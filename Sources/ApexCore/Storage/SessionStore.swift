@@ -120,7 +120,17 @@ public final class SessionStore: ObservableObject {
             tags: ["db", "postgresql"],
             colorHex: "#0A84FF"
         )
-        self.sessions = [prod1, prod2, redisStaging, dbMaster]
+        let macmini = Session(
+            name: "macmini-vm",
+            host: "100.64.0.3",
+            port: 22,
+            username: "chenxu",
+            authMethod: .password(keychainRef: "chenyn"),
+            folder: "Production",
+            tags: ["macmini", "vm", "m-series"],
+            colorHex: "#30D158"
+        )
+        self.sessions = [macmini, prod1, prod2, redisStaging, dbMaster]
         
         self.snippets = [
             Snippet(title: "Check Systemctl Nginx", command: "systemctl status nginx", category: "Nginx"),

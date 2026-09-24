@@ -5,7 +5,7 @@ import ApexCore
 import Darwin
 #endif
 
-/// Real native SSH session implementation using Darwin POSIX PTY and background metrics probe
+/// Real native SSH session implementation using Darwin POSIX PTY and background agentless probe
 public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     public let session: Session
     public private(set) var connectionState: SSHConnectionState = .disconnected
@@ -22,6 +22,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     private let monitor = AgentlessMonitor()
     private var prevCpu: AgentlessMonitor.CpuTickState?
     private var prevNet: AgentlessMonitor.NetTickState?
+    private var resolvedPassword: String?
     
     public init(session: Session) {
         self.session = session
@@ -42,6 +43,18 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     public func connect() async throws {
         self.connectionState = .connecting(step: "Initializing native Darwin PTY...")
         
+        // Resolve password if configured
+        switch session.authMethod {
+        case .password(let ref):
+            if let pw = try? await KeychainStore.shared.get(key: ref) {
+                self.resolvedPassword = pw
+            } else {
+                self.resolvedPassword = ref
+            }
+        default:
+            break
+        }
+        
         var master: Int32 = 0
         var slave: Int32 = 0
         var win = winsize(ws_row: 24, ws_col: 80, ws_xpixel: 0, ws_ypixel: 0)
@@ -53,10 +66,10 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         
         self.ptyMasterFd = master
         
-        // Spawn ssh client process
-        let sshPath = "/usr/bin/ssh"
-        let args = [
-            "-tt", // Force pseudo-terminal allocation
+        // Setup command & arguments
+        var binaryPath = "/usr/bin/ssh"
+        var sshArgs = [
+            "-tt",
             "-o", "ServerAliveInterval=\(session.keepAliveIntervalSeconds)",
             "-o", "ServerAliveCountMax=3",
             "-o", "StrictHostKeyChecking=accept-new",
@@ -64,9 +77,10 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             "\(session.username)@\(session.host)"
         ]
         
-        if let jumpId = session.jumpServerId {
-            // Future jump server proxy support
-            _ = jumpId
+        let sshpassPath = "/opt/homebrew/bin/sshpass"
+        if let pw = resolvedPassword, !pw.isEmpty, FileManager.default.fileExists(atPath: sshpassPath) {
+            binaryPath = sshpassPath
+            sshArgs = ["-p", pw, "/usr/bin/ssh"] + sshArgs
         }
         
         var fileActions: posix_spawn_file_actions_t?
@@ -79,13 +93,13 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         posix_spawn_file_actions_addclose(&fileActions, master)
         
         var pid: pid_t = 0
-        var cArgs: [UnsafeMutablePointer<CChar>?] = [strdup(sshPath)]
-        for arg in args {
+        var cArgs: [UnsafeMutablePointer<CChar>?] = [strdup(binaryPath)]
+        for arg in sshArgs {
             cArgs.append(strdup(arg))
         }
         cArgs.append(nil)
         
-        let spawnResult = posix_spawnp(&pid, sshPath, &fileActions, nil, cArgs, nil)
+        let spawnResult = posix_spawnp(&pid, binaryPath, &fileActions, nil, cArgs, nil)
         for ptr in cArgs {
             if let p = ptr { free(p) }
         }
@@ -155,7 +169,6 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     
     private func parseOSC7DirectoryChange(data: Data) {
         guard let text = String(data: data, encoding: .utf8), text.contains("\u{001B}]7;file://") else { return }
-        // \u{001B}]7;file://hostname/path\u{0007}
         if let start = text.range(of: "\u{001B}]7;file://") {
             let rest = text[start.upperBound...]
             if let end = rest.firstIndex(of: "\u{0007}") {
@@ -173,16 +186,31 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             while !Task.isCancelled {
                 guard let self = self, self.connectionState == .connected else { break }
                 
-                // Execute non-interactive probe command via ssh
                 let process = Process()
-                process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-                process.arguments = [
-                    "-o", "BatchMode=yes",
-                    "-o", "ConnectTimeout=2",
-                    "-p", "\(self.session.port)",
-                    "\(self.session.username)@\(self.session.host)",
-                    AgentlessMonitor.linuxProbeCommand
-                ]
+                let sshpassPath = "/opt/homebrew/bin/sshpass"
+                
+                if let pw = self.resolvedPassword, !pw.isEmpty, FileManager.default.fileExists(atPath: sshpassPath) {
+                    process.executableURL = URL(fileURLWithPath: sshpassPath)
+                    process.arguments = [
+                        "-p", pw,
+                        "/usr/bin/ssh",
+                        "-o", "StrictHostKeyChecking=accept-new",
+                        "-o", "ConnectTimeout=2",
+                        "-p", "\(self.session.port)",
+                        "\(self.session.username)@\(self.session.host)",
+                        AgentlessMonitor.autoProbeCommand
+                    ]
+                } else {
+                    process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+                    process.arguments = [
+                        "-o", "BatchMode=yes",
+                        "-o", "StrictHostKeyChecking=accept-new",
+                        "-o", "ConnectTimeout=2",
+                        "-p", "\(self.session.port)",
+                        "\(self.session.username)@\(self.session.host)",
+                        AgentlessMonitor.autoProbeCommand
+                    ]
+                }
                 
                 let pipe = Pipe()
                 process.standardOutput = pipe
@@ -195,7 +223,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
                     if process.terminationStatus == 0 {
                         let outData = pipe.fileHandleForReading.readDataToEndOfFile()
                         if let output = String(data: outData, encoding: .utf8) {
-                            let snapshot = self.monitor.parseLinuxOutput(
+                            let snapshot = self.monitor.parseOutput(
                                 output,
                                 prevCpu: &self.prevCpu,
                                 prevNet: &self.prevNet
@@ -215,12 +243,29 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     // SFTP implementation
     public func listDirectory(path: String) async throws -> [SFTPItem] {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-        process.arguments = [
-            "-p", "\(session.port)",
-            "\(session.username)@\(session.host)",
-            "ls -la --time-style=+%s \(path)"
-        ]
+        let sshpassPath = "/opt/homebrew/bin/sshpass"
+        let cmd = "ls -la --time-style=+%s \(path) 2>/dev/null || ls -la \(path)"
+        
+        if let pw = resolvedPassword, !pw.isEmpty, FileManager.default.fileExists(atPath: sshpassPath) {
+            process.executableURL = URL(fileURLWithPath: sshpassPath)
+            process.arguments = [
+                "-p", pw,
+                "/usr/bin/ssh",
+                "-o", "StrictHostKeyChecking=accept-new",
+                "-p", "\(session.port)",
+                "\(session.username)@\(session.host)",
+                cmd
+            ]
+        } else {
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+            process.arguments = [
+                "-o", "StrictHostKeyChecking=accept-new",
+                "-p", "\(session.port)",
+                "\(session.username)@\(session.host)",
+                cmd
+            ]
+        }
+        
         let pipe = Pipe()
         process.standardOutput = pipe
         try process.run()
@@ -233,15 +278,14 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         let lines = output.components(separatedBy: "\n")
         for line in lines {
             let parts = line.split(whereSeparator: { $0.isWhitespace })
-            if parts.count >= 7 {
+            if parts.count >= 8 {
                 let perms = String(parts[0])
                 guard perms.hasPrefix("-") || perms.hasPrefix("d") || perms.hasPrefix("l") else { continue }
                 let isDir = perms.hasPrefix("d")
                 let isLink = perms.hasPrefix("l")
                 let size = UInt64(parts[4]) ?? 0
-                let timestamp = Double(parts[5]) ?? Date().timeIntervalSince1970
-                let name = parts.dropFirst(6).joined(separator: " ")
-                if name == "." { continue }
+                let name = parts.dropFirst(parts.count > 8 ? 8 : 7).joined(separator: " ")
+                if name == "." || name.isEmpty { continue }
                 
                 let fullPath = path.hasSuffix("/") ? "\(path)\(name)" : "\(path)/\(name)"
                 items.append(SFTPItem(
@@ -250,7 +294,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
                     isDirectory: isDir,
                     isSymlink: isLink,
                     size: size,
-                    modificationDate: Date(timeIntervalSince1970: timestamp)
+                    modificationDate: Date()
                 ))
             }
         }
@@ -259,12 +303,26 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     
     public func downloadFile(remotePath: String, localURL: URL, progress: @Sendable @escaping (Double) -> Void) async throws {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/scp")
-        process.arguments = [
-            "-P", "\(session.port)",
-            "\(session.username)@\(session.host):\(remotePath)",
-            localURL.path
-        ]
+        let sshpassPath = "/opt/homebrew/bin/sshpass"
+        if let pw = resolvedPassword, !pw.isEmpty, FileManager.default.fileExists(atPath: sshpassPath) {
+            process.executableURL = URL(fileURLWithPath: sshpassPath)
+            process.arguments = [
+                "-p", pw,
+                "/usr/bin/scp",
+                "-o", "StrictHostKeyChecking=accept-new",
+                "-P", "\(session.port)",
+                "\(session.username)@\(session.host):\(remotePath)",
+                localURL.path
+            ]
+        } else {
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/scp")
+            process.arguments = [
+                "-o", "StrictHostKeyChecking=accept-new",
+                "-P", "\(session.port)",
+                "\(session.username)@\(session.host):\(remotePath)",
+                localURL.path
+            ]
+        }
         try process.run()
         process.waitUntilExit()
         progress(1.0)
@@ -272,12 +330,26 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     
     public func uploadFile(localURL: URL, remotePath: String, progress: @Sendable @escaping (Double) -> Void) async throws {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/scp")
-        process.arguments = [
-            "-P", "\(session.port)",
-            localURL.path,
-            "\(session.username)@\(session.host):\(remotePath)"
-        ]
+        let sshpassPath = "/opt/homebrew/bin/sshpass"
+        if let pw = resolvedPassword, !pw.isEmpty, FileManager.default.fileExists(atPath: sshpassPath) {
+            process.executableURL = URL(fileURLWithPath: sshpassPath)
+            process.arguments = [
+                "-p", pw,
+                "/usr/bin/scp",
+                "-o", "StrictHostKeyChecking=accept-new",
+                "-P", "\(session.port)",
+                localURL.path,
+                "\(session.username)@\(session.host):\(remotePath)"
+            ]
+        } else {
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/scp")
+            process.arguments = [
+                "-o", "StrictHostKeyChecking=accept-new",
+                "-P", "\(session.port)",
+                localURL.path,
+                "\(session.username)@\(session.host):\(remotePath)"
+            ]
+        }
         try process.run()
         process.waitUntilExit()
         progress(1.0)

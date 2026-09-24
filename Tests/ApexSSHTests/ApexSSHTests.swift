@@ -41,6 +41,38 @@ final class ApexSSHTests: XCTestCase {
         XCTAssertEqual(snapshot.uptimeSeconds, 123456)
     }
     
+    func testAgentlessMacOSMetricsParsing() {
+        let sampleMacOSOutput = """
+        CPU usage: 7.82% user, 11.38% sys, 80.78% idle 
+        PhysMem: 15G used (1740M wired, 2732M compressor), 182M unused.
+        ---CORES---
+        8
+        ---DF---
+        /dev/disk3s3s1   239362496  13334368  78350232    15%  484014 783502320    0%   /
+        ---UPTIME---
+         6:51  up 6 days, 22:50, 3 users, load averages: 1.16 1.13 1.15
+        ---NET---
+        en0 1500 <Link#6> 14:98:77:5a:b4:d5 48176988 0 46142541246 20691726 0 5206320117 0
+        """
+        
+        let monitor = AgentlessMonitor()
+        var prevNet: AgentlessMonitor.NetTickState? = AgentlessMonitor.NetTickState(rx: 46100000000, tx: 5200000000, timestamp: Date().addingTimeInterval(-1.0))
+        var prevCpu: AgentlessMonitor.CpuTickState? = nil
+        
+        let snapshot = monitor.parseOutput(sampleMacOSOutput, prevCpu: &prevCpu, prevNet: &prevNet)
+        
+        XCTAssertEqual(snapshot.cpuUsagePercent, 19.22, accuracy: 0.1)
+        XCTAssertEqual(snapshot.cpuCores, 8)
+        XCTAssertGreaterThan(snapshot.memoryTotalBytes, 0)
+        XCTAssertGreaterThan(snapshot.memoryUsedBytes, 0)
+        XCTAssertEqual(snapshot.diskTotalBytes, 239362496 * 1024)
+        XCTAssertEqual(snapshot.diskUsedBytes, 13334368 * 1024)
+        XCTAssertEqual(snapshot.loadAvg1m, 1.16)
+        XCTAssertEqual(snapshot.loadAvg5m, 1.13)
+        XCTAssertEqual(snapshot.loadAvg15m, 1.15)
+        XCTAssertEqual(snapshot.uptimeSeconds, 6 * 86400)
+    }
+    
     func testVTParserANSISequence() {
         let parser = VTParser()
         let raw = "\u{001B}[1;31mERROR\u{001B}[0m: Database connection failed at \u{001B}[32m10.0.1.10\u{001B}[0m"

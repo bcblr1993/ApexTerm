@@ -12,7 +12,16 @@ public final class AgentlessMonitor: Sendable {
     
     /// Script payload sent to remote macOS host
     public static let macosProbeCommand = """
-    top -l 1 -n 0 -s 0 | grep -E "CPU usage|PhysMem"; echo "---DF---"; df -k / | tail -1; echo "---UPTIME---"; uptime
+    top -l 1 -n 0 -s 0 | grep -E "CPU usage|PhysMem"; echo "---CORES---"; sysctl -n hw.ncpu 2>/dev/null || echo "8"; echo "---DF---"; df -k / | tail -1; echo "---UPTIME---"; uptime; echo "---NET---"; netstat -ib -n -I en0 2>/dev/null | grep -E "en0" | head -1
+    """
+    
+    /// Auto-detecting multi-OS probe command
+    public static let autoProbeCommand = """
+    if [ "$(uname)" = "Darwin" ]; then
+        \(macosProbeCommand)
+    else
+        \(linuxProbeCommand)
+    fi
     """
     
     // Previous CPU state for calculating deltas: (idle, total)
@@ -35,6 +44,173 @@ public final class AgentlessMonitor: Sendable {
             self.tx = tx
             self.timestamp = timestamp
         }
+    }
+    
+    /// Auto-detects Linux vs macOS and parses accordingly
+    public func parseOutput(
+        _ raw: String,
+        prevCpu: inout CpuTickState?,
+        prevNet: inout NetTickState?
+    ) -> ServerMetricsSnapshot {
+        if raw.contains("CPU usage:") || raw.contains("PhysMem:") {
+            return parseMacOSOutput(raw, prevNet: &prevNet)
+        } else {
+            return parseLinuxOutput(raw, prevCpu: &prevCpu, prevNet: &prevNet)
+        }
+    }
+    
+    /// Parse macOS probe stdout into ServerMetricsSnapshot
+    public func parseMacOSOutput(
+        _ raw: String,
+        prevNet: inout NetTickState?
+    ) -> ServerMetricsSnapshot {
+        var cpuPercent = 0.0
+        var cpuCores = 8
+        var memTotal: UInt64 = 0
+        var memUsed: UInt64 = 0
+        var netRxTotal: UInt64 = 0
+        var netTxTotal: UInt64 = 0
+        var diskTotal: UInt64 = 0
+        var diskUsed: UInt64 = 0
+        var load1 = 0.0
+        var load5 = 0.0
+        var load15 = 0.0
+        var uptime: UInt64 = 0
+        
+        let lines = raw.components(separatedBy: "\n")
+        var currentSection = ""
+        
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty { continue }
+            
+            if trimmed.hasPrefix("---") && trimmed.hasSuffix("---") {
+                currentSection = trimmed
+                continue
+            }
+            
+            if trimmed.hasPrefix("CPU usage:") {
+                // Example: CPU usage: 7.82% user, 11.38% sys, 80.78% idle
+                if let idleRange = trimmed.range(of: "% idle") {
+                    let beforeIdle = trimmed[..<idleRange.lowerBound]
+                    if let lastSpace = beforeIdle.lastIndex(of: " ") {
+                        let idleStr = String(beforeIdle[lastSpace...]).trimmingCharacters(in: .whitespaces)
+                        if let idleVal = Double(idleStr) {
+                            cpuPercent = max(0.0, min(100.0, 100.0 - idleVal))
+                        }
+                    }
+                }
+            } else if trimmed.hasPrefix("PhysMem:") {
+                // Example: PhysMem: 15G used (1740M wired, 2732M compressor), 182M unused.
+                memUsed = parseMemUnit(trimmed, keyword: "used")
+                let unused = parseMemUnit(trimmed, keyword: "unused")
+                memTotal = memUsed + unused
+            } else if currentSection == "---CORES---" {
+                if let c = Int(trimmed), c > 0 {
+                    cpuCores = c
+                }
+            } else if currentSection == "---DF---" {
+                let parts = trimmed.split(whereSeparator: { $0.isWhitespace })
+                if parts.count >= 4 {
+                    if let total1K = UInt64(parts[1]), let used1K = UInt64(parts[2]) {
+                        diskTotal = total1K * 1024
+                        diskUsed = used1K * 1024
+                    }
+                }
+            } else if currentSection == "---UPTIME---" {
+                // Example: 6:51 up 6 days, 22:50, 3 users, load averages: 1.16 1.13 1.15
+                if let loadRange = trimmed.range(of: "load averages:") ?? trimmed.range(of: "load average:") {
+                    let loadsStr = trimmed[loadRange.upperBound...].trimmingCharacters(in: .whitespaces)
+                    let loads = loadsStr.components(separatedBy: " ").filter { !$0.isEmpty }
+                    if loads.count >= 3 {
+                        load1 = Double(loads[0].replacingOccurrences(of: ",", with: "")) ?? 0.0
+                        load5 = Double(loads[1].replacingOccurrences(of: ",", with: "")) ?? 0.0
+                        load15 = Double(loads[2].replacingOccurrences(of: ",", with: "")) ?? 0.0
+                    }
+                }
+                uptime = parseMacOSUptime(trimmed)
+            } else if currentSection == "---NET---" {
+                // Example: en0 1500 <Link#6> 14:98:77:5a:b4:d5 48176988 0 46142541246 20691726 0 5206320117 0
+                let parts = trimmed.split(whereSeparator: { $0.isWhitespace })
+                if parts.count >= 10 {
+                    netRxTotal = UInt64(parts[6]) ?? 0
+                    netTxTotal = UInt64(parts[9]) ?? 0
+                }
+            }
+        }
+        
+        // Calculate network rate
+        var rxRate = 0.0
+        var txRate = 0.0
+        let now = Date()
+        if let prevN = prevNet {
+            let dt = now.timeIntervalSince(prevN.timestamp)
+            if dt > 0.1 && netRxTotal >= prevN.rx && netTxTotal >= prevN.tx {
+                rxRate = Double(netRxTotal - prevN.rx) / dt
+                txRate = Double(netTxTotal - prevN.tx) / dt
+            }
+        }
+        prevNet = NetTickState(rx: netRxTotal, tx: netTxTotal, timestamp: now)
+        
+        return ServerMetricsSnapshot(
+            timestamp: now,
+            cpuUsagePercent: cpuPercent,
+            cpuCores: cpuCores,
+            memoryTotalBytes: memTotal,
+            memoryUsedBytes: memUsed,
+            memoryCachedBytes: 0,
+            networkRxBytesPerSec: rxRate,
+            networkTxBytesPerSec: txRate,
+            diskTotalBytes: diskTotal,
+            diskUsedBytes: diskUsed,
+            loadAvg1m: load1,
+            loadAvg5m: load5,
+            loadAvg15m: load15,
+            uptimeSeconds: uptime
+        )
+    }
+    
+    private func parseMemUnit(_ text: String, keyword: String) -> UInt64 {
+        guard let range = text.range(of: keyword) else { return 0 }
+        let sub = text[..<range.lowerBound].trimmingCharacters(in: .whitespaces)
+        // Find digits before unit like 15G or 182M
+        var numStr = ""
+        var unit = "M"
+        for char in sub.reversed() {
+            if char.isWhitespace || char == "(" || char == "," {
+                if !numStr.isEmpty { break }
+            } else if char == "G" || char == "g" {
+                unit = "G"
+            } else if char == "M" || char == "m" {
+                unit = "M"
+            } else if char == "K" || char == "k" {
+                unit = "K"
+            } else if char.isNumber || char == "." {
+                numStr.insert(char, at: numStr.startIndex)
+            }
+        }
+        guard let val = Double(numStr) else { return 0 }
+        switch unit {
+        case "G": return UInt64(val * 1024 * 1024 * 1024)
+        case "M": return UInt64(val * 1024 * 1024)
+        case "K": return UInt64(val * 1024)
+        default: return UInt64(val)
+        }
+    }
+    
+    private func parseMacOSUptime(_ text: String) -> UInt64 {
+        var totalSec: UInt64 = 0
+        if let upRange = text.range(of: "up ") {
+            let afterUp = text[upRange.upperBound...]
+            if let comma = afterUp.firstIndex(of: ",") {
+                let part = String(afterUp[..<comma])
+                if part.contains("day") {
+                    let d = part.components(separatedBy: " ").compactMap { UInt64($0) }.first ?? 0
+                    totalSec += d * 86400
+                }
+            }
+        }
+        return totalSec > 0 ? totalSec : 3600
     }
     
     /// Parse Linux probe stdout into ServerMetricsSnapshot

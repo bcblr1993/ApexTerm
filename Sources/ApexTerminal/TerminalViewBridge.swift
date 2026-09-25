@@ -23,11 +23,9 @@ public struct TerminalRepresentable: NSViewRepresentable {
             scrollView.window?.makeFirstResponder(scrollView.terminalView)
         }
         
-        // Instant real-time listener: as soon as bytes arrive from SSH, trigger refresh!
+        // 120Hz Coalesced real-time listener: batch stream updates to prevent UI overload
         ringBuffer.onUpdate = { [weak scrollView] in
-            DispatchQueue.main.async {
-                scrollView?.terminalView.refresh()
-            }
+            scrollView?.terminalView.scheduleRefresh()
         }
         
         return scrollView
@@ -89,16 +87,39 @@ public final class NativeTerminalView: NSTextView {
     public var onInput: ((Data) -> Void)?
     
     private let parser = VTParser()
-    private var lastCommittedIndex = 0
+    private var lastCommittedIndex: Int64 = 0
     private var activeLineStartLocation = 0
     private var customInputContext: NSTextInputContext?
     private var currentMarkedText: String = ""
     private var currentMarkedRange = NSRange(location: NSNotFound, length: 0)
     
+    // Terminal frame coalescing & throttling
+    private let refreshLock = NSLock()
+    nonisolated(unsafe) private var isRefreshScheduled: Bool = false
+    
     // Terminal cursor and blinking state
     private var isCursorVisible: Bool = true
     private var cursorBlinkTimer: Timer?
     private var isFocused: Bool = false
+    
+    /// Coalesced refresh on the main thread for high-framerate batching (thread-safe, nonisolated)
+    nonisolated public func scheduleRefresh() {
+        refreshLock.lock()
+        if isRefreshScheduled {
+            refreshLock.unlock()
+            return
+        }
+        isRefreshScheduled = true
+        refreshLock.unlock()
+        
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.refreshLock.lock()
+            self.isRefreshScheduled = false
+            self.refreshLock.unlock()
+            self.refresh()
+        }
+    }
     
     override public init(frame frameRect: NSRect, textContainer: NSTextContainer?) {
         super.init(frame: frameRect, textContainer: textContainer)
@@ -519,10 +540,10 @@ public final class NativeTerminalView: NSTextView {
         CATransaction.setDisableActions(true)
         defer { CATransaction.commit() }
         
-        let committedTotal = buffer.committedLineCount
+        let currentTotal = buffer.totalCommittedCount
         
         // 1. Buffer cleared or initial render
-        if committedTotal < lastCommittedIndex {
+        if currentTotal < lastCommittedIndex {
             lastCommittedIndex = 0
             self.textStorage?.setAttributedString(NSAttributedString())
             activeLineStartLocation = 0
@@ -534,14 +555,24 @@ public final class NativeTerminalView: NSTextView {
             storage.deleteCharacters(in: activeRange)
         }
         
-        // 3. Append newly committed lines
-        if committedTotal > lastCommittedIndex {
-            let newLines = buffer.committedLines(from: lastCommittedIndex, count: committedTotal - lastCommittedIndex)
-            lastCommittedIndex = committedTotal
-            if !newLines.isEmpty {
-                let joined = newLines.joined(separator: "\n") + "\n"
-                let attr = formatANSI(joined)
-                self.textStorage?.append(attr)
+        // 3. Append newly committed lines using tailLines
+        if currentTotal > lastCommittedIndex {
+            let delta = Int(currentTotal - lastCommittedIndex)
+            lastCommittedIndex = currentTotal
+            if delta > 0 {
+                let countToFetch = min(delta, buffer.maxLines)
+                let newLines = buffer.tailLines(count: countToFetch)
+                if !newLines.isEmpty {
+                    let joined = newLines.joined(separator: "\n") + "\n"
+                    let attr = formatANSI(joined)
+                    self.textStorage?.append(attr)
+                }
+            }
+            
+            // Memory Guard: Bound textStorage length to prevent unbounded memory growth under massive streams
+            if let storage = self.textStorage, storage.length > 2_500_000 {
+                let excess = storage.length - 1_500_000
+                storage.deleteCharacters(in: NSRange(location: 0, length: excess))
             }
             activeLineStartLocation = self.textStorage?.length ?? 0
         }

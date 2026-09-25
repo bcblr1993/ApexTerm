@@ -13,6 +13,7 @@ public final class MockSSHSession: SSHSessionProtocol, @unchecked Sendable {
     private var metricsTimer: Timer?
     private var currentDirectory = "/root"
     private var inputBuffer = ""
+    private let fileLock = NSLock()
     private var mockFiles: [String: Data] = [:]
     
     private var mockCpu = 12.5
@@ -33,6 +34,13 @@ public final class MockSSHSession: SSHSessionProtocol, @unchecked Sendable {
     
     public func setDirectoryChangeHandler(_ handler: @Sendable @escaping (String) -> Void) {
         self.directoryChangeHandler = handler
+    }
+    
+    public func triggerDirectoryChange(to path: String) {
+        self.currentDirectory = path
+        let osc7 = "\u{001B}]7;file://\(session.host)\(currentDirectory)\u{0007}"
+        emit(osc7)
+        self.directoryChangeHandler?(path)
     }
     
     public func connect() async throws {
@@ -228,22 +236,34 @@ public final class MockSSHSession: SSHSessionProtocol, @unchecked Sendable {
         ]
     }
     
+    private func getMockFile(at path: String, fallback: Data) -> Data {
+        fileLock.lock()
+        defer { fileLock.unlock() }
+        return mockFiles[path] ?? fallback
+    }
+    
+    private func setMockFile(at path: String, data: Data) {
+        fileLock.lock()
+        defer { fileLock.unlock() }
+        mockFiles[path] = data
+    }
+    
     public func downloadFile(remotePath: String, localURL: URL, progress: @Sendable @escaping (Double) -> Void) async throws {
-        for step in 1...10 {
-            try await Task.sleep(nanoseconds: 50_000_000)
-            progress(Double(step) / 10.0)
+        for step in 1...5 {
+            try await Task.sleep(nanoseconds: 10_000_000)
+            progress(Double(step) / 5.0)
         }
         let sample = "# ApexTerm 模拟会话示例文件\n# 路径：\(remotePath)\n"
-        let data = mockFiles[remotePath] ?? Data(sample.utf8)
+        let data = getMockFile(at: remotePath, fallback: Data(sample.utf8))
         try data.write(to: localURL, options: .atomic)
     }
     
     public func uploadFile(localURL: URL, remotePath: String, progress: @Sendable @escaping (Double) -> Void) async throws {
         let data = try Data(contentsOf: localURL)
-        for step in 1...10 {
-            try await Task.sleep(nanoseconds: 50_000_000)
-            progress(Double(step) / 10.0)
+        for step in 1...5 {
+            try await Task.sleep(nanoseconds: 10_000_000)
+            progress(Double(step) / 5.0)
         }
-        mockFiles[remotePath] = data
+        setMockFile(at: remotePath, data: data)
     }
 }

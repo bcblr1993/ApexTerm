@@ -75,7 +75,7 @@ let package = Package(
         ),
         .testTarget(
             name: "ApexSSHTests",
-            dependencies: ["ApexSSH", "ApexCore", "ApexTerminal"],
+            dependencies: ["ApexSSH", "ApexCore", "ApexTerminal", "ApexUI"],
             path: "Tests/ApexSSHTests"
         )
     ]

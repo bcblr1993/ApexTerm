@@ -109,46 +109,62 @@ public final class SSHConfigParser: Sendable {
         }
         
         for rawLine in lines {
-            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
             // Skip comments and empty lines
             if line.isEmpty || line.hasPrefix("#") {
                 continue
             }
             
-            // Tokens can be separated by whitespace or '='
-            let normalizedLine: String
+            // Tokens can be separated by whitespace (spaces, tabs) or '='
+            let directive: String
+            let rawValue: String
+            
             if let eqIndex = line.firstIndex(of: "=") {
                 let key = line[..<eqIndex].trimmingCharacters(in: .whitespaces)
                 let val = line[line.index(after: eqIndex)...].trimmingCharacters(in: .whitespaces)
-                normalizedLine = "\(key) \(val)"
+                directive = key.lowercased()
+                rawValue = val
+            } else if let spaceIndex = line.firstIndex(where: { $0.isWhitespace }) {
+                let key = line[..<spaceIndex].trimmingCharacters(in: .whitespaces)
+                let val = line[line.index(after: spaceIndex)...].trimmingCharacters(in: .whitespaces)
+                directive = key.lowercased()
+                rawValue = val
             } else {
-                normalizedLine = line
+                directive = line.lowercased()
+                rawValue = ""
             }
             
-            let parts = normalizedLine.split(separator: " ", maxSplits: 1).map { String($0) }
-            guard !parts.isEmpty else { continue }
-            let directive = parts[0].lowercased()
-            let value = parts.count > 1 ? parts[1].trimmingCharacters(in: .whitespaces) : ""
+            guard !directive.isEmpty else { continue }
+            
+            var cleanValue = rawValue
+            if (cleanValue.hasPrefix("\"") && cleanValue.hasSuffix("\"")) || (cleanValue.hasPrefix("'") && cleanValue.hasSuffix("'")) {
+                cleanValue = String(cleanValue.dropFirst().dropLast()).trimmingCharacters(in: .whitespaces)
+            }
             
             switch directive {
             case "host":
                 flushCurrent()
-                let patterns = value.split(whereSeparator: { $0.isWhitespace }).map { String($0) }
+                let patterns: [String]
+                if (rawValue.hasPrefix("\"") && rawValue.hasSuffix("\"")) || (rawValue.hasPrefix("'") && rawValue.hasSuffix("'")) {
+                    patterns = [cleanValue]
+                } else {
+                    patterns = cleanValue.split(whereSeparator: { $0.isWhitespace }).map { String($0).trimmingCharacters(in: CharacterSet(charactersIn: "\"'")) }
+                }
                 currentHostPatterns = patterns
                 
             case "hostname":
-                currentHostName = value
+                currentHostName = cleanValue
                 
             case "user":
-                currentUser = value
+                currentUser = cleanValue
                 
             case "port":
-                if let p = Int(value), p > 0 && p <= 65535 {
+                if let p = Int(cleanValue), p > 0 && p <= 65535 {
                     currentPort = p
                 }
                 
             case "identityfile":
-                let expanded = (value as NSString).expandingTildeInPath
+                let expanded = (cleanValue as NSString).expandingTildeInPath
                 currentIdentityFile = expanded
                 
             default:

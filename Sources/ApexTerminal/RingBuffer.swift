@@ -18,7 +18,16 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         self.buffer = [String](repeating: "", count: maxLines)
     }
     
-    /// Committed historical line count (excluding current in-progress line)
+    private var _totalCommittedCount: Int64 = 0
+    
+    /// Total lifetime committed line count (monotonically increasing)
+    public var totalCommittedCount: Int64 {
+        lock.lock()
+        defer { lock.unlock() }
+        return _totalCommittedCount
+    }
+    
+    /// Committed historical line count in circular window (capped at maxLines)
     public var committedLineCount: Int {
         lock.lock()
         defer { lock.unlock() }
@@ -35,6 +44,23 @@ public final class TerminalRingBuffer: @unchecked Sendable {
     /// Return committed lines from start index to count
     public func committedLines(from start: Int, count requestedCount: Int) -> [String] {
         lines(from: start, count: requestedCount)
+    }
+    
+    /// Return the most recent N committed lines in chronological order
+    public func tailLines(count requestedCount: Int) -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        
+        let fetchCount = min(requestedCount, count)
+        guard fetchCount > 0 else { return [] }
+        var result = [String]()
+        result.reserveCapacity(fetchCount)
+        let startOffset = count - fetchCount
+        for i in 0..<fetchCount {
+            let index = (head + startOffset + i) % maxLines
+            result.append(buffer[index])
+        }
+        return result
     }
     
     /// Append streaming raw output from terminal PTY
@@ -147,6 +173,7 @@ public final class TerminalRingBuffer: @unchecked Sendable {
             buffer[head] = activeLine
             head = (head + 1) % maxLines
         }
+        _totalCommittedCount += 1
         activeLine = ""
     }
     
@@ -161,6 +188,7 @@ public final class TerminalRingBuffer: @unchecked Sendable {
             buffer[head] = line
             head = (head + 1) % maxLines
         }
+        _totalCommittedCount += 1
         let updateHandler = onUpdate
         lock.unlock()
         
@@ -180,6 +208,7 @@ public final class TerminalRingBuffer: @unchecked Sendable {
                 head = (head + 1) % maxLines
             }
         }
+        _totalCommittedCount += Int64(lines.count)
         let updateHandler = onUpdate
         lock.unlock()
         
@@ -232,6 +261,7 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         lock.lock()
         head = 0
         count = 0
+        _totalCommittedCount = 0
         activeLine = ""
         pendingSequence = ""
         let updateHandler = onUpdate

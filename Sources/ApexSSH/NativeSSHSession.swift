@@ -220,7 +220,14 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         
         if childPid > 0 {
             kill(childPid, SIGHUP)
+            var status: Int32 = 0
+            waitpid(childPid, &status, WNOHANG)
             childPid = -1
+        }
+        
+        if ptyMasterFd >= 0 {
+            close(ptyMasterFd)
+            ptyMasterFd = -1
         }
         
         // Clean up multiplex socket

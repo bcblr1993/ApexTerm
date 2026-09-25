@@ -7,7 +7,7 @@ APP_DIR="${BUILD_DIR}/${APP_NAME}"
 CONTENTS_DIR="${APP_DIR}/Contents"
 MACOS_DIR="${CONTENTS_DIR}/MacOS"
 RESOURCES_DIR="${CONTENTS_DIR}/Resources"
-VERSION="${1:-1.1.1}"
+VERSION="${1:-1.2.0}"
 DIST_ARCHIVE="${BUILD_DIR}/ApexTerm-v${VERSION}-macos-arm64.tar.gz"
 DIST_DMG="${BUILD_DIR}/ApexTerm-v${VERSION}-macos-arm64.dmg"
 
@@ -69,7 +69,7 @@ cat << EOF > "${CONTENTS_DIR}/Info.plist"
     <key>CFBundleShortVersionString</key>
     <string>${VERSION}</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>120</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>NSHighResolutionCapable</key>

@@ -79,7 +79,8 @@ public final class NativeTerminalScrollView: NSScrollView {
         self.hasHorizontalScroller = false
         self.autohidesScrollers = true
         self.drawsBackground = true
-        self.backgroundColor = NSColor(red: 0.08, green: 0.09, blue: 0.11, alpha: 1.0)
+        let bg = NSColor(hex: AppSettings.shared.themePreset.backgroundColorHex) ?? NSColor(red: 0.08, green: 0.09, blue: 0.11, alpha: 1.0)
+        self.backgroundColor = bg
         
         terminalView.minSize = NSSize(width: 0, height: 0)
         terminalView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
@@ -320,15 +321,10 @@ public final class NativeTerminalView: NSTextView {
         self.isEditable = false
         self.isSelectable = true
         self.drawsBackground = true
-        self.backgroundColor = NSColor(red: 0.08, green: 0.09, blue: 0.11, alpha: 1.0)
-        self.textColor = NSColor(red: 0.92, green: 0.93, blue: 0.95, alpha: 1.0)
         self.insertionPointColor = NSColor.cyan
         
-        // Monospace font cascading with PingFang SC for CJK characters
-        let base = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
-        self.font = base
-        self.cachedBaseFont = base
-        self.cachedBoldFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .bold)
+        // Apply settings initially
+        applyAppSettings()
         
         // Critical for AppKit NSTextView vertical auto-resizing in NSScrollView
         self.minSize = NSSize(width: 0, height: 0)
@@ -345,7 +341,54 @@ public final class NativeTerminalView: NSTextView {
         self.layer?.drawsAsynchronously = true
         
         self.registerForDraggedTypes([.fileURL])
+        
+        NotificationCenter.default.addObserver(forName: AppSettings.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.applyAppSettings()
+            }
+        }
+        
         startCursorBlink()
+    }
+    
+    public func applyAppSettings() {
+        let settings = AppSettings.shared
+        
+        // 1. Font
+        let baseSize = CGFloat(settings.fontSize)
+        let resolvedFont: NSFont
+        if settings.fontName == "SF Mono" || settings.fontName == "System Monospaced" {
+            resolvedFont = NSFont.monospacedSystemFont(ofSize: baseSize, weight: .regular)
+        } else if let custom = NSFont(name: settings.fontName, size: baseSize) {
+            resolvedFont = custom
+        } else {
+            resolvedFont = NSFont.monospacedSystemFont(ofSize: baseSize, weight: .regular)
+        }
+        self.font = resolvedFont
+        self.cachedBaseFont = resolvedFont
+        self.cachedBoldFont = NSFontManager.shared.convert(resolvedFont, toHaveTrait: .boldFontMask)
+        
+        // 2. Theme & Colors
+        let theme = settings.themePreset
+        let bg = NSColor(hex: theme.backgroundColorHex) ?? NSColor(red: 0.08, green: 0.09, blue: 0.11, alpha: 1.0)
+        let fg = NSColor(hex: theme.foregroundColorHex) ?? NSColor(red: 0.92, green: 0.93, blue: 0.95, alpha: 1.0)
+        self.backgroundColor = bg
+        self.enclosingScrollView?.backgroundColor = bg
+        self.textColor = fg
+        
+        // 3. Cursor
+        if !settings.isCursorBlinkEnabled {
+            stopCursorBlink()
+            isCursorVisible = true
+        } else if isFocused {
+            startCursorBlink()
+        }
+        
+        // 4. Copy behavior
+        self.isCopyOnSelectEnabled = settings.isCopyOnSelectEnabled
+        
+        self.notifyDimensionsChangedIfNeeded()
+        self.needsDisplay = true
     }
     
     required init?(coder: NSCoder) {
@@ -408,38 +451,62 @@ public final class NativeTerminalView: NSTextView {
               let storage = self.textStorage else { return nil }
         
         let origin = self.textContainerOrigin
-        let font = self.font ?? NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        let font = self.font ?? cachedBaseFont
         let lineHeight = layoutManager.defaultLineHeight(for: font)
-        let cursorWidth: CGFloat = 2.5
+        let shape = AppSettings.shared.cursorShape
+        let charWidth = max(7, ("M" as NSString).size(withAttributes: [.font: font]).width)
+        let cursorWidth: CGFloat = (shape == .bar) ? 2.5 : charWidth
         
         let length = storage.length
         if length == 0 {
-            return NSRect(x: origin.x, y: origin.y, width: cursorWidth, height: lineHeight)
+            if shape == .underline {
+                return NSRect(x: origin.x, y: origin.y + lineHeight - 2.5, width: cursorWidth, height: 2.5)
+            } else {
+                return NSRect(x: origin.x, y: origin.y, width: cursorWidth, height: lineHeight)
+            }
         }
         
         let cursorCol = ringBuffer?.cursorColumn ?? (length - activeLineStartLocation)
         let cursorCharIndex = min(length, max(0, activeLineStartLocation + cursorCol))
         
+        let x: CGFloat
+        let y: CGFloat
+        let h: CGFloat
+        
         if cursorCharIndex < length {
             let glyph = layoutManager.glyphIndexForCharacter(at: cursorCharIndex)
             let charRect = layoutManager.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: textContainer)
-            return NSRect(x: origin.x + charRect.minX, y: origin.y + charRect.minY, width: cursorWidth, height: charRect.height > 0 ? charRect.height : lineHeight)
+            x = origin.x + charRect.minX
+            y = origin.y + charRect.minY
+            h = charRect.height > 0 ? charRect.height : lineHeight
         } else {
             let lastChar = (storage.string as NSString).substring(with: NSRange(location: length - 1, length: 1))
             if lastChar == "\n" || lastChar == "\r" {
                 let extraRect = layoutManager.extraLineFragmentRect
                 if extraRect.height > 0 {
-                    return NSRect(x: origin.x + extraRect.minX, y: origin.y + extraRect.minY, width: cursorWidth, height: extraRect.height)
+                    x = origin.x + extraRect.minX
+                    y = origin.y + extraRect.minY
+                    h = extraRect.height
                 } else {
                     let glyph = layoutManager.glyphIndexForCharacter(at: length - 1)
                     let lineRect = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
-                    return NSRect(x: origin.x, y: origin.y + lineRect.maxY, width: cursorWidth, height: lineHeight)
+                    x = origin.x
+                    y = origin.y + lineRect.maxY
+                    h = lineHeight
                 }
             } else {
                 let lastGlyph = layoutManager.glyphIndexForCharacter(at: length - 1)
                 let charRect = layoutManager.boundingRect(forGlyphRange: NSRange(location: lastGlyph, length: 1), in: textContainer)
-                return NSRect(x: origin.x + charRect.maxX, y: origin.y + charRect.minY, width: cursorWidth, height: charRect.height > 0 ? charRect.height : lineHeight)
+                x = origin.x + charRect.maxX
+                y = origin.y + charRect.minY
+                h = charRect.height > 0 ? charRect.height : lineHeight
             }
+        }
+        
+        if shape == .underline {
+            return NSRect(x: x, y: y + h - 2.5, width: cursorWidth, height: 2.5)
+        } else {
+            return NSRect(x: x, y: y, width: cursorWidth, height: h)
         }
     }
     
@@ -448,8 +515,9 @@ public final class NativeTerminalView: NSTextView {
         
         guard isCursorVisible, let rect = getCursorRect() else { return }
         let focused = (window?.isKeyWindow == true && window?.firstResponder == self)
+        let themeCursor = NSColor(hex: AppSettings.shared.themePreset.cursorColorHex)
         let cursorColor = focused
-            ? NSColor(red: 0.20, green: 0.78, blue: 0.95, alpha: 0.95)
+            ? (themeCursor ?? NSColor(red: 0.20, green: 0.78, blue: 0.95, alpha: 0.95))
             : NSColor(white: 0.6, alpha: 0.5)
         
         cursorColor.setFill()
@@ -458,6 +526,11 @@ public final class NativeTerminalView: NSTextView {
     }
     
     public func startCursorBlink() {
+        guard AppSettings.shared.isCursorBlinkEnabled else {
+            isCursorVisible = true
+            needsDisplay = true
+            return
+        }
         cursorBlinkTimer?.invalidate()
         isCursorVisible = true
         needsDisplay = true
@@ -512,8 +585,8 @@ public final class NativeTerminalView: NSTextView {
     override public func rightMouseDown(with event: NSEvent) {
         self.window?.makeFirstResponder(self)
         
-        // If Shift is pressed, allow standard context menu popup
-        if event.modifierFlags.contains(.shift) {
+        // If Shift is pressed or right-click paste is disabled in settings, allow standard context menu popup
+        if event.modifierFlags.contains(.shift) || !AppSettings.shared.isRightClickPasteEnabled {
             super.rightMouseDown(with: event)
             return
         }

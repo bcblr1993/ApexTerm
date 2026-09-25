@@ -87,6 +87,34 @@ public final class SessionStore: ObservableObject {
         saveAll()
     }
     
+    // MARK: - Export & Import Backup Operations
+    
+    /// Exports all sessions into pretty-printed JSON data
+    public func exportSessionsJSON() throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try encoder.encode(sessions)
+    }
+    
+    /// Imports sessions from JSON data. Returns number of sessions imported.
+    @discardableResult
+    public func importSessionsJSON(from data: Data, overwrite: Bool = false) throws -> Int {
+        let imported = try JSONDecoder().decode([Session].self, from: data)
+        if overwrite {
+            self.sessions = imported
+        } else {
+            for item in imported {
+                if let index = self.sessions.firstIndex(where: { $0.id == item.id }) {
+                    self.sessions[index] = item
+                } else {
+                    self.sessions.append(item)
+                }
+            }
+        }
+        saveAll()
+        return imported.count
+    }
+    
     private func seedDefaultTriggers() {
         self.triggers = [
             Trigger(name: "Error Highlighter", regexPattern: "(?i)(error|failed|fatal|exception)", action: .highlight(colorHex: "#FF453A")),
@@ -96,3 +124,4 @@ public final class SessionStore: ObservableObject {
         saveAll()
     }
 }
+

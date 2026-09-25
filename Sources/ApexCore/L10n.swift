@@ -100,4 +100,72 @@ public enum L10n {
     public static let menuSession = "会话"
     public static let menuDisconnect = "断开当前连接"
     public static let menuClearScrollback = "清空终端回滚记录"
+    public static let menuPreferences = "偏好设置..."
+    public static let menuAbout = "关于 ApexTerm"
+    public static let menuCheckUpdates = "检查更新..."
+    public static let menuShortcuts = "键盘快捷键帮助"
+    public static let menuExportSessions = "导出服务器会话 (JSON)..."
+    public static let menuImportSessions = "导入服务器会话 (JSON)..."
+    public static let menuDocumentation = "在线文档与主页"
+    public static let menuGitHubRepo = "GitHub 源码仓库"
+    public static let menuReportIssue = "提交反馈与建议..."
+
+    // 偏好设置 Settings
+    public static let settingsTitle = "偏好设置"
+    public static let settingsTabGeneral = "通用"
+    public static let settingsTabTerminal = "终端外观"
+    public static let settingsTabBehavior = "操作习惯"
+    public static let settingsTabSFTP = "SFTP传输"
+    public static let settingsTabData = "数据备份"
+    
+    // 设置 - 终端外观
+    public static let fontSettings = "字体与字号"
+    public static let fontNameLabel = "终端字体"
+    public static let fontSizeLabel = "字体大小"
+    public static let cursorSettings = "光标样式"
+    public static let cursorShapeLabel = "光标形状"
+    public static let cursorBlinkLabel = "光标闪烁"
+    public static let themeSettings = "终端配色方案"
+    public static let themeLabel = "选择配色"
+    public static let scrollbackBuffer = "回滚缓冲区大小 (行数)"
+    public static let bellSettings = "终端响铃提示"
+    
+    // 设置 - 操作习惯
+    public static let copyOnSelectLabel = "选中文字后自动复制到剪切板 (PuTTY / Xshell 风格)"
+    public static let copyOnSelectDesc = "开启后，使用鼠标在终端中划选任意文字，释放鼠标即可直接复制到系统剪切板。"
+    public static let rightClickPasteLabel = "鼠标右键直接粘贴剪切板内容"
+    public static let rightClickPasteDesc = "开启后，鼠标右键点击终端立即粘贴剪切板内容；按住 Shift + 右键可调出完整右键菜单。"
+    
+    // 设置 - SFTP
+    public static let sftpShowHiddenLabel = "默认显示隐藏文件 (点开头 .dotfile)"
+    public static let sftpAutoSyncLabel = "默认开启终端与 SFTP 目录联动 (OSC 7)"
+    public static let defaultDownloadPath = "默认下载保存路径"
+    public static let choosePathButton = "选择目录..."
+    
+    // 设置 - 数据备份与迁移
+    public static let backupTitle = "会话配置备份与跨机迁移"
+    public static let backupDesc = "将所有保存的服务器连接、分组目录及预设标签导出为标准 JSON 格式，方便随时备份或在多台 Mac 之间无缝同步。"
+    public static let exportButton = "导出全部会话 (JSON)"
+    public static let importButton = "导入会话配置文件..."
+    public static let exportSuccess = "会话配置已成功导出！"
+    public static let importSuccess = "成功导入 %d 台服务器配置！"
+    public static let importFailure = "导入失败：文件格式不正确或损坏。"
+    
+    // 关于与更新
+    public static let checkUpdatesNow = "立即检查更新"
+    public static let autoCheckUpdates = "启动时自动检查新版本"
+    public static let appTagline = "专为 Apple Silicon 打造的新一代极速全能 SSH / SFTP 生产力终端"
+    public static let architecture = "原生架构"
+    public static let metalSupport = "Metal 120Hz 硬件加速"
+    public static let buildNumber = "内部版本"
+    public static let copyright = "Copyright © 2026 ApexTerm Team. 保留所有权利。"
+    public static let visitWebsite = "访问官方主页"
+    public static let openGitHub = "查看开源仓库"
+    public static let updateAvailableTitle = "发现新版本可用"
+    public static let upToDateTitle = "已是最新版本"
+    public static let upToDateDesc = "您当前运行的 ApexTerm %s 已经是最新稳定版本。"
+    public static let updateNow = "前往下载更新"
+    public static let remindLater = "稍后提醒"
+    public static let checkingForUpdates = "正在检查更新..."
 }
+

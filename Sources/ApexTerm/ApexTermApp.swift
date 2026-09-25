@@ -8,9 +8,15 @@ import ApexUI
 @main
 struct ApexTermApp: App {
     @StateObject private var sessionStore = SessionStore.shared
+    @ObservedObject private var updateManager = UpdateManager.shared
+    @ObservedObject private var settings = AppSettings.shared
+    
     @State private var activeTabs: [TerminalTabItem] = []
     @State private var selectedTabId: UUID?
     @State private var selectedSidebarSession: Session?
+    
+    @State private var isAboutPresented = false
+    @State private var isShortcutsPresented = false
     
     var body: some Scene {
         WindowGroup {
@@ -35,12 +41,35 @@ struct ApexTermApp: App {
             }
             .navigationSplitViewStyle(.balanced)
             .frame(minWidth: 960, minHeight: 640)
+            .sheet(isPresented: $isAboutPresented) {
+                AboutView()
+            }
+            .sheet(isPresented: $isShortcutsPresented) {
+                ShortcutsSheetView()
+            }
+            .sheet(isPresented: $updateManager.isUpdateSheetPresented) {
+                UpdateSheetView()
+            }
+            .task {
+                if settings.checkForUpdatesOnLaunch {
+                    await updateManager.checkForUpdates(manual: false)
+                }
+            }
         }
-        // Keep the system-owned traffic lights and sidebar control in a compact
-        // native toolbar. The full-height unified toolbar added an empty title
-        // row above our own session and workspace headers.
         .windowToolbarStyle(.unifiedCompact(showsTitle: true))
         .commands {
+            CommandGroup(replacing: .appInfo) {
+                Button(L10n.menuAbout) {
+                    isAboutPresented = true
+                }
+                
+                Button(L10n.menuCheckUpdates) {
+                    Task {
+                        await updateManager.checkForUpdates(manual: true)
+                    }
+                }
+            }
+            
             CommandGroup(replacing: .newItem) {
                 Button(L10n.menuNewTab) {
                     if let selected = selectedSidebarSession ?? sessionStore.sessions.first {
@@ -48,6 +77,16 @@ struct ApexTermApp: App {
                     }
                 }
                 .keyboardShortcut("t", modifiers: .command)
+                
+                Divider()
+                
+                Button(L10n.menuExportSessions) {
+                    exportSessions()
+                }
+                
+                Button(L10n.menuImportSessions) {
+                    importSessions()
+                }
             }
             
             CommandMenu(L10n.menuSession) {
@@ -90,6 +129,61 @@ struct ApexTermApp: App {
                     }
                 }
                 .keyboardShortcut("k", modifiers: .command)
+            }
+            
+            CommandGroup(replacing: .help) {
+                Button(L10n.menuShortcuts) {
+                    isShortcutsPresented = true
+                }
+                .keyboardShortcut("/", modifiers: .command)
+                
+                Divider()
+                
+                Button(L10n.menuDocumentation) {
+                    if let url = URL(string: "https://github.com/apexterm/apexterm#readme") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+                
+                Button(L10n.menuGitHubRepo) {
+                    if let url = URL(string: "https://github.com/apexterm/apexterm") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+                
+                Button(L10n.menuReportIssue) {
+                    if let url = URL(string: "https://github.com/apexterm/apexterm/issues/new") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+            }
+        }
+        
+        Settings {
+            SettingsView()
+        }
+    }
+    
+    private func exportSessions() {
+        let savePanel = NSSavePanel()
+        savePanel.allowedContentTypes = [.json]
+        savePanel.nameFieldStringValue = "apexterm-sessions-backup.json"
+        savePanel.prompt = "导出"
+        if savePanel.runModal() == .OK, let url = savePanel.url {
+            if let data = try? sessionStore.exportSessionsJSON() {
+                try? data.write(to: url)
+            }
+        }
+    }
+    
+    private func importSessions() {
+        let openPanel = NSOpenPanel()
+        openPanel.allowedContentTypes = [.json]
+        openPanel.allowsMultipleSelection = false
+        openPanel.prompt = "导入"
+        if openPanel.runModal() == .OK, let url = openPanel.url {
+            if let data = try? Data(contentsOf: url) {
+                _ = try? sessionStore.importSessionsJSON(from: data, overwrite: false)
             }
         }
     }

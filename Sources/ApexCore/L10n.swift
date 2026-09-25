@@ -13,6 +13,9 @@ public enum L10n {
     public static let stagingFolder = "测试环境"
     public static let databaseFolder = "数据库"
     public static let defaultFolder = "默认分组"
+    public static let emptySessionTitle = "暂无服务器会话"
+    public static let emptySessionSubtitle = "点击上方「+」按钮或下方按钮添加第一台主机"
+    public static let addFirstSessionButton = "添加服务器"
     
     // 会话操作
     public static let connectAction = "连接会话"

@@ -68,97 +68,131 @@ public struct SidebarView: View {
             
             Divider()
             
-            // Session tree
-            List {
-                Section(header: Label(L10n.sessionsHeader, systemImage: "server.rack").font(.caption).fontWeight(.semibold)) {
-                    ForEach(groupedFolders, id: \.self) { folder in
-                        DisclosureGroup(
-                            isExpanded: Binding(
-                                get: { !collapsedFolders.contains(folder) || !searchFilter.isEmpty },
-                                set: { expanded in
-                                    if expanded { collapsedFolders.remove(folder) }
-                                    else { collapsedFolders.insert(folder) }
-                                }
-                            ),
-                            content: {
-                                ForEach(sessionsInFolder(folder)) { session in
-                                    SessionRow(
-                                        session: session,
-                                        onConnect: { onConnect(session) }
-                                    )
-                                    .onTapGesture { selectedSession = session }
-                                    .listRowBackground(selectedSession?.id == session.id ? ApexStyle.accent.opacity(0.10) : Color.clear)
-                                    .contextMenu {
-                                        Button(L10n.connectAction) {
-                                            onConnect(session)
-                                        }
-                                        Button(L10n.editSessionAction) {
-                                            editingSession = session
-                                        }
-                                        Divider()
-                                        Button(L10n.duplicateSessionAction) {
-                                            var dup = session
-                                            dup.id = UUID()
-                                            dup.name += " \(L10n.copyTag)"
-                                            store.addSession(dup)
-                                        }
-                                        Button(L10n.deleteSessionAction, role: .destructive) {
-                                            sessionToDelete = session
+            if store.sessions.isEmpty && searchFilter.isEmpty {
+                VStack(spacing: 16) {
+                    Spacer()
+                    Image(systemName: "server.rack")
+                        .font(.system(size: 38))
+                        .foregroundStyle(.tertiary)
+                    
+                    VStack(spacing: 6) {
+                        Text(L10n.emptySessionTitle)
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(.primary)
+                        
+                        Text(L10n.emptySessionSubtitle)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 20)
+                    }
+                    
+                    Button(action: { showingAddSheet = true }) {
+                        Label(L10n.addFirstSessionButton, systemImage: "plus")
+                            .font(.system(size: 12, weight: .medium))
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.regular)
+                    
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(ApexStyle.surface)
+            } else {
+                // Session tree
+                List {
+                    Section(header: Label(L10n.sessionsHeader, systemImage: "server.rack").font(.caption).fontWeight(.semibold)) {
+                        ForEach(groupedFolders, id: \.self) { folder in
+                            DisclosureGroup(
+                                isExpanded: Binding(
+                                    get: { !collapsedFolders.contains(folder) || !searchFilter.isEmpty },
+                                    set: { expanded in
+                                        if expanded { collapsedFolders.remove(folder) }
+                                        else { collapsedFolders.insert(folder) }
+                                    }
+                                ),
+                                content: {
+                                    ForEach(sessionsInFolder(folder)) { session in
+                                        SessionRow(
+                                            session: session,
+                                            onConnect: { onConnect(session) }
+                                        )
+                                        .onTapGesture { selectedSession = session }
+                                        .listRowBackground(selectedSession?.id == session.id ? ApexStyle.accent.opacity(0.10) : Color.clear)
+                                        .contextMenu {
+                                            Button(L10n.connectAction) {
+                                                onConnect(session)
+                                            }
+                                            Button(L10n.editSessionAction) {
+                                                editingSession = session
+                                            }
+                                            Divider()
+                                            Button(L10n.duplicateSessionAction) {
+                                                var dup = session
+                                                dup.id = UUID()
+                                                dup.name += " \(L10n.copyTag)"
+                                                store.addSession(dup)
+                                            }
+                                            Button(L10n.deleteSessionAction, role: .destructive) {
+                                                sessionToDelete = session
+                                            }
                                         }
                                     }
+                                },
+                                label: {
+                                    HStack {
+                                        Image(systemName: folderIcon(for: folder))
+                                            .foregroundColor(.secondary)
+                                        Text(folder)
+                                            .font(.system(size: 12, weight: .medium))
+                                        Spacer()
+                                        Text("\(sessionsInFolder(folder).count)")
+                                            .font(.system(size: 10))
+                                            .foregroundColor(.secondary)
+                                            .padding(.horizontal, 5)
+                                            .padding(.vertical, 1)
+                                            .background(Color.primary.opacity(0.06))
+                                            .cornerRadius(4)
+                                    }
                                 }
-                            },
-                            label: {
-                                HStack {
-                                    Image(systemName: folderIcon(for: folder))
-                                        .foregroundColor(.secondary)
-                                    Text(folder)
-                                        .font(.system(size: 12, weight: .medium))
-                                    Spacer()
-                                    Text("\(sessionsInFolder(folder).count)")
-                                        .font(.system(size: 10))
-                                        .foregroundColor(.secondary)
-                                        .padding(.horizontal, 5)
-                                        .padding(.vertical, 1)
-                                        .background(Color.primary.opacity(0.06))
-                                        .cornerRadius(4)
-                                }
-                            }
-                        )
-                    }
-                }
-
-                if !searchFilter.isEmpty && !store.sessions.contains(where: {
-                    $0.name.localizedCaseInsensitiveContains(searchFilter) ||
-                    $0.host.localizedCaseInsensitiveContains(searchFilter) ||
-                    $0.tags.contains(where: { $0.localizedCaseInsensitiveContains(searchFilter) })
-                }) {
-                    ContentUnavailableView.search(text: searchFilter)
-                }
-                
-                Section(header: Label(L10n.quickCommandsHeader, systemImage: "bolt.fill").font(.caption).fontWeight(.semibold)) {
-                    ForEach(store.snippets) { snippet in
-                        HStack {
-                            Image(systemName: "terminal")
-                                .font(.system(size: 10))
-                                .foregroundColor(ApexStyle.accent)
-                            Text(snippet.title)
-                                .font(.system(size: 11))
-                            Spacer()
-                            Button(L10n.runCommandAction) {
-                                onRunSnippet(snippet)
-                            }
-                            .buttonStyle(.borderless)
-                            .controlSize(.mini)
-                            .font(.system(size: 10))
+                            )
                         }
-                        .padding(.vertical, 2)
+                    }
+
+                    if !searchFilter.isEmpty && !store.sessions.contains(where: {
+                        $0.name.localizedCaseInsensitiveContains(searchFilter) ||
+                        $0.host.localizedCaseInsensitiveContains(searchFilter) ||
+                        $0.tags.contains(where: { $0.localizedCaseInsensitiveContains(searchFilter) })
+                    }) {
+                        ContentUnavailableView.search(text: searchFilter)
+                    }
+                    
+                    if !store.snippets.isEmpty {
+                        Section(header: Label(L10n.quickCommandsHeader, systemImage: "bolt.fill").font(.caption).fontWeight(.semibold)) {
+                            ForEach(store.snippets) { snippet in
+                                HStack {
+                                    Image(systemName: "terminal")
+                                        .font(.system(size: 10))
+                                        .foregroundColor(ApexStyle.accent)
+                                    Text(snippet.title)
+                                        .font(.system(size: 11))
+                                    Spacer()
+                                    Button(L10n.runCommandAction) {
+                                        onRunSnippet(snippet)
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .controlSize(.mini)
+                                    .font(.system(size: 10))
+                                }
+                                .padding(.vertical, 2)
+                            }
+                        }
                     }
                 }
+                .listStyle(.sidebar)
+                .scrollContentBackground(.hidden)
+                .background(ApexStyle.surface)
             }
-            .listStyle(.sidebar)
-            .scrollContentBackground(.hidden)
-            .background(ApexStyle.surface)
         }
         .sheet(isPresented: $showingAddSheet) {
             SessionEditModal(session: nil) { newSession in
@@ -187,14 +221,20 @@ public struct SidebarView: View {
     }
     
     private var groupedFolders: [String] {
-        var set = Set(store.folders)
+        var set = Set<String>()
         for s in store.sessions {
-            if let f = s.folder, !f.isEmpty {
+            let f = (s.folder ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if !f.isEmpty {
                 set.insert(f)
+            } else {
+                set.insert(L10n.generalFolder)
             }
         }
-        if set.isEmpty {
-            set.insert(L10n.generalFolder)
+        for f in store.folders {
+            let trimmed = f.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                set.insert(trimmed)
+            }
         }
         return Array(set).sorted()
     }

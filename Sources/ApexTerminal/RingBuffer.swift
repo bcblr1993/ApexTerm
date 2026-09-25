@@ -8,11 +8,146 @@ public final class TerminalRingBuffer: @unchecked Sendable {
     private var count: Int = 0
     private let lock = NSLock()
     
+    private var activeLine: String = ""
+    private var pendingSequence: String = ""
+    
     public var onUpdate: (@Sendable () -> Void)?
     
     public init(maxLines: Int = 10_000) {
         self.maxLines = maxLines
         self.buffer = [String](repeating: "", count: maxLines)
+    }
+    
+    /// Committed historical line count (excluding current in-progress line)
+    public var committedLineCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
+    }
+    
+    /// Current in-progress active line text (e.g. prompt and typed characters)
+    public var currentActiveLine: String {
+        lock.lock()
+        defer { lock.unlock() }
+        return activeLine
+    }
+    
+    /// Return committed lines from start index to count
+    public func committedLines(from start: Int, count requestedCount: Int) -> [String] {
+        lines(from: start, count: requestedCount)
+    }
+    
+    /// Append streaming raw output from terminal PTY
+    public func appendStream(_ text: String) {
+        lock.lock()
+        defer {
+            let updateHandler = onUpdate
+            lock.unlock()
+            updateHandler?()
+        }
+        
+        var fullText = text
+        if !pendingSequence.isEmpty {
+            fullText = pendingSequence + fullText
+            pendingSequence = ""
+        }
+        
+        var i = fullText.startIndex
+        while i < fullText.endIndex {
+            let ch = fullText[i]
+            
+            if ch == "\r\n" || ch == "\n" {
+                commitActiveLine()
+                i = fullText.index(after: i)
+                continue
+            } else if ch == "\r" {
+                activeLine = ""
+                i = fullText.index(after: i)
+                continue
+            } else if ch == "\u{08}" { // Backspace (BS)
+                if !activeLine.isEmpty {
+                    activeLine.removeLast()
+                }
+                i = fullText.index(after: i)
+                continue
+            } else if ch == "\u{001B}" { // ESC sequence
+                let escapeStart = i
+                let next = fullText.index(after: i)
+                if next == fullText.endIndex {
+                    pendingSequence = String(fullText[escapeStart...])
+                    break
+                }
+                if fullText[next] == "[" { // CSI
+                    var j = fullText.index(after: next)
+                    var csiParam = ""
+                    while j < fullText.endIndex && !fullText[j].isLetter && fullText[j] != "@" {
+                        csiParam.append(fullText[j])
+                        j = fullText.index(after: j)
+                    }
+                    if j == fullText.endIndex {
+                        // Incomplete CSI sequence
+                        pendingSequence = String(fullText[escapeStart...])
+                        break
+                    }
+                    let finalChar = fullText[j]
+                    switch finalChar {
+                    case "J": // Erase in Display
+                        if csiParam.contains("2") || csiParam.contains("3") {
+                            head = 0
+                            count = 0
+                            activeLine = ""
+                        }
+                    case "K": // Erase in Line
+                        if csiParam.contains("2") || csiParam == "1" {
+                            activeLine = ""
+                        }
+                    case "m": // SGR color / style: preserve in activeLine for VTParser
+                        activeLine.append(String(fullText[escapeStart...j]))
+                    default:
+                        break
+                    }
+                    i = fullText.index(after: j)
+                    continue
+                } else if fullText[next] == "]" { // OSC
+                    var j = fullText.index(after: next)
+                    while j < fullText.endIndex && fullText[j] != "\u{0007}" && fullText[j] != "\u{001B}" {
+                        j = fullText.index(after: j)
+                    }
+                    if j < fullText.endIndex && fullText[j] == "\u{001B}" {
+                        let afterEsc = fullText.index(after: j)
+                        if afterEsc < fullText.endIndex && fullText[afterEsc] == "\\" {
+                            j = afterEsc
+                        }
+                    }
+                    if j == fullText.endIndex {
+                        pendingSequence = String(fullText[escapeStart...])
+                        break
+                    }
+                    i = fullText.index(after: j)
+                    continue
+                }
+                i = fullText.index(after: i)
+                continue
+            } else if ch == "\u{07}" { // Bell
+                i = fullText.index(after: i)
+                continue
+            } else {
+                activeLine.append(ch)
+                i = fullText.index(after: i)
+            }
+        }
+    }
+    
+    private func commitActiveLine() {
+        let index = (head + count) % maxLines
+        if count < maxLines {
+            buffer[index] = activeLine
+            count += 1
+        } else {
+            buffer[head] = activeLine
+            head = (head + 1) % maxLines
+        }
+        activeLine = ""
     }
     
     /// Append a single line into circular buffer
@@ -57,10 +192,13 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         defer { lock.unlock() }
         
         var result = [String]()
-        result.reserveCapacity(count)
+        result.reserveCapacity(count + (activeLine.isEmpty ? 0 : 1))
         for i in 0..<count {
             let index = (head + i) % maxLines
             result.append(buffer[index])
+        }
+        if !activeLine.isEmpty {
+            result.append(activeLine)
         }
         return result
     }
@@ -86,7 +224,7 @@ public final class TerminalRingBuffer: @unchecked Sendable {
     public var lineCount: Int {
         lock.lock()
         defer { lock.unlock() }
-        return count
+        return count + (activeLine.isEmpty ? 0 : 1)
     }
     
     /// Clear all lines
@@ -94,6 +232,8 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         lock.lock()
         head = 0
         count = 0
+        activeLine = ""
+        pendingSequence = ""
         let updateHandler = onUpdate
         lock.unlock()
         

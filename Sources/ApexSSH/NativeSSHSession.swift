@@ -77,7 +77,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         
         var master: Int32 = 0
         var slave: Int32 = 0
-        var win = winsize(ws_row: 24, ws_col: 80, ws_xpixel: 0, ws_ypixel: 0)
+        var win = winsize(ws_row: 35, ws_col: 120, ws_xpixel: 0, ws_ypixel: 0)
         
         guard openpty(&master, &slave, nil, nil, &win) == 0 else {
             self.connectionState = .failed("Failed to allocate Darwin PTY")
@@ -118,8 +118,31 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         }
         cArgs.append(nil)
         
-        let spawnResult = posix_spawnp(&pid, binaryPath, &fileActions, nil, cArgs, nil)
+        var envVars = [
+            "TERM=xterm-256color",
+            "COLORTERM=truecolor",
+            "LANG=en_US.UTF-8",
+            "LC_ALL=en_US.UTF-8"
+        ]
+        let currentEnv = ProcessInfo.processInfo.environment
+        if let path = currentEnv["PATH"] {
+            envVars.append("PATH=\(path):/usr/local/bin:/opt/homebrew/bin")
+        } else {
+            envVars.append("PATH=/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin")
+        }
+        for (k, v) in currentEnv {
+            if k != "TERM" && k != "COLORTERM" && k != "LANG" && k != "LC_ALL" && k != "PATH" {
+                envVars.append("\(k)=\(v)")
+            }
+        }
+        var cEnv: [UnsafeMutablePointer<CChar>?] = envVars.map { strdup($0) }
+        cEnv.append(nil)
+        
+        let spawnResult = posix_spawnp(&pid, binaryPath, &fileActions, nil, cArgs, cEnv)
         for ptr in cArgs {
+            if let p = ptr { free(p) }
+        }
+        for ptr in cEnv {
             if let p = ptr { free(p) }
         }
         close(slave)
@@ -269,8 +292,9 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         }
         
         // 2. Shell prompt CWD tracking fallback: ubuntu@host:/etc$ or ubuntu@host:~$ or [user@host /var/log]#
-        if let match = text.range(of: #"[:\s]((?:/|~)[a-zA-Z0-9_\-\./]*)\s*[\$#%]\s*"#, options: .regularExpression) {
-            let matchedStr = String(text[match])
+        let cleanText = text.replacingOccurrences(of: #"\x1b\[[0-9;]*[a-zA-Z]"#, with: "", options: .regularExpression)
+        if let match = cleanText.range(of: #"[:\s]((?:/|~)[a-zA-Z0-9_\-\./]*)\s*[\$#%]\s*"#, options: .regularExpression) {
+            let matchedStr = String(cleanText[match])
             let parts = matchedStr.split(whereSeparator: { $0 == ":" || $0 == " " || $0 == "$" || $0 == "#" || $0 == "%" })
             if let detected = parts.first(where: { $0.hasPrefix("/") || $0.hasPrefix("~") }) {
                 var path = String(detected)

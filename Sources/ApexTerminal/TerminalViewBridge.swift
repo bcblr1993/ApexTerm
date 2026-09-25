@@ -72,6 +72,11 @@ public final class NativeTerminalScrollView: NSScrollView {
         self.layer?.drawsAsynchronously = true
     }
     
+    override public func mouseDown(with event: NSEvent) {
+        self.window?.makeFirstResponder(terminalView)
+        super.mouseDown(with: event)
+    }
+    
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
@@ -83,7 +88,8 @@ public final class NativeTerminalView: NSTextView {
     public var onInput: ((Data) -> Void)?
     
     private let parser = VTParser()
-    private var lastRenderedCount = 0
+    private var lastCommittedIndex = 0
+    private var activeLineStartLocation = 0
     private var customInputContext: NSTextInputContext?
     private var currentMarkedText: String = ""
     private var currentMarkedRange = NSRange(location: NSNotFound, length: 0)
@@ -143,12 +149,7 @@ public final class NativeTerminalView: NSTextView {
     }
     
     override public func keyDown(with event: NSEvent) {
-        // 1. If macOS IME (e.g. Chinese Pinyin) is active and handles the event
-        if let inputContext = self.inputContext, inputContext.handleEvent(event) {
-            return
-        }
-        
-        // 2. Handle Ctrl key combinations: Ctrl+C, Ctrl+D, Ctrl+Z, Ctrl+L, etc.
+        // 1. Handle Ctrl key combinations: Ctrl+C, Ctrl+D, Ctrl+Z, Ctrl+L, etc. (HIGHEST PRIORITY)
         if event.modifierFlags.contains(.control),
            let chars = event.charactersIgnoringModifiers,
            let firstChar = chars.unicodeScalars.first {
@@ -164,49 +165,56 @@ public final class NativeTerminalView: NSTextView {
             }
         }
         
-        // 3. Handle Special keys by key code
-        switch event.keyCode {
-        case 36, 76: // Return / Enter / Numpad Enter
-            onInput?("\r".data(using: .utf8)!)
+        // 2. Handle Special keys by key code when not composing marked IME text
+        if !hasMarkedText() {
+            switch event.keyCode {
+            case 36, 76: // Return / Enter / Numpad Enter
+                onInput?("\r".data(using: .utf8)!)
+                return
+            case 51: // Backspace / Delete
+                onInput?("\u{7F}".data(using: .utf8)!)
+                return
+            case 117: // Forward Delete
+                onInput?("\u{1B}[3~".data(using: .utf8)!)
+                return
+            case 48: // Tab
+                onInput?("\t".data(using: .utf8)!)
+                return
+            case 53: // ESC
+                onInput?("\u{1B}".data(using: .utf8)!)
+                return
+            case 126: // Up arrow
+                onInput?("\u{1B}[A".data(using: .utf8)!)
+                return
+            case 125: // Down arrow
+                onInput?("\u{1B}[B".data(using: .utf8)!)
+                return
+            case 124: // Right arrow
+                onInput?("\u{1B}[C".data(using: .utf8)!)
+                return
+            case 123: // Left arrow
+                onInput?("\u{1B}[D".data(using: .utf8)!)
+                return
+            case 115: // Home
+                onInput?("\u{1B}[H".data(using: .utf8)!)
+                return
+            case 119: // End
+                onInput?("\u{1B}[F".data(using: .utf8)!)
+                return
+            case 116: // Page Up
+                onInput?("\u{1B}[5~".data(using: .utf8)!)
+                return
+            case 121: // Page Down
+                onInput?("\u{1B}[6~".data(using: .utf8)!)
+                return
+            default:
+                break
+            }
+        }
+        
+        // 3. If macOS IME (e.g. Chinese Pinyin) is active and handles the event
+        if let inputContext = self.inputContext, inputContext.handleEvent(event) {
             return
-        case 51: // Backspace / Delete
-            onInput?("\u{7F}".data(using: .utf8)!)
-            return
-        case 117: // Forward Delete
-            onInput?("\u{1B}[3~".data(using: .utf8)!)
-            return
-        case 48: // Tab
-            onInput?("\t".data(using: .utf8)!)
-            return
-        case 53: // ESC
-            onInput?("\u{1B}".data(using: .utf8)!)
-            return
-        case 126: // Up arrow
-            onInput?("\u{1B}[A".data(using: .utf8)!)
-            return
-        case 125: // Down arrow
-            onInput?("\u{1B}[B".data(using: .utf8)!)
-            return
-        case 124: // Right arrow
-            onInput?("\u{1B}[C".data(using: .utf8)!)
-            return
-        case 123: // Left arrow
-            onInput?("\u{1B}[D".data(using: .utf8)!)
-            return
-        case 115: // Home
-            onInput?("\u{1B}[H".data(using: .utf8)!)
-            return
-        case 119: // End
-            onInput?("\u{1B}[F".data(using: .utf8)!)
-            return
-        case 116: // Page Up
-            onInput?("\u{1B}[5~".data(using: .utf8)!)
-            return
-        case 121: // Page Down
-            onInput?("\u{1B}[6~".data(using: .utf8)!)
-            return
-        default:
-            break
         }
         
         // 4. Standard character typing: letters, numbers, symbols, space
@@ -233,7 +241,7 @@ public final class NativeTerminalView: NSTextView {
     
     /// Called when user commits a Chinese candidate word or types standard text
     override public func insertText(_ string: Any, replacementRange: NSRange) {
-        let text: String
+        var text: String
         if let s = string as? String {
             text = s
         } else if let attr = string as? NSAttributedString {
@@ -245,8 +253,11 @@ public final class NativeTerminalView: NSTextView {
         currentMarkedText = ""
         currentMarkedRange = NSRange(location: NSNotFound, length: 0)
         
-        if let data = text.data(using: .utf8) {
-            onInput?(data)
+        if !text.isEmpty {
+            text = text.replacingOccurrences(of: "\r\n", with: "\r").replacingOccurrences(of: "\n", with: "\r")
+            if let data = text.data(using: .utf8) {
+                onInput?(data)
+            }
         }
     }
     
@@ -292,7 +303,32 @@ public final class NativeTerminalView: NSTextView {
         return self.window?.convertToScreen(self.convert(rect, to: nil)) ?? .zero
     }
     
-    // Command selectors from interpretKeyEvents
+    // Command selectors from interpretKeyEvents & NSTextInputClient
+    override public func doCommand(by selector: Selector) {
+        switch selector {
+        case #selector(insertNewline(_:)):
+            onInput?("\r".data(using: .utf8)!)
+        case #selector(deleteBackward(_:)):
+            onInput?("\u{7F}".data(using: .utf8)!)
+        case #selector(deleteForward(_:)):
+            onInput?("\u{1B}[3~".data(using: .utf8)!)
+        case #selector(insertTab(_:)):
+            onInput?("\t".data(using: .utf8)!)
+        case #selector(cancelOperation(_:)):
+            onInput?("\u{1B}".data(using: .utf8)!)
+        case #selector(moveUp(_:)):
+            onInput?("\u{1B}[A".data(using: .utf8)!)
+        case #selector(moveDown(_:)):
+            onInput?("\u{1B}[B".data(using: .utf8)!)
+        case #selector(moveLeft(_:)):
+            onInput?("\u{1B}[D".data(using: .utf8)!)
+        case #selector(moveRight(_:)):
+            onInput?("\u{1B}[C".data(using: .utf8)!)
+        default:
+            super.doCommand(by: selector)
+        }
+    }
+    
     override public func insertNewline(_ sender: Any?) {
         onInput?("\r".data(using: .utf8)!)
     }
@@ -311,7 +347,7 @@ public final class NativeTerminalView: NSTextView {
     
     // MARK: - Incremental 120Hz Rendering (No Full Redraws)
     
-    public func appendRawOutput(_ text: String) {
+    public func formatANSI(_ text: String) -> NSAttributedString {
         let spans = parser.parseANSI(text)
         let attrString = NSMutableAttributedString()
         
@@ -328,34 +364,58 @@ public final class NativeTerminalView: NSTextView {
             }
             attrString.append(NSAttributedString(string: span.text, attributes: attrs))
         }
-        
-        self.textStorage?.append(attrString)
+        return attrString
+    }
+    
+    public func appendRawOutput(_ text: String) {
+        let attr = formatANSI(text)
+        self.textStorage?.append(attr)
         self.scrollToEndOfDocument(nil)
     }
     
-    /// Incremental refresh: only appends newly arrived lines to ensure 120Hz silky smoothness
+    /// Incremental refresh: updates active line in-place and appends newly committed lines
     public func refresh() {
         guard let buffer = ringBuffer else { return }
-        let total = buffer.lineCount
         
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         defer { CATransaction.commit() }
         
-        if total > lastRenderedCount {
-            let newLines = buffer.lines(from: lastRenderedCount, count: total - lastRenderedCount)
-            lastRenderedCount = total
-            if !newLines.isEmpty {
-                let chunk = (self.string.isEmpty ? "" : "\n") + newLines.joined(separator: "\n")
-                appendRawOutput(chunk)
-            }
-        } else if total < lastRenderedCount || (lastRenderedCount == 0 && total > 0) {
-            // Buffer cleared or initial render
-            lastRenderedCount = total
-            self.string = ""
-            let all = buffer.allLines().joined(separator: "\n")
-            appendRawOutput(all)
+        let committedTotal = buffer.committedLineCount
+        
+        // 1. Buffer cleared or initial render
+        if committedTotal < lastCommittedIndex {
+            lastCommittedIndex = 0
+            self.textStorage?.setAttributedString(NSAttributedString())
+            activeLineStartLocation = 0
         }
+        
+        // 2. Remove previously drawn active line (if any)
+        if let storage = self.textStorage, storage.length > activeLineStartLocation {
+            let activeRange = NSRange(location: activeLineStartLocation, length: storage.length - activeLineStartLocation)
+            storage.deleteCharacters(in: activeRange)
+        }
+        
+        // 3. Append newly committed lines
+        if committedTotal > lastCommittedIndex {
+            let newLines = buffer.committedLines(from: lastCommittedIndex, count: committedTotal - lastCommittedIndex)
+            lastCommittedIndex = committedTotal
+            if !newLines.isEmpty {
+                let joined = newLines.joined(separator: "\n") + "\n"
+                let attr = formatANSI(joined)
+                self.textStorage?.append(attr)
+            }
+            activeLineStartLocation = self.textStorage?.length ?? 0
+        }
+        
+        // 4. Render current active line at the bottom
+        let active = buffer.currentActiveLine
+        if !active.isEmpty {
+            let attr = formatANSI(active)
+            self.textStorage?.append(attr)
+        }
+        
+        self.scrollToEndOfDocument(nil)
     }
 }
 

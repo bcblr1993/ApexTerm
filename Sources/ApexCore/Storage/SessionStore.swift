@@ -8,7 +8,7 @@ public final class SessionStore: ObservableObject {
     @Published public var sessions: [Session] = []
     @Published public var snippets: [Snippet] = []
     @Published public var triggers: [Trigger] = []
-    @Published public var folders: [String] = ["Production", "Staging", "Database"]
+    @Published public var folders: [String] = []
     
     private let fileManager = FileManager.default
     private let baseDirectory: URL
@@ -20,8 +20,8 @@ public final class SessionStore: ObservableObject {
         try? fileManager.createDirectory(at: baseDirectory, withIntermediateDirectories: true)
         loadAll()
         
-        if sessions.isEmpty {
-            seedDefaultData()
+        if triggers.isEmpty {
+            seedDefaultTriggers()
         }
     }
     
@@ -83,68 +83,12 @@ public final class SessionStore: ObservableObject {
         saveAll()
     }
     
-    private func seedDefaultData() {
-        let prod1 = Session(
-            name: "k8s-prod-master-01",
-            host: "10.0.1.10",
-            port: 22,
-            username: "root",
-            folder: "Production",
-            tags: ["k8s", "prod", "master"],
-            colorHex: "#FF453A"
-        )
-        let prod2 = Session(
-            name: "k8s-prod-worker-02",
-            host: "10.0.1.11",
-            port: 22,
-            username: "root",
-            folder: "Production",
-            tags: ["k8s", "prod", "worker"],
-            colorHex: "#FF9F0A"
-        )
-        let redisStaging = Session(
-            name: "staging-redis-cluster",
-            host: "192.168.1.50",
-            port: 22,
-            username: "ubuntu",
-            folder: "Staging",
-            tags: ["redis", "staging"],
-            colorHex: "#30D158"
-        )
-        let dbMaster = Session(
-            name: "pg-master-primary",
-            host: "172.16.0.4",
-            port: 22,
-            username: "postgres",
-            folder: "Database",
-            tags: ["db", "postgresql"],
-            colorHex: "#0A84FF"
-        )
-        let macmini = Session(
-            name: "macmini-vm",
-            host: "100.64.0.3",
-            port: 22,
-            username: "chenxu",
-            authMethod: .password(keychainRef: "chenyn"),
-            folder: "Production",
-            tags: ["macmini", "vm", "m-series"],
-            colorHex: "#30D158"
-        )
-        self.sessions = [macmini, prod1, prod2, redisStaging, dbMaster]
-        
-        self.snippets = [
-            Snippet(title: "Check Systemctl Nginx", command: "systemctl status nginx", category: "Nginx"),
-            Snippet(title: "Tail App Log", command: "tail -f -n 100 /var/log/app.log", category: "Logging"),
-            Snippet(title: "Top Memory Processes", command: "ps aux --sort=-%mem | head -n 10", category: "Diagnosis"),
-            Snippet(title: "Disk Space Check", command: "df -h", category: "Diagnosis")
-        ]
-        
+    private func seedDefaultTriggers() {
         self.triggers = [
             Trigger(name: "Error Highlighter", regexPattern: "(?i)(error|failed|fatal|exception)", action: .highlight(colorHex: "#FF453A")),
             Trigger(name: "IP Address Highlighter", regexPattern: "\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b", action: .highlight(colorHex: "#0A84FF")),
             Trigger(name: "Success Highlighter", regexPattern: "(?i)(success|200 OK|active \\(running\\))", action: .highlight(colorHex: "#30D158"))
         ]
-        
         saveAll()
     }
 }

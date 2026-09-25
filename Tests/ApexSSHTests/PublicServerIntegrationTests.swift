@@ -81,6 +81,11 @@ final class PublicServerIntegrationTests: XCTestCase {
         
         XCTAssertTrue(outputBox.contains("Linux") || outputBox.contains("ubuntu"))
         
+        // Verify TERM environment variable is properly exported to remote shell
+        try await sshClient.sendInput("echo TERM_CHECK_$TERM\r\n".data(using: .utf8)!)
+        try await Task.sleep(nanoseconds: 800_000_000)
+        XCTAssertTrue(outputBox.contains("TERM_CHECK_xterm-256color"), "Expected remote TERM to be xterm-256color, output was: \(outputBox.currentText())")
+        
         await sshClient.disconnect()
         XCTAssertEqual(sshClient.connectionState, .disconnected)
     }
@@ -174,6 +179,7 @@ final class PublicServerIntegrationTests: XCTestCase {
         final class PathBox: @unchecked Sendable {
             private let lock = NSLock()
             private var lastPath = ""
+            private var fulfilled = false
             func set(_ p: String) {
                 lock.lock()
                 defer { lock.unlock() }
@@ -184,6 +190,13 @@ final class PublicServerIntegrationTests: XCTestCase {
                 defer { lock.unlock() }
                 return lastPath
             }
+            func markFulfilled() -> Bool {
+                lock.lock()
+                defer { lock.unlock() }
+                if fulfilled { return false }
+                fulfilled = true
+                return true
+            }
         }
         
         let pathBox = PathBox()
@@ -192,7 +205,9 @@ final class PublicServerIntegrationTests: XCTestCase {
         sshClient.setDirectoryChangeHandler { path in
             pathBox.set(path)
             if path == "/tmp" {
-                tmpExpectation.fulfill()
+                if pathBox.markFulfilled() {
+                    tmpExpectation.fulfill()
+                }
             }
         }
         

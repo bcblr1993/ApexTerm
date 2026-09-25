@@ -22,8 +22,12 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
         let metricsHistory = self.metricsHistory
         
         self.sshClient.setOutputHandler { data in
-            guard let text = String(data: data, encoding: .utf8) else { return }
-            ringBuffer.appendLine(text)
+            if let text = String(data: data, encoding: .utf8) {
+                ringBuffer.appendStream(text)
+            } else {
+                let lossy = String(decoding: data, as: UTF8.self)
+                ringBuffer.appendStream(lossy)
+            }
         }
         
         self.sshClient.setMetricsHandler { snapshot in

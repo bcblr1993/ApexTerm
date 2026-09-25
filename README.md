@@ -130,6 +130,14 @@ swift build -c release
 
 ---
 
+## 🧪 质量与测试规范 (Release Gate)
+
+为保证产品在面对生产高并发、极端网络与超大日志冲刷时的绝对稳定性，ApexTerm 参考 **electerm** 与 **FinalShell** 制定了严格的发布验收标准：
+- 完整测试场景与发布门禁矩阵详见：[TEST_SCENARIOS.md](TEST_SCENARIOS.md)
+- 包含 **SSH 多模态认证、VT 终端引擎渲染、SFTP 双向联动、性能极限压测、macOS 原生适配** 等 8 大维度 86 个测试用例。每次版本发布前必须 100% 验收通过。
+
+---
+
 ## 📜 开源协议
 
 本项目采用 [MIT License](LICENSE) 开源协议。

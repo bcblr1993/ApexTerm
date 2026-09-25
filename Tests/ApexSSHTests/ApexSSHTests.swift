@@ -159,4 +159,40 @@ final class ApexSSHTests: XCTestCase {
         XCTAssertEqual(spans[0].foregroundColorHex, "#30D158")
         XCTAssertEqual(spans[1].text, " 远程服务器连接正常，欢迎使用 ApexTerm 纯原生终端！")
     }
+    
+    func testTerminalStreamLineBufferingAndEditing() {
+        let ringBuffer = TerminalRingBuffer(maxLines: 100)
+        
+        // 1. Initial banner with CRLF and prompt without newline
+        ringBuffer.appendStream("Welcome to Ubuntu 24.04\r\n")
+        ringBuffer.appendStream("ubuntu@server:~$ ")
+        
+        XCTAssertEqual(ringBuffer.committedLineCount, 1)
+        XCTAssertEqual(ringBuffer.currentActiveLine, "ubuntu@server:~$ ")
+        
+        // 2. Typing characters in stream: 'c', 'l', 'e', 'a', 'r'
+        ringBuffer.appendStream("c")
+        XCTAssertEqual(ringBuffer.currentActiveLine, "ubuntu@server:~$ c")
+        ringBuffer.appendStream("l")
+        XCTAssertEqual(ringBuffer.currentActiveLine, "ubuntu@server:~$ cl")
+        ringBuffer.appendStream("e")
+        ringBuffer.appendStream("a")
+        ringBuffer.appendStream("r")
+        XCTAssertEqual(ringBuffer.currentActiveLine, "ubuntu@server:~$ clear")
+        
+        // 3. Backspace deletes character from active line
+        ringBuffer.appendStream("\u{08} \u{08}")
+        XCTAssertEqual(ringBuffer.currentActiveLine, "ubuntu@server:~$ clea")
+        
+        // 4. Return commits the line
+        ringBuffer.appendStream("\r\n")
+        XCTAssertEqual(ringBuffer.committedLineCount, 2)
+        XCTAssertEqual(ringBuffer.lines(from: 0, count: 2), ["Welcome to Ubuntu 24.04", "ubuntu@server:~$ clea"])
+        XCTAssertEqual(ringBuffer.currentActiveLine, "")
+        
+        // 5. Clear screen ANSI sequence wipes history and active line
+        ringBuffer.appendStream("\u{001B}[H\u{001B}[2Jubuntu@server:~$ ")
+        XCTAssertEqual(ringBuffer.committedLineCount, 0)
+        XCTAssertEqual(ringBuffer.currentActiveLine, "ubuntu@server:~$ ")
+    }
 }

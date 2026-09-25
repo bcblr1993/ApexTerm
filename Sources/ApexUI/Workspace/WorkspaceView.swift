@@ -369,13 +369,16 @@ private struct WorkspaceActiveTabSplitView: View {
                     }
                     .frame(height: 8)
                     .background(ApexStyle.surface)
+                    .contentShape(Rectangle())
                     .gesture(
                         DragGesture()
                             .onChanged { value in
                                 let start = splitDragStartRatio ?? splitRatio
                                 if splitDragStartRatio == nil { splitDragStartRatio = start }
                                 let newRatio = start + value.translation.height / geometry.size.height
-                                splitRatio = min(max(newRatio, 0.25), 0.85)
+                                let minRatio = 120.0 / max(geometry.size.height, 240)
+                                let maxRatio = 1.0 - (100.0 / max(geometry.size.height, 240))
+                                splitRatio = min(max(newRatio, minRatio), maxRatio)
                             }
                             .onEnded { _ in splitDragStartRatio = nil }
                     )
@@ -427,7 +430,19 @@ private struct PaneContainerView: View {
                 .background(isFocused ? ApexStyle.accent.opacity(0.12) : ApexStyle.subtleSurface)
             }
             
-            TerminalRepresentable(ringBuffer: pane.ringBuffer) { inputData in
+            TerminalRepresentable(
+                ringBuffer: pane.ringBuffer,
+                onResize: { cols, rows in
+                    Task {
+                        try? await pane.sshClient.resizeTerminal(columns: cols, rows: rows)
+                    }
+                },
+                onFileDrop: { localURL in
+                    let targetDir = tab.currentRemotePath
+                    let dest = targetDir.hasSuffix("/") ? "\(targetDir)\(localURL.lastPathComponent)" : "\(targetDir)/\(localURL.lastPathComponent)"
+                    TransferManager.shared.enqueueUpload(session: pane.sshClient, localURL: localURL, remotePath: dest)
+                }
+            ) { inputData in
                 Task {
                     if isBroadcastActive {
                         for t in activeTabs {

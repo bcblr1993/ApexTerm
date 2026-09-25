@@ -7,10 +7,20 @@ public struct TerminalRepresentable: NSViewRepresentable {
     public let ringBuffer: TerminalRingBuffer
     public let onInput: (Data) -> Void
     public var isCopyOnSelectEnabled: Bool = true
+    public var onResize: ((Int, Int) -> Void)? = nil
+    public var onFileDrop: ((URL) -> Void)? = nil
     
-    public init(ringBuffer: TerminalRingBuffer, isCopyOnSelectEnabled: Bool = true, onInput: @escaping (Data) -> Void) {
+    public init(
+        ringBuffer: TerminalRingBuffer,
+        isCopyOnSelectEnabled: Bool = true,
+        onResize: ((Int, Int) -> Void)? = nil,
+        onFileDrop: ((URL) -> Void)? = nil,
+        onInput: @escaping (Data) -> Void
+    ) {
         self.ringBuffer = ringBuffer
         self.isCopyOnSelectEnabled = isCopyOnSelectEnabled
+        self.onResize = onResize
+        self.onFileDrop = onFileDrop
         self.onInput = onInput
     }
     
@@ -19,11 +29,14 @@ public struct TerminalRepresentable: NSViewRepresentable {
         scrollView.terminalView.onInput = onInput
         scrollView.terminalView.ringBuffer = ringBuffer
         scrollView.terminalView.isCopyOnSelectEnabled = isCopyOnSelectEnabled
+        scrollView.terminalView.onResize = onResize
+        scrollView.terminalView.onFileDrop = onFileDrop
         context.coordinator.scrollView = scrollView
         
-        // Auto-focus the terminal view on load
+        // Auto-focus the terminal view on load and sync initial PTY window size
         DispatchQueue.main.async {
             scrollView.window?.makeFirstResponder(scrollView.terminalView)
+            scrollView.terminalView.notifyDimensionsChangedIfNeeded()
         }
         
         // 120Hz Coalesced real-time listener: batch stream updates to prevent UI overload
@@ -36,7 +49,10 @@ public struct TerminalRepresentable: NSViewRepresentable {
     
     public func updateNSView(_ nsView: NativeTerminalScrollView, context: Context) {
         nsView.terminalView.isCopyOnSelectEnabled = isCopyOnSelectEnabled
+        nsView.terminalView.onResize = onResize
+        nsView.terminalView.onFileDrop = onFileDrop
         nsView.terminalView.refresh()
+        nsView.terminalView.notifyDimensionsChangedIfNeeded()
     }
     
     public func makeCoordinator() -> Coordinator {
@@ -72,11 +88,36 @@ public final class NativeTerminalScrollView: NSScrollView {
         self.wantsLayer = true
         self.layerContentsRedrawPolicy = .onSetNeedsDisplay
         self.layer?.drawsAsynchronously = true
+        
+        // Register for file drop
+        self.registerForDraggedTypes([.fileURL])
+    }
+    
+    override public func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        terminalView.notifyDimensionsChangedIfNeeded()
     }
     
     override public func mouseDown(with event: NSEvent) {
         self.window?.makeFirstResponder(terminalView)
         super.mouseDown(with: event)
+    }
+    
+    override public func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        if sender.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: nil) {
+            return .copy
+        }
+        return []
+    }
+    
+    override public func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL],
+              let first = urls.first else { return false }
+        if let dropHandler = terminalView.onFileDrop {
+            dropHandler(first)
+            return true
+        }
+        return false
     }
     
     required init?(coder: NSCoder) {
@@ -90,6 +131,11 @@ public final class NativeTerminalView: NSTextView {
     public var ringBuffer: TerminalRingBuffer?
     public var onInput: ((Data) -> Void)?
     public var isCopyOnSelectEnabled: Bool = true
+    public var onResize: ((Int, Int) -> Void)?
+    public var onFileDrop: ((URL) -> Void)?
+    
+    private var lastReportedDimensions: (cols: Int, rows: Int)? = nil
+    private var resizeDebounceTask: Task<Void, Never>? = nil
     
     private let parser = VTParser()
     private var lastCommittedIndex: Int64 = 0
@@ -106,6 +152,67 @@ public final class NativeTerminalView: NSTextView {
     private var isCursorVisible: Bool = true
     private var cursorBlinkTimer: Timer?
     private var isFocused: Bool = false
+    
+    /// Calculate current rows and columns based on visible scroll view bounds and font metrics
+    public func calculateTerminalDimensions() -> (cols: Int, rows: Int) {
+        let font = self.font ?? NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        let layoutManager = self.layoutManager
+        let lineHeight = max(12, layoutManager?.defaultLineHeight(for: font) ?? 16)
+        let charWidth = max(6, ("M" as NSString).size(withAttributes: [.font: font]).width)
+        
+        let visibleWidth = max(60, self.enclosingScrollView?.contentView.bounds.width ?? self.bounds.width)
+        let visibleHeight = max(40, self.enclosingScrollView?.contentView.bounds.height ?? self.bounds.height)
+        
+        let cols = max(10, Int((visibleWidth - 8) / charWidth))
+        let rows = max(3, Int((visibleHeight - 4) / lineHeight))
+        return (cols, rows)
+    }
+    
+    /// Notify remote PTY of new dimensions and ensure visible rect stays pinned to bottom prompt
+    public func notifyDimensionsChangedIfNeeded() {
+        let (cols, rows) = calculateTerminalDimensions()
+        if lastReportedDimensions?.cols != cols || lastReportedDimensions?.rows != rows {
+            lastReportedDimensions = (cols, rows)
+            resizeDebounceTask?.cancel()
+            resizeDebounceTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 30_000_000)
+                guard !Task.isCancelled, let self = self else { return }
+                self.onResize?(cols, rows)
+                self.scrollToEndOfDocument(nil)
+            }
+        }
+        self.scrollToEndOfDocument(nil)
+    }
+    
+    override public func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        if let clipView = enclosingScrollView?.contentView {
+            clipView.postsBoundsChangedNotifications = true
+            NotificationCenter.default.removeObserver(self, name: NSView.boundsDidChangeNotification, object: nil)
+            NotificationCenter.default.addObserver(self, selector: #selector(clipViewBoundsDidChange), name: NSView.boundsDidChangeNotification, object: clipView)
+        }
+    }
+    
+    @objc private func clipViewBoundsDidChange() {
+        notifyDimensionsChangedIfNeeded()
+    }
+    
+    override public func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        if sender.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: nil) {
+            return .copy
+        }
+        return []
+    }
+    
+    override public func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL],
+              let first = urls.first else { return false }
+        if let dropHandler = onFileDrop {
+            dropHandler(first)
+            return true
+        }
+        return false
+    }
     
     /// Coalesced refresh on the main thread for high-framerate batching (thread-safe, nonisolated)
     nonisolated public func scheduleRefresh() {
@@ -158,6 +265,7 @@ public final class NativeTerminalView: NSTextView {
         self.layerContentsRedrawPolicy = .onSetNeedsDisplay
         self.layer?.drawsAsynchronously = true
         
+        self.registerForDraggedTypes([.fileURL])
         startCursorBlink()
     }
     

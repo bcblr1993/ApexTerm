@@ -70,10 +70,29 @@ public struct SFTPView: View {
                 .help(isLinkageEnabled ? L10n.linkageHelpOn : L10n.linkageHelpOff)
 
                 if let notice = transferNotice {
-                    Text(notice)
-                        .font(.caption)
-                        .foregroundColor(transferNotice?.contains("失败") == true ? .red : ApexStyle.success)
-                        .transition(.opacity)
+                    HStack(spacing: 5) {
+                        Image(systemName: notice.contains("失败") ? "exclamationmark.triangle.fill" : (notice.contains("正在") ? "arrow.up.circle" : "checkmark.circle.fill"))
+                            .foregroundColor(notice.contains("失败") ? .red : (notice.contains("正在") ? ApexStyle.accent : ApexStyle.success))
+                            .font(.system(size: 11))
+                        Text(notice)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(notice.contains("失败") ? .red : (notice.contains("正在") ? ApexStyle.accent : ApexStyle.success))
+                        if notice.contains("失败") {
+                            Button(action: { transferNotice = nil }) {
+                                Image(systemName: "xmark.circle")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(
+                        notice.contains("失败") ? Color.red.opacity(0.12) : (notice.contains("正在") ? ApexStyle.accent.opacity(0.12) : ApexStyle.success.opacity(0.12)),
+                        in: RoundedRectangle(cornerRadius: 6)
+                    )
+                    .transition(.opacity)
                 }
 
                 Divider().frame(height: 16)
@@ -358,19 +377,49 @@ public struct SFTPView: View {
         return try String(contentsOf: localURL, encoding: .utf8)
     }
 
+    private func handleUploadResult(_ result: Result<String, Error>, fileName: String, targetDirectory: String) {
+        DispatchQueue.main.async {
+            switch result {
+            case .success:
+                self.transferNotice = "上传成功: \(fileName)"
+                self.loadDirectory(path: self.currentPath)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                    if self.transferNotice?.hasPrefix("上传成功") == true {
+                        self.transferNotice = nil
+                    }
+                }
+            case .failure(let error):
+                let desc = error.localizedDescription
+                if desc.localizedCaseInsensitiveContains("Permission denied") || desc.contains("dest open") {
+                    self.transferNotice = "上传失败：权限不足 (Permission denied)，当前目录无写入权限"
+                } else {
+                    self.transferNotice = "上传失败: \(desc)"
+                }
+                self.isTransferDrawerExpanded = true
+            }
+        }
+    }
+
     private func uploadAction() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = true
         if panel.runModal() == .OK, let s = session {
+            let targetDir = self.currentPath
             for url in panel.urls {
-                let dest = currentPath.hasSuffix("/") ? "\(currentPath)\(url.lastPathComponent)" : "\(currentPath)/\(url.lastPathComponent)"
-                TransferManager.shared.enqueueUpload(session: s, localURL: url, remotePath: dest) {
-                    DispatchQueue.main.async {
-                        self.loadDirectory(path: self.currentPath)
+                let dest = targetDir.hasSuffix("/") ? "\(targetDir)\(url.lastPathComponent)" : "\(targetDir)/\(url.lastPathComponent)"
+                self.transferNotice = "正在上传 \(url.lastPathComponent)..."
+                TransferManager.shared.enqueueUpload(
+                    session: s,
+                    localURL: url,
+                    remotePath: dest,
+                    onResult: { result in
+                        Task { @MainActor in
+                            self.handleUploadResult(result, fileName: url.lastPathComponent, targetDirectory: targetDir)
+                        }
                     }
-                }
+                )
             }
         }
     }
@@ -387,14 +436,48 @@ public struct SFTPView: View {
         guard let s = session else { return }
         let targetDirectory = self.currentPath
         for provider in providers {
-            _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                guard let localURL = url else { return }
-                let dest = targetDirectory.hasSuffix("/") ? "\(targetDirectory)\(localURL.lastPathComponent)" : "\(targetDirectory)/\(localURL.lastPathComponent)"
-                Task { @MainActor in
-                    TransferManager.shared.enqueueUpload(session: s, localURL: localURL, remotePath: dest) {
-                        DispatchQueue.main.async {
-                            self.loadDirectory(path: targetDirectory)
-                        }
+            if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                    var localURL: URL?
+                    if let url = item as? URL {
+                        localURL = url
+                    } else if let data = item as? Data, let url = URL(dataRepresentation: data, relativeTo: nil) {
+                        localURL = url
+                    } else if let str = item as? String, let url = URL(string: str) {
+                        localURL = url
+                    }
+                    guard let fileURL = localURL else { return }
+                    let dest = targetDirectory.hasSuffix("/") ? "\(targetDirectory)\(fileURL.lastPathComponent)" : "\(targetDirectory)/\(fileURL.lastPathComponent)"
+                    Task { @MainActor in
+                        self.transferNotice = "正在上传 \(fileURL.lastPathComponent)..."
+                        TransferManager.shared.enqueueUpload(
+                            session: s,
+                            localURL: fileURL,
+                            remotePath: dest,
+                            onResult: { result in
+                                Task { @MainActor in
+                                    self.handleUploadResult(result, fileName: fileURL.lastPathComponent, targetDirectory: targetDirectory)
+                                }
+                            }
+                        )
+                    }
+                }
+            } else {
+                _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                    guard let localURL = url else { return }
+                    let dest = targetDirectory.hasSuffix("/") ? "\(targetDirectory)\(localURL.lastPathComponent)" : "\(targetDirectory)/\(localURL.lastPathComponent)"
+                    Task { @MainActor in
+                        self.transferNotice = "正在上传 \(localURL.lastPathComponent)..."
+                        TransferManager.shared.enqueueUpload(
+                            session: s,
+                            localURL: localURL,
+                            remotePath: dest,
+                            onResult: { result in
+                                Task { @MainActor in
+                                    self.handleUploadResult(result, fileName: localURL.lastPathComponent, targetDirectory: targetDirectory)
+                                }
+                            }
+                        )
                     }
                 }
             }

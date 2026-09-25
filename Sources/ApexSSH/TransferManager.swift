@@ -41,7 +41,8 @@ public final class TransferManager: ObservableObject {
         session: SSHSessionProtocol,
         localURL: URL,
         remotePath: String,
-        onCompleted: (@Sendable () -> Void)? = nil
+        onCompleted: (@Sendable () -> Void)? = nil,
+        onResult: (@Sendable (Result<String, Error>) -> Void)? = nil
     ) -> UUID {
         let fileSize = (try? FileManager.default.attributesOfItem(atPath: localURL.path)[.size] as? Int64) ?? 0
         let taskId = UUID()
@@ -58,7 +59,7 @@ public final class TransferManager: ObservableObject {
         
         let runner = Task { [weak self] in
             guard let self = self else { return }
-            await self.executeUpload(taskId: taskId, session: session, localURL: localURL, remotePath: remotePath, onCompleted: onCompleted)
+            await self.executeUpload(taskId: taskId, session: session, localURL: localURL, remotePath: remotePath, onCompleted: onCompleted, onResult: onResult)
         }
         activeTaskHandles[taskId] = runner
         return taskId
@@ -71,7 +72,8 @@ public final class TransferManager: ObservableObject {
         remotePath: String,
         localURL: URL,
         totalBytes: Int64,
-        onCompleted: (@Sendable () -> Void)? = nil
+        onCompleted: (@Sendable () -> Void)? = nil,
+        onResult: (@Sendable (Result<URL, Error>) -> Void)? = nil
     ) -> UUID {
         let taskId = UUID()
         let fileName = (remotePath as NSString).lastPathComponent
@@ -88,7 +90,7 @@ public final class TransferManager: ObservableObject {
         
         let runner = Task { [weak self] in
             guard let self = self else { return }
-            await self.executeDownload(taskId: taskId, session: session, remotePath: remotePath, localURL: localURL, onCompleted: onCompleted)
+            await self.executeDownload(taskId: taskId, session: session, remotePath: remotePath, localURL: localURL, onCompleted: onCompleted, onResult: onResult)
         }
         activeTaskHandles[taskId] = runner
         return taskId
@@ -114,7 +116,8 @@ public final class TransferManager: ObservableObject {
         session: SSHSessionProtocol,
         localURL: URL,
         remotePath: String,
-        onCompleted: (@Sendable () -> Void)?
+        onCompleted: (@Sendable () -> Void)?,
+        onResult: (@Sendable (Result<String, Error>) -> Void)? = nil
     ) async {
         guard let idx = tasks.firstIndex(where: { $0.id == taskId }) else { return }
         tasks[idx].status = .transferring
@@ -134,6 +137,7 @@ public final class TransferManager: ObservableObject {
                 tasks[finalIdx].status = .completed
                 tasks[finalIdx].completedAt = Date()
             }
+            onResult?(.success(remotePath))
             onCompleted?()
         } catch {
             if let finalIdx = tasks.firstIndex(where: { $0.id == taskId }) {
@@ -144,6 +148,7 @@ public final class TransferManager: ObservableObject {
                 }
                 tasks[finalIdx].completedAt = Date()
             }
+            onResult?(.failure(error))
         }
         
         activeTaskHandles.removeValue(forKey: taskId)
@@ -156,7 +161,8 @@ public final class TransferManager: ObservableObject {
         session: SSHSessionProtocol,
         remotePath: String,
         localURL: URL,
-        onCompleted: (@Sendable () -> Void)?
+        onCompleted: (@Sendable () -> Void)?,
+        onResult: (@Sendable (Result<URL, Error>) -> Void)? = nil
     ) async {
         guard let idx = tasks.firstIndex(where: { $0.id == taskId }) else { return }
         tasks[idx].status = .transferring
@@ -176,6 +182,7 @@ public final class TransferManager: ObservableObject {
                 tasks[finalIdx].status = .completed
                 tasks[finalIdx].completedAt = Date()
             }
+            onResult?(.success(localURL))
             onCompleted?()
         } catch {
             if let finalIdx = tasks.firstIndex(where: { $0.id == taskId }) {
@@ -186,6 +193,7 @@ public final class TransferManager: ObservableObject {
                 }
                 tasks[finalIdx].completedAt = Date()
             }
+            onResult?(.failure(error))
         }
         
         activeTaskHandles.removeValue(forKey: taskId)

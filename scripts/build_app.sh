@@ -7,7 +7,7 @@ APP_DIR="${BUILD_DIR}/${APP_NAME}"
 CONTENTS_DIR="${APP_DIR}/Contents"
 MACOS_DIR="${CONTENTS_DIR}/MacOS"
 RESOURCES_DIR="${CONTENTS_DIR}/Resources"
-VERSION="${1:-1.0.4}"
+VERSION="${1:-1.0.6}"
 DIST_ARCHIVE="${BUILD_DIR}/ApexTerm-v${VERSION}-macos-arm64.tar.gz"
 DIST_DMG="${BUILD_DIR}/ApexTerm-v${VERSION}-macos-arm64.dmg"
 
@@ -120,8 +120,14 @@ if command -v hdiutil >/dev/null 2>&1; then
     rm -rf "${TMP_DMG_DIR}"
 fi
 
+if [ -d "/Applications" ]; then
+    echo "📲 Updating local /Applications/ApexTerm.app..."
+    rm -rf "/Applications/ApexTerm.app"
+    cp -R "${APP_DIR}" "/Applications/ApexTerm.app"
+fi
+
 echo "✅ Build & Signed Packaging complete!"
-echo "📍 Application: ${APP_DIR}"
+echo "📍 Application: ${APP_DIR} (and /Applications/ApexTerm.app)"
 echo "📍 Tarball:     ${DIST_ARCHIVE}"
 if [ -f "${DIST_DMG}" ]; then
     echo "📍 Disk Image:  ${DIST_DMG}"

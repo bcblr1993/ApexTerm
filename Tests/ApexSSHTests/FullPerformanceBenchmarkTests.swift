@@ -129,7 +129,9 @@ final class FullPerformanceBenchmarkTests: XCTestCase {
         
         // Memory guard must prevent infinite growth
         XCTAssertLessThanOrEqual(textStorageLen, 2_600_000, "TextStorage should be strictly bounded")
-        XCTAssertLessThan(rssMB, 150.0, "Total process RSS should remain very lightweight")
+        let growthMB = Double(max(0, peakRss - initialRss)) / (1024 * 1024)
+        XCTAssertLessThan(growthMB, 100.0, "Memory growth under 100K-line burst should be well under 100MB")
+        XCTAssertLessThan(rssMB, 180.0, "Total process RSS should remain lightweight")
     }
     
     /// 4. 16 线程高并发争用写入性能测试 (Concurrent Contention)

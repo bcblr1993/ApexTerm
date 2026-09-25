@@ -417,20 +417,29 @@ public final class NativeTerminalView: NSTextView {
             return NSRect(x: origin.x, y: origin.y, width: cursorWidth, height: lineHeight)
         }
         
-        let lastChar = (storage.string as NSString).substring(with: NSRange(location: length - 1, length: 1))
-        if lastChar == "\n" || lastChar == "\r" {
-            let extraRect = layoutManager.extraLineFragmentRect
-            if extraRect.height > 0 {
-                return NSRect(x: origin.x + extraRect.minX, y: origin.y + extraRect.minY, width: cursorWidth, height: extraRect.height)
-            } else {
-                let glyph = layoutManager.glyphIndexForCharacter(at: length - 1)
-                let lineRect = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
-                return NSRect(x: origin.x, y: origin.y + lineRect.maxY, width: cursorWidth, height: lineHeight)
-            }
+        let cursorCol = ringBuffer?.cursorColumn ?? (length - activeLineStartLocation)
+        let cursorCharIndex = min(length, max(0, activeLineStartLocation + cursorCol))
+        
+        if cursorCharIndex < length {
+            let glyph = layoutManager.glyphIndexForCharacter(at: cursorCharIndex)
+            let charRect = layoutManager.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: textContainer)
+            return NSRect(x: origin.x + charRect.minX, y: origin.y + charRect.minY, width: cursorWidth, height: charRect.height > 0 ? charRect.height : lineHeight)
         } else {
-            let lastGlyph = layoutManager.glyphIndexForCharacter(at: length - 1)
-            let charRect = layoutManager.boundingRect(forGlyphRange: NSRange(location: lastGlyph, length: 1), in: textContainer)
-            return NSRect(x: origin.x + charRect.maxX, y: origin.y + charRect.minY, width: cursorWidth, height: charRect.height > 0 ? charRect.height : lineHeight)
+            let lastChar = (storage.string as NSString).substring(with: NSRange(location: length - 1, length: 1))
+            if lastChar == "\n" || lastChar == "\r" {
+                let extraRect = layoutManager.extraLineFragmentRect
+                if extraRect.height > 0 {
+                    return NSRect(x: origin.x + extraRect.minX, y: origin.y + extraRect.minY, width: cursorWidth, height: extraRect.height)
+                } else {
+                    let glyph = layoutManager.glyphIndexForCharacter(at: length - 1)
+                    let lineRect = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+                    return NSRect(x: origin.x, y: origin.y + lineRect.maxY, width: cursorWidth, height: lineHeight)
+                }
+            } else {
+                let lastGlyph = layoutManager.glyphIndexForCharacter(at: length - 1)
+                let charRect = layoutManager.boundingRect(forGlyphRange: NSRange(location: lastGlyph, length: 1), in: textContainer)
+                return NSRect(x: origin.x + charRect.maxX, y: origin.y + charRect.minY, width: cursorWidth, height: charRect.height > 0 ? charRect.height : lineHeight)
+            }
         }
     }
     

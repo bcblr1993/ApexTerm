@@ -126,12 +126,49 @@ final class RingBufferStressTests: XCTestCase {
         XCTAssertEqual(ringBuffer.committedLineCount, 1)
         XCTAssertEqual(ringBuffer.allLines()[0], "Downloading: [ 100% ]")
         
-        // Rapid Backspace test
+        // Rapid Backspace test: backspace key sends BS + EL (\u{08}\u{1B}[K)
         ringBuffer.appendStream("cat /etc/passwdd")
-        ringBuffer.appendStream("\u{08}") // backspace 'd'
+        ringBuffer.appendStream("\u{08}\u{1B}[K") // backspace 'd'
         ringBuffer.appendStream("\n")
         
         XCTAssertEqual(ringBuffer.committedLineCount, 2)
         XCTAssertEqual(ringBuffer.allLines()[1], "cat /etc/passwd")
+    }
+    
+    /// Test 6: Arrow keys and in-line interactive editing without garbled characters
+    func testArrowKeysAndInlineEditing() {
+        let ringBuffer = TerminalRingBuffer(maxLines: 50)
+        
+        // 1. Initial prompt and typing
+        ringBuffer.appendStream("ubuntu@server:~$ echo hello")
+        XCTAssertEqual(ringBuffer.currentActiveLine, "ubuntu@server:~$ echo hello")
+        XCTAssertEqual(ringBuffer.cursorColumn, 27)
+        
+        // 2. Press Left Arrow 5 times: sends \u{08} 5 times
+        // Crucial: characters must NOT be deleted!
+        ringBuffer.appendStream("\u{08}\u{08}\u{08}\u{08}\u{08}")
+        XCTAssertEqual(ringBuffer.currentActiveLine, "ubuntu@server:~$ echo hello", "Left arrow must not delete text!")
+        XCTAssertEqual(ringBuffer.cursorColumn, 22)
+        
+        // 3. Type 'X' with insert character sequence \u{1B}[1@X
+        ringBuffer.appendStream("\u{001B}[1@X")
+        XCTAssertEqual(ringBuffer.currentActiveLine, "ubuntu@server:~$ echo Xhello")
+        XCTAssertEqual(ringBuffer.cursorColumn, 23)
+        
+        // 4. Press Right Arrow: \u{001B}[C
+        ringBuffer.appendStream("\u{001B}[C")
+        XCTAssertEqual(ringBuffer.cursorColumn, 24)
+        
+        // 5. Shell history navigation (Up Arrow): \r + move to command start + new command + \u{1B}[K
+        ringBuffer.appendStream("\r\u{001B}[17Cgit status\u{001B}[K")
+        XCTAssertEqual(ringBuffer.currentActiveLine, "ubuntu@server:~$ git status")
+        XCTAssertEqual(ringBuffer.cursorColumn, 27)
+        
+        // 6. Enter executes and commits
+        ringBuffer.appendStream("\r\n")
+        XCTAssertEqual(ringBuffer.committedLineCount, 1)
+        XCTAssertEqual(ringBuffer.allLines()[0], "ubuntu@server:~$ git status")
+        XCTAssertEqual(ringBuffer.currentActiveLine, "")
+        XCTAssertEqual(ringBuffer.cursorColumn, 0)
     }
 }

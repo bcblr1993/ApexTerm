@@ -6,9 +6,11 @@ import ApexCore
 public struct TerminalRepresentable: NSViewRepresentable {
     public let ringBuffer: TerminalRingBuffer
     public let onInput: (Data) -> Void
+    public var isCopyOnSelectEnabled: Bool = true
     
-    public init(ringBuffer: TerminalRingBuffer, onInput: @escaping (Data) -> Void) {
+    public init(ringBuffer: TerminalRingBuffer, isCopyOnSelectEnabled: Bool = true, onInput: @escaping (Data) -> Void) {
         self.ringBuffer = ringBuffer
+        self.isCopyOnSelectEnabled = isCopyOnSelectEnabled
         self.onInput = onInput
     }
     
@@ -16,6 +18,7 @@ public struct TerminalRepresentable: NSViewRepresentable {
         let scrollView = NativeTerminalScrollView()
         scrollView.terminalView.onInput = onInput
         scrollView.terminalView.ringBuffer = ringBuffer
+        scrollView.terminalView.isCopyOnSelectEnabled = isCopyOnSelectEnabled
         context.coordinator.scrollView = scrollView
         
         // Auto-focus the terminal view on load
@@ -32,6 +35,7 @@ public struct TerminalRepresentable: NSViewRepresentable {
     }
     
     public func updateNSView(_ nsView: NativeTerminalScrollView, context: Context) {
+        nsView.terminalView.isCopyOnSelectEnabled = isCopyOnSelectEnabled
         nsView.terminalView.refresh()
     }
     
@@ -85,6 +89,7 @@ public final class NativeTerminalScrollView: NSScrollView {
 public final class NativeTerminalView: NSTextView {
     public var ringBuffer: TerminalRingBuffer?
     public var onInput: ((Data) -> Void)?
+    public var isCopyOnSelectEnabled: Bool = true
     
     private let parser = VTParser()
     private var lastCommittedIndex: Int64 = 0
@@ -294,6 +299,13 @@ public final class NativeTerminalView: NSTextView {
         super.mouseDown(with: event)
     }
     
+    override public func mouseUp(with event: NSEvent) {
+        super.mouseUp(with: event)
+        if isCopyOnSelectEnabled {
+            copySelectionToPasteboardIfAny()
+        }
+    }
+    
     // Provide active text input context for macOS Chinese / Japanese IME
     override public var inputContext: NSTextInputContext? {
         if customInputContext == nil {
@@ -389,6 +401,92 @@ public final class NativeTerminalView: NSTextView {
            let data = text.data(using: .utf8) {
             onInput?(data)
         }
+    }
+    
+    // MARK: - Copy on Select & Right-Click Context Menu
+    
+    @discardableResult
+    public func copySelectionToPasteboardIfAny() -> Bool {
+        let range = self.selectedRange()
+        guard range.length > 0, let storage = self.textStorage else { return false }
+        if range.location + range.length <= storage.length {
+            let selectedText = (storage.string as NSString).substring(with: range)
+            if !selectedText.isEmpty {
+                let pb = NSPasteboard.general
+                pb.clearContents()
+                pb.setString(selectedText, forType: .string)
+                return true
+            }
+        }
+        return false
+    }
+    
+    @objc override public func copy(_ sender: Any?) {
+        copySelectionToPasteboardIfAny()
+    }
+    
+    override public func menu(for event: NSEvent) -> NSMenu? {
+        // If there is an active selection, ensure it is copied
+        copySelectionToPasteboardIfAny()
+        
+        let menu = NSMenu(title: "Terminal")
+        let hasSelection = self.selectedRange().length > 0
+        
+        // 1. 复制 (Copy)
+        let copyItem = NSMenuItem(title: "复制 (Copy)", action: #selector(copyMenuAction(_:)), keyEquivalent: "c")
+        copyItem.target = self
+        copyItem.isEnabled = hasSelection
+        menu.addItem(copyItem)
+        
+        // 2. 粘贴 (Paste)
+        let hasPasteboard = NSPasteboard.general.string(forType: .string) != nil
+        let pasteItem = NSMenuItem(title: "粘贴 (Paste)", action: #selector(pasteMenuAction(_:)), keyEquivalent: "v")
+        pasteItem.target = self
+        pasteItem.isEnabled = hasPasteboard
+        menu.addItem(pasteItem)
+        
+        menu.addItem(NSMenuItem.separator())
+        
+        // 3. 全选 (Select All)
+        let selectAllItem = NSMenuItem(title: "全选 (Select All)", action: #selector(selectAllMenuAction(_:)), keyEquivalent: "a")
+        selectAllItem.target = self
+        menu.addItem(selectAllItem)
+        
+        // 4. 清屏 (Clear Screen)
+        let clearItem = NSMenuItem(title: "清屏 (Clear Screen)", action: #selector(clearScreenMenuAction(_:)), keyEquivalent: "k")
+        clearItem.target = self
+        menu.addItem(clearItem)
+        
+        return menu
+    }
+    
+    @objc private func copyMenuAction(_ sender: Any?) {
+        copySelectionToPasteboardIfAny()
+    }
+    
+    @objc private func pasteMenuAction(_ sender: Any?) {
+        self.paste(sender)
+    }
+    
+    @objc override public func selectAll(_ sender: Any?) {
+        selectAllMenuAction(sender)
+    }
+    
+    @objc private func selectAllMenuAction(_ sender: Any?) {
+        if let storage = self.textStorage, storage.length > 0 {
+            self.setSelectedRange(NSRange(location: 0, length: storage.length))
+            if isCopyOnSelectEnabled {
+                copySelectionToPasteboardIfAny()
+            }
+        }
+    }
+    
+    @objc private func clearScreenMenuAction(_ sender: Any?) {
+        ringBuffer?.clear()
+        self.textStorage?.setAttributedString(NSAttributedString())
+        self.activeLineStartLocation = 0
+        self.lastCommittedIndex = 0
+        self.needsDisplay = true
     }
     
     // MARK: - NSTextInputClient / Text Input Overrides

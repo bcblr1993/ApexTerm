@@ -18,12 +18,12 @@ SHA_FILE="${BUILD_DIR}/SHA256SUMS.txt"
 echo "🧹 [Clean] Removing all previous local build artifacts and archives..."
 rm -rf "${APP_DIR}" "${BUILD_DIR}"/*.dmg "${BUILD_DIR}"/*.tar.gz "${BUILD_DIR}"/*.txt "${BUILD_DIR}"/arm64-apple-macosx/release/ApexTerm* /tmp/apexterm_* 2>/dev/null || true
 
-echo "🧪 [Pre-Release Quality Gate] Running full automated test suite (80+ test cases)..."
-if ! swift test; then
-    echo "❌ [FATAL ERROR] Automated test suite failed! Release build aborted to prevent shipping broken binaries."
+echo "🧪 [Pre-Release Quality Gate] Executing Tart VM acceptance and automated test gate..."
+if ! ./scripts/test_vm_acceptance.sh; then
+    echo "❌ [FATAL ERROR] Pre-release quality gate failed! Release build aborted to prevent shipping broken binaries."
     exit 1
 fi
-echo "✅ [Pre-Release Quality Gate] 100% of test suites passed successfully!"
+echo "✅ [Pre-Release Quality Gate] 100% of quality gate criteria satisfied!"
 
 echo "⚡ Building ApexTerm Release binary for Apple Silicon (arm64)..."
 swift build -c release

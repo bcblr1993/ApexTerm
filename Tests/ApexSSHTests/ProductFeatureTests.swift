@@ -117,4 +117,14 @@ final class ProductFeatureTests: XCTestCase {
         try? FileManager.default.removeItem(at: tempDir)
         try? FileManager.default.removeItem(at: secondTempDir)
     }
+    
+    // MARK: - Update String Formatting Regression Tests
+    
+    func testUpdateStringFormattingDoesNotCrash() {
+        let version = "1.2.0"
+        let formatted = String(format: L10n.upToDateDesc, version as CVarArg)
+        XCTAssertTrue(formatted.contains("1.2.0"))
+        XCTAssertTrue(formatted.contains("最新稳定版本"))
+    }
 }
+

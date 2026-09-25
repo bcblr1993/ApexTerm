@@ -31,13 +31,28 @@
 - **右键粘贴习惯可配置**：支持在偏好设置中切换右键直接粘贴模式（开启时右键直通粘贴，按住 Shift+右键弹出系统菜单；关闭时右键展示标准菜单）；
 - **菜单栏深度原生集成**：全量补齐应用菜单、文件管理、会话分屏与清屏、帮助体系。
 
+### 🐞 问题修复 (Bug Fixes)
+- **修复点击“检查更新”闪退崩溃 (SIGSEGV / EXC_BAD_ACCESS)**：
+  - 排查定位崩溃日志 `ApexTerm-2026-09-25-225927.ips`，根因为 `L10n.swift` 中 `upToDateDesc` 使用了 C 语言字符串格式化说明符 `%s` 传入 Swift 原生 `String`，导致 Apple Silicon arm64 架构下 `_platform_strlen` 访问无效指针内存；
+  - 全面修正格式化占位符为标准 Foundation 对象说明符 `%@`；
+  - 优化关于面板的模态弹窗层级逻辑，避免 SwiftUI 多重 Sheet 渲染冲突，直接在关于面板内无缝展示最新稳定版本徽标与更新检查状态；
+  - 新增 `testUpdateStringFormattingDoesNotCrash` 格式化安全回归测试。
+
 ### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
-- **全量测试套件**：80 项自动化测试用例 100% 通过（耗时 0.016 秒），新增 `ProductFeatureTests` 专项测试；
-- **基准测试数据实测**：
-  - 日志流写入吞吐：**61,455 行/秒** (6.21 MB/秒)
-  - ANSI / TrueColor 颜色序列解析速度：**194,680 spans/秒**
-  - 物理按键直通全链路延迟：**7.00 微秒 (μs)**
-- **安全签名**：全量通过 `Developer ID Application: YanNan Chen (5984KQD4D7)` 代码签名与 designated requirement 严格验证。
+- **Tart VM 验收与全量自动化测试套件**：
+  - 90 项自动化测试用例（覆盖 ApexSSHTests 与 ApexCoreTests）全部通过（0 failures）；
+  - 新增 `ComprehensiveFeatureTests`，全量覆盖 SSH 会话生命周期、Agentless 指标解析、SFTP 权限格式化与任务取消、RingBuffer ECMA-48 控制序列、VTParser TrueColor 解析、分屏容器及 Snippet 参数插值等核心功能；
+  - 集成 `scripts/test_vm_acceptance.sh`，支持在独立 Tart 虚拟机环境中完成用例验证与发布门禁拦截；
+- **8 大性能基准测试实测数据**：
+  - [Benchmark 1] RingBuffer 写入吞吐：**64,822 行/秒** (6.55 MB/秒)
+  - [Benchmark 2] ANSI / TrueColor 颜色解析速度：**189,789 spans/秒** (单 span 5.27 μs)
+  - [Benchmark 3] 内存水位与驻留集 (RSS)：初始 87.84 MB，峰值 152.09 MB，熔断机制正常
+  - [Benchmark 4] 16 线程高并发争用写入吞吐：**1,165,499 writes/秒**
+  - [Benchmark 5] 64 核 Linux 无代理系统指标解析速度：**10,655 次/秒** (单次 93.85 μs)
+  - [Benchmark 6] OpenSSH 500 主机批量解析吞吐：**102,503 hosts/秒**
+  - [Benchmark 7] SFTP 任务中心 100 任务并发调度性能：**1,133 tasks/秒**
+  - [Benchmark 8] 终端物理按键直通全链路打字延迟：**7.23 微秒 (μs)**
+- **安全签名**：全量通过 `Developer ID Application: YanNan Chen (5984KQD4D7)` 官方开发者证书代码签名，通过严格深度递归验签。
 
 ---
 

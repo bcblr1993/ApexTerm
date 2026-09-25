@@ -35,6 +35,7 @@ DerivedData/
 *.dmg
 *.tar.gz
 SHA256SUMS.txt
+outputs/
 
 # Security & Zero-Bundle Rules (AetherRoute SOP)
 *.pem

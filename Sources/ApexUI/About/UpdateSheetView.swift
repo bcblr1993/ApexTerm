@@ -91,7 +91,7 @@ public struct UpdateSheetView: View {
                     Text(L10n.upToDateTitle)
                         .font(.headline)
                     
-                    Text(String(format: L10n.upToDateDesc, currentVersion))
+                    Text(String(format: L10n.upToDateDesc, currentVersion as CVarArg))
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)

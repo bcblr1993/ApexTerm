@@ -104,6 +104,44 @@ public struct AboutView: View {
                 .controlSize(.regular)
             }
             
+            // Inline update status notification
+            Group {
+                switch updateManager.status {
+                case .checking:
+                    Text(L10n.checkingForUpdates)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                case .upToDate(let ver):
+                    HStack(spacing: 4) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundColor(.green)
+                        Text(String(format: L10n.upToDateDesc, ver as CVarArg))
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                case .updateAvailable(let rel):
+                    HStack(spacing: 8) {
+                        Image(systemName: "arrow.down.circle.fill")
+                            .foregroundColor(.accentColor)
+                        Text("发现新版本 v\(rel.version)")
+                            .font(.caption.bold())
+                        Button("前往下载") {
+                            if let url = URL(string: rel.downloadUrl) {
+                                NSWorkspace.shared.open(url)
+                            }
+                        }
+                        .controlSize(.small)
+                    }
+                case .failed(let err):
+                    Text("检查失败: \(err)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                case .idle:
+                    EmptyView()
+                }
+            }
+            .animation(.easeInOut, value: updateManager.status)
+            
             // Footer: Copyright
             VStack(spacing: 4) {
                 Text(L10n.copyright)
@@ -119,9 +157,6 @@ public struct AboutView: View {
         .padding(24)
         .frame(width: 500)
         .background(ApexStyle.surface)
-        .sheet(isPresented: $updateManager.isUpdateSheetPresented) {
-            UpdateSheetView()
-        }
     }
     
     private func techBadge(icon: String, title: String, color: Color) -> some View {

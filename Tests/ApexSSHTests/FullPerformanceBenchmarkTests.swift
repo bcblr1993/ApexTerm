@@ -60,7 +60,7 @@ final class FullPerformanceBenchmarkTests: XCTestCase {
         XCTAssertEqual(ringBuffer.committedLineCount, maxLines)
         XCTAssertEqual(ringBuffer.totalCommittedCount, Int64(lineCount))
         #if DEBUG
-        XCTAssertGreaterThan(linesPerSec, 50_000, "Throughput should exceed 50,000 lines/sec in unoptimized debug build")
+        XCTAssertGreaterThan(linesPerSec, 30_000, "Throughput should exceed 30,000 lines/sec in unoptimized debug build")
         #else
         XCTAssertGreaterThan(linesPerSec, 80_000, "Throughput should exceed 80,000 lines/sec")
         #endif

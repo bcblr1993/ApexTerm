@@ -55,13 +55,19 @@
 在执行任何发布构建（Release Build）前，**必须无条件通过全部自动化测试门禁**，任何单一测试失败立即熔断，严禁带病发布：
 
 ```bash
+# 执行 Tart 虚拟机验收门禁与全量测试
+./scripts/test_vm_acceptance.sh
+
 # 必须 100% 通过（0 failures）
 swift test
 ```
 
 ### 质量验收标准：
-1. **单元与功能测试**：80+ 自动化测试用例全部绿色（涵盖 Core 核心、SSH 协议、Terminal 终端引擎、UI 状态与 ProductFeature）；
-2. **8 大性能基准测试（Benchmarks）**：
+1. **Tart VM 虚拟机验收与集成测试**：
+   - 每次发布版本前，通过 `./scripts/test_vm_acceptance.sh` 执行针对 Tart 虚拟机的真实链路与本地全量门禁；
+   - 虚拟机集成测试覆盖真实 PTY 交互、SFTP 双向传输完整性、Linux Agentless 系统监控采集；
+2. **单元与功能测试**：90+ 自动化测试用例全部绿色（涵盖 Core 核心、SSH 协议、Terminal 终端引擎、UI 状态、分屏与 ProductFeature）；
+3. **8 大性能基准测试（Benchmarks）**：
    - [Benchmark 1] RingBuffer 写入吞吐：≥ 50,000 行/秒 (≥ 5.0 MB/秒)
    - [Benchmark 2] ANSI / TrueColor 颜色解析速度：≥ 150,000 spans/秒
    - [Benchmark 3] 内存水位与驻留集（RSS）：峰值 ≤ 250 MB，熔断截断正常
@@ -70,7 +76,7 @@ swift test
    - [Benchmark 6] OpenSSH 500 主机批量解析吞吐：≥ 80,000 hosts/秒
    - [Benchmark 7] SFTP 任务中心 100 任务并发调度性能：≥ 800 tasks/秒
    - [Benchmark 8] 终端物理按键直通与全链路键入延迟：≤ 15.0 微秒 (μs)
-3. **编译器状态**：Swift 6 模式下零警告（Zero Warnings）。
+4. **编译器状态**：Swift 6 模式下零警告（Zero Warnings）。
 
 ---
 

@@ -163,7 +163,7 @@ public enum L10n {
     public static let openGitHub = "查看开源仓库"
     public static let updateAvailableTitle = "发现新版本可用"
     public static let upToDateTitle = "已是最新版本"
-    public static let upToDateDesc = "您当前运行的 ApexTerm %s 已经是最新稳定版本。"
+    public static let upToDateDesc = "您当前运行的 ApexTerm %@ 已经是最新稳定版本。"
     public static let updateNow = "前往下载更新"
     public static let remindLater = "稍后提醒"
     public static let checkingForUpdates = "正在检查更新..."

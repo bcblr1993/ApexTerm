@@ -14,6 +14,13 @@ DIST_DMG="${BUILD_DIR}/ApexTerm-v${VERSION}-macos-arm64.dmg"
 echo "🧹 [Clean] Removing all previous local build artifacts and archives..."
 rm -rf "${APP_DIR}" "${BUILD_DIR}"/*.dmg "${BUILD_DIR}"/*.tar.gz "${BUILD_DIR}"/arm64-apple-macosx/release/ApexTerm* /tmp/apexterm_* 2>/dev/null || true
 
+echo "🧪 [Pre-Release Quality Gate] Running full automated test suite (58+ test cases)..."
+if ! swift test; then
+    echo "❌ [FATAL ERROR] Automated test suite failed! Release build aborted to prevent shipping broken binaries."
+    exit 1
+fi
+echo "✅ [Pre-Release Quality Gate] 100% of test suites passed successfully!"
+
 echo "⚡ Building ApexTerm Release binary for Apple Silicon (arm64)..."
 swift build -c release
 

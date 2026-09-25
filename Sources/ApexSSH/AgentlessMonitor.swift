@@ -222,6 +222,7 @@ public final class AgentlessMonitor: Sendable {
         var cpuPercent = 0.0
         var cpuCores = 0
         var memTotal: UInt64 = 0
+        var memAvailable: UInt64 = 0
         var memFree: UInt64 = 0
         var memBuffers: UInt64 = 0
         var memCached: UInt64 = 0
@@ -306,13 +307,15 @@ public final class AgentlessMonitor: Sendable {
                 cpuCores += 1
             } else if trimmed.hasPrefix("MemTotal:") {
                 memTotal = parseMeminfoKb(trimmed)
+            } else if trimmed.hasPrefix("MemAvailable:") {
+                memAvailable = parseMeminfoKb(trimmed)
             } else if trimmed.hasPrefix("MemFree:") {
                 memFree = parseMeminfoKb(trimmed)
             } else if trimmed.hasPrefix("Buffers:") {
                 memBuffers = parseMeminfoKb(trimmed)
             } else if trimmed.hasPrefix("Cached:") {
                 memCached = parseMeminfoKb(trimmed)
-            } else if trimmed.contains(":") && (trimmed.contains("eth") || trimmed.contains("ens") || trimmed.contains("enp") || trimmed.contains("wlan")) {
+            } else if trimmed.contains(":") && (trimmed.contains("eth") || trimmed.contains("ens") || trimmed.contains("enp") || trimmed.contains("eno") || trimmed.contains("bond") || trimmed.contains("wlan")) {
                 // Network interface line
                 let parts = trimmed.split(whereSeparator: { $0 == ":" || $0.isWhitespace })
                 if parts.count >= 10 {
@@ -324,7 +327,12 @@ public final class AgentlessMonitor: Sendable {
             }
         }
         
-        let memUsed = memTotal > (memFree + memBuffers + memCached) ? (memTotal - memFree - memBuffers - memCached) : 0
+        let memUsed: UInt64
+        if memAvailable > 0 && memTotal >= memAvailable {
+            memUsed = memTotal - memAvailable
+        } else {
+            memUsed = memTotal > (memFree + memBuffers + memCached) ? (memTotal - memFree - memBuffers - memCached) : 0
+        }
         
         // Calculate network rate
         var rxRate = 0.0

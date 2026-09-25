@@ -13,11 +13,15 @@ public final class SessionStore: ObservableObject {
     private let fileManager = FileManager.default
     private let baseDirectory: URL
     
-    public init() {
-        let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        self.baseDirectory = appSupport.appendingPathComponent("ApexTerm", isDirectory: true)
+    public init(baseDirectory: URL? = nil) {
+        if let baseDirectory = baseDirectory {
+            self.baseDirectory = baseDirectory
+        } else {
+            let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            self.baseDirectory = appSupport.appendingPathComponent("ApexTerm", isDirectory: true)
+        }
         
-        try? fileManager.createDirectory(at: baseDirectory, withIntermediateDirectories: true)
+        try? fileManager.createDirectory(at: self.baseDirectory, withIntermediateDirectories: true)
         loadAll()
         
         if triggers.isEmpty {

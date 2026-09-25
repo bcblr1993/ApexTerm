@@ -1,12 +1,14 @@
 import Foundation
 
-/// High-performance circular line buffer for terminal scrollback history
+/// High-performance circular line buffer for terminal scrollback history with real-time update notifications
 public final class TerminalRingBuffer: @unchecked Sendable {
     public let maxLines: Int
     private var buffer: [String]
     private var head: Int = 0
     private var count: Int = 0
     private let lock = NSLock()
+    
+    public var onUpdate: (@Sendable () -> Void)?
     
     public init(maxLines: Int = 10_000) {
         self.maxLines = maxLines
@@ -16,8 +18,6 @@ public final class TerminalRingBuffer: @unchecked Sendable {
     /// Append a single line into circular buffer
     public func appendLine(_ line: String) {
         lock.lock()
-        defer { lock.unlock() }
-        
         let index = (head + count) % maxLines
         if count < maxLines {
             buffer[index] = line
@@ -26,13 +26,29 @@ public final class TerminalRingBuffer: @unchecked Sendable {
             buffer[head] = line
             head = (head + 1) % maxLines
         }
+        let updateHandler = onUpdate
+        lock.unlock()
+        
+        updateHandler?()
     }
     
     /// Append multiple lines
     public func appendLines(_ lines: [String]) {
+        lock.lock()
         for line in lines {
-            appendLine(line)
+            let index = (head + count) % maxLines
+            if count < maxLines {
+                buffer[index] = line
+                count += 1
+            } else {
+                buffer[head] = line
+                head = (head + 1) % maxLines
+            }
         }
+        let updateHandler = onUpdate
+        lock.unlock()
+        
+        updateHandler?()
     }
     
     /// Return all active lines in chronological order
@@ -76,8 +92,11 @@ public final class TerminalRingBuffer: @unchecked Sendable {
     /// Clear all lines
     public func clear() {
         lock.lock()
-        defer { lock.unlock() }
         head = 0
         count = 0
+        let updateHandler = onUpdate
+        lock.unlock()
+        
+        updateHandler?()
     }
 }

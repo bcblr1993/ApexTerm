@@ -7,12 +7,12 @@ APP_DIR="${BUILD_DIR}/${APP_NAME}"
 CONTENTS_DIR="${APP_DIR}/Contents"
 MACOS_DIR="${CONTENTS_DIR}/MacOS"
 RESOURCES_DIR="${CONTENTS_DIR}/Resources"
-VERSION="${1:-1.0.1}"
+VERSION="${1:-1.0.3}"
 DIST_ARCHIVE="${BUILD_DIR}/ApexTerm-v${VERSION}-macos-arm64.tar.gz"
 DIST_DMG="${BUILD_DIR}/ApexTerm-v${VERSION}-macos-arm64.dmg"
 
 echo "🧹 [Clean] Removing all previous local build artifacts and archives..."
-rm -rf "${APP_DIR}" "${BUILD_DIR}"/*.dmg "${BUILD_DIR}"/*.tar.gz "${BUILD_DIR}/arm64-apple-macosx/release/ApexTerm" /tmp/apexterm_* 2>/dev/null || true
+rm -rf "${APP_DIR}" "${BUILD_DIR}"/*.dmg "${BUILD_DIR}"/*.tar.gz "${BUILD_DIR}"/arm64-apple-macosx/release/ApexTerm* /tmp/apexterm_* 2>/dev/null || true
 
 echo "⚡ Building ApexTerm Release binary for Apple Silicon (arm64)..."
 swift build -c release
@@ -33,6 +33,12 @@ fi
 echo "📋 Using Release binary: ${RELEASE_BIN}"
 cp "${RELEASE_BIN}" "${MACOS_DIR}/ApexTerm"
 chmod +x "${MACOS_DIR}/ApexTerm"
+
+if [ -f "/opt/homebrew/bin/sshpass" ]; then
+    echo "📦 Bundling standalone arm64 sshpass helper into ${MACOS_DIR}/sshpass..."
+    cp "/opt/homebrew/bin/sshpass" "${MACOS_DIR}/sshpass"
+    chmod +x "${MACOS_DIR}/sshpass"
+fi
 
 # Create standard Info.plist
 cat << EOF > "${CONTENTS_DIR}/Info.plist"
@@ -70,6 +76,9 @@ EOF
 SIGNING_IDENTITY="Developer ID Application: YanNan Chen (5984KQD4D7)"
 if security find-identity -v -p codesigning | grep -q "${SIGNING_IDENTITY}"; then
     echo "🔏 Signing with official Apple Certificate: ${SIGNING_IDENTITY}..."
+    if [ -f "${MACOS_DIR}/sshpass" ]; then
+        codesign --force --sign "${SIGNING_IDENTITY}" --options runtime --timestamp=none "${MACOS_DIR}/sshpass"
+    fi
     codesign --force --deep --sign "${SIGNING_IDENTITY}" --options runtime --timestamp=none "${APP_DIR}"
 elif security find-identity -v -p codesigning | grep -q "Apple Development"; then
     DEV_IDENTITY=$(security find-identity -v -p codesigning | grep "Apple Development" | head -1 | awk -F '"' '{print $2}')

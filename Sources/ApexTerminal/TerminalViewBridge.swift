@@ -17,6 +17,14 @@ public struct TerminalRepresentable: NSViewRepresentable {
         scrollView.terminalView.onInput = onInput
         scrollView.terminalView.ringBuffer = ringBuffer
         context.coordinator.scrollView = scrollView
+        
+        // Instant real-time listener: as soon as bytes arrive from SSH, trigger refresh!
+        ringBuffer.onUpdate = { [weak scrollView] in
+            DispatchQueue.main.async {
+                scrollView?.terminalView.refresh()
+            }
+        }
+        
         return scrollView
     }
     

@@ -10,12 +10,13 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
     public let sshClient: SSHSessionProtocol
     public let ringBuffer = TerminalRingBuffer(maxLines: 50_000)
     public let metricsHistory = ObservableMetricsHistory()
-    @Published public var currentRemotePath = "/root"
+    @Published public var currentRemotePath: String
     @Published public var connectionState: SSHConnectionState = .disconnected
     
     public init(session: Session, sshClient: SSHSessionProtocol) {
         self.session = session
         self.sshClient = sshClient
+        self.currentRemotePath = session.username == "root" ? "/root" : (session.username.isEmpty ? "~" : "/home/\(session.username)")
         
         let ringBuffer = self.ringBuffer
         let metricsHistory = self.metricsHistory

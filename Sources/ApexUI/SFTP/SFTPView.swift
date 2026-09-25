@@ -1,8 +1,9 @@
 import SwiftUI
+import UniformTypeIdentifiers
 import ApexCore
 import ApexSSH
 
-/// High-performance integrated SFTP file manager (electerm-style with OSC 7 sync) with Chinese localization
+/// High-performance integrated SFTP file manager (electerm-style with OSC 7 sync and drag-and-drop upload/download)
 public struct SFTPView: View {
     @Binding public var currentPath: String
     public let session: SSHSessionProtocol?
@@ -13,6 +14,8 @@ public struct SFTPView: View {
     @State private var searchFilter = ""
     @State private var editingFile: SFTPItem?
     @State private var editorContent = ""
+    @State private var isDropTargeted = false
+    @State private var transferNotice: String?
     
     public init(currentPath: Binding<String>, session: SSHSessionProtocol?) {
         self._currentPath = currentPath
@@ -47,6 +50,13 @@ public struct SFTPView: View {
                 .padding(.vertical, 3)
                 .background(Color.green.opacity(0.1))
                 .cornerRadius(4)
+                
+                if let notice = transferNotice {
+                    Text(notice)
+                        .font(.caption)
+                        .foregroundColor(.green)
+                        .transition(.opacity)
+                }
                 
                 Divider().frame(height: 16)
                 
@@ -103,63 +113,92 @@ public struct SFTPView: View {
             
             Divider()
             
-            // Files table
-            if isLoading {
-                VStack {
-                    Spacer()
-                    ProgressView(L10n.loadingFiles)
-                        .font(.caption)
-                    Spacer()
-                }
-            } else {
-                List(filteredItems, id: \.path, selection: $selectedItem) { item in
-                    HStack(spacing: 10) {
-                        Image(systemName: fileIcon(for: item))
-                            .foregroundColor(fileColor(for: item))
-                            .frame(width: 18)
-                        
-                        Text(item.name)
-                            .font(.system(size: 12, design: .monospaced))
-                            .lineLimit(1)
-                        
+            // Files table with Drag & Drop upload & download
+            ZStack {
+                if isLoading {
+                    VStack {
                         Spacer()
-                        
-                        Text(item.permissionString)
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundColor(.secondary)
-                            .frame(width: 80, alignment: .trailing)
-                        
-                        Text(item.formattedSize)
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundColor(.secondary)
-                            .frame(width: 70, alignment: .trailing)
-                        
-                        Text(formatDate(item.modificationDate))
-                            .font(.system(size: 11))
-                            .foregroundColor(.secondary)
-                            .frame(width: 110, alignment: .trailing)
+                        ProgressView(L10n.loadingFiles)
+                            .font(.caption)
+                        Spacer()
                     }
-                    .contentShape(Rectangle())
-                    .onTapGesture(count: 2) {
-                        handleDoubleClick(item)
-                    }
-                    .contextMenu {
-                        Button(L10n.downloadToDownloads) {
-                            downloadAction(item)
+                } else {
+                    List(filteredItems, id: \.path, selection: $selectedItem) { item in
+                        HStack(spacing: 10) {
+                            Image(systemName: fileIcon(for: item))
+                                .foregroundColor(fileColor(for: item))
+                                .frame(width: 18)
+                            
+                            Text(item.name)
+                                .font(.system(size: 12, design: .monospaced))
+                                .lineLimit(1)
+                            
+                            Spacer()
+                            
+                            Text(item.permissionString)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundColor(.secondary)
+                                .frame(width: 80, alignment: .trailing)
+                            
+                            Text(item.formattedSize)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundColor(.secondary)
+                                .frame(width: 70, alignment: .trailing)
+                            
+                            Text(formatDate(item.modificationDate))
+                                .font(.system(size: 11))
+                                .foregroundColor(.secondary)
+                                .frame(width: 110, alignment: .trailing)
                         }
-                        if !item.isDirectory {
-                            Button(L10n.quickViewEdit) {
-                                openEditor(item)
+                        .contentShape(Rectangle())
+                        .onTapGesture(count: 2) {
+                            handleDoubleClick(item)
+                        }
+                        // Drag remote file to download to desktop/finder
+                        .onDrag {
+                            handleDragDownload(for: item)
+                        }
+                        .contextMenu {
+                            Button(L10n.downloadToDownloads) {
+                                downloadAction(item)
+                            }
+                            if !item.isDirectory {
+                                Button(L10n.quickViewEdit) {
+                                    openEditor(item)
+                                }
+                            }
+                            Divider()
+                            Button(L10n.copyRemotePath) {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(item.path, forType: .string)
                             }
                         }
-                        Divider()
-                        Button(L10n.copyRemotePath) {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(item.path, forType: .string)
-                        }
+                    }
+                    .listStyle(.inset(alternatesRowBackgrounds: true))
+                    // Drag local file from Finder/Desktop to upload into current remote directory
+                    .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
+                        handleDropUpload(providers: providers)
+                        return true
                     }
                 }
-                .listStyle(.inset(alternatesRowBackgrounds: true))
+                
+                // Visual overlay when dragging local file into SFTP panel
+                if isDropTargeted {
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.accentColor, lineWidth: 3)
+                        .background(Color.accentColor.opacity(0.12))
+                        .overlay(
+                            VStack(spacing: 8) {
+                                Image(systemName: "arrow.down.doc.fill")
+                                    .font(.system(size: 36))
+                                    .foregroundColor(.accentColor)
+                                Text("松开鼠标上传至当前目录 (\(currentPath))")
+                                    .font(.headline)
+                                    .foregroundColor(.accentColor)
+                            }
+                        )
+                        .allowsHitTesting(false)
+                }
             }
         }
         .onAppear {
@@ -239,7 +278,71 @@ public struct SFTPView: View {
         let localURL = downloads.appendingPathComponent(item.name)
         Task {
             try? await session?.downloadFile(remotePath: item.path, localURL: localURL, progress: { _ in })
+            await MainActor.run {
+                withAnimation {
+                    self.transferNotice = "已下载: \(item.name)"
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                    withAnimation { self.transferNotice = nil }
+                }
+            }
         }
+    }
+    
+    /// Handle local file drop from Finder / Desktop
+    private func handleDropUpload(providers: [NSItemProvider]) {
+        let targetDirectory = self.currentPath
+        for provider in providers {
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                guard let localURL = url else { return }
+                Task {
+                    let dest = targetDirectory.hasSuffix("/") ? "\(targetDirectory)\(localURL.lastPathComponent)" : "\(targetDirectory)/\(localURL.lastPathComponent)"
+                    do {
+                        try await session?.uploadFile(localURL: localURL, remotePath: dest, progress: { _ in })
+                        await MainActor.run {
+                            loadDirectory(path: targetDirectory)
+                            withAnimation {
+                                self.transferNotice = "已成功上传: \(localURL.lastPathComponent)"
+                            }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                                withAnimation { self.transferNotice = nil }
+                            }
+                        }
+                    } catch {
+                        await MainActor.run {
+                            withAnimation {
+                                self.transferNotice = "上传失败: \(error.localizedDescription)"
+                            }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
+                                withAnimation { self.transferNotice = nil }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    /// Handle dragging a remote file item to download
+    private func handleDragDownload(for item: SFTPItem) -> NSItemProvider {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("ApexTermTransfers")
+        try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        let localURL = tempDir.appendingPathComponent(item.name)
+        
+        let provider = NSItemProvider()
+        provider.suggestedName = item.name
+        provider.registerFileRepresentation(forTypeIdentifier: UTType.item.identifier, fileOptions: [], visibility: .all) { completion in
+            Task {
+                do {
+                    try await session?.downloadFile(remotePath: item.path, localURL: localURL, progress: { _ in })
+                    completion(localURL, true, nil)
+                } catch {
+                    completion(nil, false, error)
+                }
+            }
+            return nil
+        }
+        return provider
     }
     
     private func fileIcon(for item: SFTPItem) -> String {

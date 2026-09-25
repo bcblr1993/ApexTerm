@@ -25,7 +25,7 @@ struct ApexTermApp: App {
                         runSnippet(snippet)
                     }
                 )
-                .frame(minWidth: 230, idealWidth: 260, maxWidth: 350)
+                .frame(minWidth: 260, idealWidth: 290, maxWidth: 370)
             } detail: {
                 WorkspaceView(
                     store: sessionStore,
@@ -35,12 +35,6 @@ struct ApexTermApp: App {
             }
             .navigationSplitViewStyle(.balanced)
             .frame(minWidth: 960, minHeight: 640)
-            .onAppear {
-                // Connect to demo session on launch only if no tabs exist and default session exists
-                if let first = sessionStore.sessions.first, activeTabs.isEmpty {
-                    connectToSession(first)
-                }
-            }
         }
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unified(showsTitle: true))
@@ -90,7 +84,13 @@ struct ApexTermApp: App {
         selectedTabId = tab.id
         
         Task {
-            try? await client.connect()
+            tab.connectionState = .connecting(step: "正在连接")
+            do {
+                try await client.connect()
+                tab.connectionState = client.connectionState
+            } catch {
+                tab.connectionState = .failed(error.localizedDescription)
+            }
         }
     }
     

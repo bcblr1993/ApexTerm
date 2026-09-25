@@ -15,11 +15,12 @@ public struct SessionEditModal: View {
     @State private var authType: AuthType = .password
     @State private var password: String = ""
     @State private var isPasswordVisible: Bool = false
-    @State private var folder: String = "生产环境"
-    @State private var tags: String = "生产, k8s"
+    @State private var folder: String = "常用会话"
+    @State private var tags: String = ""
     @State private var colorHex: String = "#0A84FF"
     @State private var agentlessMonitor: Bool = true
     @State private var sftpAutoSync: Bool = true
+    @State private var saveError: String?
     
     public enum AuthType: String, CaseIterable, Identifiable {
         case password = "密码认证"
@@ -34,25 +35,23 @@ public struct SessionEditModal: View {
     
     public var body: some View {
         VStack(spacing: 0) {
-            // Header
-            HStack {
-                Label(initialSession == nil ? L10n.newSessionTitle : L10n.editSessionTitle, systemImage: "server.rack")
-                    .font(.headline)
-                    .foregroundColor(.primary)
-                Spacer()
-                Button(L10n.cancel) { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                
-                Button(L10n.save) {
-                    saveSession()
+            HStack(spacing: 12) {
+                Image(systemName: "server.rack")
+                    .font(.system(size: 19, weight: .semibold))
+                    .foregroundStyle(ApexStyle.accent)
+                    .frame(width: 42, height: 42)
+                    .background(ApexStyle.accent.opacity(0.10), in: RoundedRectangle(cornerRadius: 11))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(initialSession == nil ? L10n.newSessionTitle : L10n.editSessionTitle)
+                        .font(.system(size: 18, weight: .semibold))
+                    Text("填写连接信息，保存后可从侧栏快速访问")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(host.trimmingCharacters(in: .whitespaces).isEmpty)
-                .keyboardShortcut(.defaultAction)
+                Spacer()
             }
-            .padding(.horizontal, 20)
-            .padding(.top, 18)
-            .padding(.bottom, 12)
+            .padding(20)
+            .background(ApexStyle.surface)
             
             Divider()
             
@@ -61,11 +60,12 @@ public struct SessionEditModal: View {
                 Section(L10n.hostDetailsSection) {
                     TextField(L10n.sessionNameLabel, text: $name, prompt: Text(L10n.sessionNamePlaceholder))
                     
-                    HStack(spacing: 12) {
-                        TextField(L10n.hostLabel, text: $host, prompt: Text(L10n.hostPlaceholder))
-                        
-                        TextField(L10n.portLabel, text: $port)
-                            .frame(width: 80)
+                    TextField(L10n.hostLabel, text: $host, prompt: Text(L10n.hostPlaceholder))
+                    TextField(L10n.portLabel, text: $port)
+                    if !port.isEmpty && !isValidPort {
+                        Text("端口请输入 1–65535 之间的数字")
+                            .font(.caption)
+                            .foregroundStyle(.red)
                     }
                     
                     TextField(L10n.usernameLabel, text: $username)
@@ -114,6 +114,21 @@ public struct SessionEditModal: View {
                 Section(L10n.organizationSection) {
                     TextField(L10n.folderLabel, text: $folder)
                     TextField(L10n.tagsLabel, text: $tags, prompt: Text(L10n.tagsPlaceholder))
+                    HStack(spacing: 9) {
+                        Text("标识颜色")
+                        Spacer()
+                        ForEach(["#0A84FF", "#30D158", "#FF9F0A", "#FF453A", "#BF5AF2"], id: \.self) { hex in
+                            Button { colorHex = hex } label: {
+                                Circle()
+                                    .fill(Color(hex: hex) ?? ApexStyle.accent)
+                                    .frame(width: 18, height: 18)
+                                    .padding(3)
+                                    .overlay(Circle().stroke(colorHex == hex ? Color.primary : .clear, lineWidth: 1.5))
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("选择标识颜色 \(hex)")
+                        }
+                    }
                 }
                 
                 // 4. 特性与监控
@@ -123,11 +138,37 @@ public struct SessionEditModal: View {
                 }
             }
             .formStyle(.grouped)
+
+            Divider()
+            HStack {
+                if let saveError {
+                    Text(saveError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .lineLimit(2)
+                }
+                Spacer()
+                Button(L10n.cancel) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button(L10n.save) { saveSession() }
+                    .buttonStyle(.borderedProminent)
+                    .tint(ApexStyle.accent)
+                    .disabled(host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !isValidPort)
+                    .keyboardShortcut(.defaultAction)
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 14)
+            .background(ApexStyle.surface)
         }
-        .frame(width: 520, height: 490)
+        .frame(width: 560, height: 560)
         .onAppear {
             loadInitialSessionData()
         }
+    }
+
+    private var isValidPort: Bool {
+        guard let value = Int(port) else { return false }
+        return (1...65535).contains(value)
     }
     
     private func loadInitialSessionData() {
@@ -164,10 +205,19 @@ public struct SessionEditModal: View {
         
         if authType == .password && !password.isEmpty {
             let key = "ssh_\(sessionId.uuidString)"
-            try? KeychainStore.shared.save(key: key, secret: password)
-            authMethod = .password(keychainRef: password)
+            do {
+                try KeychainStore.shared.save(key: key, secret: password)
+            } catch {
+                saveError = "密码保存失败：\(error.localizedDescription)"
+                return
+            }
+            authMethod = .password(keychainRef: key)
         } else if authType == .password {
-            authMethod = .password(keychainRef: "")
+            if case .password(let ref) = initialSession?.authMethod {
+                authMethod = .password(keychainRef: ref)
+            } else {
+                authMethod = .password(keychainRef: "")
+            }
         } else {
             authMethod = .agent
         }

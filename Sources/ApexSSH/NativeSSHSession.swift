@@ -241,8 +241,8 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         process.standardError = Pipe()
         do {
             try process.run()
-            process.waitUntilExit()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
             if let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines), output.hasPrefix("/") {
                 return output
             }
@@ -377,9 +377,9 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         process.standardOutput = pipe
         process.standardError = errPipe
         try process.run()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
         guard let output = String(data: data, encoding: .utf8) else { return [] }
         
         var items: [SFTPItem] = []
@@ -447,7 +447,9 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
                 localURL.path
             ]
         }
+        let outPipe = Pipe()
         let errPipe = Pipe()
+        process.standardOutput = outPipe
         process.standardError = errPipe
         try process.run()
         process.waitUntilExit()
@@ -482,7 +484,9 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
                 "\(session.username)@\(session.host):\(remotePath)"
             ]
         }
+        let outPipe = Pipe()
         let errPipe = Pipe()
+        process.standardOutput = outPipe
         process.standardError = errPipe
         try process.run()
         process.waitUntilExit()

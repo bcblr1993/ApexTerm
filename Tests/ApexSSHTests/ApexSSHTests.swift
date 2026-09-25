@@ -4,6 +4,22 @@ import XCTest
 @testable import ApexTerminal
 
 final class ApexSSHTests: XCTestCase {
+
+    func testMockFileEditorRoundTrip() async throws {
+        let session = Session(name: "UI Preview", host: "10.0.1.10", username: "root")
+        let client = MockSSHSession(session: session)
+        let source = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let result = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer {
+            try? FileManager.default.removeItem(at: source)
+            try? FileManager.default.removeItem(at: result)
+        }
+
+        try "updated configuration\n".write(to: source, atomically: true, encoding: .utf8)
+        try await client.uploadFile(localURL: source, remotePath: "/root/example.conf", progress: { _ in })
+        try await client.downloadFile(remotePath: "/root/example.conf", localURL: result, progress: { _ in })
+        XCTAssertEqual(try String(contentsOf: result, encoding: .utf8), "updated configuration\n")
+    }
     
     func testAgentlessLinuxMetricsParsing() {
         let sampleLinuxOutput = """

@@ -19,6 +19,7 @@ swift build -c release
 
 echo "📦 Packaging ${APP_NAME} bundle..."
 mkdir -p "${MACOS_DIR}" "${RESOURCES_DIR}"
+cp "Resources/ApexTerm.icns" "${RESOURCES_DIR}/ApexTerm.icns"
 
 # Copy release binary
 RELEASE_BIN=""
@@ -53,6 +54,8 @@ cat << EOF > "${CONTENTS_DIR}/Info.plist"
     <key>CFBundleName</key>
     <string>ApexTerm</string>
     <key>CFBundleDisplayName</key>
+    <string>ApexTerm</string>
+    <key>CFBundleIconFile</key>
     <string>ApexTerm</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>

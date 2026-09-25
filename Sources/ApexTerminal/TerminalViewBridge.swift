@@ -18,6 +18,11 @@ public struct TerminalRepresentable: NSViewRepresentable {
         scrollView.terminalView.ringBuffer = ringBuffer
         context.coordinator.scrollView = scrollView
         
+        // Auto-focus the terminal view on load
+        DispatchQueue.main.async {
+            scrollView.window?.makeFirstResponder(scrollView.terminalView)
+        }
+        
         // Instant real-time listener: as soon as bytes arrive from SSH, trigger refresh!
         ringBuffer.onUpdate = { [weak scrollView] in
             DispatchQueue.main.async {
@@ -89,7 +94,12 @@ public final class NativeTerminalView: NSTextView {
     }
     
     public convenience init() {
-        self.init(frame: .zero, textContainer: nil)
+        let storage = NSTextStorage()
+        let layoutManager = NSLayoutManager()
+        let container = NSTextContainer(size: NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
+        storage.addLayoutManager(layoutManager)
+        layoutManager.addTextContainer(container)
+        self.init(frame: .zero, textContainer: container)
     }
     
     private func setupTerminalView() {
@@ -98,6 +108,7 @@ public final class NativeTerminalView: NSTextView {
         self.drawsBackground = true
         self.backgroundColor = NSColor(red: 0.08, green: 0.09, blue: 0.11, alpha: 1.0)
         self.textColor = NSColor(red: 0.92, green: 0.93, blue: 0.95, alpha: 1.0)
+        self.insertionPointColor = NSColor.cyan
         
         // Monospace font cascading with PingFang SC for CJK characters
         self.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
@@ -115,6 +126,13 @@ public final class NativeTerminalView: NSTextView {
     }
     
     override public var acceptsFirstResponder: Bool { true }
+    override public var canBecomeKeyView: Bool { true }
+    override public var needsPanelToBecomeKey: Bool { false }
+    
+    override public func mouseDown(with event: NSEvent) {
+        self.window?.makeFirstResponder(self)
+        super.mouseDown(with: event)
+    }
     
     // Provide active text input context for macOS Chinese / Japanese IME
     override public var inputContext: NSTextInputContext? {
@@ -125,7 +143,12 @@ public final class NativeTerminalView: NSTextView {
     }
     
     override public func keyDown(with event: NSEvent) {
-        // 1. Handle Ctrl key combinations: Ctrl+C, Ctrl+D, Ctrl+Z, Ctrl+L, etc.
+        // 1. If macOS IME (e.g. Chinese Pinyin) is active and handles the event
+        if let inputContext = self.inputContext, inputContext.handleEvent(event) {
+            return
+        }
+        
+        // 2. Handle Ctrl key combinations: Ctrl+C, Ctrl+D, Ctrl+Z, Ctrl+L, etc.
         if event.modifierFlags.contains(.control),
            let chars = event.charactersIgnoringModifiers,
            let firstChar = chars.unicodeScalars.first {
@@ -141,26 +164,69 @@ public final class NativeTerminalView: NSTextView {
             }
         }
         
-        // 2. Handle Arrow keys and special navigation keys
-        if event.keyCode == 126 { // Up arrow
-            onInput?("\u{001B}[A".data(using: .utf8)!)
+        // 3. Handle Special keys by key code
+        switch event.keyCode {
+        case 36, 76: // Return / Enter / Numpad Enter
+            onInput?("\r".data(using: .utf8)!)
             return
-        } else if event.keyCode == 125 { // Down arrow
-            onInput?("\u{001B}[B".data(using: .utf8)!)
+        case 51: // Backspace / Delete
+            onInput?("\u{7F}".data(using: .utf8)!)
             return
-        } else if event.keyCode == 124 { // Right arrow
-            onInput?("\u{001B}[C".data(using: .utf8)!)
+        case 117: // Forward Delete
+            onInput?("\u{1B}[3~".data(using: .utf8)!)
             return
-        } else if event.keyCode == 123 { // Left arrow
-            onInput?("\u{001B}[D".data(using: .utf8)!)
+        case 48: // Tab
+            onInput?("\t".data(using: .utf8)!)
             return
-        } else if event.keyCode == 53 { // ESC key
-            onInput?("\u{001B}".data(using: .utf8)!)
+        case 53: // ESC
+            onInput?("\u{1B}".data(using: .utf8)!)
             return
+        case 126: // Up arrow
+            onInput?("\u{1B}[A".data(using: .utf8)!)
+            return
+        case 125: // Down arrow
+            onInput?("\u{1B}[B".data(using: .utf8)!)
+            return
+        case 124: // Right arrow
+            onInput?("\u{1B}[C".data(using: .utf8)!)
+            return
+        case 123: // Left arrow
+            onInput?("\u{1B}[D".data(using: .utf8)!)
+            return
+        case 115: // Home
+            onInput?("\u{1B}[H".data(using: .utf8)!)
+            return
+        case 119: // End
+            onInput?("\u{1B}[F".data(using: .utf8)!)
+            return
+        case 116: // Page Up
+            onInput?("\u{1B}[5~".data(using: .utf8)!)
+            return
+        case 121: // Page Down
+            onInput?("\u{1B}[6~".data(using: .utf8)!)
+            return
+        default:
+            break
         }
         
-        // 3. Delegate to macOS Text Input System (supports Chinese Pinyin/Wubi/Cangjie IME candidate selection)
+        // 4. Standard character typing: letters, numbers, symbols, space
+        if let chars = event.characters, !chars.isEmpty {
+            if let data = chars.data(using: .utf8) {
+                onInput?(data)
+                return
+            }
+        }
+        
+        // 5. Fallback to interpretKeyEvents
         self.interpretKeyEvents([event])
+    }
+    
+    // Paste support (Cmd+V)
+    override public func paste(_ sender: Any?) {
+        if let text = NSPasteboard.general.string(forType: .string),
+           let data = text.data(using: .utf8) {
+            onInput?(data)
+        }
     }
     
     // MARK: - NSTextInputClient / Text Input Overrides

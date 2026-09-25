@@ -47,7 +47,8 @@ public struct WorkspaceView: View {
     @Binding public var selectedTabId: UUID?
     
     @State private var isBroadcastActive = false
-    @State private var splitRatio: CGFloat = 0.65 // 65% terminal, 35% sftp
+    @State private var splitRatio: CGFloat = 0.70
+    @State private var splitDragStartRatio: CGFloat?
     @State private var isSFTPVisible = true
     
     public init(
@@ -66,62 +67,66 @@ public struct WorkspaceView: View {
     
     public var body: some View {
         VStack(spacing: 0) {
-            // Header Bar: Tabs & Live Performance Capsule
-            HStack(spacing: 8) {
-                // Tab bar
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 4) {
-                        ForEach(activeTabs) { tab in
-                            TabButton(
-                                title: tab.session.name,
-                                isSelected: tab.id == currentTab?.id,
-                                colorHex: tab.session.colorHex,
-                                onSelect: { selectedTabId = tab.id },
-                                onClose: { closeTab(tab) }
-                            )
-                        }
-                    }
-                    .padding(.horizontal, 8)
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(currentTab?.session.name ?? "工作台")
+                        .font(.system(size: 17, weight: .semibold))
+                        .lineLimit(1)
+                    Text(currentTab.map { "\($0.session.username)@\($0.session.host)" } ?? "选择左侧会话开始连接")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
-                
-                Spacer()
-                
-                // FinalShell-style live performance capsule
+                Spacer(minLength: 12)
                 if let tab = currentTab {
                     MetricCapsuleView(historyStore: tab.metricsHistory)
-                        .padding(.trailing, 6)
                 }
-                
-                // Toggle SFTP layout button with tuned snappy spring animation
                 Button(action: {
-                    withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
-                        isSFTPVisible.toggle()
-                    }
+                    withAnimation(.easeInOut(duration: 0.2)) { isSFTPVisible.toggle() }
                 }) {
-                    Image(systemName: isSFTPVisible ? "rectangle.split.2x1.fill" : "rectangle.fill")
-                        .font(.system(size: 12))
-                        .foregroundColor(.secondary)
+                    Label(isSFTPVisible ? "隐藏文件" : "显示文件", systemImage: "folder")
                 }
-                .buttonStyle(.plain)
-                .help(isSFTPVisible ? L10n.hideSFTPPanel : L10n.showSFTPPanel)
-                .padding(.trailing, 10)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(currentTab == nil)
             }
-            .padding(.vertical, 6)
-            .background(Color(nsColor: .windowBackgroundColor))
-            
-            Divider()
-            
-            // Broadcast input bar (SecureCRT feature)
-            BroadcastBar(
-                isBroadcastActive: $isBroadcastActive,
-                targetCount: activeTabs.count,
-                onBroadcastSubmit: { cmd in
-                    guard let data = cmd.data(using: .utf8) else { return }
-                    for tab in activeTabs {
-                        Task { try? await tab.sshClient.sendInput(data) }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background(ApexStyle.surface)
+
+            if !activeTabs.isEmpty {
+                HStack(spacing: 8) {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 4) {
+                            ForEach(activeTabs) { tab in
+                                TabButton(
+                                    title: tab.session.name,
+                                    isSelected: tab.id == currentTab?.id,
+                                    colorHex: tab.session.colorHex,
+                                    onSelect: { selectedTabId = tab.id },
+                                    onClose: { closeTab(tab) }
+                                )
+                            }
+                        }
+                        .padding(.horizontal, 12)
                     }
                 }
-            )
+                .frame(height: 38)
+                .background(ApexStyle.subtleSurface.opacity(0.5))
+
+                if activeTabs.count > 1 {
+                BroadcastBar(
+                    isBroadcastActive: $isBroadcastActive,
+                    targetCount: activeTabs.count,
+                    onBroadcastSubmit: { cmd in
+                        guard let data = cmd.data(using: .utf8) else { return }
+                        for tab in activeTabs {
+                            Task { try? await tab.sshClient.sendInput(data) }
+                        }
+                    }
+                )
+                }
+            }
             
             // Workspace Split: Terminal on Top, SFTP on Bottom (electerm layout)
             if let tab = currentTab {
@@ -143,15 +148,22 @@ public struct WorkspaceView: View {
                         
                         if isSFTPVisible {
                             // Split Divider with draggable handle
-                            Rectangle()
-                                .fill(Color(nsColor: .separatorColor))
-                                .frame(height: 3)
+                            HStack {
+                                Spacer()
+                                Capsule().fill(Color.secondary.opacity(0.5)).frame(width: 36, height: 3)
+                                Spacer()
+                            }
+                                .frame(height: 8)
+                                .background(ApexStyle.surface)
                                 .gesture(
                                     DragGesture()
                                         .onChanged { value in
-                                            let newRatio = (geometry.size.height * splitRatio + value.translation.height) / geometry.size.height
+                                            let start = splitDragStartRatio ?? splitRatio
+                                            if splitDragStartRatio == nil { splitDragStartRatio = start }
+                                            let newRatio = start + value.translation.height / geometry.size.height
                                             splitRatio = min(max(newRatio, 0.25), 0.85)
                                         }
+                                        .onEnded { _ in splitDragStartRatio = nil }
                                 )
                             
                             // Integrated SFTP Panel
@@ -162,20 +174,21 @@ public struct WorkspaceView: View {
                                 ),
                                 session: tab.sshClient
                             )
-                            .frame(height: max(0, geometry.size.height * (1.0 - splitRatio) - 3))
+                            .frame(height: max(0, geometry.size.height * (1.0 - splitRatio) - 8))
                         }
                     }
                 }
             } else {
                 VStack(spacing: 14) {
                     Spacer()
-                    Image(systemName: "terminal")
+                    Image(systemName: "terminal.fill")
                         .font(.system(size: 48))
-                        .foregroundColor(.secondary.opacity(0.6))
-                    Text(L10n.noActiveSession)
-                        .font(.headline)
-                        .foregroundColor(.secondary)
-                    Text(L10n.doubleClickPrompt)
+                        .foregroundColor(ApexStyle.accent)
+                        .frame(width: 88, height: 88)
+                        .background(ApexStyle.accent.opacity(0.10), in: RoundedRectangle(cornerRadius: 22))
+                    Text("从会话开始")
+                        .font(.title2.weight(.semibold))
+                    Text("在左侧选择主机，然后点击连接按钮")
                         .font(.subheadline)
                         .foregroundColor(.secondary.opacity(0.8))
                     Spacer()
@@ -188,27 +201,19 @@ public struct WorkspaceView: View {
             // Bottom Status Bar
             HStack(spacing: 16) {
                 if let tab = currentTab {
-                    HStack(spacing: 6) {
-                        Circle()
-                            .fill(Color.green)
-                            .frame(width: 7, height: 7)
-                        Text("\(L10n.connectedStatus): \(tab.session.username)@\(tab.session.host):\(tab.session.port)")
-                            .font(.system(size: 11, design: .monospaced))
-                    }
+                    ConnectionStatusView(tab: tab)
                     
                     Text("UTF-8")
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundColor(.secondary)
-                    
-                    Text(L10n.metalRender120Hz)
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundColor(.cyan)
                     
                     Spacer()
                     
                     Text("\(L10n.currentDirectory): \(tab.currentRemotePath)")
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                 } else {
                     Text(L10n.readyStatus)
                         .font(.system(size: 11))
@@ -217,8 +222,11 @@ public struct WorkspaceView: View {
                 }
             }
             .padding(.horizontal, 12)
-            .padding(.vertical, 4)
-            .background(Color(nsColor: .windowBackgroundColor))
+            .padding(.vertical, 7)
+            .background(ApexStyle.surface)
+        }
+        .onChange(of: activeTabs.count) { _, count in
+            if count < 2 { isBroadcastActive = false }
         }
     }
     
@@ -227,6 +235,41 @@ public struct WorkspaceView: View {
         activeTabs.removeAll(where: { $0.id == tab.id })
         if selectedTabId == tab.id {
             selectedTabId = activeTabs.first?.id
+        }
+    }
+
+}
+
+private struct ConnectionStatusView: View {
+    @ObservedObject var tab: TerminalTabItem
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Circle().fill(statusColor).frame(width: 7, height: 7)
+            Text("\(statusText) · \(tab.session.username)@\(tab.session.host):\(tab.session.port)")
+                .font(.system(size: 11, design: .monospaced))
+                .lineLimit(1)
+                .help(statusText)
+        }
+    }
+
+    private var statusText: String {
+        let state = tab.connectionState
+        switch state {
+        case .disconnected: return "已断开"
+        case .connecting: return "连接中"
+        case .connected: return "已连接"
+        case .failed(let message): return "连接失败：\(message)"
+        }
+    }
+
+    private var statusColor: Color {
+        let state = tab.connectionState
+        switch state {
+        case .disconnected: return .secondary
+        case .connecting: return .orange
+        case .connected: return .green
+        case .failed: return .red
         }
     }
 }
@@ -239,13 +282,13 @@ struct TabButton: View {
     let onClose: () -> Void
     
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 7) {
             Circle()
                 .fill(Color(hex: colorHex ?? "#0A84FF") ?? .blue)
                 .frame(width: 6, height: 6)
             
             Text(title)
-                .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
+                .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
                 .foregroundColor(isSelected ? .primary : .secondary)
             
             Button(action: onClose) {
@@ -256,10 +299,10 @@ struct TabButton: View {
             .buttonStyle(.plain)
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 5)
+        .padding(.vertical, 7)
         .background(
-            RoundedRectangle(cornerRadius: 6)
-                .fill(isSelected ? Color(nsColor: .controlBackgroundColor) : Color.clear)
+            RoundedRectangle(cornerRadius: 8)
+                .fill(isSelected ? ApexStyle.accent.opacity(0.12) : Color.clear)
         )
         .contentShape(Rectangle())
         .onTapGesture {

@@ -14,8 +14,15 @@ public struct MetricCapsuleView: View {
     public var body: some View {
         Button(action: { showingDetail.toggle() }) {
             HStack(spacing: 12) {
-                // CPU indicator
-                HStack(spacing: 5) {
+                if latest == nil {
+                    Image(systemName: "waveform.path.ecg")
+                        .foregroundStyle(ApexStyle.accent)
+                    Text("监控待命")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                } else {
+                    // CPU indicator
+                    HStack(spacing: 5) {
                     Image(systemName: "bolt.fill")
                         .font(.system(size: 11, weight: .bold))
                         .foregroundColor(cpuColor)
@@ -27,40 +34,19 @@ public struct MetricCapsuleView: View {
                     Text(String(format: "%.1f%%", latest?.cpuUsagePercent ?? 0))
                         .font(.system(size: 11, weight: .bold, design: .monospaced))
                         .foregroundColor(.primary)
-                }
-                
-                Divider()
-                    .frame(height: 12)
-                
-                // Memory indicator
-                HStack(spacing: 5) {
+                    }
+
+                    Divider().frame(height: 12)
+
+                    // Memory indicator
+                    HStack(spacing: 5) {
                     Image(systemName: "memorychip")
                         .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(.cyan)
+                        .foregroundColor(ApexStyle.accent)
                     
                     Text(formattedMemory)
                         .font(.system(size: 11, weight: .medium, design: .monospaced))
                         .foregroundColor(.primary)
-                }
-                
-                Divider()
-                    .frame(height: 12)
-                
-                // Network indicator
-                HStack(spacing: 8) {
-                    HStack(spacing: 3) {
-                        Image(systemName: "arrow.down")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundColor(.green)
-                        Text(formatNetworkRate(latest?.networkRxBytesPerSec ?? 0))
-                            .font(.system(size: 10, weight: .medium, design: .monospaced))
-                    }
-                    HStack(spacing: 3) {
-                        Image(systemName: "arrow.up")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundColor(.blue)
-                        Text(formatNetworkRate(latest?.networkTxBytesPerSec ?? 0))
-                            .font(.system(size: 10, weight: .medium, design: .monospaced))
                     }
                 }
                 
@@ -69,20 +55,13 @@ public struct MetricCapsuleView: View {
                     .foregroundColor(.secondary)
             }
             .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color(nsColor: .controlBackgroundColor).opacity(0.85))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8)
-                            .stroke(Color.primary.opacity(0.08), lineWidth: 1)
-                    )
-            )
+            .padding(.vertical, 6)
+            .apexPanel()
         }
         .buttonStyle(.plain)
         .popover(isPresented: $showingDetail, arrowEdge: .bottom) {
             MetricDetailView(historyStore: historyStore)
-                .frame(width: 460, height: 330)
+                .frame(width: 460, height: 360)
         }
     }
     
@@ -104,15 +83,6 @@ public struct MetricCapsuleView: View {
         return String(format: "%.1f/%.0fG (%.0f%%)", usedGB, totalGB, m.memoryUsagePercent)
     }
     
-    private func formatNetworkRate(_ bytesPerSec: Double) -> String {
-        if bytesPerSec < 1024 {
-            return String(format: "%.0f B/s", bytesPerSec)
-        } else if bytesPerSec < 1024 * 1024 {
-            return String(format: "%.1f K/s", bytesPerSec / 1024)
-        } else {
-            return String(format: "%.1f M/s", bytesPerSec / (1024 * 1024))
-        }
-    }
 }
 
 /// Observable wrapper for SwiftUI reactivity
@@ -152,6 +122,11 @@ public struct MetricDetailView: View {
             }
             
             Divider()
+
+            if historyStore.snapshots.isEmpty {
+                ContentUnavailableView("等待监控数据", systemImage: "waveform.path.ecg", description: Text("连接建立后，指标会显示在这里。"))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
             
             // CPU Chart
             VStack(alignment: .leading, spacing: 4) {
@@ -241,8 +216,10 @@ public struct MetricDetailView: View {
                     .progressViewStyle(.linear)
                     .tint(disk.diskUsagePercent > 85 ? .red : .blue)
             }
+            }
         }
-        .padding(14)
+        .padding(18)
+        .background(ApexStyle.surface)
     }
     
     private func formatRate(_ b: Double) -> String {

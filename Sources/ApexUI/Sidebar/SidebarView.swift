@@ -11,6 +11,8 @@ public struct SidebarView: View {
     @State private var searchFilter = ""
     @State private var showingAddSheet = false
     @State private var editingSession: Session?
+    @State private var sessionToDelete: Session?
+    @State private var collapsedFolders: Set<String> = []
     
     public init(
         store: SessionStore,
@@ -26,30 +28,43 @@ public struct SidebarView: View {
     
     public var body: some View {
         VStack(spacing: 0) {
-            // Search and header
+            HStack(alignment: .firstTextBaseline) {
+                Text("会话")
+                    .font(.system(size: 19, weight: .bold))
+                Spacer()
+                Text("\(store.sessions.count) 台主机")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 18)
+            .padding(.bottom, 10)
+
             HStack(spacing: 8) {
                 HStack(spacing: 6) {
                     Image(systemName: "magnifyingglass")
                         .foregroundColor(.secondary)
-                        .font(.system(size: 11))
+                        .font(.system(size: 12))
                     TextField(L10n.searchPlaceholder, text: $searchFilter)
                         .textFieldStyle(.plain)
                         .font(.system(size: 11))
                 }
-                .padding(6)
+                .padding(8)
                 .background(Color(nsColor: .controlBackgroundColor))
-                .cornerRadius(6)
+                .clipShape(RoundedRectangle(cornerRadius: 9))
                 
                 Button(action: { showingAddSheet = true }) {
                     Image(systemName: "plus")
                         .font(.system(size: 12, weight: .bold))
-                        .foregroundColor(.accentColor)
+                        .foregroundColor(.white)
+                        .frame(width: 28, height: 28)
+                        .background(ApexStyle.accent, in: RoundedRectangle(cornerRadius: 8))
                 }
                 .buttonStyle(.plain)
                 .help(L10n.addSessionHelp)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
+            .padding(.horizontal, 14)
+            .padding(.bottom, 12)
             
             Divider()
             
@@ -58,14 +73,21 @@ public struct SidebarView: View {
                 Section(header: Label(L10n.sessionsHeader, systemImage: "server.rack").font(.caption).fontWeight(.semibold)) {
                     ForEach(groupedFolders, id: \.self) { folder in
                         DisclosureGroup(
-                            isExpanded: .constant(true),
+                            isExpanded: Binding(
+                                get: { !collapsedFolders.contains(folder) || !searchFilter.isEmpty },
+                                set: { expanded in
+                                    if expanded { collapsedFolders.remove(folder) }
+                                    else { collapsedFolders.insert(folder) }
+                                }
+                            ),
                             content: {
                                 ForEach(sessionsInFolder(folder)) { session in
                                     SessionRow(
                                         session: session,
-                                        isSelected: selectedSession?.id == session.id,
                                         onConnect: { onConnect(session) }
                                     )
+                                    .onTapGesture { selectedSession = session }
+                                    .listRowBackground(selectedSession?.id == session.id ? ApexStyle.accent.opacity(0.10) : Color.clear)
                                     .contextMenu {
                                         Button(L10n.connectAction) {
                                             onConnect(session)
@@ -81,7 +103,7 @@ public struct SidebarView: View {
                                             store.addSession(dup)
                                         }
                                         Button(L10n.deleteSessionAction, role: .destructive) {
-                                            store.deleteSession(id: session.id)
+                                            sessionToDelete = session
                                         }
                                     }
                                 }
@@ -105,13 +127,21 @@ public struct SidebarView: View {
                         )
                     }
                 }
+
+                if !searchFilter.isEmpty && !store.sessions.contains(where: {
+                    $0.name.localizedCaseInsensitiveContains(searchFilter) ||
+                    $0.host.localizedCaseInsensitiveContains(searchFilter) ||
+                    $0.tags.contains(where: { $0.localizedCaseInsensitiveContains(searchFilter) })
+                }) {
+                    ContentUnavailableView.search(text: searchFilter)
+                }
                 
                 Section(header: Label(L10n.quickCommandsHeader, systemImage: "bolt.fill").font(.caption).fontWeight(.semibold)) {
                     ForEach(store.snippets) { snippet in
                         HStack {
                             Image(systemName: "terminal")
                                 .font(.system(size: 10))
-                                .foregroundColor(.cyan)
+                                .foregroundColor(ApexStyle.accent)
                             Text(snippet.title)
                                 .font(.system(size: 11))
                             Spacer()
@@ -127,6 +157,8 @@ public struct SidebarView: View {
                 }
             }
             .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
+            .background(ApexStyle.surface)
         }
         .sheet(isPresented: $showingAddSheet) {
             SessionEditModal(session: nil) { newSession in
@@ -137,6 +169,20 @@ public struct SidebarView: View {
             SessionEditModal(session: session) { updated in
                 store.updateSession(updated)
             }
+        }
+        .confirmationDialog("删除会话？", isPresented: Binding(
+            get: { sessionToDelete != nil },
+            set: { if !$0 { sessionToDelete = nil } }
+        )) {
+            Button("删除 \(sessionToDelete?.name ?? "会话")", role: .destructive) {
+                if let sessionToDelete {
+                    store.deleteSession(id: sessionToDelete.id)
+                    if selectedSession?.id == sessionToDelete.id { selectedSession = nil }
+                }
+                sessionToDelete = nil
+            }
+        } message: {
+            Text("删除后无法从应用内恢复。")
         }
     }
     
@@ -176,7 +222,6 @@ public struct SidebarView: View {
 
 struct SessionRow: View {
     let session: Session
-    let isSelected: Bool
     let onConnect: () -> Void
     
     var body: some View {
@@ -188,30 +233,28 @@ struct SessionRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(session.name)
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(isSelected ? .white : .primary)
+                    .foregroundColor(.primary)
                 
                 Text("\(session.username)@\(session.host)")
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundColor(.secondary)
             }
             
-            Spacer()
-            
-            if !session.tags.isEmpty {
-                Text(session.tags[0])
-                    .font(.system(size: 9))
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 1)
-                    .background(Color.primary.opacity(0.08))
-                    .cornerRadius(3)
-                    .foregroundColor(.secondary)
+            Spacer(minLength: 4)
+
+            Button(action: onConnect) {
+                Image(systemName: "arrow.up.right")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(ApexStyle.accent)
+                    .frame(width: 24, height: 24)
+                    .background(ApexStyle.accent.opacity(0.10), in: RoundedRectangle(cornerRadius: 7))
             }
+            .buttonStyle(.plain)
+            .help("连接到 \(session.name)")
+            .accessibilityLabel("连接到 \(session.name)")
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 7)
         .contentShape(Rectangle())
-        .onTapGesture(count: 2) {
-            onConnect()
-        }
     }
 }
 

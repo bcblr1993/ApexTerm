@@ -13,6 +13,7 @@ public final class MockSSHSession: SSHSessionProtocol, @unchecked Sendable {
     private var metricsTimer: Timer?
     private var currentDirectory = "/root"
     private var inputBuffer = ""
+    private var mockFiles: [String: Data] = [:]
     
     private var mockCpu = 12.5
     private var mockMemUsed: UInt64 = 4 * 1024 * 1024 * 1024 // 4GB
@@ -232,12 +233,17 @@ public final class MockSSHSession: SSHSessionProtocol, @unchecked Sendable {
             try await Task.sleep(nanoseconds: 50_000_000)
             progress(Double(step) / 10.0)
         }
+        let sample = "# ApexTerm 模拟会话示例文件\n# 路径：\(remotePath)\n"
+        let data = mockFiles[remotePath] ?? Data(sample.utf8)
+        try data.write(to: localURL, options: .atomic)
     }
     
     public func uploadFile(localURL: URL, remotePath: String, progress: @Sendable @escaping (Double) -> Void) async throws {
+        let data = try Data(contentsOf: localURL)
         for step in 1...10 {
             try await Task.sleep(nanoseconds: 50_000_000)
             progress(Double(step) / 10.0)
         }
+        mockFiles[remotePath] = data
     }
 }

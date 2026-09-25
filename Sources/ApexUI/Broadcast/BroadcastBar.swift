@@ -20,17 +20,18 @@ public struct BroadcastBar: View {
     }
     
     public var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 10) {
             Toggle(isOn: $isBroadcastActive) {
                 HStack(spacing: 4) {
                     Image(systemName: "antenna.radiowaves.left.and.right")
-                        .foregroundColor(isBroadcastActive ? .orange : .secondary)
+                        .foregroundColor(isBroadcastActive ? ApexStyle.warning : .secondary)
                     Text(String(format: L10n.broadcastToTabs, targetCount))
                         .font(.system(size: 11, weight: .semibold))
                 }
             }
             .toggleStyle(.button)
             .controlSize(.small)
+            .disabled(targetCount == 0)
             
             if isBroadcastActive {
                 TextField(L10n.broadcastPlaceholder, text: $broadcastText, onCommit: {
@@ -41,6 +42,7 @@ public struct BroadcastBar: View {
                 })
                 .textFieldStyle(.roundedBorder)
                 .font(.system(size: 12, design: .monospaced))
+                .accessibilityLabel("发送到所有已打开的会话")
                 
                 Button(L10n.broadcastSend) {
                     if !broadcastText.isEmpty {
@@ -49,12 +51,14 @@ public struct BroadcastBar: View {
                     }
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(.orange)
+                .tint(ApexStyle.warning)
                 .controlSize(.small)
             }
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 4)
-        .background(isBroadcastActive ? Color.orange.opacity(0.08) : Color.clear)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(isBroadcastActive ? ApexStyle.warning.opacity(0.12) : ApexStyle.surface)
+        .overlay(alignment: .bottom) { Divider() }
     }
 }

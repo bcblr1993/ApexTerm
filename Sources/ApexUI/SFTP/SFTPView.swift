@@ -47,26 +47,12 @@ public struct SFTPView: View {
                 .textFieldStyle(.roundedBorder)
                 .font(.system(size: 12, design: .monospaced))
 
-                // Directory Linkage toggle button
-                Button(action: {
-                    isLinkageEnabled.toggle()
-                }) {
-                    HStack(spacing: 4) {
-                        Image(systemName: isLinkageEnabled ? "link" : "link.slash")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundColor(isLinkageEnabled ? ApexStyle.success : .secondary)
-                        Text(isLinkageEnabled ? L10n.linkageOn : L10n.linkageOff)
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundColor(isLinkageEnabled ? .primary : .secondary)
-                    }
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 3)
-                    .background(isLinkageEnabled ? ApexStyle.success.opacity(0.12) : Color.secondary.opacity(0.10), in: Capsule())
-                    .overlay(
-                        Capsule().stroke(isLinkageEnabled ? ApexStyle.success.opacity(0.3) : Color.secondary.opacity(0.2), lineWidth: 1)
-                    )
+                Toggle(isOn: $isLinkageEnabled) {
+                    Label(isLinkageEnabled ? L10n.linkageOn : L10n.linkageOff,
+                          systemImage: isLinkageEnabled ? "link" : "link.slash")
                 }
-                .buttonStyle(.plain)
+                .toggleStyle(.button)
+                .controlSize(.small)
                 .help(isLinkageEnabled ? L10n.linkageHelpOn : L10n.linkageHelpOff)
 
                 if let notice = transferNotice {
@@ -79,11 +65,11 @@ public struct SFTPView: View {
                             .foregroundColor(notice.contains("失败") ? .red : (notice.contains("正在") ? ApexStyle.accent : ApexStyle.success))
                         if notice.contains("失败") {
                             Button(action: { transferNotice = nil }) {
-                                Image(systemName: "xmark.circle")
-                                    .font(.system(size: 10))
-                                    .foregroundColor(.secondary)
+                                Label("关闭传输提示", systemImage: "xmark.circle")
                             }
-                            .buttonStyle(.plain)
+                            .labelStyle(.iconOnly)
+                            .buttonStyle(.borderless)
+                            .controlSize(.small)
                         }
                     }
                     .padding(.horizontal, 8)
@@ -98,12 +84,12 @@ public struct SFTPView: View {
                 Divider().frame(height: 16)
 
                 // Actions
-                Button(action: {
-                    navigateUp()
-                }) {
-                    Image(systemName: "arrow.up")
+                Button(action: navigateUp) {
+                    Label(L10n.parentDirectory, systemImage: "arrow.up")
                 }
-                .buttonStyle(.plain)
+                .labelStyle(.iconOnly)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
                 .help(L10n.parentDirectory)
 
                 Button(action: {
@@ -115,10 +101,12 @@ public struct SFTPView: View {
                             .scaleEffect(0.7)
                             .frame(width: 14, height: 14)
                     } else {
-                        Image(systemName: "arrow.clockwise")
+                        Label(L10n.refreshDirectory, systemImage: "arrow.clockwise")
+                            .labelStyle(.iconOnly)
                     }
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
                 .help(L10n.refreshDirectory)
 
                 Button(action: {
@@ -137,23 +125,20 @@ public struct SFTPView: View {
 
             // Search filter bar
             HStack {
-                Image(systemName: "magnifyingglass")
-                    .foregroundColor(.secondary)
-                    .font(.system(size: 11))
                 TextField(L10n.filterFiles, text: $searchFilter)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 11))
+                    .textFieldStyle(.roundedBorder)
                 if !searchFilter.isEmpty {
                     Button(action: { searchFilter = "" }) {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundColor(.secondary)
+                        Label("清除文件筛选", systemImage: "xmark.circle.fill")
                     }
-                    .buttonStyle(.plain)
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
                 }
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 4)
-            .background(ApexStyle.subtleSurface.opacity(0.65))
+            .background(ApexStyle.subtleSurface)
 
             Divider()
 
@@ -207,6 +192,8 @@ public struct SFTPView: View {
                                 .foregroundColor(.secondary)
                                 .frame(width: 110, alignment: .trailing)
                         }
+                        .padding(.vertical, 3)
+                        .padding(.horizontal, 6)
                         .contentShape(Rectangle())
                         .onTapGesture(count: 2) {
                             handleDoubleClick(item)

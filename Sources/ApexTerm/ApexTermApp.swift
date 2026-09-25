@@ -36,8 +36,10 @@ struct ApexTermApp: App {
             .navigationSplitViewStyle(.balanced)
             .frame(minWidth: 960, minHeight: 640)
         }
-        .windowStyle(.titleBar)
-        .windowToolbarStyle(.unified(showsTitle: true))
+        // Keep the system-owned traffic lights and sidebar control in a compact
+        // native toolbar. The full-height unified toolbar added an empty title
+        // row above our own session and workspace headers.
+        .windowToolbarStyle(.unifiedCompact(showsTitle: true))
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button(L10n.menuNewTab) {

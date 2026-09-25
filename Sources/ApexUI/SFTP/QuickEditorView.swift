@@ -83,11 +83,11 @@ public struct QuickEditorView: View {
                 
                 // Search toggle
                 Button(action: { withAnimation { isSearchVisible.toggle() } }) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.system(size: 12))
-                        .foregroundColor(isSearchVisible ? ApexStyle.accent : .secondary)
+                    Label("查找", systemImage: "magnifyingglass")
                 }
-                .buttonStyle(.plain)
+                .labelStyle(.iconOnly)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
                 .help("查找 (⌘F)")
                 .keyboardShortcut("f", modifiers: .command)
                 
@@ -96,21 +96,21 @@ public struct QuickEditorView: View {
                     if isReloading {
                         ProgressView().controlSize(.small).scaleEffect(0.6)
                     } else {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.system(size: 12))
-                            .foregroundColor(.secondary)
+                        Label("重新加载", systemImage: "arrow.clockwise")
+                            .labelStyle(.iconOnly)
                     }
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
                 .help("从服务器重新加载")
                 .disabled(isReloading)
                 
                 Button(action: { dismiss() }) {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 15))
-                        .foregroundColor(.secondary)
+                    Label("关闭编辑器", systemImage: "xmark")
                 }
-                .buttonStyle(.plain)
+                .labelStyle(.iconOnly)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
                 .keyboardShortcut(.cancelAction)
             }
             .padding(.horizontal, 16)
@@ -122,12 +122,8 @@ public struct QuickEditorView: View {
             // Search Bar
             if isSearchVisible {
                 HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundColor(.secondary)
-                        .font(.system(size: 11))
-                    
                     TextField("在文件中查找…", text: $searchText)
-                        .textFieldStyle(.plain)
+                        .textFieldStyle(.roundedBorder)
                         .font(.system(size: 12, design: .monospaced))
                     
                     if !searchText.isEmpty {
@@ -137,11 +133,11 @@ public struct QuickEditorView: View {
                             .foregroundColor(.secondary)
                         
                         Button(action: { searchText = "" }) {
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundColor(.secondary)
-                                .font(.system(size: 11))
+                            Label("清除查找", systemImage: "xmark.circle.fill")
                         }
-                        .buttonStyle(.plain)
+                        .labelStyle(.iconOnly)
+                        .buttonStyle(.borderless)
+                        .controlSize(.small)
                     }
                 }
                 .padding(.horizontal, 14)
@@ -192,7 +188,7 @@ public struct QuickEditorView: View {
                 HStack(spacing: 8) {
                     Circle().fill(ApexStyle.success).frame(width: 6, height: 6)
                     Text("UTF-8 · 远程流式直连")
-                        .font(.system(size: 11, design: .monospaced))
+                        .font(.caption.monospaced())
                         .foregroundColor(.secondary)
                 }
                 

@@ -91,11 +91,12 @@ public struct SessionEditModal: View {
                             }
                             
                             Button(action: { isPasswordVisible.toggle() }) {
-                                Image(systemName: isPasswordVisible ? "eye.slash.fill" : "eye.fill")
-                                    .foregroundColor(.secondary)
-                                    .frame(width: 22, height: 22)
+                                Label(isPasswordVisible ? "隐藏密码" : "显示密码",
+                                      systemImage: isPasswordVisible ? "eye.slash" : "eye")
                             }
-                            .buttonStyle(.plain)
+                            .labelStyle(.iconOnly)
+                            .buttonStyle(.borderless)
+                            .controlSize(.small)
                             .help(isPasswordVisible ? "隐藏密码" : "显示明文密码")
                         }
                     } else {

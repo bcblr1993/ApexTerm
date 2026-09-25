@@ -54,11 +54,10 @@ public struct MetricCapsuleView: View {
                     .font(.system(size: 9, weight: .semibold))
                     .foregroundColor(.secondary)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .apexPanel()
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .help("查看服务器性能")
         .popover(isPresented: $showingDetail, arrowEdge: .bottom) {
             MetricDetailView(historyStore: historyStore)
                 .frame(width: 460, height: 360)
@@ -214,7 +213,7 @@ public struct MetricDetailView: View {
                 }
                 ProgressView(value: disk.diskUsagePercent, total: 100)
                     .progressViewStyle(.linear)
-                    .tint(disk.diskUsagePercent > 85 ? .red : .blue)
+                    .tint(disk.diskUsagePercent > 85 ? .red : ApexStyle.accent)
             }
             }
         }

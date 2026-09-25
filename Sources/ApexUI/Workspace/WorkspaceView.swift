@@ -154,9 +154,9 @@ public struct WorkspaceView: View {
                 HStack(spacing: 12) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("工作台")
-                            .font(.system(size: 17, weight: .semibold))
+                            .font(.headline)
                         Text("选择左侧会话开始连接")
-                            .font(.system(size: 11, design: .monospaced))
+                            .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
@@ -281,10 +281,10 @@ private struct WorkspaceHeaderBar: View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(tab.session.name)
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(.headline)
                     .lineLimit(1)
                 Text("\(tab.session.username)@\(tab.session.host)")
-                    .font(.system(size: 11, design: .monospaced))
+                    .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
@@ -418,11 +418,11 @@ private struct PaneContainerView: View {
                         .foregroundColor(isFocused ? .primary : .secondary)
                     Spacer()
                     Button(action: { tab.closePane(id: pane.id) }) {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 9))
-                            .foregroundColor(.secondary)
+                        Label("关闭此分屏", systemImage: "xmark")
                     }
-                    .buttonStyle(.plain)
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
                     .help("关闭此分屏")
                 }
                 .padding(.horizontal, 8)
@@ -476,28 +476,21 @@ private struct WorkspaceBottomStatusBar: View {
             ConnectionStatusView(tab: tab)
             
             Text("UTF-8")
-                .font(.system(size: 10, design: .monospaced))
+                .font(.caption.monospaced())
                 .foregroundColor(.secondary)
             
-            Button(action: {
-                tab.isDirectoryLinkageEnabled.toggle()
-            }) {
-                HStack(spacing: 4) {
-                    Image(systemName: tab.isDirectoryLinkageEnabled ? "link" : "link.slash")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundColor(tab.isDirectoryLinkageEnabled ? ApexStyle.success : .secondary)
-                    Text(tab.isDirectoryLinkageEnabled ? L10n.linkageOn : L10n.linkageOff)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundColor(tab.isDirectoryLinkageEnabled ? .primary : .secondary)
-                }
+            Toggle(isOn: $tab.isDirectoryLinkageEnabled) {
+                Label(tab.isDirectoryLinkageEnabled ? L10n.linkageOn : L10n.linkageOff,
+                      systemImage: tab.isDirectoryLinkageEnabled ? "link" : "link.slash")
             }
-            .buttonStyle(.plain)
+            .toggleStyle(.button)
+            .controlSize(.small)
             .help(tab.isDirectoryLinkageEnabled ? L10n.linkageHelpOn : L10n.linkageHelpOff)
             
             Spacer()
             
             Text("\(L10n.currentDirectory): \(tab.currentRemotePath)")
-                .font(.system(size: 11, design: .monospaced))
+                .font(.caption.monospaced())
                 .foregroundColor(.secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
@@ -515,7 +508,7 @@ private struct ConnectionStatusView: View {
         HStack(spacing: 6) {
             Circle().fill(statusColor).frame(width: 7, height: 7)
             Text("\(statusText) · \(tab.session.username)@\(tab.session.host):\(tab.session.port)")
-                .font(.system(size: 11, design: .monospaced))
+                .font(.caption.monospaced())
                 .lineLimit(1)
                 .help(statusText)
         }
@@ -560,11 +553,11 @@ struct TabButton: View {
                 .foregroundColor(isSelected ? .primary : .secondary)
             
             Button(action: onClose) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 9))
-                    .foregroundColor(.secondary)
+                Label("关闭 \(title)", systemImage: "xmark")
             }
-            .buttonStyle(.plain)
+            .labelStyle(.iconOnly)
+            .buttonStyle(.borderless)
+            .controlSize(.small)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)

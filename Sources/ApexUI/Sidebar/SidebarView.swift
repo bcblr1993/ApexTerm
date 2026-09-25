@@ -31,7 +31,7 @@ public struct SidebarView: View {
         VStack(spacing: 0) {
             HStack(alignment: .firstTextBaseline) {
                 Text("会话")
-                    .font(.system(size: 19, weight: .bold))
+                    .font(.title2.weight(.semibold))
                 Spacer()
                 Text("\(store.sessions.count) 台主机")
                     .font(.caption)
@@ -42,36 +42,22 @@ public struct SidebarView: View {
             .padding(.bottom, 10)
 
             HStack(spacing: 6) {
-                HStack(spacing: 6) {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundColor(.secondary)
-                        .font(.system(size: 12))
-                    TextField(L10n.searchPlaceholder, text: $searchFilter)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 11))
-                }
-                .padding(8)
-                .background(Color(nsColor: .controlBackgroundColor))
-                .clipShape(RoundedRectangle(cornerRadius: 9))
+                TextField(L10n.searchPlaceholder, text: $searchFilter)
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityLabel(L10n.searchPlaceholder)
                 
                 Button(action: { showingImportSheet = true }) {
-                    Image(systemName: "square.and.arrow.down")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(.primary)
-                        .frame(width: 28, height: 28)
-                        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+                    Label("导入主机", systemImage: "square.and.arrow.down")
                 }
-                .buttonStyle(.plain)
+                .labelStyle(.iconOnly)
+                .buttonStyle(.bordered)
                 .help("从 ~/.ssh/config 导入主机")
                 
                 Button(action: { showingAddSheet = true }) {
-                    Image(systemName: "plus")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundColor(.white)
-                        .frame(width: 28, height: 28)
-                        .background(ApexStyle.accent, in: RoundedRectangle(cornerRadius: 8))
+                    Label(L10n.addSessionHelp, systemImage: "plus")
                 }
-                .buttonStyle(.plain)
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderedProminent)
                 .help(L10n.addSessionHelp)
             }
             .padding(.horizontal, 14)
@@ -88,11 +74,11 @@ public struct SidebarView: View {
                     
                     VStack(spacing: 6) {
                         Text(L10n.emptySessionTitle)
-                            .font(.system(size: 14, weight: .semibold))
+                            .font(.headline)
                             .foregroundColor(.primary)
                         
                         Text(L10n.emptySessionSubtitle)
-                            .font(.system(size: 11))
+                            .font(.subheadline)
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
                             .padding(.horizontal, 20)
@@ -100,7 +86,6 @@ public struct SidebarView: View {
                     
                     Button(action: { showingAddSheet = true }) {
                         Label(L10n.addFirstSessionButton, systemImage: "plus")
-                            .font(.system(size: 12, weight: .medium))
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.regular)
@@ -108,10 +93,9 @@ public struct SidebarView: View {
                     Spacer()
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(ApexStyle.surface)
             } else {
                 // Session tree
-                List {
+                List(selection: selectedSessionID) {
                     Section(header: Label(L10n.sessionsHeader, systemImage: "server.rack").font(.caption).fontWeight(.semibold)) {
                         ForEach(groupedFolders, id: \.self) { folder in
                             DisclosureGroup(
@@ -128,8 +112,7 @@ public struct SidebarView: View {
                                             session: session,
                                             onConnect: { onConnect(session) }
                                         )
-                                        .onTapGesture { selectedSession = session }
-                                        .listRowBackground(selectedSession?.id == session.id ? ApexStyle.accent.opacity(0.10) : Color.clear)
+                                        .tag(session.id)
                                         .contextMenu {
                                             Button(L10n.connectAction) {
                                                 onConnect(session)
@@ -201,8 +184,6 @@ public struct SidebarView: View {
                     }
                 }
                 .listStyle(.sidebar)
-                .scrollContentBackground(.hidden)
-                .background(ApexStyle.surface)
             }
         }
         .sheet(isPresented: $showingAddSheet) {
@@ -232,6 +213,13 @@ public struct SidebarView: View {
         } message: {
             Text("删除后无法从应用内恢复。")
         }
+    }
+
+    private var selectedSessionID: Binding<UUID?> {
+        Binding(
+            get: { selectedSession?.id },
+            set: { id in selectedSession = store.sessions.first(where: { $0.id == id }) }
+        )
     }
     
     private var groupedFolders: [String] {
@@ -286,26 +274,23 @@ struct SessionRow: View {
             
             VStack(alignment: .leading, spacing: 2) {
                 Text(session.name)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.subheadline.weight(.medium))
                     .foregroundColor(.primary)
                 
                 Text("\(session.username)@\(session.host)")
-                    .font(.system(size: 10, design: .monospaced))
+                    .font(.caption.monospaced())
                     .foregroundColor(.secondary)
             }
             
             Spacer(minLength: 4)
 
             Button(action: onConnect) {
-                Image(systemName: "arrow.up.right")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(ApexStyle.accent)
-                    .frame(width: 24, height: 24)
-                    .background(ApexStyle.accent.opacity(0.10), in: RoundedRectangle(cornerRadius: 7))
+                Label("连接到 \(session.name)", systemImage: "arrow.up.right")
             }
-            .buttonStyle(.plain)
+            .labelStyle(.iconOnly)
+            .buttonStyle(.borderless)
+            .controlSize(.small)
             .help("连接到 \(session.name)")
-            .accessibilityLabel("连接到 \(session.name)")
         }
         .padding(.vertical, 7)
         .contentShape(Rectangle())

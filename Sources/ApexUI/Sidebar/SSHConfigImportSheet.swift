@@ -28,9 +28,9 @@ public struct SSHConfigImportSheet: View {
                 
                 VStack(alignment: .leading, spacing: 3) {
                     Text("从 ~/.ssh/config 导入主机")
-                        .font(.system(size: 16, weight: .bold))
+                        .font(.headline)
                     Text("自动扫描系统已知配置与密钥，一键导入 ApexTerm 会话库")
-                        .font(.system(size: 11))
+                        .font(.subheadline)
                         .foregroundColor(.secondary)
                 }
                 Spacer()
@@ -43,22 +43,19 @@ public struct SSHConfigImportSheet: View {
             // Configuration & Toolbar
             HStack(spacing: 12) {
                 Text("分组名称:")
-                    .font(.system(size: 12))
+                    .font(.subheadline)
                     .foregroundColor(.secondary)
                 TextField("目标文件夹", text: $targetFolder)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 140)
-                    .font(.system(size: 12))
                 
                 Spacer()
                 
                 if !discoveredHosts.isEmpty {
-                    Button(action: toggleSelectAll) {
-                        Text(selectedHostIds.count == discoveredHosts.count ? "取消全选" : "全选全部")
-                            .font(.system(size: 12))
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundColor(ApexStyle.accent)
+                    Button(selectedHostIds.count == discoveredHosts.count ? "取消全选" : "全选",
+                           action: toggleSelectAll)
+                        .buttonStyle(.borderless)
+                        .controlSize(.small)
                 }
             }
             .padding(.horizontal, 18)
@@ -69,21 +66,11 @@ public struct SSHConfigImportSheet: View {
             
             // Discovered Hosts List
             if discoveredHosts.isEmpty {
-                VStack(spacing: 14) {
-                    Spacer()
-                    Image(systemName: "doc.text.magnifyingglass")
-                        .font(.system(size: 40))
-                        .foregroundColor(.secondary.opacity(0.6))
-                    Text("未在 \(configPath) 中发现任何 Host 配置")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(.secondary)
-                    Text("请确认您的 ~/.ssh/config 文件中包含有效的 Host 与 HostName 配置。")
-                        .font(.caption)
-                        .foregroundColor(.secondary.opacity(0.8))
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 32)
-                    Spacer()
-                }
+                ContentUnavailableView(
+                    "没有找到主机配置",
+                    systemImage: "doc.text.magnifyingglass",
+                    description: Text("请检查 \(configPath) 中的 Host 与 HostName 配置。")
+                )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List(discoveredHosts) { host in
@@ -137,7 +124,7 @@ public struct SSHConfigImportSheet: View {
                     }
                     .padding(.vertical, 4)
                 }
-                .listStyle(.inset(alternatesRowBackgrounds: true))
+                .listStyle(.plain)
             }
             
             Divider()

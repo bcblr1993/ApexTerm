@@ -31,17 +31,16 @@ public struct TransferDrawer: View {
                             Button("清空已完成") {
                                 manager.clearCompleted()
                             }
-                            .buttonStyle(.plain)
-                            .font(.system(size: 11))
-                            .foregroundColor(.secondary)
+                            .buttonStyle(.borderless)
+                            .controlSize(.small)
                         }
                         
                         Button(action: { withAnimation(.spring(duration: 0.25)) { isExpanded = false } }) {
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundColor(.secondary)
-                                .font(.system(size: 13))
+                            Label("收起传输任务", systemImage: "xmark")
                         }
-                        .buttonStyle(.plain)
+                        .labelStyle(.iconOnly)
+                        .buttonStyle(.borderless)
+                        .controlSize(.small)
                     }
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
@@ -90,39 +89,41 @@ public struct TransferDrawer: View {
             
             // Collapsed Floating Pill Trigger
             if manager.activeCount > 0 || !manager.tasks.isEmpty {
-                HStack(spacing: 8) {
-                    HStack(spacing: 6) {
-                        Image(systemName: manager.activeCount > 0 ? "arrow.triangle.2.circlepath" : "checkmark.circle.fill")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundColor(manager.activeCount > 0 ? ApexStyle.accent : ApexStyle.success)
-                            .rotationEffect(.degrees(manager.activeCount > 0 ? 360 : 0))
-                            .animation(manager.activeCount > 0 ? .linear(duration: 1.5).repeatForever(autoreverses: false) : .default, value: manager.activeCount)
-                        
-                        Text(manager.activeCount > 0 ? "传输中 (\(manager.activeCount))" : "传输完成")
-                            .font(.system(size: 11, weight: .medium))
-                    }
-                    
-                    if manager.activeCount > 0 {
-                        Text("·")
-                            .foregroundColor(.secondary)
-                        Text(manager.formattedTotalSpeed)
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundColor(ApexStyle.accent)
-                    }
-                    
-                    Image(systemName: isExpanded ? "chevron.down" : "chevron.up")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundColor(.secondary)
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(ApexStyle.surface, in: Capsule())
-                .overlay(Capsule().stroke(Color.secondary.opacity(0.25), lineWidth: 1))
-                .shadow(color: Color.black.opacity(0.12), radius: 6, x: 0, y: 2)
-                .contentShape(Rectangle())
-                .onTapGesture {
+                Button {
                     withAnimation(.spring(duration: 0.25)) { isExpanded.toggle() }
+                } label: {
+                    HStack(spacing: 8) {
+                        HStack(spacing: 6) {
+                            Image(systemName: manager.activeCount > 0 ? "arrow.triangle.2.circlepath" : "checkmark.circle.fill")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundColor(manager.activeCount > 0 ? ApexStyle.accent : ApexStyle.success)
+                                .rotationEffect(.degrees(manager.activeCount > 0 ? 360 : 0))
+                                .animation(manager.activeCount > 0 ? .linear(duration: 1.5).repeatForever(autoreverses: false) : .default, value: manager.activeCount)
+
+                            Text(manager.activeCount > 0 ? "传输中 (\(manager.activeCount))" : "传输完成")
+                                .font(.system(size: 11, weight: .medium))
+                        }
+
+                        if manager.activeCount > 0 {
+                            Text("·")
+                                .foregroundColor(.secondary)
+                            Text(manager.formattedTotalSpeed)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundColor(ApexStyle.accent)
+                        }
+
+                        Image(systemName: isExpanded ? "chevron.down" : "chevron.up")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(ApexStyle.surface, in: Capsule())
+                    .overlay(Capsule().stroke(Color.secondary.opacity(0.25), lineWidth: 1))
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel(isExpanded ? "收起传输任务" : "展开传输任务")
+                .shadow(color: Color.black.opacity(0.12), radius: 6, x: 0, y: 2)
                 .padding(.trailing, 16)
                 .padding(.bottom, 8)
                 .frame(maxWidth: .infinity, alignment: .trailing)
@@ -175,11 +176,11 @@ private struct TransferTaskRow: View {
                         .foregroundColor(ApexStyle.accent)
                     
                     Button(action: onCancel) {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 10))
-                            .foregroundColor(.secondary)
+                        Label("取消传输 \(task.fileName)", systemImage: "xmark")
                     }
-                    .buttonStyle(.plain)
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
                     .padding(.leading, 4)
                 } else if task.status == .completed {
                     Image(systemName: "checkmark")

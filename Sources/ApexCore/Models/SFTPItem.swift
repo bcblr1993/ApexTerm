@@ -39,7 +39,7 @@ public struct SFTPItem: Identifiable, Sendable, Codable, Equatable, Hashable {
     }
     
     public var permissionString: String {
-        let isDir = isDirectory ? "d" : "-"
+        let typeChar = isDirectory ? "d" : (isSymlink ? "l" : "-")
         func rwx(_ octal: UInt32) -> String {
             let r = (octal & 4) != 0 ? "r" : "-"
             let w = (octal & 2) != 0 ? "w" : "-"
@@ -49,6 +49,6 @@ public struct SFTPItem: Identifiable, Sendable, Codable, Equatable, Hashable {
         let user = rwx((permissions >> 6) & 7)
         let group = rwx((permissions >> 3) & 7)
         let others = rwx(permissions & 7)
-        return "\(isDir)\(user)\(group)\(others)"
+        return "\(typeChar)\(user)\(group)\(others)"
     }
 }

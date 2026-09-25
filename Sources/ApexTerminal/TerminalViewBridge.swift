@@ -51,8 +51,6 @@ public struct TerminalRepresentable: NSViewRepresentable {
         nsView.terminalView.isCopyOnSelectEnabled = isCopyOnSelectEnabled
         nsView.terminalView.onResize = onResize
         nsView.terminalView.onFileDrop = onFileDrop
-        nsView.terminalView.refresh()
-        nsView.terminalView.notifyDimensionsChangedIfNeeded()
     }
     
     public func makeCoordinator() -> Coordinator {
@@ -77,25 +75,42 @@ public final class NativeTerminalScrollView: NSScrollView {
     }
     
     private func setupScrollView() {
-        self.documentView = terminalView
         self.hasVerticalScroller = true
         self.hasHorizontalScroller = false
         self.autohidesScrollers = true
         self.drawsBackground = true
         self.backgroundColor = NSColor(red: 0.08, green: 0.09, blue: 0.11, alpha: 1.0)
         
+        terminalView.minSize = NSSize(width: 0, height: 0)
+        terminalView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        terminalView.isVerticallyResizable = true
+        terminalView.isHorizontallyResizable = false
+        terminalView.autoresizingMask = [.width]
+        terminalView.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
+        terminalView.textContainer?.widthTracksTextView = true
+        
+        self.documentView = terminalView
+        
         // 120Hz ProMotion GPU hardware acceleration layer
         self.wantsLayer = true
         self.layerContentsRedrawPolicy = .onSetNeedsDisplay
         self.layer?.drawsAsynchronously = true
+        self.contentView.wantsLayer = true
+        self.contentView.layerContentsRedrawPolicy = .onSetNeedsDisplay
         
         // Register for file drop
         self.registerForDraggedTypes([.fileURL])
     }
     
     override public func setFrameSize(_ newSize: NSSize) {
+        let sizeChanged = (newSize != self.frame.size)
         super.setFrameSize(newSize)
-        terminalView.notifyDimensionsChangedIfNeeded()
+        if sizeChanged {
+            if terminalView.isPinnedToBottom {
+                terminalView.scrollToBottom(forceLayout: true)
+            }
+            terminalView.notifyDimensionsChangedIfNeeded()
+        }
     }
     
     override public func mouseDown(with event: NSEvent) {
@@ -153,9 +168,19 @@ public final class NativeTerminalView: NSTextView {
     private var cursorBlinkTimer: Timer?
     private var isFocused: Bool = false
     
+    // High-performance styling cache for zero-allocation 120Hz rendering
+    private var cachedBaseFont: NSFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+    private var cachedBoldFont: NSFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .bold)
+    private static let defaultTextColor = NSColor(red: 0.90, green: 0.92, blue: 0.95, alpha: 1.0)
+    private static var colorCache: [String: NSColor] = [:]
+    private static let colorCacheLock = NSLock()
+    
+    /// Tracks whether viewport is pinned to the command prompt line at the bottom
+    public var isPinnedToBottom: Bool = true
+    
     /// Calculate current rows and columns based on visible scroll view bounds and font metrics
     public func calculateTerminalDimensions() -> (cols: Int, rows: Int) {
-        let font = self.font ?? NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        let font = self.font ?? cachedBaseFont
         let layoutManager = self.layoutManager
         let lineHeight = max(12, layoutManager?.defaultLineHeight(for: font) ?? 16)
         let charWidth = max(6, ("M" as NSString).size(withAttributes: [.font: font]).width)
@@ -168,20 +193,53 @@ public final class NativeTerminalView: NSTextView {
         return (cols, rows)
     }
     
-    /// Notify remote PTY of new dimensions and ensure visible rect stays pinned to bottom prompt
+    /// Check whether clipView is currently resting at the bottom of the document
+    public func isScrolledToBottom() -> Bool {
+        guard let clipView = self.enclosingScrollView?.contentView else { return true }
+        let docHeight = self.frame.height
+        let clipHeight = clipView.bounds.height
+        let targetY = max(0, docHeight - clipHeight)
+        return abs(clipView.bounds.origin.y - targetY) <= 1.0
+    }
+    
+    /// Canonical rock-solid scroll to bottom ensuring prompt line is always visible without flicker.
+    /// forceLayout is only needed when geometry changed (e.g. divider drag / setFrameSize).
+    public func scrollToBottom(forceLayout: Bool = false) {
+        guard let storage = self.textStorage, storage.length > 0 else { return }
+        guard let clipView = self.enclosingScrollView?.contentView else { return }
+        
+        if forceLayout {
+            let endRange = NSRange(location: storage.length - 1, length: 1)
+            self.layoutManager?.ensureLayout(forCharacterRange: endRange)
+        }
+        
+        let docHeight = self.frame.height
+        let clipHeight = clipView.bounds.height
+        let targetY = max(0, docHeight - clipHeight)
+        
+        // Only scroll if the offset actually changed, avoiding jitter and scroll feedback loops
+        if abs(clipView.bounds.origin.y - targetY) > 0.5 {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            clipView.scroll(to: NSPoint(x: 0, y: targetY))
+            self.enclosingScrollView?.reflectScrolledClipView(clipView)
+            CATransaction.commit()
+        }
+    }
+    
+    /// Notify remote PTY of new dimensions with debounce (prevents SIGWINCH storm during drag)
     public func notifyDimensionsChangedIfNeeded() {
         let (cols, rows) = calculateTerminalDimensions()
         if lastReportedDimensions?.cols != cols || lastReportedDimensions?.rows != rows {
             lastReportedDimensions = (cols, rows)
             resizeDebounceTask?.cancel()
             resizeDebounceTask = Task { @MainActor [weak self] in
-                try? await Task.sleep(nanoseconds: 30_000_000)
+                // 150ms debounce ensures remote PTY only resizes after active dragging pauses
+                try? await Task.sleep(nanoseconds: 150_000_000)
                 guard !Task.isCancelled, let self = self else { return }
                 self.onResize?(cols, rows)
-                self.scrollToEndOfDocument(nil)
             }
         }
-        self.scrollToEndOfDocument(nil)
     }
     
     override public func viewDidMoveToSuperview() {
@@ -194,7 +252,18 @@ public final class NativeTerminalView: NSTextView {
     }
     
     @objc private func clipViewBoundsDidChange() {
-        notifyDimensionsChangedIfNeeded()
+        if let clipView = enclosingScrollView?.contentView {
+            let docHeight = self.frame.height
+            let clipHeight = clipView.bounds.height
+            let currentBottom = clipView.bounds.origin.y + clipHeight
+            
+            // If user scrolled up by more than 25 points, unpin so we don't disrupt their reading
+            if docHeight <= clipHeight || (docHeight - currentBottom) <= 25.0 {
+                isPinnedToBottom = true
+            } else {
+                isPinnedToBottom = false
+            }
+        }
     }
     
     override public func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
@@ -256,8 +325,18 @@ public final class NativeTerminalView: NSTextView {
         self.insertionPointColor = NSColor.cyan
         
         // Monospace font cascading with PingFang SC for CJK characters
-        self.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        let base = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        self.font = base
+        self.cachedBaseFont = base
+        self.cachedBoldFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .bold)
+        
+        // Critical for AppKit NSTextView vertical auto-resizing in NSScrollView
+        self.minSize = NSSize(width: 0, height: 0)
+        self.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        self.isVerticallyResizable = true
+        self.isHorizontallyResizable = false
         self.autoresizingMask = [.width]
+        self.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
         self.textContainer?.widthTracksTextView = true
         
         // Enable hardware accelerated rendering
@@ -407,10 +486,34 @@ public final class NativeTerminalView: NSTextView {
         super.mouseDown(with: event)
     }
     
+    override public func setSelectedRanges(_ ranges: [NSValue], affinity: NSSelectionAffinity, stillSelecting stillSelectingFlag: Bool) {
+        super.setSelectedRanges(ranges, affinity: affinity, stillSelecting: stillSelectingFlag)
+        if !stillSelectingFlag && isCopyOnSelectEnabled {
+            copySelectionToPasteboardIfAny()
+        }
+    }
+    
     override public func mouseUp(with event: NSEvent) {
         super.mouseUp(with: event)
         if isCopyOnSelectEnabled {
             copySelectionToPasteboardIfAny()
+        }
+    }
+    
+    override public func rightMouseDown(with event: NSEvent) {
+        self.window?.makeFirstResponder(self)
+        
+        // If Shift is pressed, allow standard context menu popup
+        if event.modifierFlags.contains(.shift) {
+            super.rightMouseDown(with: event)
+            return
+        }
+        
+        // PuTTY / Xshell / SecureCRT style: Right-Click directly pastes from clipboard
+        _ = pasteFromClipboard()
+        // Clear text selection after pasting so terminal view stays clean
+        if let len = self.textStorage?.length {
+            self.setSelectedRange(NSRange(location: len, length: 0))
         }
     }
     
@@ -423,6 +526,16 @@ public final class NativeTerminalView: NSTextView {
     }
     
     override public func keyDown(with event: NSEvent) {
+        self.isPinnedToBottom = true
+        
+        // 0. Handle Cmd+K (Clear Screen)
+        if event.modifierFlags.contains(.command), !event.modifierFlags.contains(.shift) {
+            if let chars = event.charactersIgnoringModifiers?.lowercased(), chars == "k" {
+                clearScreen()
+                return
+            }
+        }
+        
         // 1. Handle Ctrl key combinations: Ctrl+C, Ctrl+D, Ctrl+Z, Ctrl+L, etc. (HIGHEST PRIORITY)
         if event.modifierFlags.contains(.control),
            let chars = event.charactersIgnoringModifiers,
@@ -503,12 +616,19 @@ public final class NativeTerminalView: NSTextView {
         self.interpretKeyEvents([event])
     }
     
-    // Paste support (Cmd+V)
+    // Paste support (Cmd+V and Right-Click direct paste)
+    @discardableResult
+    public func pasteFromClipboard() -> Bool {
+        guard let text = NSPasteboard.general.string(forType: .string), !text.isEmpty else { return false }
+        let normalized = text.replacingOccurrences(of: "\r\n", with: "\r").replacingOccurrences(of: "\n", with: "\r")
+        guard let data = normalized.data(using: .utf8) else { return false }
+        self.isPinnedToBottom = true
+        onInput?(data)
+        return true
+    }
+    
     override public func paste(_ sender: Any?) {
-        if let text = NSPasteboard.general.string(forType: .string),
-           let data = text.data(using: .utf8) {
-            onInput?(data)
-        }
+        pasteFromClipboard()
     }
     
     // MARK: - Copy on Select & Right-Click Context Menu
@@ -589,18 +709,25 @@ public final class NativeTerminalView: NSTextView {
         }
     }
     
-    @objc private func clearScreenMenuAction(_ sender: Any?) {
+    public func clearScreen() {
         ringBuffer?.clear()
         self.textStorage?.setAttributedString(NSAttributedString())
         self.activeLineStartLocation = 0
         self.lastCommittedIndex = 0
         self.needsDisplay = true
+        self.scrollToBottom()
+        onInput?(Data([0x0C])) // Send Ctrl+L (FF) to remote shell to redraw prompt at top
+    }
+    
+    @objc private func clearScreenMenuAction(_ sender: Any?) {
+        clearScreen()
     }
     
     // MARK: - NSTextInputClient / Text Input Overrides
     
     /// Called when user commits a Chinese candidate word or types standard text
     override public func insertText(_ string: Any, replacementRange: NSRange) {
+        self.isPinnedToBottom = true
         var text: String
         if let s = string as? String {
             text = s
@@ -716,17 +843,31 @@ public final class NativeTerminalView: NSTextView {
         let spans = parser.parseANSI(text)
         let attrString = NSMutableAttributedString()
         
-        let baseFont = self.font ?? NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
-        let boldFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .bold)
+        let baseFont = self.font ?? cachedBaseFont
+        let boldFont = self.cachedBoldFont
+        let defaultColor = Self.defaultTextColor
         
         for span in spans {
-            var attrs: [NSAttributedString.Key: Any] = [
-                .font: span.isBold ? boldFont : baseFont,
-                .foregroundColor: NSColor(red: 0.90, green: 0.92, blue: 0.95, alpha: 1.0)
-            ]
-            if let hex = span.foregroundColorHex, let nsColor = NSColor(hex: hex) {
-                attrs[.foregroundColor] = nsColor
+            var textColor = defaultColor
+            if let hex = span.foregroundColorHex {
+                Self.colorCacheLock.lock()
+                if let cached = Self.colorCache[hex] {
+                    textColor = cached
+                    Self.colorCacheLock.unlock()
+                } else {
+                    Self.colorCacheLock.unlock()
+                    if let parsed = NSColor(hex: hex) {
+                        Self.colorCacheLock.lock()
+                        Self.colorCache[hex] = parsed
+                        Self.colorCacheLock.unlock()
+                        textColor = parsed
+                    }
+                }
             }
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: span.isBold ? boldFont : baseFont,
+                .foregroundColor: textColor
+            ]
             attrString.append(NSAttributedString(string: span.text, attributes: attrs))
         }
         return attrString
@@ -735,7 +876,9 @@ public final class NativeTerminalView: NSTextView {
     public func appendRawOutput(_ text: String) {
         let attr = formatANSI(text)
         self.textStorage?.append(attr)
-        self.scrollToEndOfDocument(nil)
+        if self.isPinnedToBottom {
+            self.scrollToBottom(forceLayout: false)
+        }
     }
     
     /// Incremental refresh: updates active line in-place and appends newly committed lines
@@ -744,12 +887,12 @@ public final class NativeTerminalView: NSTextView {
         
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        defer { CATransaction.commit() }
         
         let currentTotal = buffer.totalCommittedCount
+        let isCleared = buffer.consumeClearFlag() || (currentTotal < lastCommittedIndex)
         
         // 1. Buffer cleared or initial render
-        if currentTotal < lastCommittedIndex {
+        if isCleared {
             lastCommittedIndex = 0
             self.textStorage?.setAttributedString(NSAttributedString())
             activeLineStartLocation = 0
@@ -762,7 +905,8 @@ public final class NativeTerminalView: NSTextView {
         }
         
         // 3. Append newly committed lines using tailLines
-        if currentTotal > lastCommittedIndex {
+        let hasNewCommittedLines = (currentTotal > lastCommittedIndex)
+        if hasNewCommittedLines {
             let delta = Int(currentTotal - lastCommittedIndex)
             lastCommittedIndex = currentTotal
             if delta > 0 {
@@ -790,7 +934,11 @@ public final class NativeTerminalView: NSTextView {
             self.textStorage?.append(attr)
         }
         
-        self.scrollToEndOfDocument(nil)
+        CATransaction.commit()
+        
+        if self.isPinnedToBottom && (hasNewCommittedLines || isCleared || !self.isScrolledToBottom()) {
+            self.scrollToBottom(forceLayout: false)
+        }
         self.resetCursorBlink()
     }
 }

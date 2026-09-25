@@ -23,6 +23,9 @@ public protocol SSHSessionProtocol: AnyObject, Sendable {
     /// Send user keystrokes / input to remote PTY
     func sendInput(_ data: Data) async throws
     
+    /// Immediate zero-latency synchronous write to PTY file descriptor
+    func sendInputSync(_ data: Data)
+    
     /// Resize remote PTY window (cols, rows)
     func resizeTerminal(columns: Int, rows: Int) async throws
     
@@ -35,4 +38,10 @@ public protocol SSHSessionProtocol: AnyObject, Sendable {
     func setOutputHandler(_ handler: @Sendable @escaping (Data) -> Void)
     func setMetricsHandler(_ handler: @Sendable @escaping (ServerMetricsSnapshot) -> Void)
     func setDirectoryChangeHandler(_ handler: @Sendable @escaping (String) -> Void)
+}
+
+public extension SSHSessionProtocol {
+    func sendInputSync(_ data: Data) {
+        Task { try? await sendInput(data) }
+    }
 }

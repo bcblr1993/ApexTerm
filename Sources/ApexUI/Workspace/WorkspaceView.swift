@@ -440,19 +440,21 @@ private struct PaneContainerView: View {
                 onFileDrop: { localURL in
                     let targetDir = tab.currentRemotePath
                     let dest = targetDir.hasSuffix("/") ? "\(targetDir)\(localURL.lastPathComponent)" : "\(targetDir)/\(localURL.lastPathComponent)"
-                    TransferManager.shared.enqueueUpload(session: pane.sshClient, localURL: localURL, remotePath: dest)
+                    TransferManager.shared.enqueueUpload(session: pane.sshClient, localURL: localURL, remotePath: dest, onResult: { _ in
+                        Task { @MainActor in
+                            NotificationCenter.default.post(name: NSNotification.Name("SFTPDirectoryRefreshNeeded"), object: dest)
+                        }
+                    })
                 }
             ) { inputData in
-                Task {
-                    if isBroadcastActive {
-                        for t in activeTabs {
-                            for p in t.panes {
-                                try? await p.sshClient.sendInput(inputData)
-                            }
+                if isBroadcastActive {
+                    for t in activeTabs {
+                        for p in t.panes {
+                            p.sshClient.sendInputSync(inputData)
                         }
-                    } else {
-                        try? await pane.sshClient.sendInput(inputData)
                     }
+                } else {
+                    pane.sshClient.sendInputSync(inputData)
                 }
             }
         }

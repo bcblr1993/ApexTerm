@@ -6,6 +6,7 @@ import ApexSSH
 /// High-performance integrated SFTP file manager (electerm-style with OSC 7 sync and drag-and-drop upload/download)
 public struct SFTPView: View {
     @Binding public var currentPath: String
+    @Binding public var isLinkageEnabled: Bool
     public let session: SSHSessionProtocol?
 
     @State private var items: [SFTPItem] = []
@@ -19,8 +20,13 @@ public struct SFTPView: View {
     @State private var loadError: String?
     @State private var isOpeningEditor = false
 
-    public init(currentPath: Binding<String>, session: SSHSessionProtocol?) {
+    public init(
+        currentPath: Binding<String>,
+        isLinkageEnabled: Binding<Bool> = .constant(true),
+        session: SSHSessionProtocol?
+    ) {
         self._currentPath = currentPath
+        self._isLinkageEnabled = isLinkageEnabled
         self.session = session
     }
 
@@ -39,18 +45,27 @@ public struct SFTPView: View {
                 .textFieldStyle(.roundedBorder)
                 .font(.system(size: 12, design: .monospaced))
 
-                // OSC 7 Auto-sync badge
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(Color.green)
-                        .frame(width: 6, height: 6)
-                    Text(L10n.osc7Sync)
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundColor(.secondary)
+                // Directory Linkage toggle button
+                Button(action: {
+                    isLinkageEnabled.toggle()
+                }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: isLinkageEnabled ? "link" : "link.slash")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(isLinkageEnabled ? ApexStyle.success : .secondary)
+                        Text(isLinkageEnabled ? L10n.linkageOn : L10n.linkageOff)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(isLinkageEnabled ? .primary : .secondary)
+                    }
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(isLinkageEnabled ? ApexStyle.success.opacity(0.12) : Color.secondary.opacity(0.10), in: Capsule())
+                    .overlay(
+                        Capsule().stroke(isLinkageEnabled ? ApexStyle.success.opacity(0.3) : Color.secondary.opacity(0.2), lineWidth: 1)
+                    )
                 }
-                .padding(.horizontal, 6)
-                .padding(.vertical, 3)
-                .background(ApexStyle.success.opacity(0.10), in: Capsule())
+                .buttonStyle(.plain)
+                .help(isLinkageEnabled ? L10n.linkageHelpOn : L10n.linkageHelpOff)
 
                 if let notice = transferNotice {
                     Text(notice)

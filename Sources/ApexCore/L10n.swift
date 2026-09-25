@@ -55,6 +55,10 @@ public enum L10n {
     // SFTP 文件管理
     public static let remotePath = "远程路径"
     public static let osc7Sync = "终端目录联动 (OSC 7)"
+    public static let linkageOn = "路径联动：开"
+    public static let linkageOff = "路径联动：关"
+    public static let linkageHelpOn = "路径联动已开启：终端中 cd 切换路径时，下方 SFTP 文件面板将自动同步切换到该目录。点击可关闭联动。"
+    public static let linkageHelpOff = "路径联动已关闭：终端中 cd 切换路径时，下方 SFTP 保持当前浏览位置不变。点击可开启联动。"
     public static let parentDirectory = "上一级目录"
     public static let refreshDirectory = "刷新文件列表"
     public static let uploadFile = "上传文件"

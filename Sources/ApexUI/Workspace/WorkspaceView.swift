@@ -11,12 +11,14 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
     public let ringBuffer = TerminalRingBuffer(maxLines: 50_000)
     public let metricsHistory = ObservableMetricsHistory()
     @Published public var currentRemotePath: String
+    @Published public var isDirectoryLinkageEnabled: Bool
     @Published public var connectionState: SSHConnectionState = .disconnected
     
     public init(session: Session, sshClient: SSHSessionProtocol) {
         self.session = session
         self.sshClient = sshClient
         self.currentRemotePath = session.username == "root" ? "/root" : (session.username.isEmpty ? "~" : "/home/\(session.username)")
+        self.isDirectoryLinkageEnabled = session.sftpAutoSyncEnabled
         
         let ringBuffer = self.ringBuffer
         let metricsHistory = self.metricsHistory
@@ -38,7 +40,10 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
         
         self.sshClient.setDirectoryChangeHandler { [weak self] path in
             Task { @MainActor [weak self] in
-                self?.currentRemotePath = path
+                guard let self = self, self.isDirectoryLinkageEnabled else { return }
+                if self.currentRemotePath != path {
+                    self.currentRemotePath = path
+                }
             }
         }
     }
@@ -176,6 +181,10 @@ public struct WorkspaceView: View {
                                     get: { tab.currentRemotePath },
                                     set: { tab.currentRemotePath = $0 }
                                 ),
+                                isLinkageEnabled: Binding(
+                                    get: { tab.isDirectoryLinkageEnabled },
+                                    set: { tab.isDirectoryLinkageEnabled = $0 }
+                                ),
                                 session: tab.sshClient
                             )
                             .frame(height: max(0, geometry.size.height * (1.0 - splitRatio) - 8))
@@ -210,6 +219,21 @@ public struct WorkspaceView: View {
                     Text("UTF-8")
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundColor(.secondary)
+                    
+                    Button(action: {
+                        tab.isDirectoryLinkageEnabled.toggle()
+                    }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: tab.isDirectoryLinkageEnabled ? "link" : "link.slash")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundColor(tab.isDirectoryLinkageEnabled ? ApexStyle.success : .secondary)
+                            Text(tab.isDirectoryLinkageEnabled ? L10n.linkageOn : L10n.linkageOff)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundColor(tab.isDirectoryLinkageEnabled ? .primary : .secondary)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .help(tab.isDirectoryLinkageEnabled ? L10n.linkageHelpOn : L10n.linkageHelpOff)
                     
                     Spacer()
                     

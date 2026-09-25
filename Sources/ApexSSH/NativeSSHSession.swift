@@ -24,6 +24,9 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     private var prevNet: AgentlessMonitor.NetTickState?
     private var resolvedPassword: String?
     private var passwordFeedSent = false
+    private var recentPromptBuffer = ""
+    private var lastReportedDirectory: String?
+    private var remoteHomeDirectory: String?
     
     /// Locate bundled sshpass first, then Homebrew/system locations
     public var sshpassExecutablePath: String? {
@@ -197,6 +200,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         Task { [weak self] in
             try? await Task.sleep(nanoseconds: 1_200_000_000)
             if let home = await self?.probeRemoteHome(), !home.isEmpty {
+                self?.remoteHomeDirectory = home
                 self?.directoryChangeHandler?(home)
             }
         }
@@ -285,26 +289,42 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
                 let urlString = String(rest[..<end])
                 if let slash = urlString.firstIndex(of: "/") {
                     let path = String(urlString[slash...])
-                    directoryChangeHandler?(path)
+                    if path != lastReportedDirectory {
+                        lastReportedDirectory = path
+                        directoryChangeHandler?(path)
+                    }
                     return
                 }
             }
         }
         
-        // 2. Shell prompt CWD tracking fallback: ubuntu@host:/etc$ or ubuntu@host:~$ or [user@host /var/log]#
-        let cleanText = text.replacingOccurrences(of: #"\x1b\[[0-9;]*[a-zA-Z]"#, with: "", options: .regularExpression)
-        if let match = cleanText.range(of: #"[:\s]((?:/|~)[a-zA-Z0-9_\-\./]*)\s*[\$#%]\s*"#, options: .regularExpression) {
-            let matchedStr = String(cleanText[match])
-            let parts = matchedStr.split(whereSeparator: { $0 == ":" || $0 == " " || $0 == "$" || $0 == "#" || $0 == "%" })
-            if let detected = parts.first(where: { $0.hasPrefix("/") || $0.hasPrefix("~") }) {
-                var path = String(detected)
-                let home = session.username == "root" ? "/root" : (session.username.isEmpty ? "/" : "/home/\(session.username)")
+        // 2. Shell prompt CWD tracking fallback using sliding window to handle packet fragmentation
+        let clean = text.replacingOccurrences(of: #"\x1b\[[0-9;]*[a-zA-Z]"#, with: "", options: .regularExpression)
+                        .replacingOccurrences(of: #"\x1b\][^\u0007\x1b]*(\u0007|\x1b\\)"#, with: "", options: .regularExpression)
+        recentPromptBuffer.append(clean)
+        if recentPromptBuffer.count > 2048 {
+            recentPromptBuffer = String(recentPromptBuffer.suffix(1024))
+        }
+        
+        // Match prompt pattern like ubuntu@host:~/services$ or user@host /var/log % or root@host:/etc#
+        let pattern = #"[:\s]((?:/|~)[a-zA-Z0-9_\-\./]+)\s*(?:\([^\)]+\)\s*)?[\$#%>]"#
+        if let regex = try? NSRegularExpression(pattern: pattern) {
+            let nsStr = recentPromptBuffer as NSString
+            let matches = regex.matches(in: recentPromptBuffer, range: NSRange(location: 0, length: nsStr.length))
+            if let lastMatch = matches.last, lastMatch.numberOfRanges > 1 {
+                let raw = nsStr.substring(with: lastMatch.range(at: 1))
+                let home = self.remoteHomeDirectory ?? (session.username == "root" ? "/root" : (session.username.isEmpty ? "/" : "/home/\(session.username)"))
+                var path = raw
                 if path == "~" {
                     path = home
                 } else if path.hasPrefix("~/") {
-                    path = home + path.dropFirst()
+                    let sub = String(path.dropFirst(2))
+                    path = home == "/" ? "/\(sub)" : "\(home)/\(sub)"
                 }
-                directoryChangeHandler?(path)
+                if path != lastReportedDirectory {
+                    lastReportedDirectory = path
+                    directoryChangeHandler?(path)
+                }
             }
         }
     }

@@ -27,8 +27,22 @@ xcuserdata/
 DerivedData/
 .swiftpm/xcode/
 
-# Build artifacts
+# Build artifacts & Distribution
 *.app
 *.dSYM
 *.o
 *.a
+*.dmg
+*.tar.gz
+SHA256SUMS.txt
+
+# Security & Zero-Bundle Rules (AetherRoute SOP)
+*.pem
+*.key
+*.cer
+*.p12
+*id_rsa*
+*.aetherroute
+.apexterm_sessions_backup/
+*sessions*.json
+

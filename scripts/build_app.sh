@@ -7,14 +7,18 @@ APP_DIR="${BUILD_DIR}/${APP_NAME}"
 CONTENTS_DIR="${APP_DIR}/Contents"
 MACOS_DIR="${CONTENTS_DIR}/MacOS"
 RESOURCES_DIR="${CONTENTS_DIR}/Resources"
+
 VERSION="${1:-1.2.0}"
+DATE_PREFIX=$(date +%Y%m%d)
+BUILD_NUMBER="${2:-${DATE_PREFIX}01}"
 DIST_ARCHIVE="${BUILD_DIR}/ApexTerm-v${VERSION}-macos-arm64.tar.gz"
 DIST_DMG="${BUILD_DIR}/ApexTerm-v${VERSION}-macos-arm64.dmg"
+SHA_FILE="${BUILD_DIR}/SHA256SUMS.txt"
 
 echo "🧹 [Clean] Removing all previous local build artifacts and archives..."
-rm -rf "${APP_DIR}" "${BUILD_DIR}"/*.dmg "${BUILD_DIR}"/*.tar.gz "${BUILD_DIR}"/arm64-apple-macosx/release/ApexTerm* /tmp/apexterm_* 2>/dev/null || true
+rm -rf "${APP_DIR}" "${BUILD_DIR}"/*.dmg "${BUILD_DIR}"/*.tar.gz "${BUILD_DIR}"/*.txt "${BUILD_DIR}"/arm64-apple-macosx/release/ApexTerm* /tmp/apexterm_* 2>/dev/null || true
 
-echo "🧪 [Pre-Release Quality Gate] Running full automated test suite (58+ test cases)..."
+echo "🧪 [Pre-Release Quality Gate] Running full automated test suite (80+ test cases)..."
 if ! swift test; then
     echo "❌ [FATAL ERROR] Automated test suite failed! Release build aborted to prevent shipping broken binaries."
     exit 1
@@ -24,7 +28,7 @@ echo "✅ [Pre-Release Quality Gate] 100% of test suites passed successfully!"
 echo "⚡ Building ApexTerm Release binary for Apple Silicon (arm64)..."
 swift build -c release
 
-echo "📦 Packaging ${APP_NAME} bundle..."
+echo "📦 Packaging ${APP_NAME} bundle (v${VERSION} Build ${BUILD_NUMBER})..."
 mkdir -p "${MACOS_DIR}" "${RESOURCES_DIR}"
 cp "Resources/ApexTerm.icns" "${RESOURCES_DIR}/ApexTerm.icns"
 
@@ -48,7 +52,7 @@ if [ -f "/opt/homebrew/bin/sshpass" ]; then
     chmod +x "${MACOS_DIR}/sshpass"
 fi
 
-# Create standard Info.plist
+# Create standard Info.plist aligned with AetherRoute standards
 cat << EOF > "${CONTENTS_DIR}/Info.plist"
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -69,7 +73,7 @@ cat << EOF > "${CONTENTS_DIR}/Info.plist"
     <key>CFBundleShortVersionString</key>
     <string>${VERSION}</string>
     <key>CFBundleVersion</key>
-    <string>120</string>
+    <string>${BUILD_NUMBER}</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>NSHighResolutionCapable</key>
@@ -81,6 +85,16 @@ cat << EOF > "${CONTENTS_DIR}/Info.plist"
 </dict>
 </plist>
 EOF
+
+# 🛡️ Zero-Bundle Security Verification (AetherRoute SOP)
+echo "🛡️ [Security Scan] Scanning app bundle for forbidden private credentials or sessions..."
+LEAKS=$(find "${APP_DIR}" -type f \( -name "*.pem" -o -name "*.key" -o -name "*id_rsa*" -o -name "*sessions*.json" \) 2>/dev/null || true)
+if [ -n "${LEAKS}" ]; then
+    echo "❌ [SECURITY FATAL] Bundle contains forbidden private keys or session files:"
+    echo "${LEAKS}"
+    exit 1
+fi
+echo "✅ [Security Scan] Clean! No private keys or developer credentials leaked."
 
 # Code Signing
 SIGNING_IDENTITY="${SIGNING_IDENTITY:-}"
@@ -120,6 +134,11 @@ if command -v hdiutil >/dev/null 2>&1; then
     rm -rf "${TMP_DMG_DIR}"
 fi
 
+# Generate Checksums
+echo "🔐 Generating SHA256 distribution checksums..."
+shasum -a 256 "${DIST_DMG}" "${DIST_ARCHIVE}" > "${SHA_FILE}"
+cat "${SHA_FILE}"
+
 if [ -d "/Applications" ]; then
     echo "📲 Updating local /Applications/ApexTerm.app..."
     rm -rf "/Applications/ApexTerm.app"
@@ -132,3 +151,4 @@ echo "📍 Tarball:     ${DIST_ARCHIVE}"
 if [ -f "${DIST_DMG}" ]; then
     echo "📍 Disk Image:  ${DIST_DMG}"
 fi
+echo "📍 Checksums:   ${SHA_FILE}"

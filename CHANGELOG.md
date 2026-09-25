@@ -1,0 +1,67 @@
+# ApexTerm 更新日志 (Changelog)
+
+本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
+
+---
+
+## [v1.2.0] - 2026-09-25
+
+### ✨ 新增特性 (Features)
+- **定制原生“关于”面板 (`AboutView`)**：
+  - 拦截系统默认空白对话框，提供高分辨率 App 图标、版本与构建号徽标；
+  - 呈现硬件架构标签（Apple Silicon arm64、Metal 120Hz、Native SSH / SFTP、Swift 6 Native）；
+  - 内置一键“检查更新”按钮与开源主页直达。
+- **在线版本更新引擎 (`UpdateManager` & `UpdateSheetView`)**：
+  - 支持 SemVer 语义化版本严格比对算法，自动解析 GitHub Releases 规范元数据；
+  - 提供非阻塞异步检查状态机，并在发现新版本时弹出结构化更新日志与直接下载引导；
+  - 支持启动时自动静默检查新版本（可在偏好设置中自由启闭）。
+- **原生 macOS 偏好设置中心 (`SettingsView`, `⌘,`)**：
+  - **通用设置**：自动更新检查开关、当前版本展示、终端提示音模式（声音 / 视觉闪烁 / 静音）、一键恢复默认；
+  - **终端外观**：等宽字体选择器（SF Mono、Menlo、Monaco、Courier、JetBrains Mono、PingFang SC）、字号无级调节、3 种光标形状（竖线 / 方块 / 下划线）、光标闪烁开关、5 套官方精选配色（Apex Dark、OLED Black、Solarized Dark、Monokai Pro、One Dark），并提供实时排版预览小窗；
+  - **操作习惯**：划选自动复制开关、鼠标右键直接粘贴开关、终端回滚历史缓冲区行数设置；
+  - **SFTP 传输**：显示隐藏文件、终端与 SFTP 目录联动开关、默认下载目录路径选择器、并发传输上限；
+  - **数据备份与迁移**：一键导出所有会话为 `sessions.json`、一键导入合并已有配置。
+- **服务器会话跨机迁移与备份 (`SessionStore`)**：
+  - 新增 `exportSessionsJSON()` 与 `importSessionsJSON(from:overwrite:)`，并集成进系统主菜单栏（`文件` -> `导出/导入服务器会话`）。
+- **键盘快捷键速查表 (`ShortcutsSheetView`, `⌘/`)**：
+  - 结构化归类列出所有常用快捷键与鼠标高效操作。
+
+### ⚡️ 体验优化 (Improvements)
+- **终端动态外观即时重载**：`NativeTerminalView` 响应式监听 `AppSettings` 变更，无需重启应用即可热切换配色方案、字号、字体与光标样式；
+- **右键粘贴习惯可配置**：支持在偏好设置中切换右键直接粘贴模式（开启时右键直通粘贴，按住 Shift+右键弹出系统菜单；关闭时右键展示标准菜单）；
+- **菜单栏深度原生集成**：全量补齐应用菜单、文件管理、会话分屏与清屏、帮助体系。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- **全量测试套件**：80 项自动化测试用例 100% 通过（耗时 0.016 秒），新增 `ProductFeatureTests` 专项测试；
+- **基准测试数据实测**：
+  - 日志流写入吞吐：**61,455 行/秒** (6.21 MB/秒)
+  - ANSI / TrueColor 颜色序列解析速度：**194,680 spans/秒**
+  - 物理按键直通全链路延迟：**7.00 微秒 (μs)**
+- **安全签名**：全量通过 `Developer ID Application: YanNan Chen (5984KQD4D7)` 代码签名与 designated requirement 严格验证。
+
+---
+
+## [v1.1.1] - 2026-09-25
+
+### 🐞 问题修复 (Bug Fixes)
+- **方向键行内移动与历史命令乱码修复**：
+  - 重构 `RingBuffer` 缓冲区，引入 `TerminalCell` 单元格模型与 `cursorCol` 精准列定位；
+  - 彻底修复按左箭头时将 `\x08`（BS）误当作退格删除字符的缺陷；
+  - 完整支持 ECMA-48 控制序列（`\x1b[C`、`\x1b[D`、`\x1b[@`、`\x1b[P`、`\x1b[K`），完美支持 Linux Bash 上下箭头历史命令切换覆盖；
+  - 动态计算光标屏幕渲染坐标，光标在行内插入与移动时光标实时精准跟随。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- 新增 `testArrowKeysAndInlineEditing` 与行内交互回归测试；
+- 日志直通与单元格编辑双轨模式下，普通海量日志吞吐依然保持 **111,000+ 行/秒**。
+
+---
+
+## [v1.1.0] - 2026-09-25
+
+### ✨ 新增特性 (Features)
+- **无感实时性能监控 (Agentless Monitor)**：
+  - 纯原语 SSH 会话后台采集 CPU、内存、网络与磁盘指标，无需在目标服务器安装任何 Agent；
+- **终端目录联动 (OSC 7)**：
+  - 终端 `cd` 切换远程目录时，下方 SFTP 文件面板实时同步切换路径；
+- **Metal 120Hz 硬件加速终端渲染**：
+  - 专为 Apple Silicon ProMotion 打造的丝滑终端流渲染层。

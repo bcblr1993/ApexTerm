@@ -19,6 +19,7 @@ public struct SFTPView: View {
     @State private var transferNotice: String?
     @State private var loadError: String?
     @State private var isOpeningEditor = false
+    @State private var loadTask: Task<Void, Never>?
 
     public init(
         currentPath: Binding<String>,
@@ -88,7 +89,14 @@ public struct SFTPView: View {
                 Button(action: {
                     loadDirectory(path: currentPath)
                 }) {
-                    Image(systemName: "arrow.clockwise")
+                    if isLoading {
+                        ProgressView()
+                            .controlSize(.small)
+                            .scaleEffect(0.7)
+                            .frame(width: 14, height: 14)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                    }
                 }
                 .buttonStyle(.plain)
                 .help(L10n.refreshDirectory)
@@ -131,7 +139,7 @@ public struct SFTPView: View {
 
             // Files table with Drag & Drop upload & download
             ZStack {
-                if isLoading {
+                if items.isEmpty && isLoading {
                     VStack {
                         Spacer()
                         ProgressView(L10n.loadingFiles)
@@ -204,6 +212,7 @@ public struct SFTPView: View {
                         }
                     }
                     .listStyle(.inset(alternatesRowBackgrounds: true))
+                    .opacity(isLoading ? 0.65 : 1.0)
                     // Drag local file from Finder/Desktop to upload into current remote directory
                     .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
                         handleDropUpload(providers: providers)
@@ -257,9 +266,11 @@ public struct SFTPView: View {
         guard let s = session else { return }
         isLoading = true
         loadError = nil
-        Task {
+        loadTask?.cancel()
+        loadTask = Task {
             do {
                 let fetched = try await s.listDirectory(path: path)
+                guard !Task.isCancelled else { return }
                 await MainActor.run {
                     self.items = fetched.sorted {
                         if $0.isDirectory != $1.isDirectory {
@@ -270,6 +281,7 @@ public struct SFTPView: View {
                     self.isLoading = false
                 }
             } catch {
+                guard !Task.isCancelled else { return }
                 await MainActor.run {
                     self.items = []
                     self.loadError = error.localizedDescription

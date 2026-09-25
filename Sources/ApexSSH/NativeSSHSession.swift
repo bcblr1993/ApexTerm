@@ -222,6 +222,17 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             kill(childPid, SIGHUP)
             childPid = -1
         }
+        
+        // Clean up multiplex socket
+        let socket = controlSocketPath
+        if FileManager.default.fileExists(atPath: socket) {
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+            proc.arguments = ["-O", "exit", "-o", "ControlPath=\(socket)", "\(session.username)@\(session.host)"]
+            try? proc.run()
+            proc.waitUntilExit()
+            try? FileManager.default.removeItem(atPath: socket)
+        }
     }
     
     public func sendInput(_ data: Data) async throws {
@@ -238,10 +249,21 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         _ = ioctl(ptyMasterFd, TIOCSWINSZ, &win)
     }
     
+    private var controlSocketPath: String {
+        let safeHost = session.host.replacingOccurrences(of: "/", with: "_")
+        let safeUser = session.username.replacingOccurrences(of: "/", with: "_")
+        return "/tmp/apex_ctrl_\(safeHost)_\(session.port)_\(safeUser)"
+    }
+    
     public func probeRemoteHome() async -> String? {
         await resolvePasswordIfNeeded()
         let process = Process()
         let cmd = "pwd"
+        let ctrlArgs = [
+            "-o", "ControlMaster=auto",
+            "-o", "ControlPath=\(controlSocketPath)",
+            "-o", "ControlPersist=60s"
+        ]
         if let pw = resolvedPassword, !pw.isEmpty, let sshpass = sshpassExecutablePath {
             process.executableURL = URL(fileURLWithPath: sshpass)
             process.arguments = [
@@ -249,6 +271,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
                 "/usr/bin/ssh",
                 "-o", "StrictHostKeyChecking=accept-new",
                 "-o", "ConnectTimeout=3",
+            ] + ctrlArgs + [
                 "-p", "\(session.port)",
                 "\(session.username)@\(session.host)",
                 cmd
@@ -258,6 +281,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             process.arguments = [
                 "-o", "StrictHostKeyChecking=accept-new",
                 "-o", "ConnectTimeout=3",
+            ] + ctrlArgs + [
                 "-p", "\(session.port)",
                 "\(session.username)@\(session.host)",
                 cmd
@@ -279,27 +303,56 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         return nil
     }
     
+    private func resolveAndDispatchDirectory(_ raw: String) {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        
+        let home = self.remoteHomeDirectory ?? (session.username == "root" ? "/root" : (session.username.isEmpty ? "/" : "/home/\(session.username)"))
+        var path = trimmed
+        if path == "~" {
+            path = home
+        } else if path.hasPrefix("~/") {
+            let sub = String(path.dropFirst(2))
+            path = home == "/" ? "/\(sub)" : "\(home)/\(sub)"
+        }
+        
+        if !path.isEmpty && path != lastReportedDirectory {
+            lastReportedDirectory = path
+            directoryChangeHandler?(path)
+        }
+    }
+    
     private func parseOSC7DirectoryChange(data: Data) {
         guard let text = String(data: data, encoding: .utf8) else { return }
         
-        // 1. Standard OSC 7 format
+        // 1. Standard OSC 7 format (\e]7;file://hostname/path\a or \e\\)
         if let start = text.range(of: "\u{001B}]7;file://") {
             let rest = text[start.upperBound...]
-            if let end = rest.firstIndex(of: "\u{0007}") {
+            if let end = rest.firstIndex(of: "\u{0007}") ?? rest.range(of: "\u{001B}\\")?.lowerBound {
                 let urlString = String(rest[..<end])
                 if let slash = urlString.firstIndex(of: "/") {
                     let path = String(urlString[slash...])
-                    if path != lastReportedDirectory {
-                        lastReportedDirectory = path
-                        directoryChangeHandler?(path)
-                    }
+                    resolveAndDispatchDirectory(path)
                     return
                 }
             }
         }
         
-        // 2. Shell prompt CWD tracking fallback using sliding window to handle packet fragmentation
-        let clean = text.replacingOccurrences(of: #"\x1b\[[0-9;]*[a-zA-Z]"#, with: "", options: .regularExpression)
+        // 2. OSC 0 & OSC 2 Window Title format (\e]0;user@host: ~/dir\a - default in Ubuntu/Debian/CentOS bash PS1)
+        if let start = text.range(of: "\u{001B}]0;") ?? text.range(of: "\u{001B}]2;") {
+            let rest = text[start.upperBound...]
+            if let end = rest.firstIndex(of: "\u{0007}") ?? rest.range(of: "\u{001B}\\")?.lowerBound {
+                let title = String(rest[..<end])
+                if let colon = title.range(of: ": ") {
+                    let rawPath = String(title[colon.upperBound...])
+                    resolveAndDispatchDirectory(rawPath)
+                    return
+                }
+            }
+        }
+        
+        // 3. Shell prompt CWD tracking fallback using sliding window to handle packet fragmentation
+        let clean = text.replacingOccurrences(of: #"\x1b\[[0-9;?]*[a-zA-Z]"#, with: "", options: .regularExpression)
                         .replacingOccurrences(of: #"\x1b\][^\u0007\x1b]*(\u0007|\x1b\\)"#, with: "", options: .regularExpression)
         recentPromptBuffer.append(clean)
         if recentPromptBuffer.count > 2048 {
@@ -307,24 +360,13 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         }
         
         // Match prompt pattern like ubuntu@host:~/services$ or user@host /var/log % or root@host:/etc#
-        let pattern = #"[:\s]((?:/|~)[a-zA-Z0-9_\-\./]+)\s*(?:\([^\)]+\)\s*)?[\$#%>]"#
+        let pattern = #"[:\s]((?:/|~|[a-zA-Z0-9_\-\.])[a-zA-Z0-9_\-\./]*)\s*(?:\([^\)]+\)\s*)?[\$#%>]"#
         if let regex = try? NSRegularExpression(pattern: pattern) {
             let nsStr = recentPromptBuffer as NSString
             let matches = regex.matches(in: recentPromptBuffer, range: NSRange(location: 0, length: nsStr.length))
             if let lastMatch = matches.last, lastMatch.numberOfRanges > 1 {
                 let raw = nsStr.substring(with: lastMatch.range(at: 1))
-                let home = self.remoteHomeDirectory ?? (session.username == "root" ? "/root" : (session.username.isEmpty ? "/" : "/home/\(session.username)"))
-                var path = raw
-                if path == "~" {
-                    path = home
-                } else if path.hasPrefix("~/") {
-                    let sub = String(path.dropFirst(2))
-                    path = home == "/" ? "/\(sub)" : "\(home)/\(sub)"
-                }
-                if path != lastReportedDirectory {
-                    lastReportedDirectory = path
-                    directoryChangeHandler?(path)
-                }
+                resolveAndDispatchDirectory(raw)
             }
         }
     }
@@ -395,6 +437,11 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         let sshpass = self.sshpassExecutablePath
         let escapedPath = path.replacingOccurrences(of: "\"", with: "\\\"")
         let cmd = "ls -la --time-style=+%s \"\(escapedPath)\" 2>/dev/null || ls -la \"\(escapedPath)\""
+        let ctrlArgs = [
+            "-o", "ControlMaster=auto",
+            "-o", "ControlPath=\(controlSocketPath)",
+            "-o", "ControlPersist=60s"
+        ]
         
         if let pw = resolvedPassword, !pw.isEmpty, let passBin = sshpass {
             process.executableURL = URL(fileURLWithPath: passBin)
@@ -402,6 +449,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
                 "-p", pw,
                 "/usr/bin/ssh",
                 "-o", "StrictHostKeyChecking=accept-new",
+            ] + ctrlArgs + [
                 "-p", "\(session.port)",
                 "\(session.username)@\(session.host)",
                 cmd
@@ -410,6 +458,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
             process.arguments = [
                 "-o", "StrictHostKeyChecking=accept-new",
+            ] + ctrlArgs + [
                 "-p", "\(session.port)",
                 "\(session.username)@\(session.host)",
                 cmd

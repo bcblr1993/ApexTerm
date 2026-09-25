@@ -83,6 +83,7 @@ public final class NativeTerminalScrollView: NSScrollView {
 }
 
 /// Native Terminal View with full macOS Chinese IME (拼音/五笔) support and incremental 120Hz rendering
+@MainActor
 public final class NativeTerminalView: NSTextView {
     public var ringBuffer: TerminalRingBuffer?
     public var onInput: ((Data) -> Void)?
@@ -93,6 +94,11 @@ public final class NativeTerminalView: NSTextView {
     private var customInputContext: NSTextInputContext?
     private var currentMarkedText: String = ""
     private var currentMarkedRange = NSRange(location: NSNotFound, length: 0)
+    
+    // Terminal cursor and blinking state
+    private var isCursorVisible: Bool = true
+    private var cursorBlinkTimer: Timer?
+    private var isFocused: Bool = false
     
     override public init(frame frameRect: NSRect, textContainer: NSTextContainer?) {
         super.init(frame: frameRect, textContainer: textContainer)
@@ -125,6 +131,8 @@ public final class NativeTerminalView: NSTextView {
         self.wantsLayer = true
         self.layerContentsRedrawPolicy = .onSetNeedsDisplay
         self.layer?.drawsAsynchronously = true
+        
+        startCursorBlink()
     }
     
     required init?(coder: NSCoder) {
@@ -134,6 +142,131 @@ public final class NativeTerminalView: NSTextView {
     override public var acceptsFirstResponder: Bool { true }
     override public var canBecomeKeyView: Bool { true }
     override public var needsPanelToBecomeKey: Bool { false }
+    
+    override public func becomeFirstResponder() -> Bool {
+        let ok = super.becomeFirstResponder()
+        if ok {
+            isFocused = true
+            startCursorBlink()
+        }
+        return ok
+    }
+    
+    override public func resignFirstResponder() -> Bool {
+        let ok = super.resignFirstResponder()
+        if ok {
+            isFocused = false
+            stopCursorBlink()
+        }
+        return ok
+    }
+    
+    override public func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        NotificationCenter.default.removeObserver(self, name: NSWindow.didBecomeKeyNotification, object: nil)
+        NotificationCenter.default.removeObserver(self, name: NSWindow.didResignKeyNotification, object: nil)
+        if let win = window {
+            startCursorBlink()
+            NotificationCenter.default.addObserver(self, selector: #selector(windowDidBecomeKey), name: NSWindow.didBecomeKeyNotification, object: win)
+            NotificationCenter.default.addObserver(self, selector: #selector(windowDidResignKey), name: NSWindow.didResignKeyNotification, object: win)
+        } else {
+            stopCursorBlink()
+        }
+    }
+    
+    @objc private func windowDidBecomeKey() {
+        startCursorBlink()
+    }
+    
+    @objc private func windowDidResignKey() {
+        needsDisplay = true
+    }
+    
+    isolated deinit {
+        cursorBlinkTimer?.invalidate()
+        NotificationCenter.default.removeObserver(self)
+    }
+    
+    // MARK: - Terminal Cursor Implementation
+    
+    private func getCursorRect() -> NSRect? {
+        guard let layoutManager = self.layoutManager,
+              let textContainer = self.textContainer,
+              let storage = self.textStorage else { return nil }
+        
+        let origin = self.textContainerOrigin
+        let font = self.font ?? NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        let lineHeight = layoutManager.defaultLineHeight(for: font)
+        let cursorWidth: CGFloat = 2.5
+        
+        let length = storage.length
+        if length == 0 {
+            return NSRect(x: origin.x, y: origin.y, width: cursorWidth, height: lineHeight)
+        }
+        
+        let lastChar = (storage.string as NSString).substring(with: NSRange(location: length - 1, length: 1))
+        if lastChar == "\n" || lastChar == "\r" {
+            let extraRect = layoutManager.extraLineFragmentRect
+            if extraRect.height > 0 {
+                return NSRect(x: origin.x + extraRect.minX, y: origin.y + extraRect.minY, width: cursorWidth, height: extraRect.height)
+            } else {
+                let glyph = layoutManager.glyphIndexForCharacter(at: length - 1)
+                let lineRect = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+                return NSRect(x: origin.x, y: origin.y + lineRect.maxY, width: cursorWidth, height: lineHeight)
+            }
+        } else {
+            let lastGlyph = layoutManager.glyphIndexForCharacter(at: length - 1)
+            let charRect = layoutManager.boundingRect(forGlyphRange: NSRange(location: lastGlyph, length: 1), in: textContainer)
+            return NSRect(x: origin.x + charRect.maxX, y: origin.y + charRect.minY, width: cursorWidth, height: charRect.height > 0 ? charRect.height : lineHeight)
+        }
+    }
+    
+    override public func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        
+        guard isCursorVisible, let rect = getCursorRect() else { return }
+        let focused = (window?.isKeyWindow == true && window?.firstResponder == self)
+        let cursorColor = focused
+            ? NSColor(red: 0.20, green: 0.78, blue: 0.95, alpha: 0.95)
+            : NSColor(white: 0.6, alpha: 0.5)
+        
+        cursorColor.setFill()
+        let path = NSBezierPath(roundedRect: rect, xRadius: 1.0, yRadius: 1.0)
+        path.fill()
+    }
+    
+    public func startCursorBlink() {
+        cursorBlinkTimer?.invalidate()
+        isCursorVisible = true
+        needsDisplay = true
+        cursorBlinkTimer = Timer.scheduledTimer(withTimeInterval: 0.55, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                self.isCursorVisible.toggle()
+                if let rect = self.getCursorRect() {
+                    self.setNeedsDisplay(rect.insetBy(dx: -4, dy: -4))
+                } else {
+                    self.needsDisplay = true
+                }
+            }
+        }
+    }
+    
+    public func stopCursorBlink() {
+        cursorBlinkTimer?.invalidate()
+        cursorBlinkTimer = nil
+        isCursorVisible = false
+        needsDisplay = true
+    }
+    
+    public func resetCursorBlink() {
+        isCursorVisible = true
+        if let rect = getCursorRect() {
+            setNeedsDisplay(rect.insetBy(dx: -4, dy: -4))
+        } else {
+            needsDisplay = true
+        }
+    }
     
     override public func mouseDown(with event: NSEvent) {
         self.window?.makeFirstResponder(self)
@@ -259,6 +392,7 @@ public final class NativeTerminalView: NSTextView {
                 onInput?(data)
             }
         }
+        resetCursorBlink()
     }
     
     override public func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
@@ -273,12 +407,14 @@ public final class NativeTerminalView: NSTextView {
         self.currentMarkedText = text
         self.currentMarkedRange = selectedRange
         self.needsDisplay = true
+        resetCursorBlink()
     }
     
     override public func unmarkText() {
         self.currentMarkedText = ""
         self.currentMarkedRange = NSRange(location: NSNotFound, length: 0)
         self.needsDisplay = true
+        resetCursorBlink()
     }
     
     override public func hasMarkedText() -> Bool {
@@ -294,17 +430,15 @@ public final class NativeTerminalView: NSTextView {
     }
     
     override public func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect {
-        let total = textStorage?.length ?? 0
-        let glyphRange = NSRange(location: max(0, total - 1), length: 1)
-        var rect = layoutManager?.boundingRect(forGlyphRange: glyphRange, in: textContainer ?? NSTextContainer()) ?? .zero
-        rect.origin.y += rect.size.height
-        rect.size.width = 12
-        rect.size.height = 18
-        return self.window?.convertToScreen(self.convert(rect, to: nil)) ?? .zero
+        let rect = getCursorRect() ?? NSRect(x: textContainerOrigin.x, y: textContainerOrigin.y, width: 12, height: 18)
+        var screenRect = self.convert(rect, to: nil)
+        screenRect.origin.y -= screenRect.size.height
+        return self.window?.convertToScreen(screenRect) ?? .zero
     }
     
     // Command selectors from interpretKeyEvents & NSTextInputClient
     override public func doCommand(by selector: Selector) {
+        resetCursorBlink()
         switch selector {
         case #selector(insertNewline(_:)):
             onInput?("\r".data(using: .utf8)!)
@@ -330,18 +464,22 @@ public final class NativeTerminalView: NSTextView {
     }
     
     override public func insertNewline(_ sender: Any?) {
+        resetCursorBlink()
         onInput?("\r".data(using: .utf8)!)
     }
     
     override public func deleteBackward(_ sender: Any?) {
+        resetCursorBlink()
         onInput?("\u{7F}".data(using: .utf8)!)
     }
     
     override public func insertTab(_ sender: Any?) {
+        resetCursorBlink()
         onInput?("\t".data(using: .utf8)!)
     }
     
     override public func cancelOperation(_ sender: Any?) {
+        resetCursorBlink()
         onInput?("\u{1B}".data(using: .utf8)!)
     }
     
@@ -416,6 +554,7 @@ public final class NativeTerminalView: NSTextView {
         }
         
         self.scrollToEndOfDocument(nil)
+        self.resetCursorBlink()
     }
 }
 

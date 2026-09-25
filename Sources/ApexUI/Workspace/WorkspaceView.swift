@@ -76,32 +76,23 @@ public struct WorkspaceView: View {
     
     public var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(currentTab?.session.name ?? "工作台")
-                        .font(.system(size: 17, weight: .semibold))
-                        .lineLimit(1)
-                    Text(currentTab.map { "\($0.session.username)@\($0.session.host)" } ?? "选择左侧会话开始连接")
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+            if let tab = currentTab {
+                WorkspaceHeaderBar(tab: tab, isSFTPVisible: $isSFTPVisible)
+            } else {
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("工作台")
+                            .font(.system(size: 17, weight: .semibold))
+                        Text("选择左侧会话开始连接")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
                 }
-                Spacer(minLength: 12)
-                if let tab = currentTab {
-                    MetricCapsuleView(historyStore: tab.metricsHistory)
-                }
-                Button(action: {
-                    withAnimation(.easeInOut(duration: 0.2)) { isSFTPVisible.toggle() }
-                }) {
-                    Label(isSFTPVisible ? "隐藏文件" : "显示文件", systemImage: "folder")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(currentTab == nil)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .background(ApexStyle.surface)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-            .background(ApexStyle.surface)
 
             if !activeTabs.isEmpty {
                 HStack(spacing: 8) {
@@ -124,73 +115,29 @@ public struct WorkspaceView: View {
                 .background(ApexStyle.subtleSurface.opacity(0.5))
 
                 if activeTabs.count > 1 {
-                BroadcastBar(
-                    isBroadcastActive: $isBroadcastActive,
-                    targetCount: activeTabs.count,
-                    onBroadcastSubmit: { cmd in
-                        guard let data = cmd.data(using: .utf8) else { return }
-                        for tab in activeTabs {
-                            Task { try? await tab.sshClient.sendInput(data) }
+                    BroadcastBar(
+                        isBroadcastActive: $isBroadcastActive,
+                        targetCount: activeTabs.count,
+                        onBroadcastSubmit: { cmd in
+                            guard let data = cmd.data(using: .utf8) else { return }
+                            for tab in activeTabs {
+                                Task { try? await tab.sshClient.sendInput(data) }
+                            }
                         }
-                    }
-                )
+                    )
                 }
             }
             
             // Workspace Split: Terminal on Top, SFTP on Bottom (electerm layout)
             if let tab = currentTab {
-                GeometryReader { geometry in
-                    VStack(spacing: 0) {
-                        // Terminal Area
-                        TerminalRepresentable(ringBuffer: tab.ringBuffer) { inputData in
-                            Task {
-                                if isBroadcastActive {
-                                    for t in activeTabs {
-                                        try? await t.sshClient.sendInput(inputData)
-                                    }
-                                } else {
-                                    try? await tab.sshClient.sendInput(inputData)
-                                }
-                            }
-                        }
-                        .frame(height: isSFTPVisible ? geometry.size.height * splitRatio : geometry.size.height)
-                        
-                        if isSFTPVisible {
-                            // Split Divider with draggable handle
-                            HStack {
-                                Spacer()
-                                Capsule().fill(Color.secondary.opacity(0.5)).frame(width: 36, height: 3)
-                                Spacer()
-                            }
-                                .frame(height: 8)
-                                .background(ApexStyle.surface)
-                                .gesture(
-                                    DragGesture()
-                                        .onChanged { value in
-                                            let start = splitDragStartRatio ?? splitRatio
-                                            if splitDragStartRatio == nil { splitDragStartRatio = start }
-                                            let newRatio = start + value.translation.height / geometry.size.height
-                                            splitRatio = min(max(newRatio, 0.25), 0.85)
-                                        }
-                                        .onEnded { _ in splitDragStartRatio = nil }
-                                )
-                            
-                            // Integrated SFTP Panel
-                            SFTPView(
-                                currentPath: Binding(
-                                    get: { tab.currentRemotePath },
-                                    set: { tab.currentRemotePath = $0 }
-                                ),
-                                isLinkageEnabled: Binding(
-                                    get: { tab.isDirectoryLinkageEnabled },
-                                    set: { tab.isDirectoryLinkageEnabled = $0 }
-                                ),
-                                session: tab.sshClient
-                            )
-                            .frame(height: max(0, geometry.size.height * (1.0 - splitRatio) - 8))
-                        }
-                    }
-                }
+                WorkspaceActiveTabSplitView(
+                    tab: tab,
+                    activeTabs: activeTabs,
+                    isBroadcastActive: isBroadcastActive,
+                    isSFTPVisible: $isSFTPVisible,
+                    splitRatio: $splitRatio,
+                    splitDragStartRatio: $splitDragStartRatio
+                )
             } else {
                 VStack(spacing: 14) {
                     Spacer()
@@ -212,46 +159,19 @@ public struct WorkspaceView: View {
             Divider()
             
             // Bottom Status Bar
-            HStack(spacing: 16) {
-                if let tab = currentTab {
-                    ConnectionStatusView(tab: tab)
-                    
-                    Text("UTF-8")
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundColor(.secondary)
-                    
-                    Button(action: {
-                        tab.isDirectoryLinkageEnabled.toggle()
-                    }) {
-                        HStack(spacing: 4) {
-                            Image(systemName: tab.isDirectoryLinkageEnabled ? "link" : "link.slash")
-                                .font(.system(size: 10, weight: .bold))
-                                .foregroundColor(tab.isDirectoryLinkageEnabled ? ApexStyle.success : .secondary)
-                            Text(tab.isDirectoryLinkageEnabled ? L10n.linkageOn : L10n.linkageOff)
-                                .font(.system(size: 11, design: .monospaced))
-                                .foregroundColor(tab.isDirectoryLinkageEnabled ? .primary : .secondary)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .help(tab.isDirectoryLinkageEnabled ? L10n.linkageHelpOn : L10n.linkageHelpOff)
-                    
-                    Spacer()
-                    
-                    Text("\(L10n.currentDirectory): \(tab.currentRemotePath)")
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                } else {
+            if let tab = currentTab {
+                WorkspaceBottomStatusBar(tab: tab)
+            } else {
+                HStack {
                     Text(L10n.readyStatus)
                         .font(.system(size: 11))
                         .foregroundColor(.secondary)
                     Spacer()
                 }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(ApexStyle.surface)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 7)
-            .background(ApexStyle.surface)
         }
         .onChange(of: activeTabs.count) { _, count in
             if count < 2 { isBroadcastActive = false }
@@ -265,7 +185,135 @@ public struct WorkspaceView: View {
             selectedTabId = activeTabs.first?.id
         }
     }
+}
 
+private struct WorkspaceHeaderBar: View {
+    @ObservedObject var tab: TerminalTabItem
+    @Binding var isSFTPVisible: Bool
+    
+    var body: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(tab.session.name)
+                    .font(.system(size: 17, weight: .semibold))
+                    .lineLimit(1)
+                Text("\(tab.session.username)@\(tab.session.host)")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 12)
+            MetricCapsuleView(historyStore: tab.metricsHistory)
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.2)) { isSFTPVisible.toggle() }
+            }) {
+                Label(isSFTPVisible ? "隐藏文件" : "显示文件", systemImage: "folder")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(ApexStyle.surface)
+    }
+}
+
+private struct WorkspaceActiveTabSplitView: View {
+    @ObservedObject var tab: TerminalTabItem
+    let activeTabs: [TerminalTabItem]
+    let isBroadcastActive: Bool
+    @Binding var isSFTPVisible: Bool
+    @Binding var splitRatio: CGFloat
+    @Binding var splitDragStartRatio: CGFloat?
+    
+    var body: some View {
+        GeometryReader { geometry in
+            VStack(spacing: 0) {
+                // Terminal Area
+                TerminalRepresentable(ringBuffer: tab.ringBuffer) { inputData in
+                    Task {
+                        if isBroadcastActive {
+                            for t in activeTabs {
+                                try? await t.sshClient.sendInput(inputData)
+                            }
+                        } else {
+                            try? await tab.sshClient.sendInput(inputData)
+                        }
+                    }
+                }
+                .frame(height: isSFTPVisible ? geometry.size.height * splitRatio : geometry.size.height)
+                
+                if isSFTPVisible {
+                    // Split Divider with draggable handle
+                    HStack {
+                        Spacer()
+                        Capsule().fill(Color.secondary.opacity(0.5)).frame(width: 36, height: 3)
+                        Spacer()
+                    }
+                    .frame(height: 8)
+                    .background(ApexStyle.surface)
+                    .gesture(
+                        DragGesture()
+                            .onChanged { value in
+                                let start = splitDragStartRatio ?? splitRatio
+                                if splitDragStartRatio == nil { splitDragStartRatio = start }
+                                let newRatio = start + value.translation.height / geometry.size.height
+                                splitRatio = min(max(newRatio, 0.25), 0.85)
+                            }
+                            .onEnded { _ in splitDragStartRatio = nil }
+                    )
+                    
+                    // Integrated SFTP Panel with live observed bindings
+                    SFTPView(
+                        currentPath: $tab.currentRemotePath,
+                        isLinkageEnabled: $tab.isDirectoryLinkageEnabled,
+                        session: tab.sshClient
+                    )
+                    .frame(height: max(0, geometry.size.height * (1.0 - splitRatio) - 8))
+                }
+            }
+        }
+    }
+}
+
+private struct WorkspaceBottomStatusBar: View {
+    @ObservedObject var tab: TerminalTabItem
+    
+    var body: some View {
+        HStack(spacing: 16) {
+            ConnectionStatusView(tab: tab)
+            
+            Text("UTF-8")
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundColor(.secondary)
+            
+            Button(action: {
+                tab.isDirectoryLinkageEnabled.toggle()
+            }) {
+                HStack(spacing: 4) {
+                    Image(systemName: tab.isDirectoryLinkageEnabled ? "link" : "link.slash")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(tab.isDirectoryLinkageEnabled ? ApexStyle.success : .secondary)
+                    Text(tab.isDirectoryLinkageEnabled ? L10n.linkageOn : L10n.linkageOff)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundColor(tab.isDirectoryLinkageEnabled ? .primary : .secondary)
+                }
+            }
+            .buttonStyle(.plain)
+            .help(tab.isDirectoryLinkageEnabled ? L10n.linkageHelpOn : L10n.linkageHelpOff)
+            
+            Spacer()
+            
+            Text("\(L10n.currentDirectory): \(tab.currentRemotePath)")
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(ApexStyle.surface)
+    }
 }
 
 private struct ConnectionStatusView: View {

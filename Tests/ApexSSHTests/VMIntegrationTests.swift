@@ -6,19 +6,31 @@ import Foundation
 
 final class VMIntegrationTests: XCTestCase {
     
-    let vmHost = "100.64.0.3"
-    let vmUser = "chenxu"
-    let vmPassword = "chenyn"
+    private var vmHost: String {
+        ProcessInfo.processInfo.environment["APEX_TEST_VM_HOST"] ?? ""
+    }
+    private var vmUser: String {
+        ProcessInfo.processInfo.environment["APEX_TEST_VM_USER"] ?? ""
+    }
+    private var vmPassword: String {
+        ProcessInfo.processInfo.environment["APEX_TEST_VM_PASSWORD"] ?? ""
+    }
+    
+    private func requireVMConfig() throws {
+        guard !vmHost.isEmpty, !vmUser.isEmpty else {
+            throw XCTSkip("Skipping live VM integration test: APEX_TEST_VM_* environment variables not set.")
+        }
+    }
     
     var vmSession: Session {
         Session(
-            name: "macmini-vm",
+            name: "vm-integration-target",
             host: vmHost,
             port: 22,
             username: vmUser,
             authMethod: .password(keychainRef: vmPassword),
-            folder: "Production",
-            tags: ["macmini", "vm", "m-series"],
+            folder: "Testing",
+            tags: ["vm", "integration-test"],
             agentlessMonitorEnabled: true,
             sftpAutoSyncEnabled: true
         )
@@ -26,6 +38,7 @@ final class VMIntegrationTests: XCTestCase {
     
     // MARK: - Test 1: Real Agentless Metrics Probe
     func testVMRealAgentlessMetricsCollection() async throws {
+        try requireVMConfig()
         let monitor = AgentlessMonitor()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/sshpass")
@@ -54,8 +67,6 @@ final class VMIntegrationTests: XCTestCase {
         var prevNet: AgentlessMonitor.NetTickState? = nil
         let snapshot = monitor.parseOutput(output, prevCpu: &prevCpu, prevNet: &prevNet)
         
-        print("📊 VM Metrics Snapshot: CPU=\(snapshot.cpuUsagePercent)%, Cores=\(snapshot.cpuCores), MemoryUsed=\(snapshot.memoryUsedBytes / (1024*1024))MB, DiskUsed=\(snapshot.diskUsedBytes / (1024*1024*1024))GB")
-        
         XCTAssertGreaterThan(snapshot.cpuCores, 0)
         XCTAssertGreaterThan(snapshot.memoryTotalBytes, 0)
         XCTAssertGreaterThan(snapshot.memoryUsedBytes, 0)
@@ -65,14 +76,12 @@ final class VMIntegrationTests: XCTestCase {
     
     // MARK: - Test 2: Real SFTP Directory Listing & File Transfer Integrity
     func testVMRealSFTPDirectoryListingAndTransfer() async throws {
+        try requireVMConfig()
         let sshClient = NativeSSHSession(session: vmSession)
         
         // 1. List directory
-        let items = try await sshClient.listDirectory(path: "/Users/chenxu")
-        XCTAssertFalse(items.isEmpty, "Directory listing of /Users/chenxu should contain items")
-        
-        let hasExpectedDir = items.contains { $0.name == "Desktop" || $0.name == "Documents" || $0.name == "Downloads" || $0.name == "Library" }
-        XCTAssertTrue(hasExpectedDir, "Listing should contain standard macOS user directories")
+        let items = try await sshClient.listDirectory(path: "/tmp")
+        XCTAssertFalse(items.isEmpty, "Directory listing of /tmp should contain items")
         
         // 2. Prepare test payload
         let testString = "ApexTerm Real VM Integration Test Payload - \(UUID().uuidString)\nApple Silicon Native SSH Client & Metrics Engine\nTimestamp: \(Date())\n"
@@ -112,6 +121,7 @@ final class VMIntegrationTests: XCTestCase {
     
     // MARK: - Test 3: Real SSH Darwin PTY Interactive Session
     func testVMRealSSHPTYInteractiveSession() async throws {
+        try requireVMConfig()
         let sshClient = NativeSSHSession(session: vmSession)
         
         final class OutputBox: @unchecked Sendable {
@@ -143,7 +153,7 @@ final class VMIntegrationTests: XCTestCase {
         sshClient.setOutputHandler { data in
             if let str = String(data: data, encoding: .utf8) {
                 outputBox.append(str)
-                if outputBox.contains("chenxus-Mac-mini") || outputBox.contains("Darwin") || outputBox.contains("Last login") || outputBox.contains("%") || outputBox.contains("$") {
+                if outputBox.contains("Darwin") || outputBox.contains("Last login") || outputBox.contains("%") || outputBox.contains("$") {
                     if outputBox.markFulfilled() {
                         outputExpectation.fulfill()
                     }
@@ -160,7 +170,7 @@ final class VMIntegrationTests: XCTestCase {
         try await sshClient.sendInput("uname -m\r\n".data(using: .utf8)!)
         try await Task.sleep(nanoseconds: 500_000_000)
         
-        XCTAssertTrue(outputBox.contains("arm64") || outputBox.contains("Darwin") || outputBox.contains("Last login") || outputBox.contains("chenxu"))
+        XCTAssertTrue(outputBox.contains("arm64") || outputBox.contains("Darwin") || outputBox.contains("x86_64"))
         
         await sshClient.disconnect()
         XCTAssertEqual(sshClient.connectionState, .disconnected)
@@ -168,6 +178,7 @@ final class VMIntegrationTests: XCTestCase {
     
     // MARK: - Test 4: Verify Remote Disk Space Cleanliness
     func testVMDiskCleanlinessVerification() throws {
+        try requireVMConfig()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/sshpass")
         process.arguments = [
@@ -183,8 +194,6 @@ final class VMIntegrationTests: XCTestCase {
         
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         let output = String(data: data, encoding: .utf8) ?? ""
-        print("💾 Installed App Size on VM: \(output.trimmingCharacters(in: .whitespacesAndNewlines))")
-        
         XCTAssertTrue(output.contains("ApexTerm.app"))
         XCTAssertFalse(output.contains("G\t"), "Installed size should be in MBs, definitely not GBs!")
     }

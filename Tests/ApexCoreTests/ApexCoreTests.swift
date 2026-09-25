@@ -76,18 +76,18 @@ final class ApexCoreTests: XCTestCase {
     
     func testSessionPasswordAuthMethod() throws {
         let session = Session(
-            name: "VM Tart",
-            host: "192.168.64.12",
+            name: "Test Server",
+            host: "192.168.1.10",
             port: 22,
-            username: "chenxu",
-            authMethod: .password(keychainRef: "chenyn")
+            username: "testuser",
+            authMethod: .password(keychainRef: "mock_secret_ref")
         )
         
         let data = try JSONEncoder().encode(session)
         let decoded = try JSONDecoder().decode(Session.self, from: data)
         XCTAssertEqual(session.authMethod, decoded.authMethod)
         if case .password(let ref) = decoded.authMethod {
-            XCTAssertEqual(ref, "chenyn")
+            XCTAssertEqual(ref, "mock_secret_ref")
         } else {
             XCTFail("Decoded authMethod should be .password")
         }

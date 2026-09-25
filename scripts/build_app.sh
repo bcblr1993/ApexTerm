@@ -75,18 +75,21 @@ cat << EOF > "${CONTENTS_DIR}/Info.plist"
 </plist>
 EOF
 
-# Official Code Signing
-SIGNING_IDENTITY="Developer ID Application: YanNan Chen (5984KQD4D7)"
-if security find-identity -v -p codesigning | grep -q "${SIGNING_IDENTITY}"; then
-    echo "🔏 Signing with official Apple Certificate: ${SIGNING_IDENTITY}..."
+# Code Signing
+SIGNING_IDENTITY="${SIGNING_IDENTITY:-}"
+if [ -z "${SIGNING_IDENTITY}" ]; then
+    SIGNING_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null | grep "Developer ID Application:" | head -1 | awk -F '"' '{print $2}' || true)
+fi
+if [ -z "${SIGNING_IDENTITY}" ]; then
+    SIGNING_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null | grep "Apple Development:" | head -1 | awk -F '"' '{print $2}' || true)
+fi
+
+if [ -n "${SIGNING_IDENTITY}" ]; then
+    echo "🔏 Signing with certificate: ${SIGNING_IDENTITY}..."
     if [ -f "${MACOS_DIR}/sshpass" ]; then
         codesign --force --sign "${SIGNING_IDENTITY}" --options runtime --timestamp=none "${MACOS_DIR}/sshpass"
     fi
     codesign --force --deep --sign "${SIGNING_IDENTITY}" --options runtime --timestamp=none "${APP_DIR}"
-elif security find-identity -v -p codesigning | grep -q "Apple Development"; then
-    DEV_IDENTITY=$(security find-identity -v -p codesigning | grep "Apple Development" | head -1 | awk -F '"' '{print $2}')
-    echo "🔏 Signing with Development Certificate: ${DEV_IDENTITY}..."
-    codesign --force --deep --sign "${DEV_IDENTITY}" --options runtime --timestamp=none "${APP_DIR}"
 else
     echo "⚠️ No certificates found, using ad-hoc signature..."
     codesign --force --deep --sign - "${APP_DIR}"

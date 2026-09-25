@@ -6,26 +6,39 @@ import Foundation
 
 final class PublicServerIntegrationTests: XCTestCase {
     
-    let serverHost = "43.155.167.224"
-    let serverUser = "ubuntu"
-    let serverPassword = "Chen6185$$"
+    private var serverHost: String {
+        ProcessInfo.processInfo.environment["APEX_TEST_PUBLIC_SERVER_HOST"] ?? ""
+    }
+    private var serverUser: String {
+        ProcessInfo.processInfo.environment["APEX_TEST_PUBLIC_SERVER_USER"] ?? ""
+    }
+    private var serverPassword: String {
+        ProcessInfo.processInfo.environment["APEX_TEST_PUBLIC_SERVER_PASSWORD"] ?? ""
+    }
+    
+    private func requireServerConfig() throws {
+        guard !serverHost.isEmpty, !serverUser.isEmpty else {
+            throw XCTSkip("Skipping public server integration test: APEX_TEST_PUBLIC_SERVER_* environment variables not set.")
+        }
+    }
     
     var publicSession: Session {
         Session(
-            name: "ubuntu-public-server",
+            name: "public-integration-server",
             host: serverHost,
             port: 22,
             username: serverUser,
             authMethod: .password(keychainRef: serverPassword),
-            folder: "生产环境",
-            tags: ["ubuntu", "tencent-cloud", "public"],
+            folder: "Testing",
+            tags: ["integration-test"],
             agentlessMonitorEnabled: true,
             sftpAutoSyncEnabled: true
         )
     }
     
-    // MARK: - Test 1: Real SSH PTY Interactive Session to 43.155.167.224
+    // MARK: - Test 1: Real SSH PTY Interactive Session
     func testPublicServerSSHInteractiveSession() async throws {
+        try requireServerConfig()
         let sshClient = NativeSSHSession(session: publicSession)
         
         final class OutputBox: @unchecked Sendable {
@@ -57,12 +70,12 @@ final class PublicServerIntegrationTests: XCTestCase {
         }
         
         let outputBox = OutputBox()
-        let promptExpectation = expectation(description: "Receive shell banner and prompt from 43.155.167.224")
+        let promptExpectation = expectation(description: "Receive shell banner and prompt from remote server")
         
         sshClient.setOutputHandler { data in
             if let str = String(data: data, encoding: .utf8) {
                 outputBox.append(str)
-                if outputBox.contains("ubuntu") || outputBox.contains("Linux") || outputBox.contains("$") || outputBox.contains("Welcome") {
+                if outputBox.contains("$") || outputBox.contains("#") || outputBox.contains("%") {
                     if outputBox.markFulfilled() {
                         promptExpectation.fulfill()
                     }
@@ -79,7 +92,7 @@ final class PublicServerIntegrationTests: XCTestCase {
         try await sshClient.sendInput("uname -a\r\n".data(using: .utf8)!)
         try await Task.sleep(nanoseconds: 800_000_000)
         
-        XCTAssertTrue(outputBox.contains("Linux") || outputBox.contains("ubuntu"))
+        XCTAssertTrue(outputBox.contains("Linux") || outputBox.contains("Darwin"))
         
         // Verify TERM environment variable is properly exported to remote shell
         try await sshClient.sendInput("echo TERM_CHECK_$TERM\r\n".data(using: .utf8)!)
@@ -92,6 +105,7 @@ final class PublicServerIntegrationTests: XCTestCase {
     
     // MARK: - Test 2: Real Agentless Linux Server Metrics Collection
     func testPublicServerAgentlessMetrics() async throws {
+        try requireServerConfig()
         let monitor = AgentlessMonitor()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/sshpass")
@@ -120,26 +134,25 @@ final class PublicServerIntegrationTests: XCTestCase {
         var prevNet: AgentlessMonitor.NetTickState? = nil
         let snapshot = monitor.parseOutput(output, prevCpu: &prevCpu, prevNet: &prevNet)
         
-        print("📊 43.155.167.224 Linux Metrics: CPU=\(snapshot.cpuUsagePercent)%, Cores=\(snapshot.cpuCores), MemoryTotal=\(snapshot.memoryTotalBytes / (1024*1024))MB, DiskUsed=\(snapshot.diskUsedBytes / (1024*1024*1024))GB")
-        
         XCTAssertGreaterThan(snapshot.cpuCores, 0)
         XCTAssertGreaterThan(snapshot.memoryTotalBytes, 0)
         XCTAssertGreaterThan(snapshot.diskTotalBytes, 0)
         XCTAssertGreaterThan(snapshot.uptimeSeconds, 0)
     }
     
-    // MARK: - Test 3: Real SFTP Directory Listing on /home/ubuntu
+    // MARK: - Test 3: Real SFTP Directory Listing and Transfer
     func testPublicServerSFTPListingAndTransfer() async throws {
+        try requireServerConfig()
         let sshClient = NativeSSHSession(session: publicSession)
         
-        // 1. List /home/ubuntu
-        let items = try await sshClient.listDirectory(path: "/home/ubuntu")
-        XCTAssertFalse(items.isEmpty, "Directory listing of /home/ubuntu should contain items")
+        // 1. List /tmp
+        let items = try await sshClient.listDirectory(path: "/tmp")
+        XCTAssertFalse(items.isEmpty, "Directory listing of /tmp should contain items")
         
         // 2. Prepare test file
-        let testString = "ApexTerm 43.155.167.224 Integration Test Payload - \(UUID().uuidString)\nTimestamp: \(Date())\n"
-        let localTempURL = FileManager.default.temporaryDirectory.appendingPathComponent("apexterm_ubuntu_upload.txt")
-        let localDownloadedURL = FileManager.default.temporaryDirectory.appendingPathComponent("apexterm_ubuntu_download.txt")
+        let testString = "ApexTerm Integration Test Payload - \(UUID().uuidString)\nTimestamp: \(Date())\n"
+        let localTempURL = FileManager.default.temporaryDirectory.appendingPathComponent("apexterm_upload_payload.txt")
+        let localDownloadedURL = FileManager.default.temporaryDirectory.appendingPathComponent("apexterm_download_payload.txt")
         let remotePath = "/tmp/apexterm_test_\(UUID().uuidString).txt"
         
         try testString.write(to: localTempURL, atomically: true, encoding: .utf8)
@@ -174,6 +187,7 @@ final class PublicServerIntegrationTests: XCTestCase {
     
     // MARK: - Test 4: Real Shell Directory Syncing (cd /tmp -> directoryChangeHandler)
     func testPublicServerDirectoryChangeSync() async throws {
+        try requireServerConfig()
         let sshClient = NativeSSHSession(session: publicSession)
         
         final class PathBox: @unchecked Sendable {

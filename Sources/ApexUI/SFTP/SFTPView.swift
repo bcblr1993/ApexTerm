@@ -19,6 +19,7 @@ public struct SFTPView: View {
     @State private var transferNotice: String?
     @State private var loadError: String?
     @State private var isOpeningEditor = false
+    @State private var isTransferDrawerExpanded = false
     @State private var loadTask: Task<Void, Never>?
 
     public init(
@@ -242,6 +243,12 @@ public struct SFTPView: View {
                         .padding(18)
                         .apexPanel()
                 }
+
+                // Floating Transfer Task Drawer
+                VStack {
+                    Spacer()
+                    TransferDrawer(isExpanded: $isTransferDrawerExpanded)
+                }
             }
         }
         .onAppear {
@@ -251,9 +258,16 @@ public struct SFTPView: View {
             loadDirectory(path: newPath)
         }
         .sheet(item: $editingFile) { item in
-            QuickEditorSheet(item: item, content: $editorContent) { newContent in
-                saveEditedFile(item, content: newContent)
-            }
+            QuickEditorView(
+                item: item,
+                content: $editorContent,
+                onSave: { newContent in
+                    try await saveEditedFileAsync(item, content: newContent)
+                },
+                onReload: {
+                    try await reloadFileContentAsync(item)
+                }
+            )
         }
     }
 
@@ -325,80 +339,61 @@ public struct SFTPView: View {
         }
     }
 
-    private func saveEditedFile(_ item: SFTPItem, content: String) {
+    private func saveEditedFileAsync(_ item: SFTPItem, content: String) async throws {
         guard let session else { return }
-        Task {
-            let localURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-            defer { try? FileManager.default.removeItem(at: localURL) }
-            do {
-                try content.write(to: localURL, atomically: true, encoding: .utf8)
-                try await session.uploadFile(localURL: localURL, remotePath: item.path, progress: { _ in })
-                transferNotice = "已保存：\(item.name)"
-                loadDirectory(path: currentPath)
-            } catch {
-                transferNotice = "保存失败：\(error.localizedDescription)"
-            }
+        let localURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: localURL) }
+        try content.write(to: localURL, atomically: true, encoding: .utf8)
+        try await session.uploadFile(localURL: localURL, remotePath: item.path, progress: { _ in })
+        await MainActor.run {
+            self.loadDirectory(path: self.currentPath)
         }
+    }
+
+    private func reloadFileContentAsync(_ item: SFTPItem) async throws -> String {
+        guard let session else { return "" }
+        let localURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: localURL) }
+        try await session.downloadFile(remotePath: item.path, localURL: localURL, progress: { _ in })
+        return try String(contentsOf: localURL, encoding: .utf8)
     }
 
     private func uploadAction() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        if panel.runModal() == .OK, let url = panel.url {
-            Task {
-                do {
-                    try await session?.uploadFile(localURL: url, remotePath: "\(currentPath)/\(url.lastPathComponent)", progress: { _ in })
-                    transferNotice = "已上传：\(url.lastPathComponent)"
-                    loadDirectory(path: currentPath)
-                } catch {
-                    transferNotice = "上传失败：\(error.localizedDescription)"
+        panel.allowsMultipleSelection = true
+        if panel.runModal() == .OK, let s = session {
+            for url in panel.urls {
+                let dest = currentPath.hasSuffix("/") ? "\(currentPath)\(url.lastPathComponent)" : "\(currentPath)/\(url.lastPathComponent)"
+                TransferManager.shared.enqueueUpload(session: s, localURL: url, remotePath: dest) {
+                    DispatchQueue.main.async {
+                        self.loadDirectory(path: self.currentPath)
+                    }
                 }
             }
         }
     }
 
     private func downloadAction(_ item: SFTPItem) {
+        guard let s = session else { return }
         let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first!
         let localURL = downloads.appendingPathComponent(item.name)
-        Task {
-            do {
-                try await session?.downloadFile(remotePath: item.path, localURL: localURL, progress: { _ in })
-                transferNotice = "已下载：\(item.name)"
-            } catch {
-                transferNotice = "下载失败：\(error.localizedDescription)"
-            }
-        }
+        TransferManager.shared.enqueueDownload(session: s, remotePath: item.path, localURL: localURL, totalBytes: Int64(item.size))
     }
 
     /// Handle local file drop from Finder / Desktop
     private func handleDropUpload(providers: [NSItemProvider]) {
+        guard let s = session else { return }
         let targetDirectory = self.currentPath
         for provider in providers {
             _ = provider.loadObject(ofClass: URL.self) { url, _ in
                 guard let localURL = url else { return }
-                Task {
-                    let dest = targetDirectory.hasSuffix("/") ? "\(targetDirectory)\(localURL.lastPathComponent)" : "\(targetDirectory)/\(localURL.lastPathComponent)"
-                    do {
-                        try await session?.uploadFile(localURL: localURL, remotePath: dest, progress: { _ in })
-                        await MainActor.run {
-                            loadDirectory(path: targetDirectory)
-                            withAnimation {
-                                self.transferNotice = "已成功上传: \(localURL.lastPathComponent)"
-                            }
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                                withAnimation { self.transferNotice = nil }
-                            }
-                        }
-                    } catch {
-                        await MainActor.run {
-                            withAnimation {
-                                self.transferNotice = "上传失败: \(error.localizedDescription)"
-                            }
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
-                                withAnimation { self.transferNotice = nil }
-                            }
+                let dest = targetDirectory.hasSuffix("/") ? "\(targetDirectory)\(localURL.lastPathComponent)" : "\(targetDirectory)/\(localURL.lastPathComponent)"
+                Task { @MainActor in
+                    TransferManager.shared.enqueueUpload(session: s, localURL: localURL, remotePath: dest) {
+                        DispatchQueue.main.async {
+                            self.loadDirectory(path: targetDirectory)
                         }
                     }
                 }
@@ -458,60 +453,5 @@ public struct SFTPView: View {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH:mm"
         return formatter.string(from: date)
-    }
-}
-
-/// In-place code editor sheet
-public struct QuickEditorSheet: View {
-    public let item: SFTPItem
-    @Binding public var content: String
-    public let onSave: (String) -> Void
-    @Environment(\.dismiss) private var dismiss
-
-    public var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                Image(systemName: "doc.text")
-                    .font(.system(size: 18))
-                    .foregroundStyle(ApexStyle.accent)
-                    .frame(width: 38, height: 38)
-                    .background(ApexStyle.accent.opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(item.name).font(.system(size: 17, weight: .semibold))
-                    Text(item.path)
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                Spacer()
-            }
-            .padding(16)
-            .background(ApexStyle.surface)
-
-            Divider()
-
-            TextEditor(text: $content)
-                .font(.system(size: 13, design: .monospaced))
-                .padding(12)
-
-            Divider()
-            HStack {
-                Text("UTF-8 · 修改后将上传到远程主机")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button(L10n.closeWindow) { dismiss() }
-                Button("保存并关闭") {
-                    onSave(content)
-                    dismiss()
-                }
-                .keyboardShortcut("s", modifiers: .command)
-                .buttonStyle(.borderedProminent)
-                .tint(ApexStyle.accent)
-            }
-            .padding(14)
-            .background(ApexStyle.surface)
-        }
-        .frame(minWidth: 660, minHeight: 500)
     }
 }

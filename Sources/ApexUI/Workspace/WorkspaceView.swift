@@ -3,26 +3,27 @@ import ApexCore
 import ApexSSH
 import ApexTerminal
 
+public enum PaneSplitMode: String, Sendable {
+    case single
+    case vertical
+    case horizontal
+}
+
 @MainActor
-public final class TerminalTabItem: Identifiable, ObservableObject {
+public final class TerminalPaneItem: Identifiable, ObservableObject {
     public let id = UUID()
     public let session: Session
     public let sshClient: SSHSessionProtocol
     public let ringBuffer = TerminalRingBuffer(maxLines: 50_000)
-    public let metricsHistory = ObservableMetricsHistory()
-    @Published public var currentRemotePath: String
-    @Published public var isDirectoryLinkageEnabled: Bool
+    public let title: String
     @Published public var connectionState: SSHConnectionState = .disconnected
     
-    public init(session: Session, sshClient: SSHSessionProtocol) {
+    public init(session: Session, sshClient: SSHSessionProtocol, title: String) {
         self.session = session
         self.sshClient = sshClient
-        self.currentRemotePath = session.username == "root" ? "/root" : (session.username.isEmpty ? "~" : "/home/\(session.username)")
-        self.isDirectoryLinkageEnabled = session.sftpAutoSyncEnabled
+        self.title = title
         
         let ringBuffer = self.ringBuffer
-        let metricsHistory = self.metricsHistory
-        
         self.sshClient.setOutputHandler { data in
             if let text = String(data: data, encoding: .utf8) {
                 ringBuffer.appendStream(text)
@@ -31,7 +32,44 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
                 ringBuffer.appendStream(lossy)
             }
         }
+    }
+}
+
+@MainActor
+public final class TerminalTabItem: Identifiable, ObservableObject {
+    public let id = UUID()
+    public let session: Session
+    public let sshClient: SSHSessionProtocol
+    public let metricsHistory = ObservableMetricsHistory()
+    @Published public var currentRemotePath: String
+    @Published public var isDirectoryLinkageEnabled: Bool
+    @Published public var connectionState: SSHConnectionState = .disconnected
+    
+    // Split Panes
+    @Published public var panes: [TerminalPaneItem] = []
+    @Published public var activePaneId: UUID?
+    @Published public var splitMode: PaneSplitMode = .single
+    
+    private let fallbackRingBuffer = TerminalRingBuffer(maxLines: 50_000)
+    public var ringBuffer: TerminalRingBuffer {
+        activePane?.ringBuffer ?? panes.first?.ringBuffer ?? fallbackRingBuffer
+    }
+    
+    public var activePane: TerminalPaneItem? {
+        panes.first(where: { $0.id == activePaneId }) ?? panes.first
+    }
+    
+    public init(session: Session, sshClient: SSHSessionProtocol) {
+        self.session = session
+        self.sshClient = sshClient
+        self.currentRemotePath = session.username == "root" ? "/root" : (session.username.isEmpty ? "~" : "/home/\(session.username)")
+        self.isDirectoryLinkageEnabled = session.sftpAutoSyncEnabled
         
+        let primaryPane = TerminalPaneItem(session: session, sshClient: sshClient, title: session.name)
+        self.panes = [primaryPane]
+        self.activePaneId = primaryPane.id
+        
+        let metricsHistory = self.metricsHistory
         self.sshClient.setMetricsHandler { snapshot in
             Task { @MainActor in
                 metricsHistory.append(snapshot)
@@ -46,6 +84,40 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
                 }
             }
         }
+    }
+    
+    public func split(mode: PaneSplitMode) {
+        guard panes.count < 2 else { return }
+        let newClient: SSHSessionProtocol
+        if session.host == "10.0.1.10" {
+            newClient = MockSSHSession(session: session)
+        } else {
+            newClient = NativeSSHSession(session: session)
+        }
+        
+        let newPane = TerminalPaneItem(session: session, sshClient: newClient, title: "\(session.name) (分屏)")
+        self.panes.append(newPane)
+        self.activePaneId = newPane.id
+        self.splitMode = mode
+        
+        Task {
+            newPane.connectionState = .connecting(step: "连接中")
+            do {
+                try await newClient.connect()
+                newPane.connectionState = newClient.connectionState
+            } catch {
+                newPane.connectionState = .failed(error.localizedDescription)
+            }
+        }
+    }
+    
+    public func closePane(id: UUID) {
+        guard let idx = panes.firstIndex(where: { $0.id == id }) else { return }
+        let pane = panes[idx]
+        Task { await pane.sshClient.disconnect() }
+        panes.remove(at: idx)
+        splitMode = .single
+        activePaneId = panes.first?.id
     }
 }
 
@@ -121,12 +193,24 @@ public struct WorkspaceView: View {
                         onBroadcastSubmit: { cmd in
                             guard let data = cmd.data(using: .utf8) else { return }
                             for tab in activeTabs {
-                                Task { try? await tab.sshClient.sendInput(data) }
+                                for pane in tab.panes {
+                                    Task { try? await pane.sshClient.sendInput(data) }
+                                }
                             }
                         }
                     )
                 }
             }
+            
+            // Hidden buttons for split keyboard shortcuts
+            Group {
+                Button("") { currentTab?.split(mode: .vertical) }
+                    .keyboardShortcut("d", modifiers: .command)
+                Button("") { currentTab?.split(mode: .horizontal) }
+                    .keyboardShortcut("d", modifiers: [.command, .shift])
+            }
+            .frame(width: 0, height: 0)
+            .opacity(0)
             
             // Workspace Split: Terminal on Top, SFTP on Bottom (electerm layout)
             if let tab = currentTab {
@@ -179,7 +263,9 @@ public struct WorkspaceView: View {
     }
     
     private func closeTab(_ tab: TerminalTabItem) {
-        Task { await tab.sshClient.disconnect() }
+        for pane in tab.panes {
+            Task { await pane.sshClient.disconnect() }
+        }
         activeTabs.removeAll(where: { $0.id == tab.id })
         if selectedTabId == tab.id {
             selectedTabId = activeTabs.first?.id
@@ -203,7 +289,30 @@ private struct WorkspaceHeaderBar: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 12)
+            
+            // Split Buttons
+            HStack(spacing: 4) {
+                Button(action: { tab.split(mode: .vertical) }) {
+                    Image(systemName: "rectangle.split.2x1")
+                        .font(.system(size: 11))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("垂直分屏 (⌘D)")
+                .disabled(tab.panes.count >= 2)
+                
+                Button(action: { tab.split(mode: .horizontal) }) {
+                    Image(systemName: "rectangle.split.1x2")
+                        .font(.system(size: 11))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("水平分屏 (⌘⇧D)")
+                .disabled(tab.panes.count >= 2)
+            }
+            
             MetricCapsuleView(historyStore: tab.metricsHistory)
+            
             Button(action: {
                 withAnimation(.easeInOut(duration: 0.2)) { isSFTPVisible.toggle() }
             }) {
@@ -229,15 +338,23 @@ private struct WorkspaceActiveTabSplitView: View {
     var body: some View {
         GeometryReader { geometry in
             VStack(spacing: 0) {
-                // Terminal Area
-                TerminalRepresentable(ringBuffer: tab.ringBuffer) { inputData in
-                    Task {
-                        if isBroadcastActive {
-                            for t in activeTabs {
-                                try? await t.sshClient.sendInput(inputData)
+                // Terminal Area with Split Panes
+                Group {
+                    if tab.splitMode == .single || tab.panes.count < 2 {
+                        if let pane = tab.panes.first {
+                            PaneContainerView(pane: pane, tab: tab, activeTabs: activeTabs, isBroadcastActive: isBroadcastActive)
+                        }
+                    } else if tab.splitMode == .vertical {
+                        HStack(spacing: 4) {
+                            ForEach(tab.panes) { pane in
+                                PaneContainerView(pane: pane, tab: tab, activeTabs: activeTabs, isBroadcastActive: isBroadcastActive)
                             }
-                        } else {
-                            try? await tab.sshClient.sendInput(inputData)
+                        }
+                    } else {
+                        VStack(spacing: 4) {
+                            ForEach(tab.panes) { pane in
+                                PaneContainerView(pane: pane, tab: tab, activeTabs: activeTabs, isBroadcastActive: isBroadcastActive)
+                            }
                         }
                     }
                 }
@@ -272,6 +389,66 @@ private struct WorkspaceActiveTabSplitView: View {
                     .frame(height: max(0, geometry.size.height * (1.0 - splitRatio) - 8))
                 }
             }
+        }
+    }
+}
+
+private struct PaneContainerView: View {
+    @ObservedObject var pane: TerminalPaneItem
+    @ObservedObject var tab: TerminalTabItem
+    let activeTabs: [TerminalTabItem]
+    let isBroadcastActive: Bool
+    
+    var isFocused: Bool {
+        tab.activePaneId == pane.id
+    }
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            if tab.panes.count > 1 {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(isFocused ? ApexStyle.accent : Color.secondary.opacity(0.5))
+                        .frame(width: 6, height: 6)
+                    Text(pane.title)
+                        .font(.system(size: 11, weight: isFocused ? .semibold : .regular, design: .monospaced))
+                        .foregroundColor(isFocused ? .primary : .secondary)
+                    Spacer()
+                    Button(action: { tab.closePane(id: pane.id) }) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 9))
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("关闭此分屏")
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(isFocused ? ApexStyle.accent.opacity(0.12) : ApexStyle.subtleSurface)
+            }
+            
+            TerminalRepresentable(ringBuffer: pane.ringBuffer) { inputData in
+                Task {
+                    if isBroadcastActive {
+                        for t in activeTabs {
+                            for p in t.panes {
+                                try? await p.sshClient.sendInput(inputData)
+                            }
+                        }
+                    } else {
+                        try? await pane.sshClient.sendInput(inputData)
+                    }
+                }
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(isFocused && tab.panes.count > 1 ? ApexStyle.accent.opacity(0.85) : Color.clear, lineWidth: 1.5)
+        )
+        .contentShape(Rectangle())
+        .onTapGesture {
+            tab.activePaneId = pane.id
         }
     }
 }

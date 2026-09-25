@@ -51,12 +51,34 @@ struct ApexTermApp: App {
             CommandMenu(L10n.menuSession) {
                 Button(L10n.menuDisconnect) {
                     if let current = activeTabs.first(where: { $0.id == selectedTabId }) {
-                        Task { await current.sshClient.disconnect() }
-                        activeTabs.removeAll(where: { $0.id == current.id })
-                        selectedTabId = activeTabs.first?.id
+                        if current.panes.count > 1, let activeId = current.activePaneId {
+                            current.closePane(id: activeId)
+                        } else {
+                            for pane in current.panes {
+                                Task { await pane.sshClient.disconnect() }
+                            }
+                            activeTabs.removeAll(where: { $0.id == current.id })
+                            selectedTabId = activeTabs.first?.id
+                        }
                     }
                 }
                 .keyboardShortcut("w", modifiers: .command)
+                
+                Divider()
+                
+                Button("垂直分屏") {
+                    if let current = activeTabs.first(where: { $0.id == selectedTabId }) {
+                        current.split(mode: .vertical)
+                    }
+                }
+                .keyboardShortcut("d", modifiers: .command)
+                
+                Button("水平分屏") {
+                    if let current = activeTabs.first(where: { $0.id == selectedTabId }) {
+                        current.split(mode: .horizontal)
+                    }
+                }
+                .keyboardShortcut("d", modifiers: [.command, .shift])
                 
                 Divider()
                 
@@ -104,7 +126,8 @@ struct ApexTermApp: App {
         let toSend = snippet.autoExecute ? "\(resolved)\n" : resolved
         if let data = toSend.data(using: .utf8) {
             Task {
-                try? await current.sshClient.sendInput(data)
+                let target = current.activePane?.sshClient ?? current.sshClient
+                try? await target.sendInput(data)
             }
         }
     }

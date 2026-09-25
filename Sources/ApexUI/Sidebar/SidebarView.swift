@@ -10,6 +10,7 @@ public struct SidebarView: View {
     
     @State private var searchFilter = ""
     @State private var showingAddSheet = false
+    @State private var showingImportSheet = false
     @State private var editingSession: Session?
     @State private var sessionToDelete: Session?
     @State private var collapsedFolders: Set<String> = []
@@ -40,7 +41,7 @@ public struct SidebarView: View {
             .padding(.top, 18)
             .padding(.bottom, 10)
 
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 HStack(spacing: 6) {
                     Image(systemName: "magnifyingglass")
                         .foregroundColor(.secondary)
@@ -52,6 +53,16 @@ public struct SidebarView: View {
                 .padding(8)
                 .background(Color(nsColor: .controlBackgroundColor))
                 .clipShape(RoundedRectangle(cornerRadius: 9))
+                
+                Button(action: { showingImportSheet = true }) {
+                    Image(systemName: "square.and.arrow.down")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.primary)
+                        .frame(width: 28, height: 28)
+                        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+                }
+                .buttonStyle(.plain)
+                .help("从 ~/.ssh/config 导入主机")
                 
                 Button(action: { showingAddSheet = true }) {
                     Image(systemName: "plus")
@@ -198,6 +209,9 @@ public struct SidebarView: View {
             SessionEditModal(session: nil) { newSession in
                 store.addSession(newSession)
             }
+        }
+        .sheet(isPresented: $showingImportSheet) {
+            SSHConfigImportSheet(store: store)
         }
         .sheet(item: $editingSession) { session in
             SessionEditModal(session: session) { updated in

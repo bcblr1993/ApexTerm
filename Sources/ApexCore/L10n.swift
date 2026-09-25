@@ -1,0 +1,96 @@
+import Foundation
+
+/// 集中式中文国际化文案管理
+public enum L10n {
+    // 侧边栏与导航
+    public static let appName = "ApexTerm"
+    public static let sessionsHeader = "会话列表"
+    public static let quickCommandsHeader = "快捷命令"
+    public static let searchPlaceholder = "搜索会话、标签或主机..."
+    public static let addSessionHelp = "添加新的 SSH 会话"
+    public static let generalFolder = "常用会话"
+    public static let productionFolder = "生产环境"
+    public static let stagingFolder = "测试环境"
+    public static let databaseFolder = "数据库"
+    public static let defaultFolder = "默认分组"
+    
+    // 会话操作
+    public static let connectAction = "连接会话"
+    public static let editSessionAction = "编辑会话..."
+    public static let duplicateSessionAction = "复制会话"
+    public static let deleteSessionAction = "删除会话"
+    public static let copyTag = "(副本)"
+    public static let runCommandAction = "运行"
+    
+    // 工作台
+    public static let noActiveSession = "未连接会话"
+    public static let doubleClickPrompt = "双击左侧会话列表进行连接，或点击上方「+」新建会话。"
+    public static let connectedStatus = "已连接"
+    public static let readyStatus = "就绪"
+    public static let metalRender120Hz = "120Hz 原生渲染"
+    public static let currentDirectory = "当前目录"
+    public static let hideSFTPPanel = "隐藏 SFTP 文件面板"
+    public static let showSFTPPanel = "显示 SFTP 文件面板"
+    public static let broadcastToTabs = "向 %d 个终端广播"
+    public static let broadcastPlaceholder = "输入命令，将实时同步发送至所有已连接的会话..."
+    public static let broadcastSend = "广播发送"
+    
+    // 性能监控
+    public static let cpuMetric = "CPU"
+    public static let ramMetric = "内存"
+    public static let netMetric = "网络"
+    public static let diskMetric = "磁盘"
+    public static let serverPerformance = "服务器实时性能监控"
+    public static let uptime = "运行时间"
+    public static let cpuUtilization = "CPU 使用率"
+    public static let cpuCores = "核心数"
+    public static let networkThroughput = "网络实时吞吐 (下行 / 上行)"
+    public static let downloadStream = "下行"
+    public static let uploadStream = "上行"
+    public static let rootStorage = "系统盘空间"
+    
+    // SFTP 文件管理
+    public static let remotePath = "远程路径"
+    public static let osc7Sync = "终端目录联动 (OSC 7)"
+    public static let parentDirectory = "上一级目录"
+    public static let refreshDirectory = "刷新文件列表"
+    public static let uploadFile = "上传文件"
+    public static let filterFiles = "筛选当前目录文件..."
+    public static let loadingFiles = "正在读取远程文件列表..."
+    public static let downloadToDownloads = "下载至「下载」文件夹"
+    public static let quickViewEdit = "快速查看 / 编辑"
+    public static let copyRemotePath = "复制远程路径"
+    public static let saveShortcut = "保存 (⌘S)"
+    public static let closeWindow = "关闭"
+    
+    // 会话新建与编辑模态框
+    public static let newSessionTitle = "新建 SSH 会话"
+    public static let editSessionTitle = "编辑 SSH 会话"
+    public static let cancel = "取消"
+    public static let save = "保存"
+    public static let hostDetailsSection = "主机与连接设置"
+    public static let sessionNameLabel = "会话名称"
+    public static let sessionNamePlaceholder = "例如：生产环境主控机 (k8s-master)"
+    public static let hostLabel = "主机地址 / IP"
+    public static let hostPlaceholder = "例如：192.168.64.12 或 example.com"
+    public static let portLabel = "SSH 端口"
+    public static let usernameLabel = "登录用户名"
+    public static let authMethodSection = "身份认证方式"
+    public static let authPassword = "密码认证 (Password)"
+    public static let authKeyOrAgent = "SSH 密钥 / 代理 (Key / Agent)"
+    public static let passwordLabel = "登录密码"
+    public static let passwordPlaceholder = "输入服务器密码（安全保存在系统钥匙串）"
+    public static let organizationSection = "分组与标签"
+    public static let folderLabel = "分组目录"
+    public static let tagsLabel = "标签 (用逗号分隔)"
+    public static let tagsPlaceholder = "例如：生产, k8s, 核心"
+    public static let performanceSection = "性能与增强特性"
+    public static let agentlessMonitorToggle = "开启无感实时性能监控 (FinalShell 风格)"
+    public static let sftpAutoSyncToggle = "开启 SFTP 终端目录跟随联动 (electerm 风格)"
+    
+    // 菜单项
+    public static let menuNewTab = "新建终端标签"
+    public static let menuSession = "会话"
+    public static let menuDisconnect = "断开当前连接"
+    public static let menuClearScrollback = "清空终端回滚记录"
+}

@@ -2,7 +2,7 @@ import SwiftUI
 import ApexCore
 import ApexSSH
 
-/// High-performance integrated SFTP file manager (electerm-style with OSC 7 sync)
+/// High-performance integrated SFTP file manager (electerm-style with OSC 7 sync) with Chinese localization
 public struct SFTPView: View {
     @Binding public var currentPath: String
     public let session: SSHSessionProtocol?
@@ -28,7 +28,7 @@ public struct SFTPView: View {
                     .foregroundColor(.cyan)
                     .font(.system(size: 13))
                 
-                TextField("Remote Path", text: $currentPath, onCommit: {
+                TextField(L10n.remotePath, text: $currentPath, onCommit: {
                     loadDirectory(path: currentPath)
                 })
                 .textFieldStyle(.roundedBorder)
@@ -39,7 +39,7 @@ public struct SFTPView: View {
                     Circle()
                         .fill(Color.green)
                         .frame(width: 6, height: 6)
-                    Text("OSC 7 Sync")
+                    Text(L10n.osc7Sync)
                         .font(.system(size: 10, weight: .medium))
                         .foregroundColor(.secondary)
                 }
@@ -57,7 +57,7 @@ public struct SFTPView: View {
                     Image(systemName: "arrow.up")
                 }
                 .buttonStyle(.plain)
-                .help("Parent directory")
+                .help(L10n.parentDirectory)
                 
                 Button(action: {
                     loadDirectory(path: currentPath)
@@ -65,12 +65,12 @@ public struct SFTPView: View {
                     Image(systemName: "arrow.clockwise")
                 }
                 .buttonStyle(.plain)
-                .help("Refresh")
+                .help(L10n.refreshDirectory)
                 
                 Button(action: {
                     uploadAction()
                 }) {
-                    Label("Upload", systemImage: "arrow.up.doc")
+                    Label(L10n.uploadFile, systemImage: "arrow.up.doc")
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
@@ -86,7 +86,7 @@ public struct SFTPView: View {
                 Image(systemName: "magnifyingglass")
                     .foregroundColor(.secondary)
                     .font(.system(size: 11))
-                TextField("Filter files...", text: $searchFilter)
+                TextField(L10n.filterFiles, text: $searchFilter)
                     .textFieldStyle(.plain)
                     .font(.system(size: 11))
                 if !searchFilter.isEmpty {
@@ -107,7 +107,7 @@ public struct SFTPView: View {
             if isLoading {
                 VStack {
                     Spacer()
-                    ProgressView("Loading remote files...")
+                    ProgressView(L10n.loadingFiles)
                         .font(.caption)
                     Spacer()
                 }
@@ -144,16 +144,16 @@ public struct SFTPView: View {
                         handleDoubleClick(item)
                     }
                     .contextMenu {
-                        Button("Download to Downloads") {
+                        Button(L10n.downloadToDownloads) {
                             downloadAction(item)
                         }
                         if !item.isDirectory {
-                            Button("Quick View / Edit") {
+                            Button(L10n.quickViewEdit) {
                                 openEditor(item)
                             }
                         }
                         Divider()
-                        Button("Copy Remote Path") {
+                        Button(L10n.copyRemotePath) {
                             NSPasteboard.general.clearContents()
                             NSPasteboard.general.setString(item.path, forType: .string)
                         }
@@ -217,7 +217,7 @@ public struct SFTPView: View {
     }
     
     private func openEditor(_ item: SFTPItem) {
-        self.editorContent = "# Remote file: \(item.path)\n# Size: \(item.formattedSize)\n\n# Loaded via ApexTerm High-Throughput SFTP\nserver {\n    listen 80;\n    server_name localhost;\n    access_log /var/log/nginx/access.log;\n}"
+        self.editorContent = "# 远程文件: \(item.path)\n# 文件大小: \(item.formattedSize)\n\n# 经由 ApexTerm 高速 SFTP 引擎载入\nserver {\n    listen 80;\n    server_name localhost;\n    access_log /var/log/nginx/access.log;\n}"
         self.editingFile = item
     }
     
@@ -292,13 +292,13 @@ public struct QuickEditorSheet: View {
                 Text(item.path)
                     .font(.caption)
                     .foregroundColor(.secondary)
-                Button("Save (⌘S)") {
+                Button(L10n.saveShortcut) {
                     onSave(content)
                     dismiss()
                 }
                 .keyboardShortcut("s", modifiers: .command)
                 .buttonStyle(.borderedProminent)
-                Button("Close") {
+                Button(L10n.closeWindow) {
                     dismiss()
                 }
             }

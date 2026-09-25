@@ -49,6 +49,23 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         return result
     }
     
+    /// Return lines from offset to count for incremental rendering
+    public func lines(from start: Int, count requestedCount: Int) -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        
+        guard start < count else { return [] }
+        let available = count - start
+        let fetchCount = min(requestedCount, available)
+        var result = [String]()
+        result.reserveCapacity(fetchCount)
+        for i in 0..<fetchCount {
+            let index = (head + start + i) % maxLines
+            result.append(buffer[index])
+        }
+        return result
+    }
+    
     /// Get the total number of lines in the buffer
     public var lineCount: Int {
         lock.lock()

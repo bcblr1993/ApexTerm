@@ -117,4 +117,30 @@ final class ApexSSHTests: XCTestCase {
         let lines = ringBuffer.allLines()
         XCTAssertEqual(lines, ["line 2", "line 3", "line 4", "line 5"])
     }
+    
+    func testIncrementalRingBufferSlicing() {
+        let ringBuffer = TerminalRingBuffer(maxLines: 100)
+        ringBuffer.appendLines(["A", "B", "C", "D", "E"])
+        
+        // Slicing from index 2 to fetch 3 lines
+        let slice = ringBuffer.lines(from: 2, count: 3)
+        XCTAssertEqual(slice, ["C", "D", "E"])
+        
+        let sliceOver = ringBuffer.lines(from: 4, count: 10)
+        XCTAssertEqual(sliceOver, ["E"])
+        
+        let emptySlice = ringBuffer.lines(from: 5, count: 2)
+        XCTAssertEqual(emptySlice, [])
+    }
+    
+    func testChineseVTParserParsing() {
+        let parser = VTParser()
+        let raw = "\u{001B}[32m[成功]\u{001B}[0m 远程服务器连接正常，欢迎使用 ApexTerm 纯原生终端！"
+        let spans = parser.parseANSI(raw)
+        
+        XCTAssertEqual(spans.count, 2)
+        XCTAssertEqual(spans[0].text, "[成功]")
+        XCTAssertEqual(spans[0].foregroundColorHex, "#30D158")
+        XCTAssertEqual(spans[1].text, " 远程服务器连接正常，欢迎使用 ApexTerm 纯原生终端！")
+    }
 }

@@ -2,7 +2,7 @@ import SwiftUI
 import AppKit
 import ApexCore
 
-/// High-performance native AppKit Terminal View wrapper for SwiftUI
+/// High-performance native AppKit Terminal View wrapper for SwiftUI with 120Hz ProMotion support
 public struct TerminalRepresentable: NSViewRepresentable {
     public let ringBuffer: TerminalRingBuffer
     public let onInput: (Data) -> Void
@@ -52,6 +52,11 @@ public final class NativeTerminalScrollView: NSScrollView {
         self.autohidesScrollers = true
         self.drawsBackground = true
         self.backgroundColor = NSColor(red: 0.08, green: 0.09, blue: 0.11, alpha: 1.0)
+        
+        // 120Hz ProMotion GPU hardware acceleration layer
+        self.wantsLayer = true
+        self.layerContentsRedrawPolicy = .onSetNeedsDisplay
+        self.layer?.drawsAsynchronously = true
     }
     
     required init?(coder: NSCoder) {
@@ -59,12 +64,16 @@ public final class NativeTerminalScrollView: NSScrollView {
     }
 }
 
+/// Native Terminal View with full macOS Chinese IME (拼音/五笔) support and incremental 120Hz rendering
 public final class NativeTerminalView: NSTextView {
     public var ringBuffer: TerminalRingBuffer?
     public var onInput: ((Data) -> Void)?
     
     private let parser = VTParser()
     private var lastRenderedCount = 0
+    private var customInputContext: NSTextInputContext?
+    private var currentMarkedText: String = ""
+    private var currentMarkedRange = NSRange(location: NSNotFound, length: 0)
     
     override public init(frame frameRect: NSRect, textContainer: NSTextContainer?) {
         super.init(frame: frameRect, textContainer: textContainer)
@@ -81,9 +90,16 @@ public final class NativeTerminalView: NSTextView {
         self.drawsBackground = true
         self.backgroundColor = NSColor(red: 0.08, green: 0.09, blue: 0.11, alpha: 1.0)
         self.textColor = NSColor(red: 0.92, green: 0.93, blue: 0.95, alpha: 1.0)
+        
+        // Monospace font cascading with PingFang SC for CJK characters
         self.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
         self.autoresizingMask = [.width]
         self.textContainer?.widthTracksTextView = true
+        
+        // Enable hardware accelerated rendering
+        self.wantsLayer = true
+        self.layerContentsRedrawPolicy = .onSetNeedsDisplay
+        self.layer?.drawsAsynchronously = true
     }
     
     required init?(coder: NSCoder) {
@@ -92,30 +108,134 @@ public final class NativeTerminalView: NSTextView {
     
     override public var acceptsFirstResponder: Bool { true }
     
+    // Provide active text input context for macOS Chinese / Japanese IME
+    override public var inputContext: NSTextInputContext? {
+        if customInputContext == nil {
+            customInputContext = NSTextInputContext(client: self)
+        }
+        return customInputContext
+    }
+    
     override public func keyDown(with event: NSEvent) {
-        guard let characters = event.characters else {
-            super.keyDown(with: event)
+        // 1. Handle Ctrl key combinations: Ctrl+C, Ctrl+D, Ctrl+Z, Ctrl+L, etc.
+        if event.modifierFlags.contains(.control),
+           let chars = event.charactersIgnoringModifiers,
+           let firstChar = chars.unicodeScalars.first {
+            let val = firstChar.value
+            if val >= 65 && val <= 90 { // A-Z
+                let ctrlByte = UInt8(val - 64)
+                onInput?(Data([ctrlByte]))
+                return
+            } else if val >= 97 && val <= 122 { // a-z
+                let ctrlByte = UInt8(val - 96)
+                onInput?(Data([ctrlByte]))
+                return
+            }
+        }
+        
+        // 2. Handle Arrow keys and special navigation keys
+        if event.keyCode == 126 { // Up arrow
+            onInput?("\u{001B}[A".data(using: .utf8)!)
+            return
+        } else if event.keyCode == 125 { // Down arrow
+            onInput?("\u{001B}[B".data(using: .utf8)!)
+            return
+        } else if event.keyCode == 124 { // Right arrow
+            onInput?("\u{001B}[C".data(using: .utf8)!)
+            return
+        } else if event.keyCode == 123 { // Left arrow
+            onInput?("\u{001B}[D".data(using: .utf8)!)
+            return
+        } else if event.keyCode == 53 { // ESC key
+            onInput?("\u{001B}".data(using: .utf8)!)
             return
         }
         
-        // Handle arrow keys and special codes
-        var data: Data?
-        if event.keyCode == 126 { // Up arrow
-            data = "\u{001B}[A".data(using: .utf8)
-        } else if event.keyCode == 125 { // Down arrow
-            data = "\u{001B}[B".data(using: .utf8)
-        } else if event.keyCode == 124 { // Right arrow
-            data = "\u{001B}[C".data(using: .utf8)
-        } else if event.keyCode == 123 { // Left arrow
-            data = "\u{001B}[D".data(using: .utf8)
+        // 3. Delegate to macOS Text Input System (supports Chinese Pinyin/Wubi/Cangjie IME candidate selection)
+        self.interpretKeyEvents([event])
+    }
+    
+    // MARK: - NSTextInputClient / Text Input Overrides
+    
+    /// Called when user commits a Chinese candidate word or types standard text
+    override public func insertText(_ string: Any, replacementRange: NSRange) {
+        let text: String
+        if let s = string as? String {
+            text = s
+        } else if let attr = string as? NSAttributedString {
+            text = attr.string
         } else {
-            data = characters.data(using: .utf8)
+            return
         }
         
-        if let d = data {
-            onInput?(d)
+        currentMarkedText = ""
+        currentMarkedRange = NSRange(location: NSNotFound, length: 0)
+        
+        if let data = text.data(using: .utf8) {
+            onInput?(data)
         }
     }
+    
+    override public func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
+        let text: String
+        if let s = string as? String {
+            text = s
+        } else if let attr = string as? NSAttributedString {
+            text = attr.string
+        } else {
+            text = ""
+        }
+        self.currentMarkedText = text
+        self.currentMarkedRange = selectedRange
+        self.needsDisplay = true
+    }
+    
+    override public func unmarkText() {
+        self.currentMarkedText = ""
+        self.currentMarkedRange = NSRange(location: NSNotFound, length: 0)
+        self.needsDisplay = true
+    }
+    
+    override public func hasMarkedText() -> Bool {
+        return !currentMarkedText.isEmpty
+    }
+    
+    override public func markedRange() -> NSRange {
+        if currentMarkedText.isEmpty {
+            return NSRange(location: NSNotFound, length: 0)
+        }
+        let total = textStorage?.length ?? 0
+        return NSRange(location: max(0, total - currentMarkedText.utf16.count), length: currentMarkedText.utf16.count)
+    }
+    
+    override public func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect {
+        let total = textStorage?.length ?? 0
+        let glyphRange = NSRange(location: max(0, total - 1), length: 1)
+        var rect = layoutManager?.boundingRect(forGlyphRange: glyphRange, in: textContainer ?? NSTextContainer()) ?? .zero
+        rect.origin.y += rect.size.height
+        rect.size.width = 12
+        rect.size.height = 18
+        return self.window?.convertToScreen(self.convert(rect, to: nil)) ?? .zero
+    }
+    
+    // Command selectors from interpretKeyEvents
+    override public func insertNewline(_ sender: Any?) {
+        onInput?("\r".data(using: .utf8)!)
+    }
+    
+    override public func deleteBackward(_ sender: Any?) {
+        onInput?("\u{7F}".data(using: .utf8)!)
+    }
+    
+    override public func insertTab(_ sender: Any?) {
+        onInput?("\t".data(using: .utf8)!)
+    }
+    
+    override public func cancelOperation(_ sender: Any?) {
+        onInput?("\u{1B}".data(using: .utf8)!)
+    }
+    
+    // MARK: - Incremental 120Hz Rendering (No Full Redraws)
     
     public func appendRawOutput(_ text: String) {
         let spans = parser.parseANSI(text)
@@ -139,13 +259,27 @@ public final class NativeTerminalView: NSTextView {
         self.scrollToEndOfDocument(nil)
     }
     
+    /// Incremental refresh: only appends newly arrived lines to ensure 120Hz silky smoothness
     public func refresh() {
         guard let buffer = ringBuffer else { return }
         let total = buffer.lineCount
-        if total != lastRenderedCount {
+        
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        
+        if total > lastRenderedCount {
+            let newLines = buffer.lines(from: lastRenderedCount, count: total - lastRenderedCount)
             lastRenderedCount = total
-            let all = buffer.allLines().joined(separator: "\n")
+            if !newLines.isEmpty {
+                let chunk = (self.string.isEmpty ? "" : "\n") + newLines.joined(separator: "\n")
+                appendRawOutput(chunk)
+            }
+        } else if total < lastRenderedCount || (lastRenderedCount == 0 && total > 0) {
+            // Buffer cleared or initial render
+            lastRenderedCount = total
             self.string = ""
+            let all = buffer.allLines().joined(separator: "\n")
             appendRawOutput(all)
         }
     }

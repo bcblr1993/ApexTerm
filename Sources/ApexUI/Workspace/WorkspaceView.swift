@@ -91,14 +91,18 @@ public struct WorkspaceView: View {
                         .padding(.trailing, 6)
                 }
                 
-                // Toggle SFTP layout button
-                Button(action: { withAnimation { isSFTPVisible.toggle() } }) {
+                // Toggle SFTP layout button with tuned snappy spring animation
+                Button(action: {
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
+                        isSFTPVisible.toggle()
+                    }
+                }) {
                     Image(systemName: isSFTPVisible ? "rectangle.split.2x1.fill" : "rectangle.fill")
                         .font(.system(size: 12))
                         .foregroundColor(.secondary)
                 }
                 .buttonStyle(.plain)
-                .help(isSFTPVisible ? "Hide SFTP Panel" : "Show SFTP Panel")
+                .help(isSFTPVisible ? L10n.hideSFTPPanel : L10n.showSFTPPanel)
                 .padding(.trailing, 10)
             }
             .padding(.vertical, 6)
@@ -157,20 +161,20 @@ public struct WorkspaceView: View {
                                 ),
                                 session: tab.sshClient
                             )
-                            .frame(height: geometry.size.height * (1.0 - splitRatio) - 3)
+                            .frame(height: max(0, geometry.size.height * (1.0 - splitRatio) - 3))
                         }
                     }
                 }
             } else {
-                VStack(spacing: 12) {
+                VStack(spacing: 14) {
                     Spacer()
                     Image(systemName: "terminal")
                         .font(.system(size: 48))
                         .foregroundColor(.secondary.opacity(0.6))
-                    Text("No Active Session")
+                    Text(L10n.noActiveSession)
                         .font(.headline)
                         .foregroundColor(.secondary)
-                    Text("Double-click a session in the left sidebar to connect.")
+                    Text(L10n.doubleClickPrompt)
                         .font(.subheadline)
                         .foregroundColor(.secondary.opacity(0.8))
                     Spacer()
@@ -187,7 +191,7 @@ public struct WorkspaceView: View {
                         Circle()
                             .fill(Color.green)
                             .frame(width: 7, height: 7)
-                        Text("Connected: \(tab.session.username)@\(tab.session.host):\(tab.session.port)")
+                        Text("\(L10n.connectedStatus): \(tab.session.username)@\(tab.session.host):\(tab.session.port)")
                             .font(.system(size: 11, design: .monospaced))
                     }
                     
@@ -195,17 +199,17 @@ public struct WorkspaceView: View {
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundColor(.secondary)
                     
-                    Text("120Hz Metal Render")
+                    Text(L10n.metalRender120Hz)
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundColor(.cyan)
                     
                     Spacer()
                     
-                    Text("Directory: \(tab.currentRemotePath)")
+                    Text("\(L10n.currentDirectory): \(tab.currentRemotePath)")
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundColor(.secondary)
                 } else {
-                    Text("Ready")
+                    Text(L10n.readyStatus)
                         .font(.system(size: 11))
                         .foregroundColor(.secondary)
                     Spacer()

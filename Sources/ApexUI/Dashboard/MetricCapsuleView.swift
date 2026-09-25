@@ -2,7 +2,7 @@ import SwiftUI
 import Charts
 import ApexCore
 
-/// FinalShell-style live performance monitoring capsule (CPU, RAM, Network, Disk)
+/// FinalShell-style live performance monitoring capsule (CPU, RAM, Network, Disk) with Chinese localization & no-stutter charts
 public struct MetricCapsuleView: View {
     @ObservedObject public var historyStore: ObservableMetricsHistory
     @State private var showingDetail = false
@@ -20,7 +20,7 @@ public struct MetricCapsuleView: View {
                         .font(.system(size: 11, weight: .bold))
                         .foregroundColor(cpuColor)
                     
-                    Text("CPU")
+                    Text(L10n.cpuMetric)
                         .font(.system(size: 10, weight: .semibold, design: .monospaced))
                         .foregroundColor(.secondary)
                     
@@ -82,7 +82,7 @@ public struct MetricCapsuleView: View {
         .buttonStyle(.plain)
         .popover(isPresented: $showingDetail, arrowEdge: .bottom) {
             MetricDetailView(historyStore: historyStore)
-                .frame(width: 440, height: 320)
+                .frame(width: 460, height: 330)
         }
     }
     
@@ -133,7 +133,7 @@ public final class ObservableMetricsHistory: ObservableObject {
     }
 }
 
-/// Detailed Swift Charts popup with hardware accelerated metrics curves
+/// Detailed Swift Charts popup with hardware accelerated metrics curves and no-bounce animation
 public struct MetricDetailView: View {
     @ObservedObject var historyStore: ObservableMetricsHistory
     
@@ -141,11 +141,11 @@ public struct MetricDetailView: View {
         VStack(alignment: .leading, spacing: 14) {
             // Header
             HStack {
-                Label("Live Server Performance", systemImage: "gauge.with.needle")
+                Label(L10n.serverPerformance, systemImage: "gauge.with.needle")
                     .font(.headline)
                 Spacer()
                 if let uptime = historyStore.latest?.uptimeSeconds {
-                    Text("Uptime: \(formatUptime(uptime))")
+                    Text("\(L10n.uptime): \(formatUptime(uptime))")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -156,11 +156,11 @@ public struct MetricDetailView: View {
             // CPU Chart
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
-                    Text("CPU Utilization")
+                    Text(L10n.cpuUtilization)
                         .font(.subheadline)
                         .fontWeight(.semibold)
                     Spacer()
-                    Text(String(format: "%.1f%% (Cores: %d)", historyStore.latest?.cpuUsagePercent ?? 0, historyStore.latest?.cpuCores ?? 1))
+                    Text(String(format: "%.1f%% (%@: %d)", historyStore.latest?.cpuUsagePercent ?? 0, L10n.cpuCores, historyStore.latest?.cpuCores ?? 1))
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -187,13 +187,14 @@ public struct MetricDetailView: View {
                     .interpolationMethod(.monotone)
                 }
                 .chartYScale(domain: 0...100)
+                .animation(nil, value: historyStore.snapshots.count) // Disable bouncy re-interpolation
                 .frame(height: 90)
             }
             
             // Network Waterfall Chart
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
-                    Text("Network Throughput (Rx / Tx)")
+                    Text(L10n.networkThroughput)
                         .font(.subheadline)
                         .fontWeight(.semibold)
                     Spacer()
@@ -212,25 +213,26 @@ public struct MetricDetailView: View {
                         LineMark(
                             x: .value("Time", item.timestamp),
                             y: .value("Rx KB/s", item.networkRxBytesPerSec / 1024),
-                            series: .value("Stream", "Download")
+                            series: .value("Stream", L10n.downloadStream)
                         )
                         .foregroundStyle(Color.green)
                         
                         LineMark(
                             x: .value("Time", item.timestamp),
                             y: .value("Tx KB/s", item.networkTxBytesPerSec / 1024),
-                            series: .value("Stream", "Upload")
+                            series: .value("Stream", L10n.uploadStream)
                         )
                         .foregroundStyle(Color.blue)
                     }
                 }
+                .animation(nil, value: historyStore.snapshots.count) // Disable bouncy re-interpolation
                 .frame(height: 80)
             }
             
             // Disk Bar
             if let disk = historyStore.latest, disk.diskTotalBytes > 0 {
                 HStack {
-                    Text("Root Storage: \(String(format: "%.1f", Double(disk.diskUsedBytes) / 1e9)) GB / \(String(format: "%.1f", Double(disk.diskTotalBytes) / 1e9)) GB (\(String(format: "%.0f%%", disk.diskUsagePercent)))")
+                    Text("\(L10n.rootStorage): \(String(format: "%.1f", Double(disk.diskUsedBytes) / 1e9)) GB / \(String(format: "%.1f", Double(disk.diskTotalBytes) / 1e9)) GB (\(String(format: "%.0f%%", disk.diskUsagePercent)))")
                         .font(.caption)
                         .foregroundColor(.secondary)
                     Spacer()
@@ -253,7 +255,7 @@ public struct MetricDetailView: View {
         let days = s / 86400
         let hours = (s % 86400) / 3600
         let mins = (s % 3600) / 60
-        if days > 0 { return "\(days)d \(hours)h" }
-        return "\(hours)h \(mins)m"
+        if days > 0 { return "\(days)天 \(hours)小时" }
+        return "\(hours)小时 \(mins)分"
     }
 }

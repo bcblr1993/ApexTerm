@@ -36,7 +36,7 @@ struct ApexTermApp: App {
             .navigationSplitViewStyle(.balanced)
             .frame(minWidth: 960, minHeight: 640)
             .onAppear {
-                // Automatically connect to first demo session on launch
+                // Connect to demo session on launch only if no tabs exist and default session exists
                 if let first = sessionStore.sessions.first, activeTabs.isEmpty {
                     connectToSession(first)
                 }
@@ -46,7 +46,7 @@ struct ApexTermApp: App {
         .windowToolbarStyle(.unified(showsTitle: true))
         .commands {
             CommandGroup(replacing: .newItem) {
-                Button("New Terminal Tab") {
+                Button(L10n.menuNewTab) {
                     if let selected = selectedSidebarSession ?? sessionStore.sessions.first {
                         connectToSession(selected)
                     }
@@ -54,8 +54,8 @@ struct ApexTermApp: App {
                 .keyboardShortcut("t", modifiers: .command)
             }
             
-            CommandMenu("Session") {
-                Button("Disconnect Current") {
+            CommandMenu(L10n.menuSession) {
+                Button(L10n.menuDisconnect) {
                     if let current = activeTabs.first(where: { $0.id == selectedTabId }) {
                         Task { await current.sshClient.disconnect() }
                         activeTabs.removeAll(where: { $0.id == current.id })
@@ -66,7 +66,7 @@ struct ApexTermApp: App {
                 
                 Divider()
                 
-                Button("Clear Scrollback Buffer") {
+                Button(L10n.menuClearScrollback) {
                     if let current = activeTabs.first(where: { $0.id == selectedTabId }) {
                         current.ringBuffer.clear()
                     }
@@ -77,9 +77,9 @@ struct ApexTermApp: App {
     }
     
     private func connectToSession(_ session: Session) {
-        // Use MockSSHSession for instantaneous offline simulation or NativeSSHSession
+        // Only synthetic demo host 10.0.1.10 uses Mock; real IPs (including 192.168.x.x Tart VMs) use NativeSSHSession
         let client: SSHSessionProtocol
-        if session.host == "10.0.1.10" || session.host.hasPrefix("192.168.") || session.host.hasPrefix("172.") {
+        if session.host == "10.0.1.10" {
             client = MockSSHSession(session: session)
         } else {
             client = NativeSSHSession(session: session)

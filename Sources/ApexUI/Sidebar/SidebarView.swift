@@ -1,7 +1,7 @@
 import SwiftUI
 import ApexCore
 
-/// Native macOS Sidebar with session tree, folders, tags, and quick snippets
+/// Native macOS Sidebar with session tree, folders, tags, quick snippets, and full Chinese localization
 public struct SidebarView: View {
     @ObservedObject var store: SessionStore
     @Binding var selectedSession: Session?
@@ -27,12 +27,12 @@ public struct SidebarView: View {
     public var body: some View {
         VStack(spacing: 0) {
             // Search and header
-            HStack {
-                HStack {
+            HStack(spacing: 8) {
+                HStack(spacing: 6) {
                     Image(systemName: "magnifyingglass")
                         .foregroundColor(.secondary)
                         .font(.system(size: 11))
-                    TextField("Search sessions, tags...", text: $searchFilter)
+                    TextField(L10n.searchPlaceholder, text: $searchFilter)
                         .textFieldStyle(.plain)
                         .font(.system(size: 11))
                 }
@@ -43,9 +43,10 @@ public struct SidebarView: View {
                 Button(action: { showingAddSheet = true }) {
                     Image(systemName: "plus")
                         .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(.accentColor)
                 }
                 .buttonStyle(.plain)
-                .help("Add new SSH Session")
+                .help(L10n.addSessionHelp)
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
@@ -54,7 +55,7 @@ public struct SidebarView: View {
             
             // Session tree
             List {
-                Section(header: Label("SESSIONS", systemImage: "server.rack").font(.caption).fontWeight(.semibold)) {
+                Section(header: Label(L10n.sessionsHeader, systemImage: "server.rack").font(.caption).fontWeight(.semibold)) {
                     ForEach(groupedFolders, id: \.self) { folder in
                         DisclosureGroup(
                             isExpanded: .constant(true),
@@ -66,20 +67,20 @@ public struct SidebarView: View {
                                         onConnect: { onConnect(session) }
                                     )
                                     .contextMenu {
-                                        Button("Connect (Return)") {
+                                        Button(L10n.connectAction) {
                                             onConnect(session)
                                         }
-                                        Button("Edit Session...") {
+                                        Button(L10n.editSessionAction) {
                                             editingSession = session
                                         }
                                         Divider()
-                                        Button("Duplicate") {
+                                        Button(L10n.duplicateSessionAction) {
                                             var dup = session
                                             dup.id = UUID()
-                                            dup.name += " (Copy)"
+                                            dup.name += " \(L10n.copyTag)"
                                             store.addSession(dup)
                                         }
-                                        Button("Delete", role: .destructive) {
+                                        Button(L10n.deleteSessionAction, role: .destructive) {
                                             store.deleteSession(id: session.id)
                                         }
                                     }
@@ -105,7 +106,7 @@ public struct SidebarView: View {
                     }
                 }
                 
-                Section(header: Label("QUICK COMMANDS", systemImage: "bolt.fill").font(.caption).fontWeight(.semibold)) {
+                Section(header: Label(L10n.quickCommandsHeader, systemImage: "bolt.fill").font(.caption).fontWeight(.semibold)) {
                     ForEach(store.snippets) { snippet in
                         HStack {
                             Image(systemName: "terminal")
@@ -114,7 +115,7 @@ public struct SidebarView: View {
                             Text(snippet.title)
                                 .font(.system(size: 11))
                             Spacer()
-                            Button("Run") {
+                            Button(L10n.runCommandAction) {
                                 onRunSnippet(snippet)
                             }
                             .buttonStyle(.borderless)
@@ -146,12 +147,15 @@ public struct SidebarView: View {
                 set.insert(f)
             }
         }
+        if set.isEmpty {
+            set.insert(L10n.generalFolder)
+        }
         return Array(set).sorted()
     }
     
     private func sessionsInFolder(_ folder: String) -> [Session] {
         store.sessions.filter {
-            let matchesFolder = ($0.folder ?? "General") == folder
+            let matchesFolder = ($0.folder ?? L10n.generalFolder) == folder
             if searchFilter.isEmpty { return matchesFolder }
             let matchesSearch = $0.name.localizedCaseInsensitiveContains(searchFilter) ||
                                 $0.host.localizedCaseInsensitiveContains(searchFilter) ||
@@ -161,10 +165,10 @@ public struct SidebarView: View {
     }
     
     private func folderIcon(for folder: String) -> String {
-        switch folder.lowercased() {
-        case "production": return "flame.fill"
-        case "staging": return "testtube.2"
-        case "database": return "cylinder.split.1x2.fill"
+        switch folder {
+        case "生产环境", "Production": return "flame.fill"
+        case "测试环境", "Staging": return "testtube.2"
+        case "数据库", "Database": return "cylinder.split.1x2.fill"
         default: return "folder.fill"
         }
     }

@@ -1,6 +1,7 @@
 import SwiftUI
+import ApexCore
 
-/// SecureCRT-style multi-session broadcast input bar
+/// SecureCRT-style multi-session broadcast input bar with Chinese localization
 public struct BroadcastBar: View {
     @Binding public var isBroadcastActive: Bool
     public let targetCount: Int
@@ -24,7 +25,7 @@ public struct BroadcastBar: View {
                 HStack(spacing: 4) {
                     Image(systemName: "antenna.radiowaves.left.and.right")
                         .foregroundColor(isBroadcastActive ? .orange : .secondary)
-                    Text("Broadcast to \(targetCount) Tabs")
+                    Text(String(format: L10n.broadcastToTabs, targetCount))
                         .font(.system(size: 11, weight: .semibold))
                 }
             }
@@ -32,7 +33,7 @@ public struct BroadcastBar: View {
             .controlSize(.small)
             
             if isBroadcastActive {
-                TextField("Type command to broadcast simultaneously to all connected sessions...", text: $broadcastText, onCommit: {
+                TextField(L10n.broadcastPlaceholder, text: $broadcastText, onCommit: {
                     if !broadcastText.isEmpty {
                         onBroadcastSubmit(broadcastText + "\n")
                         broadcastText = ""
@@ -41,7 +42,7 @@ public struct BroadcastBar: View {
                 .textFieldStyle(.roundedBorder)
                 .font(.system(size: 12, design: .monospaced))
                 
-                Button("Send") {
+                Button(L10n.broadcastSend) {
                     if !broadcastText.isEmpty {
                         onBroadcastSubmit(broadcastText + "\n")
                         broadcastText = ""

@@ -73,4 +73,30 @@ final class ApexCoreTests: XCTestCase {
         let dir = SFTPItem(name: "logs", path: "/var/logs", isDirectory: true)
         XCTAssertEqual(dir.formattedSize, "--")
     }
+    
+    func testSessionPasswordAuthMethod() throws {
+        let session = Session(
+            name: "VM Tart",
+            host: "192.168.64.12",
+            port: 22,
+            username: "chenxu",
+            authMethod: .password(keychainRef: "chenyn")
+        )
+        
+        let data = try JSONEncoder().encode(session)
+        let decoded = try JSONDecoder().decode(Session.self, from: data)
+        XCTAssertEqual(session.authMethod, decoded.authMethod)
+        if case .password(let ref) = decoded.authMethod {
+            XCTAssertEqual(ref, "chenyn")
+        } else {
+            XCTFail("Decoded authMethod should be .password")
+        }
+    }
+    
+    func testL10nStrings() {
+        XCTAssertFalse(L10n.newSessionTitle.isEmpty)
+        XCTAssertFalse(L10n.authPassword.isEmpty)
+        XCTAssertFalse(L10n.passwordLabel.isEmpty)
+        XCTAssertEqual(L10n.passwordLabel, "登录密码")
+    }
 }

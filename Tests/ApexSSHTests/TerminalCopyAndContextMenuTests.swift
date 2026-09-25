@@ -89,4 +89,57 @@ final class TerminalCopyAndContextMenuTests: XCTestCase {
         XCTAssertEqual(view.textStorage?.length, 0)
         XCTAssertEqual(ringBuffer.committedLineCount, 0)
     }
+    
+    @MainActor
+    func testAutoCopyOnSelectViaSetSelectedRanges() {
+        let view = NativeTerminalView()
+        view.isCopyOnSelectEnabled = true
+        let sample = "git status --short"
+        view.textStorage?.setAttributedString(NSAttributedString(string: sample))
+        
+        // 1. While still selecting (dragging mouse), should not finalize copy
+        let rangeVal = NSValue(range: NSRange(location: 0, length: 10)) // "git status"
+        view.setSelectedRanges([rangeVal], affinity: .downstream, stillSelecting: true)
+        
+        // 2. Mouse released / drag finished -> stillSelecting is false
+        view.setSelectedRanges([rangeVal], affinity: .downstream, stillSelecting: false)
+        let clipboard = NSPasteboard.general.string(forType: .string)
+        XCTAssertEqual(clipboard, "git status")
+    }
+    
+    @MainActor
+    func testRightClickDirectPaste() {
+        let view = NativeTerminalView()
+        let sampleText = "curl https://api.apexterm.dev\n"
+        
+        // Put text into clipboard
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(sampleText, forType: .string)
+        
+        var receivedInput: Data?
+        view.onInput = { data in
+            receivedInput = data
+        }
+        
+        // Simulate rightMouseDown without shift (PuTTY / SecureCRT style direct paste)
+        let dummyEvent = NSEvent.mouseEvent(
+            with: .rightMouseDown,
+            location: NSPoint(x: 100, y: 100),
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            eventNumber: 1,
+            clickCount: 1,
+            pressure: 1.0
+        )!
+        
+        view.rightMouseDown(with: dummyEvent)
+        
+        XCTAssertNotNil(receivedInput)
+        let pastedString = String(data: receivedInput!, encoding: .utf8)
+        // \n should be normalized to \r for terminal input
+        XCTAssertEqual(pastedString, "curl https://api.apexterm.dev\r")
+    }
 }

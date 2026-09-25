@@ -242,12 +242,16 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         }
     }
     
-    public func sendInput(_ data: Data) async throws {
+    public func sendInputSync(_ data: Data) {
         guard ptyMasterFd >= 0 else { return }
         data.withUnsafeBytes { rawBuffer in
             guard let baseAddress = rawBuffer.baseAddress else { return }
             _ = write(ptyMasterFd, baseAddress, rawBuffer.count)
         }
+    }
+    
+    public func sendInput(_ data: Data) async throws {
+        sendInputSync(data)
     }
     
     public func resizeTerminal(columns: Int, rows: Int) async throws {
@@ -314,6 +318,10 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         
+        // A valid directory path must start with '/' or '~'.
+        // This strictly prevents metrics like '36' from 'Swap usage: 36%' being parsed as directories.
+        guard trimmed.hasPrefix("/") || trimmed.hasPrefix("~") else { return }
+        
         let home = self.remoteHomeDirectory ?? (session.username == "root" ? "/root" : (session.username.isEmpty ? "/" : "/home/\(session.username)"))
         var path = trimmed
         if path == "~" {
@@ -323,14 +331,35 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             path = home == "/" ? "/\(sub)" : "\(home)/\(sub)"
         }
         
+        // Must resolve to a valid Unix absolute path
+        guard path.hasPrefix("/") else { return }
+        
         if !path.isEmpty && path != lastReportedDirectory {
             lastReportedDirectory = path
             directoryChangeHandler?(path)
         }
     }
     
+    private static let promptRegex: NSRegularExpression? = {
+        let pattern = #"(?:[:\s]|^)((?:/|~)[a-zA-Z0-9_\-\./]*)\s*(?:\([^\)]+\)\s*)?[\$#%>](?:\s|$)"#
+        return try? NSRegularExpression(pattern: pattern)
+    }()
+    
+    private static let stripCsiRegex: NSRegularExpression? = {
+        return try? NSRegularExpression(pattern: #"\x1b\[[0-9;?]*[a-zA-Z]"#)
+    }()
+    
+    private static let stripOscRegex: NSRegularExpression? = {
+        return try? NSRegularExpression(pattern: #"\x1b\][^\u0007\x1b]*(\u0007|\x1b\\)"#)
+    }()
+
     private func parseOSC7DirectoryChange(data: Data) {
         guard let text = String(data: data, encoding: .utf8) else { return }
+        
+        // Fast path: skip directory parsing for normal keystroke echoes and pure text streams
+        let hasTrigger = text.contains("\u{001B}]") || text.contains("\n") || text.contains("\r") ||
+                         text.contains("$") || text.contains("#") || text.contains("%") || text.contains(">")
+        guard hasTrigger else { return }
         
         // 1. Standard OSC 7 format (\e]7;file://hostname/path\a or \e\\)
         if let start = text.range(of: "\u{001B}]7;file://") {
@@ -351,7 +380,11 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             if let end = rest.firstIndex(of: "\u{0007}") ?? rest.range(of: "\u{001B}\\")?.lowerBound {
                 let title = String(rest[..<end])
                 if let colon = title.range(of: ": ") {
-                    let rawPath = String(title[colon.upperBound...])
+                    let rawPath = String(title[colon.upperBound...]).trimmingCharacters(in: .whitespaces)
+                    resolveAndDispatchDirectory(rawPath)
+                    return
+                } else if let colon = title.firstIndex(of: ":") {
+                    let rawPath = String(title[title.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
                     resolveAndDispatchDirectory(rawPath)
                     return
                 }
@@ -359,16 +392,21 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         }
         
         // 3. Shell prompt CWD tracking fallback using sliding window to handle packet fragmentation
-        let clean = text.replacingOccurrences(of: #"\x1b\[[0-9;?]*[a-zA-Z]"#, with: "", options: .regularExpression)
-                        .replacingOccurrences(of: #"\x1b\][^\u0007\x1b]*(\u0007|\x1b\\)"#, with: "", options: .regularExpression)
+        var clean = text
+        if let csi = Self.stripCsiRegex {
+            clean = csi.stringByReplacingMatches(in: clean, range: NSRange(location: 0, length: (clean as NSString).length), withTemplate: "")
+        }
+        if let osc = Self.stripOscRegex {
+            clean = osc.stringByReplacingMatches(in: clean, range: NSRange(location: 0, length: (clean as NSString).length), withTemplate: "")
+        }
+        
         recentPromptBuffer.append(clean)
         if recentPromptBuffer.count > 2048 {
             recentPromptBuffer = String(recentPromptBuffer.suffix(1024))
         }
         
         // Match prompt pattern like ubuntu@host:~/services$ or user@host /var/log % or root@host:/etc#
-        let pattern = #"[:\s]((?:/|~|[a-zA-Z0-9_\-\.])[a-zA-Z0-9_\-\./]*)\s*(?:\([^\)]+\)\s*)?[\$#%>]"#
-        if let regex = try? NSRegularExpression(pattern: pattern) {
+        if let regex = Self.promptRegex {
             let nsStr = recentPromptBuffer as NSString
             let matches = regex.matches(in: recentPromptBuffer, range: NSRange(location: 0, length: nsStr.length))
             if let lastMatch = matches.last, lastMatch.numberOfRanges > 1 {
@@ -385,6 +423,11 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
                 
                 let process = Process()
                 let sshpass = self.sshpassExecutablePath
+                let ctrlArgs = [
+                    "-o", "ControlMaster=auto",
+                    "-o", "ControlPath=\(self.controlSocketPath)",
+                    "-o", "ControlPersist=60s"
+                ]
                 
                 if let pw = self.resolvedPassword, !pw.isEmpty, let passBin = sshpass {
                     process.executableURL = URL(fileURLWithPath: passBin)
@@ -393,6 +436,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
                         "/usr/bin/ssh",
                         "-o", "StrictHostKeyChecking=accept-new",
                         "-o", "ConnectTimeout=3",
+                    ] + ctrlArgs + [
                         "-p", "\(self.session.port)",
                         "\(self.session.username)@\(self.session.host)",
                         AgentlessMonitor.autoProbeCommand
@@ -403,6 +447,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
                         "-o", "BatchMode=yes",
                         "-o", "StrictHostKeyChecking=accept-new",
                         "-o", "ConnectTimeout=3",
+                    ] + ctrlArgs + [
                         "-p", "\(self.session.port)",
                         "\(self.session.username)@\(self.session.host)",
                         AgentlessMonitor.autoProbeCommand
@@ -442,7 +487,9 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         await resolvePasswordIfNeeded()
         let process = Process()
         let sshpass = self.sshpassExecutablePath
-        let escapedPath = path.replacingOccurrences(of: "\"", with: "\\\"")
+        // Ensure trailing slash so that symbolic links pointing to directories are properly traversed by ls
+        let targetPath = path.hasSuffix("/") ? path : "\(path)/"
+        let escapedPath = targetPath.replacingOccurrences(of: "\"", with: "\\\"")
         let cmd = "ls -la --time-style=+%s \"\(escapedPath)\" 2>/dev/null || ls -la \"\(escapedPath)\""
         let ctrlArgs = [
             "-o", "ControlMaster=auto",
@@ -499,8 +546,13 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             let nameIndex = isEpoch ? 6 : (parts.count >= 9 ? 8 : 7)
             guard parts.count > nameIndex else { continue }
             
-            let name = parts.dropFirst(nameIndex).joined(separator: " ")
-            if name == "." || name == ".." || name.isEmpty { continue }
+            let rawName = parts.dropFirst(nameIndex).joined(separator: " ")
+            if rawName == "." || rawName == ".." || rawName.isEmpty { continue }
+            
+            var name = rawName
+            if isLink, let arrow = rawName.range(of: " -> ") {
+                name = String(rawName[..<arrow.lowerBound])
+            }
             
             let modDate: Date
             if isEpoch, let epoch = Double(parts[5]) {

@@ -19,6 +19,18 @@ public final class TerminalRingBuffer: @unchecked Sendable {
     }
     
     private var _totalCommittedCount: Int64 = 0
+    private var _isClearPending: Bool = false
+    
+    /// Atomically consume and reset clear pending flag
+    public func consumeClearFlag() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if _isClearPending {
+            _isClearPending = false
+            return true
+        }
+        return false
+    }
     
     /// Total lifetime committed line count (monotonically increasing)
     public var totalCommittedCount: Int64 {
@@ -117,11 +129,13 @@ public final class TerminalRingBuffer: @unchecked Sendable {
                     }
                     let finalChar = fullText[j]
                     switch finalChar {
-                    case "J": // Erase in Display
-                        if csiParam.contains("2") || csiParam.contains("3") {
+                    case "J": // Erase in Display (clear command output)
+                        if csiParam.contains("2") || csiParam.contains("3") || csiParam.isEmpty {
                             head = 0
                             count = 0
+                            _totalCommittedCount = 0
                             activeLine = ""
+                            _isClearPending = true
                         }
                     case "K": // Erase in Line
                         if csiParam.contains("2") || csiParam == "1" {
@@ -264,6 +278,7 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         _totalCommittedCount = 0
         activeLine = ""
         pendingSequence = ""
+        _isClearPending = true
         let updateHandler = onUpdate
         lock.unlock()
         

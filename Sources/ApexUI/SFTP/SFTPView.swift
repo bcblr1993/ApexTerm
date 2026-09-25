@@ -11,7 +11,7 @@ public struct SFTPView: View {
 
     @State private var items: [SFTPItem] = []
     @State private var isLoading = false
-    @State private var selectedItem: SFTPItem?
+    @State private var selectedPath: String?
     @State private var searchFilter = ""
     @State private var editingFile: SFTPItem?
     @State private var editorContent = ""
@@ -165,7 +165,7 @@ public struct SFTPView: View {
                         systemImage: searchFilter.isEmpty ? "folder" : "magnifyingglass"
                     )
                 } else {
-                    List(filteredItems, id: \.path, selection: $selectedItem) { item in
+                    List(filteredItems, id: \.path, selection: $selectedPath) { item in
                         HStack(spacing: 10) {
                             Image(systemName: fileIcon(for: item))
                                 .foregroundColor(fileColor(for: item))
@@ -195,6 +195,11 @@ public struct SFTPView: View {
                         .padding(.vertical, 3)
                         .padding(.horizontal, 6)
                         .contentShape(Rectangle())
+                        .simultaneousGesture(
+                            TapGesture(count: 1).onEnded {
+                                selectedPath = item.path
+                            }
+                        )
                         .onTapGesture(count: 2) {
                             handleDoubleClick(item)
                         }
@@ -204,15 +209,18 @@ public struct SFTPView: View {
                         }
                         .contextMenu {
                             Button(L10n.downloadToDownloads) {
+                                selectedPath = item.path
                                 downloadAction(item)
                             }
                             if !item.isDirectory {
                                 Button(L10n.quickViewEdit) {
+                                    selectedPath = item.path
                                     openEditor(item)
                                 }
                             }
                             Divider()
                             Button(L10n.copyRemotePath) {
+                                selectedPath = item.path
                                 NSPasteboard.general.clearContents()
                                 NSPasteboard.general.setString(item.path, forType: .string)
                             }
@@ -263,6 +271,9 @@ public struct SFTPView: View {
         .onChange(of: currentPath) { _, newPath in
             loadDirectory(path: newPath)
         }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("SFTPDirectoryRefreshNeeded"))) { _ in
+            loadDirectory(path: currentPath)
+        }
         .sheet(item: $editingFile) { item in
             QuickEditorView(
                 item: item,
@@ -286,6 +297,7 @@ public struct SFTPView: View {
         guard let s = session else { return }
         isLoading = true
         loadError = nil
+        selectedPath = nil
         loadTask?.cancel()
         loadTask = Task {
             do {
@@ -319,6 +331,18 @@ public struct SFTPView: View {
     private func handleDoubleClick(_ item: SFTPItem) {
         if item.isDirectory {
             currentPath = item.path
+        } else if item.isSymlink {
+            Task {
+                if let s = session, (try? await s.listDirectory(path: item.path)) != nil {
+                    await MainActor.run {
+                        currentPath = item.path
+                    }
+                } else {
+                    await MainActor.run {
+                        openEditor(item)
+                    }
+                }
+            }
         } else {
             openEditor(item)
         }
@@ -496,6 +520,7 @@ public struct SFTPView: View {
     private func fileIcon(for item: SFTPItem) -> String {
         if item.name == ".." { return "arrow.turn.up.left" }
         if item.isDirectory { return "folder.fill" }
+        if item.isSymlink { return "arrow.triangle.turn.up.right.diamond.fill" }
         let ext = (item.name as NSString).pathExtension.lowercased()
         switch ext {
         case "log", "txt": return "doc.text.fill"
@@ -509,6 +534,7 @@ public struct SFTPView: View {
 
     private func fileColor(for item: SFTPItem) -> Color {
         if item.isDirectory { return ApexStyle.accent }
+        if item.isSymlink { return .cyan }
         let ext = (item.name as NSString).pathExtension.lowercased()
         switch ext {
         case "sh": return .green

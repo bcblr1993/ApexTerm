@@ -35,6 +35,9 @@ final class QuickEditorAndSFTPItemTests: XCTestCase {
         
         let executable = SFTPItem(name: "run.sh", path: "/usr/local/bin/run.sh", isDirectory: false, permissions: 0o777)
         XCTAssertEqual(executable.permissionString, "-rwxrwxrwx")
+        
+        let symlink = SFTPItem(name: "treasure-shop-test", path: "/home/ubuntu/services/treasure-shop-test", isDirectory: false, isSymlink: true, permissions: 0o777)
+        XCTAssertEqual(symlink.permissionString, "lrwxrwxrwx")
     }
     
     /// Test 3: QuickEditor text line calculations and search matching logic

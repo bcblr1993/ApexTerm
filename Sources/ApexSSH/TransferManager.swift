@@ -139,6 +139,9 @@ public final class TransferManager: ObservableObject {
             }
             onResult?(.success(remotePath))
             onCompleted?()
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: NSNotification.Name("SFTPDirectoryRefreshNeeded"), object: remotePath)
+            }
         } catch {
             if let finalIdx = tasks.firstIndex(where: { $0.id == taskId }) {
                 if Task.isCancelled {

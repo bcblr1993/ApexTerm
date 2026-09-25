@@ -76,7 +76,7 @@ public final class MockSSHSession: SSHSessionProtocol, @unchecked Sendable {
         metricsTimer = nil
     }
     
-    public func sendInput(_ data: Data) async throws {
+    public func sendInputSync(_ data: Data) {
         guard let text = String(data: data, encoding: .utf8) else { return }
         
         for char in text {
@@ -99,6 +99,10 @@ public final class MockSSHSession: SSHSessionProtocol, @unchecked Sendable {
                 emit(String(char))
             }
         }
+    }
+    
+    public func sendInput(_ data: Data) async throws {
+        sendInputSync(data)
     }
     
     public func resizeTerminal(columns: Int, rows: Int) async throws {

@@ -36,8 +36,16 @@ public struct TerminalRepresentable: NSViewRepresentable {
 public final class NativeTerminalScrollView: NSScrollView {
     public let terminalView = NativeTerminalView()
     
-    public init() {
-        super.init(frame: .zero)
+    override public init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setupScrollView()
+    }
+    
+    public convenience init() {
+        self.init(frame: .zero)
+    }
+    
+    private func setupScrollView() {
         self.documentView = terminalView
         self.hasVerticalScroller = true
         self.hasHorizontalScroller = false
@@ -58,8 +66,16 @@ public final class NativeTerminalView: NSTextView {
     private let parser = VTParser()
     private var lastRenderedCount = 0
     
-    public init() {
-        super.init(frame: .zero)
+    override public init(frame frameRect: NSRect, textContainer: NSTextContainer?) {
+        super.init(frame: frameRect, textContainer: textContainer)
+        setupTerminalView()
+    }
+    
+    public convenience init() {
+        self.init(frame: .zero, textContainer: nil)
+    }
+    
+    private func setupTerminalView() {
         self.isEditable = false
         self.isSelectable = true
         self.drawsBackground = true

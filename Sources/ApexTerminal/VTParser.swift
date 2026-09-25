@@ -66,7 +66,7 @@ public final class VTParser: Sendable {
                                 currentColor = String(format: "#%02X%02X%02X", r, g, b)
                             } else if codes.count >= 3 && codes[0] == 38 && codes[1] == 5 {
                                 // 256-color palette
-                                currentColor = colorFrom256Palette(codes[2])
+                                currentColor = Self.colorFrom256Palette(codes[2])
                             } else {
                                 for code in codes {
                                     switch code {
@@ -123,7 +123,7 @@ public final class VTParser: Sendable {
         return spans
     }
     
-    private func colorFrom256Palette(_ index: Int) -> String {
+    public static func colorFrom256Palette(_ index: Int) -> String {
         let idx = max(0, min(255, index))
         if idx < 16 {
             let standard16 = [

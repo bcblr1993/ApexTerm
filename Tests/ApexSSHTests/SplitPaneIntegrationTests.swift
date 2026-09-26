@@ -188,8 +188,11 @@ final class SplitPaneIntegrationTests: XCTestCase {
         tab.reconnect(pane: secondaryPane)
         XCTAssertEqual(secondaryPane.connectionState, .connecting(step: "正在连接"))
         
-        // Allow Task to connect
-        try? await Task.sleep(nanoseconds: 250_000_000)
+        // Wait for the actual transition; shared CI runners can defer tasks beyond 250 ms.
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while secondaryPane.connectionState != .connected && ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
         XCTAssertEqual(secondaryPane.connectionState, .connected)
     }
 }

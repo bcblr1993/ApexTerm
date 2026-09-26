@@ -96,6 +96,13 @@ struct ApexTermApp: App {
                 }
             }
             
+            CommandGroup(after: .pasteboard) {
+                Button("查找...") {
+                    NotificationCenter.default.post(name: NSNotification.Name("TriggerTerminalFind"), object: nil)
+                }
+                .keyboardShortcut("f", modifiers: .command)
+            }
+            
             CommandMenu(L10n.menuSession) {
                 Button("复制此会话到新标签页") {
                     duplicateCurrentSession()

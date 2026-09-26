@@ -33,6 +33,11 @@ public protocol SSHSessionProtocol: AnyObject, Sendable {
     func listDirectory(path: String) async throws -> [SFTPItem]
     func downloadFile(remotePath: String, localURL: URL, progress: @Sendable @escaping (Double) -> Void) async throws
     func uploadFile(localURL: URL, remotePath: String, progress: @Sendable @escaping (Double) -> Void) async throws
+    func removeFile(remotePath: String) async throws
+    func removeDirectory(remotePath: String, recursive: Bool) async throws
+    func createDirectory(remotePath: String) async throws
+    func createFile(remotePath: String) async throws
+    func rename(oldPath: String, newPath: String) async throws
     
     // Callbacks
     func setOutputHandler(_ handler: @Sendable @escaping (Data) -> Void)
@@ -44,4 +49,10 @@ public extension SSHSessionProtocol {
     func sendInputSync(_ data: Data) {
         Task { try? await sendInput(data) }
     }
+    
+    func removeFile(remotePath: String) async throws {}
+    func removeDirectory(remotePath: String, recursive: Bool) async throws {}
+    func createDirectory(remotePath: String) async throws {}
+    func createFile(remotePath: String) async throws {}
+    func rename(oldPath: String, newPath: String) async throws {}
 }

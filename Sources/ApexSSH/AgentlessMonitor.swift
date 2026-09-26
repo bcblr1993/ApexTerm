@@ -7,12 +7,12 @@ public final class AgentlessMonitor: Sendable {
     
     /// Script payload sent to remote Linux host over lightweight SSH channel
     public static let linuxProbeCommand = """
-    cat /proc/stat /proc/meminfo /proc/net/dev 2>/dev/null; echo "---DF---"; df -k / 2>/dev/null | tail -1; echo "---UPTIME---"; cat /proc/uptime 2>/dev/null; echo "---LOAD---"; cat /proc/loadavg 2>/dev/null
+    cat /proc/stat /proc/meminfo /proc/net/dev 2>/dev/null; echo "---DF---"; df -k / 2>/dev/null | tail -1; echo "---UPTIME---"; cat /proc/uptime 2>/dev/null; echo "---LOAD---"; cat /proc/loadavg 2>/dev/null; echo "---TOP---"; ps -eo pid,user,%cpu,%mem,comm --sort=-%cpu 2>/dev/null | head -6
     """
     
     /// Script payload sent to remote macOS host
     public static let macosProbeCommand = """
-    top -l 1 -n 0 -s 0 | grep -E "CPU usage|PhysMem"; echo "---CORES---"; sysctl -n hw.ncpu 2>/dev/null || echo "8"; echo "---DF---"; df -k / | tail -1; echo "---UPTIME---"; uptime; echo "---NET---"; netstat -ib -n -I en0 2>/dev/null | grep -E "en0" | head -1
+    top -l 1 -n 0 -s 0 | grep -E "CPU usage|PhysMem"; echo "---CORES---"; sysctl -n hw.ncpu 2>/dev/null || echo "8"; echo "---DF---"; df -k / | tail -1; echo "---UPTIME---"; uptime; echo "---NET---"; netstat -ib -n -I en0 2>/dev/null | grep -E "en0" | head -1; echo "---TOP---"; ps -eo pid,user,%cpu,%mem,comm -r 2>/dev/null | head -6
     """
     
     /// Auto-detecting multi-OS probe command
@@ -76,6 +76,7 @@ public final class AgentlessMonitor: Sendable {
         var load5 = 0.0
         var load15 = 0.0
         var uptime: UInt64 = 0
+        var topProcesses: [ProcessMetricItem] = []
         
         let lines = raw.components(separatedBy: "\n")
         var currentSection = ""
@@ -136,6 +137,18 @@ public final class AgentlessMonitor: Sendable {
                     netRxTotal = UInt64(parts[6]) ?? 0
                     netTxTotal = UInt64(parts[9]) ?? 0
                 }
+            } else if currentSection == "---TOP---" {
+                let parts = trimmed.split(whereSeparator: { $0.isWhitespace })
+                if parts.count >= 5 {
+                    if parts[0] == "PID" || parts[0] == "pid" { continue }
+                    if let pid = Int(parts[0]),
+                       let cpu = Double(parts[2]),
+                       let mem = Double(parts[3]) {
+                        let user = String(parts[1])
+                        let cmd = parts.dropFirst(4).joined(separator: " ")
+                        topProcesses.append(ProcessMetricItem(pid: pid, user: user, cpuPercent: cpu, memPercent: mem, command: cmd))
+                    }
+                }
             }
         }
         
@@ -166,7 +179,8 @@ public final class AgentlessMonitor: Sendable {
             loadAvg1m: load1,
             loadAvg5m: load5,
             loadAvg15m: load15,
-            uptimeSeconds: uptime
+            uptimeSeconds: uptime,
+            topProcesses: topProcesses
         )
     }
     
@@ -234,6 +248,7 @@ public final class AgentlessMonitor: Sendable {
         var load5 = 0.0
         var load15 = 0.0
         var uptime: UInt64 = 0
+        var topProcesses: [ProcessMetricItem] = []
         
         let lines = raw.components(separatedBy: "\n")
         var currentSection = ""
@@ -244,6 +259,21 @@ public final class AgentlessMonitor: Sendable {
             
             if trimmed.hasPrefix("---") && trimmed.hasSuffix("---") {
                 currentSection = trimmed
+                continue
+            }
+            
+            if currentSection == "---TOP---" {
+                let parts = trimmed.split(whereSeparator: { $0.isWhitespace })
+                if parts.count >= 5 {
+                    if parts[0] == "PID" || parts[0] == "pid" { continue }
+                    if let pid = Int(parts[0]),
+                       let cpu = Double(parts[2]),
+                       let mem = Double(parts[3]) {
+                        let user = String(parts[1])
+                        let cmd = parts.dropFirst(4).joined(separator: " ")
+                        topProcesses.append(ProcessMetricItem(pid: pid, user: user, cpuPercent: cpu, memPercent: mem, command: cmd))
+                    }
+                }
                 continue
             }
             
@@ -361,7 +391,8 @@ public final class AgentlessMonitor: Sendable {
             loadAvg1m: load1,
             loadAvg5m: load5,
             loadAvg15m: load15,
-            uptimeSeconds: uptime
+            uptimeSeconds: uptime,
+            topProcesses: topProcesses
         )
     }
     

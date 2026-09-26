@@ -136,4 +136,43 @@ final class SplitPaneIntegrationTests: XCTestCase {
         XCTAssertEqual(tab.splitMode, .single)
         XCTAssertEqual(tab.panes[0].title, "prod-server")
     }
+    
+    @MainActor
+    func testPaneSplitRatioAndCustomTitleAndReconnect() async {
+        let session = Session(name: "ratio-test", host: "10.0.1.10", username: "root")
+        let client = MockSSHSession(session: session)
+        let tab = TerminalTabItem(session: session, sshClient: client)
+        
+        // 1. Initial displayTitle equals session.name
+        XCTAssertEqual(tab.displayTitle, "ratio-test")
+        
+        // 2. Custom title overrides displayTitle
+        tab.customTitle = "Production Nginx Logs"
+        XCTAssertEqual(tab.displayTitle, "Production Nginx Logs")
+        
+        // 3. Clear customTitle restores session.name
+        tab.customTitle = nil
+        XCTAssertEqual(tab.displayTitle, "ratio-test")
+        
+        // 4. Split pane ratio initial and adjust
+        XCTAssertEqual(tab.paneSplitRatio, 0.5)
+        tab.split(mode: .vertical)
+        XCTAssertEqual(tab.paneSplitRatio, 0.5)
+        
+        // Adjust ratio (e.g. 70/30)
+        tab.paneSplitRatio = 0.7
+        XCTAssertEqual(tab.paneSplitRatio, 0.7)
+        
+        // 5. Test Reconnect state transition
+        let secondaryPane = tab.panes[1]
+        secondaryPane.connectionState = .disconnected
+        XCTAssertEqual(secondaryPane.connectionState, .disconnected)
+        
+        tab.reconnect(pane: secondaryPane)
+        XCTAssertEqual(secondaryPane.connectionState, .connecting(step: "正在连接"))
+        
+        // Allow Task to connect
+        try? await Task.sleep(nanoseconds: 250_000_000)
+        XCTAssertEqual(secondaryPane.connectionState, .connected)
+    }
 }

@@ -40,6 +40,9 @@ public struct ServerMetricsSnapshot: Sendable, Codable, Equatable, Identifiable 
     // Uptime
     public var uptimeSeconds: UInt64
     
+    // Top resource consuming processes
+    public var topProcesses: [ProcessMetricItem]
+    
     public init(
         id: UUID = UUID(),
         timestamp: Date = Date(),
@@ -55,7 +58,8 @@ public struct ServerMetricsSnapshot: Sendable, Codable, Equatable, Identifiable 
         loadAvg1m: Double = 0.0,
         loadAvg5m: Double = 0.0,
         loadAvg15m: Double = 0.0,
-        uptimeSeconds: UInt64 = 0
+        uptimeSeconds: UInt64 = 0,
+        topProcesses: [ProcessMetricItem] = []
     ) {
         self.id = id
         self.timestamp = timestamp
@@ -72,6 +76,25 @@ public struct ServerMetricsSnapshot: Sendable, Codable, Equatable, Identifiable 
         self.loadAvg5m = loadAvg5m
         self.loadAvg15m = loadAvg15m
         self.uptimeSeconds = uptimeSeconds
+        self.topProcesses = topProcesses
+    }
+}
+
+/// Process-level resource metric item
+public struct ProcessMetricItem: Sendable, Codable, Equatable, Identifiable {
+    public var id: Int { pid }
+    public let pid: Int
+    public let user: String
+    public let cpuPercent: Double
+    public let memPercent: Double
+    public let command: String
+    
+    public init(pid: Int, user: String, cpuPercent: Double, memPercent: Double, command: String) {
+        self.pid = pid
+        self.user = user
+        self.cpuPercent = cpuPercent
+        self.memPercent = memPercent
+        self.command = command
     }
 }
 

@@ -60,7 +60,7 @@ public struct MetricCapsuleView: View {
         .help("查看服务器性能")
         .popover(isPresented: $showingDetail, arrowEdge: .bottom) {
             MetricDetailView(historyStore: historyStore)
-                .frame(width: 460, height: 360)
+                .frame(width: 480, height: 440)
         }
     }
     
@@ -107,117 +107,170 @@ public struct MetricDetailView: View {
     @ObservedObject var historyStore: ObservableMetricsHistory
     
     public var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            // Header
-            HStack {
-                Label(L10n.serverPerformance, systemImage: "gauge.with.needle")
-                    .font(.headline)
-                Spacer()
-                if let uptime = historyStore.latest?.uptimeSeconds {
-                    Text("\(L10n.uptime): \(formatUptime(uptime))")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+        ScrollView(.vertical, showsIndicators: true) {
+            VStack(alignment: .leading, spacing: 14) {
+                // Header
+                HStack {
+                    Label(L10n.serverPerformance, systemImage: "gauge.with.needle")
+                        .font(.headline)
+                    Spacer()
+                    if let uptime = historyStore.latest?.uptimeSeconds {
+                        Text("\(L10n.uptime): \(formatUptime(uptime))")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
                 }
-            }
-            
-            Divider()
+                
+                Divider()
 
-            if historyStore.snapshots.isEmpty {
-                ContentUnavailableView("等待监控数据", systemImage: "waveform.path.ecg", description: Text("连接建立后，指标会显示在这里。"))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-            
-            // CPU Chart
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text(L10n.cpuUtilization)
-                        .font(.subheadline)
-                        .fontWeight(.semibold)
-                    Spacer()
-                    Text(String(format: "%.1f%% (%@: %d)", historyStore.latest?.cpuUsagePercent ?? 0, L10n.cpuCores, historyStore.latest?.cpuCores ?? 1))
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
+                if historyStore.snapshots.isEmpty {
+                    ContentUnavailableView("等待监控数据", systemImage: "waveform.path.ecg", description: Text("连接建立后，指标会显示在这里。"))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
                 
-                Chart(historyStore.snapshots) { item in
-                    LineMark(
-                        x: .value("Time", item.timestamp),
-                        y: .value("CPU %", item.cpuUsagePercent)
-                    )
-                    .foregroundStyle(Color.green.gradient)
-                    .interpolationMethod(.monotone)
+                // CPU Chart
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text(L10n.cpuUtilization)
+                            .font(.subheadline)
+                            .fontWeight(.semibold)
+                        Spacer()
+                        Text(String(format: "%.1f%% (%@: %d)", historyStore.latest?.cpuUsagePercent ?? 0, L10n.cpuCores, historyStore.latest?.cpuCores ?? 1))
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
                     
-                    AreaMark(
-                        x: .value("Time", item.timestamp),
-                        y: .value("CPU %", item.cpuUsagePercent)
-                    )
-                    .foregroundStyle(
-                        LinearGradient(
-                            colors: [Color.green.opacity(0.35), Color.green.opacity(0.02)],
-                            startPoint: .top,
-                            endPoint: .bottom
+                    Chart(historyStore.snapshots) { item in
+                        LineMark(
+                            x: .value("Time", item.timestamp),
+                            y: .value("CPU %", item.cpuUsagePercent)
                         )
-                    )
-                    .interpolationMethod(.monotone)
-                }
-                .chartYScale(domain: 0...100)
-                .animation(nil, value: historyStore.snapshots.count) // Disable bouncy re-interpolation
-                .frame(height: 90)
-            }
-            
-            // Network Waterfall Chart
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text(L10n.networkThroughput)
-                        .font(.subheadline)
-                        .fontWeight(.semibold)
-                    Spacer()
-                    HStack(spacing: 8) {
-                        Text("↓ \(formatRate(historyStore.latest?.networkRxBytesPerSec ?? 0))")
-                            .font(.caption)
-                            .foregroundColor(.green)
-                        Text("↑ \(formatRate(historyStore.latest?.networkTxBytesPerSec ?? 0))")
-                            .font(.caption)
-                            .foregroundColor(.blue)
+                        .foregroundStyle(Color.green.gradient)
+                        .interpolationMethod(.monotone)
+                        
+                        AreaMark(
+                            x: .value("Time", item.timestamp),
+                            y: .value("CPU %", item.cpuUsagePercent)
+                        )
+                        .foregroundStyle(
+                            LinearGradient(
+                                colors: [Color.green.opacity(0.35), Color.green.opacity(0.02)],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+                        .interpolationMethod(.monotone)
                     }
+                    .chartYScale(domain: 0...100)
+                    .animation(nil, value: historyStore.snapshots.count) // Disable bouncy re-interpolation
+                    .frame(height: 90)
                 }
                 
-                Chart {
-                    ForEach(historyStore.snapshots) { item in
-                        LineMark(
-                            x: .value("Time", item.timestamp),
-                            y: .value("Rx KB/s", item.networkRxBytesPerSec / 1024),
-                            series: .value("Stream", L10n.downloadStream)
-                        )
-                        .foregroundStyle(Color.green)
+                // Network Waterfall Chart
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text(L10n.networkThroughput)
+                            .font(.subheadline)
+                            .fontWeight(.semibold)
+                        Spacer()
+                        HStack(spacing: 8) {
+                            Text("↓ \(formatRate(historyStore.latest?.networkRxBytesPerSec ?? 0))")
+                                .font(.caption)
+                                .foregroundColor(.green)
+                            Text("↑ \(formatRate(historyStore.latest?.networkTxBytesPerSec ?? 0))")
+                                .font(.caption)
+                                .foregroundColor(.blue)
+                        }
+                    }
+                    
+                    Chart {
+                        ForEach(historyStore.snapshots) { item in
+                            LineMark(
+                                x: .value("Time", item.timestamp),
+                                y: .value("Rx KB/s", item.networkRxBytesPerSec / 1024),
+                                series: .value("Stream", L10n.downloadStream)
+                            )
+                            .foregroundStyle(Color.green)
+                            
+                            LineMark(
+                                x: .value("Time", item.timestamp),
+                                y: .value("Tx KB/s", item.networkTxBytesPerSec / 1024),
+                                series: .value("Stream", L10n.uploadStream)
+                            )
+                            .foregroundStyle(Color.blue)
+                        }
+                    }
+                    .animation(nil, value: historyStore.snapshots.count) // Disable bouncy re-interpolation
+                    .frame(height: 80)
+                }
+                
+                // Disk Bar
+                if let disk = historyStore.latest, disk.diskTotalBytes > 0 {
+                    HStack {
+                        Text("\(L10n.rootStorage): \(String(format: "%.1f", Double(disk.diskUsedBytes) / 1e9)) GB / \(String(format: "%.1f", Double(disk.diskTotalBytes) / 1e9)) GB (\(String(format: "%.0f%%", disk.diskUsagePercent)))")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Spacer()
+                    }
+                    ProgressView(value: disk.diskUsagePercent, total: 100)
+                        .progressViewStyle(.linear)
+                        .tint(disk.diskUsagePercent > 85 ? .red : ApexStyle.accent)
+                }
+                
+                // Top 5 Processes Table
+                if let procs = historyStore.latest?.topProcesses, !procs.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("Top 进程资源占用")
+                                .font(.subheadline)
+                                .fontWeight(.semibold)
+                            Spacer()
+                            Text("按 CPU 占用排序")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
                         
-                        LineMark(
-                            x: .value("Time", item.timestamp),
-                            y: .value("Tx KB/s", item.networkTxBytesPerSec / 1024),
-                            series: .value("Stream", L10n.uploadStream)
-                        )
-                        .foregroundStyle(Color.blue)
+                        VStack(spacing: 3) {
+                            HStack {
+                                Text("PID").frame(width: 46, alignment: .leading)
+                                Text("用户").frame(width: 55, alignment: .leading)
+                                Text("CPU %").frame(width: 52, alignment: .trailing)
+                                Text("内存 %").frame(width: 52, alignment: .trailing)
+                                Text("命令").frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                            .foregroundColor(.secondary)
+                            .padding(.bottom, 2)
+                            
+                            Divider()
+                            
+                            ForEach(procs) { p in
+                                HStack {
+                                    Text("\(p.pid)").frame(width: 46, alignment: .leading)
+                                    Text(p.user).frame(width: 55, alignment: .leading)
+                                    Text(String(format: "%.1f%%", p.cpuPercent))
+                                        .frame(width: 52, alignment: .trailing)
+                                        .foregroundColor(p.cpuPercent > 50 ? .red : (p.cpuPercent > 20 ? .orange : .primary))
+                                    Text(String(format: "%.1f%%", p.memPercent))
+                                        .frame(width: 52, alignment: .trailing)
+                                    Text(p.command)
+                                        .lineLimit(1)
+                                        .truncationMode(.tail)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                                .font(.system(size: 10, design: .monospaced))
+                                .padding(.vertical, 1)
+                            }
+                        }
+                        .padding(8)
+                        .background(Color(NSColor.controlBackgroundColor).opacity(0.4))
+                        .cornerRadius(6)
                     }
                 }
-                .animation(nil, value: historyStore.snapshots.count) // Disable bouncy re-interpolation
-                .frame(height: 80)
-            }
-            
-            // Disk Bar
-            if let disk = historyStore.latest, disk.diskTotalBytes > 0 {
-                HStack {
-                    Text("\(L10n.rootStorage): \(String(format: "%.1f", Double(disk.diskUsedBytes) / 1e9)) GB / \(String(format: "%.1f", Double(disk.diskTotalBytes) / 1e9)) GB (\(String(format: "%.0f%%", disk.diskUsagePercent)))")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    Spacer()
                 }
-                ProgressView(value: disk.diskUsagePercent, total: 100)
-                    .progressViewStyle(.linear)
-                    .tint(disk.diskUsagePercent > 85 ? .red : ApexStyle.accent)
             }
-            }
+            .padding(18)
         }
-        .padding(18)
         .background(ApexStyle.surface)
     }
     

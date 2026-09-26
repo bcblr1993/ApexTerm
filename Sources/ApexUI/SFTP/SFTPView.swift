@@ -9,6 +9,17 @@ public struct SFTPView: View {
     @Binding public var isLinkageEnabled: Bool
     public let session: SSHSessionProtocol?
 
+    public enum SFTPSortField: String, CaseIterable, Sendable {
+        case name
+        case size
+        case date
+    }
+
+    public enum SFTPSortOrder: String, CaseIterable, Sendable {
+        case ascending
+        case descending
+    }
+
     @State private var items: [SFTPItem] = []
     @State private var isLoading = false
     @State private var selectedPath: String?
@@ -22,6 +33,21 @@ public struct SFTPView: View {
     @State private var isOpeningEditor = false
     @State private var isTransferDrawerExpanded = false
     @State private var loadTask: Task<Void, Never>?
+    
+    // Sort and visibility
+    @State private var sortField: SFTPSortField = .name
+    @State private var sortOrder: SFTPSortOrder = .ascending
+    @State private var showHiddenFiles = false
+    
+    // File operations state
+    @State private var itemToDelete: SFTPItem?
+    @State private var itemToRename: SFTPItem?
+    @State private var renameText = ""
+    @State private var isShowingRenameAlert = false
+    @State private var newFolderName = ""
+    @State private var isShowingNewFolderAlert = false
+    @State private var newFileName = ""
+    @State private var isShowingNewFileAlert = false
 
     public init(
         currentPath: Binding<String>,
@@ -131,6 +157,42 @@ public struct SFTPView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
 
+                Button(action: {
+                    newFolderName = ""
+                    isShowingNewFolderAlert = true
+                }) {
+                    Label("新建文件夹", systemImage: "folder.badge.plus")
+                }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("新建文件夹")
+
+                Button(action: {
+                    newFileName = ""
+                    isShowingNewFileAlert = true
+                }) {
+                    Label("新建文件", systemImage: "doc.badge.plus")
+                }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("新建空白文件")
+
+                Button(action: {
+                    showHiddenFiles.toggle()
+                }) {
+                    Image(systemName: showHiddenFiles ? "eye.fill" : "eye.slash")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help(showHiddenFiles ? "隐藏点文件 (⌘⇧.)" : "显示点文件 (⌘⇧.)")
+
+                Button("") { showHiddenFiles.toggle() }
+                    .keyboardShortcut(".", modifiers: [.command, .shift])
+                    .frame(width: 0, height: 0)
+                    .opacity(0)
+
                 // Transfer records drawer toggle button
                 Button(action: {
                     withAnimation(.spring(duration: 0.25)) {
@@ -182,6 +244,64 @@ public struct SFTPView: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 4)
             .background(ApexStyle.subtleSurface)
+
+            Divider()
+
+            // Table column header
+            HStack(spacing: 10) {
+                Button(action: { toggleSort(.name) }) {
+                    HStack(spacing: 4) {
+                        Text("名称")
+                            .font(.system(size: 11, weight: .semibold))
+                        if sortField == .name {
+                            Image(systemName: sortOrder == .ascending ? "chevron.up" : "chevron.down")
+                                .font(.system(size: 8, weight: .bold))
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+                .foregroundColor(sortField == .name ? ApexStyle.accent : .secondary)
+
+                Spacer()
+
+                Text("权限")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.secondary)
+                    .frame(width: 80, alignment: .trailing)
+
+                Button(action: { toggleSort(.size) }) {
+                    HStack(spacing: 4) {
+                        Spacer()
+                        Text("大小")
+                            .font(.system(size: 11, weight: .semibold))
+                        if sortField == .size {
+                            Image(systemName: sortOrder == .ascending ? "chevron.up" : "chevron.down")
+                                .font(.system(size: 8, weight: .bold))
+                        }
+                    }
+                    .frame(width: 70, alignment: .trailing)
+                }
+                .buttonStyle(.plain)
+                .foregroundColor(sortField == .size ? ApexStyle.accent : .secondary)
+
+                Button(action: { toggleSort(.date) }) {
+                    HStack(spacing: 4) {
+                        Spacer()
+                        Text("修改时间")
+                            .font(.system(size: 11, weight: .semibold))
+                        if sortField == .date {
+                            Image(systemName: sortOrder == .ascending ? "chevron.up" : "chevron.down")
+                                .font(.system(size: 8, weight: .bold))
+                        }
+                    }
+                    .frame(width: 110, alignment: .trailing)
+                }
+                .buttonStyle(.plain)
+                .foregroundColor(sortField == .date ? ApexStyle.accent : .secondary)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 4)
+            .background(ApexStyle.surface)
 
             Divider()
 
@@ -262,6 +382,19 @@ public struct SFTPView: View {
                                 }
                             }
                             Divider()
+                            Button("重命名...") {
+                                selectedPath = item.path
+                                itemToRename = item
+                                renameText = item.name
+                                isShowingRenameAlert = true
+                            }
+                            Button(role: .destructive) {
+                                selectedPath = item.path
+                                itemToDelete = item
+                            } label: {
+                                Label("删除", systemImage: "trash")
+                            }
+                            Divider()
                             Button(L10n.copyRemotePath) {
                                 selectedPath = item.path
                                 NSPasteboard.general.clearContents()
@@ -270,6 +403,23 @@ public struct SFTPView: View {
                         }
                     }
                     .listStyle(.inset(alternatesRowBackgrounds: true))
+                    .contextMenu {
+                        Button("新建文件夹") {
+                            newFolderName = ""
+                            isShowingNewFolderAlert = true
+                        }
+                        Button("新建文件") {
+                            newFileName = ""
+                            isShowingNewFileAlert = true
+                        }
+                        Divider()
+                        Button(action: { showHiddenFiles.toggle() }) {
+                            Label(showHiddenFiles ? "隐藏点文件 (⌘⇧.)" : "显示点文件 (⌘⇧.)", systemImage: showHiddenFiles ? "eye.fill" : "eye.slash")
+                        }
+                        Button(action: { loadDirectory(path: currentPath) }) {
+                            Label("刷新目录", systemImage: "arrow.clockwise")
+                        }
+                    }
                     .opacity(isLoading ? 0.65 : 1.0)
                     // Drag local file from Finder/Desktop to upload into current remote directory
                     .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
@@ -329,11 +479,190 @@ public struct SFTPView: View {
                 }
             )
         }
+        .confirmationDialog(
+            "确定删除？",
+            isPresented: Binding(
+                get: { itemToDelete != nil },
+                set: { if !$0 { itemToDelete = nil } }
+            ),
+            presenting: itemToDelete
+        ) { item in
+            Button("永久删除「\(item.name)」", role: .destructive) {
+                performDelete(item)
+            }
+            Button("取消", role: .cancel) {
+                itemToDelete = nil
+            }
+        } message: { item in
+            Text("将从远程服务器永久删除「\(item.name)」\(item.isDirectory ? "及其内部所有文件" : "")，此操作不可撤销。")
+        }
+        .alert("新建文件夹", isPresented: $isShowingNewFolderAlert) {
+            TextField("文件夹名称", text: $newFolderName)
+            Button("创建") {
+                performCreateFolder(name: newFolderName)
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("在当前目录 (\(currentPath)) 下创建新文件夹")
+        }
+        .alert("新建空白文件", isPresented: $isShowingNewFileAlert) {
+            TextField("文件名 (例如 test.sh)", text: $newFileName)
+            Button("创建") {
+                performCreateFile(name: newFileName)
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("在当前目录 (\(currentPath)) 下创建空白文件")
+        }
+        .alert("重命名", isPresented: $isShowingRenameAlert) {
+            TextField("新名称", text: $renameText)
+            Button("确定") {
+                if let item = itemToRename {
+                    performRename(item: item, newName: renameText)
+                }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("输入「\(itemToRename?.name ?? "")」的新名称")
+        }
     }
 
     private var filteredItems: [SFTPItem] {
-        if searchFilter.isEmpty { return items }
-        return items.filter { $0.name.localizedCaseInsensitiveContains(searchFilter) }
+        var result = items
+        if !showHiddenFiles {
+            result = result.filter { !$0.name.hasPrefix(".") || $0.name == ".." }
+        }
+        if !searchFilter.isEmpty {
+            result = result.filter { $0.name.localizedCaseInsensitiveContains(searchFilter) }
+        }
+        return result.sorted { a, b in
+            if a.isDirectory != b.isDirectory {
+                return a.isDirectory && !b.isDirectory
+            }
+            switch sortField {
+            case .name:
+                let cmp = a.name.localizedStandardCompare(b.name)
+                return sortOrder == .ascending ? (cmp == .orderedAscending) : (cmp == .orderedDescending)
+            case .size:
+                if a.size != b.size {
+                    return sortOrder == .ascending ? (a.size < b.size) : (a.size > b.size)
+                }
+                return a.name.localizedStandardCompare(b.name) == .orderedAscending
+            case .date:
+                if a.modificationDate != b.modificationDate {
+                    return sortOrder == .ascending ? (a.modificationDate < b.modificationDate) : (a.modificationDate > b.modificationDate)
+                }
+                return a.name.localizedStandardCompare(b.name) == .orderedAscending
+            }
+        }
+    }
+
+    private func toggleSort(_ field: SFTPSortField) {
+        if sortField == field {
+            sortOrder = (sortOrder == .ascending) ? .descending : .ascending
+        } else {
+            sortField = field
+            sortOrder = .ascending
+        }
+    }
+
+    private func performDelete(_ item: SFTPItem) {
+        guard let s = session else { return }
+        Task {
+            do {
+                if item.isDirectory {
+                    try await s.removeDirectory(remotePath: item.path, recursive: true)
+                } else {
+                    try await s.removeFile(remotePath: item.path)
+                }
+                await MainActor.run {
+                    self.transferNotice = "已删除: \(item.name)"
+                    self.loadDirectory(path: self.currentPath)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                        if self.transferNotice?.hasPrefix("已删除") == true {
+                            self.transferNotice = nil
+                        }
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    self.transferNotice = "删除失败: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+    
+    private func performCreateFolder(name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let s = session else { return }
+        let target = currentPath.hasSuffix("/") ? "\(currentPath)\(trimmed)" : "\(currentPath)/\(trimmed)"
+        Task {
+            do {
+                try await s.createDirectory(remotePath: target)
+                await MainActor.run {
+                    self.transferNotice = "已新建文件夹: \(trimmed)"
+                    self.loadDirectory(path: self.currentPath)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                        if self.transferNotice?.hasPrefix("已新建") == true {
+                            self.transferNotice = nil
+                        }
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    self.transferNotice = "新建文件夹失败: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+    
+    private func performCreateFile(name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let s = session else { return }
+        let target = currentPath.hasSuffix("/") ? "\(currentPath)\(trimmed)" : "\(currentPath)/\(trimmed)"
+        Task {
+            do {
+                try await s.createFile(remotePath: target)
+                await MainActor.run {
+                    self.transferNotice = "已新建文件: \(trimmed)"
+                    self.loadDirectory(path: self.currentPath)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                        if self.transferNotice?.hasPrefix("已新建") == true {
+                            self.transferNotice = nil
+                        }
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    self.transferNotice = "新建文件失败: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+    
+    private func performRename(item: SFTPItem, newName: String) {
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != item.name, let s = session else { return }
+        let parent = (item.path as NSString).deletingLastPathComponent
+        let target = parent == "/" ? "/\(trimmed)" : "\(parent)/\(trimmed)"
+        Task {
+            do {
+                try await s.rename(oldPath: item.path, newPath: target)
+                await MainActor.run {
+                    self.transferNotice = "已重命名为: \(trimmed)"
+                    self.loadDirectory(path: self.currentPath)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                        if self.transferNotice?.hasPrefix("已重命名") == true {
+                            self.transferNotice = nil
+                        }
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    self.transferNotice = "重命名失败: \(error.localizedDescription)"
+                }
+            }
+        }
     }
 
     private func loadDirectory(path: String) {
@@ -347,12 +676,7 @@ public struct SFTPView: View {
                 let fetched = try await s.listDirectory(path: path)
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
-                    self.items = fetched.sorted {
-                        if $0.isDirectory != $1.isDirectory {
-                            return $0.isDirectory && !$1.isDirectory
-                        }
-                        return $0.name.localizedStandardCompare($1.name) == .orderedAscending
-                    }
+                    self.items = fetched
                     self.isLoading = false
                 }
             } catch {

@@ -98,8 +98,166 @@ public struct TerminalRepresentable: NSViewRepresentable {
     }
 }
 
+/// Floating Find Bar overlay for Terminal with search field, match count and navigation
+public final class TerminalFindBarView: NSView, NSTextFieldDelegate {
+    public weak var terminalView: NativeTerminalView?
+    
+    public let searchField = NSTextField()
+    public let matchLabel = NSTextField(labelWithString: "")
+    public let prevButton = NSButton()
+    public let nextButton = NSButton()
+    public let closeButton = NSButton()
+    
+    override public init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setupUI()
+    }
+    
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+    
+    private func setupUI() {
+        wantsLayer = true
+        layer?.cornerRadius = 8
+        layer?.masksToBounds = true
+        layer?.borderWidth = 1
+        layer?.borderColor = NSColor.separatorColor.cgColor
+        layer?.backgroundColor = NSColor(red: 0.14, green: 0.15, blue: 0.18, alpha: 0.96).cgColor
+        
+        searchField.placeholderString = "查找 (⌘F)..."
+        searchField.isBezeled = false
+        searchField.drawsBackground = true
+        searchField.backgroundColor = NSColor(white: 0.25, alpha: 0.6)
+        searchField.wantsLayer = true
+        searchField.layer?.cornerRadius = 5
+        searchField.font = NSFont.systemFont(ofSize: 12)
+        searchField.textColor = .white
+        searchField.focusRingType = .none
+        searchField.delegate = self
+        
+        matchLabel.font = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
+        matchLabel.textColor = .secondaryLabelColor
+        matchLabel.alignment = .right
+        
+        configureButton(prevButton, symbolName: "chevron.up", tooltip: "上一个 (⇧Enter)", action: #selector(prevClicked))
+        configureButton(nextButton, symbolName: "chevron.down", tooltip: "下一个 (Enter)", action: #selector(nextClicked))
+        configureButton(closeButton, symbolName: "xmark", tooltip: "关闭 (Esc)", action: #selector(closeClicked))
+        
+        addSubview(searchField)
+        addSubview(matchLabel)
+        addSubview(prevButton)
+        addSubview(nextButton)
+        addSubview(closeButton)
+    }
+    
+    private func configureButton(_ btn: NSButton, symbolName: String, tooltip: String, action: Selector) {
+        btn.bezelStyle = .regularSquare
+        btn.isBordered = false
+        btn.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: tooltip)
+        btn.imageScaling = .scaleProportionallyDown
+        btn.toolTip = tooltip
+        btn.target = self
+        btn.action = action
+        btn.contentTintColor = .secondaryLabelColor
+    }
+    
+    override public func layout() {
+        super.layout()
+        let h = bounds.height
+        let btnW: CGFloat = 22
+        let closeW: CGFloat = 22
+        let margin: CGFloat = 6
+        let matchW: CGFloat = 55
+        
+        closeButton.frame = NSRect(x: bounds.width - closeW - margin, y: (h - 20) / 2, width: closeW, height: 20)
+        nextButton.frame = NSRect(x: closeButton.frame.minX - btnW - 2, y: (h - 20) / 2, width: btnW, height: 20)
+        prevButton.frame = NSRect(x: nextButton.frame.minX - btnW - 2, y: (h - 20) / 2, width: btnW, height: 20)
+        matchLabel.frame = NSRect(x: prevButton.frame.minX - matchW - 4, y: (h - 16) / 2, width: matchW, height: 16)
+        
+        let searchW = matchLabel.frame.minX - margin - 4
+        searchField.frame = NSRect(x: margin, y: (h - 22) / 2, width: max(50, searchW), height: 22)
+    }
+    
+    public func show(withInitialText text: String? = nil) {
+        isHidden = false
+        if let t = text, !t.isEmpty {
+            searchField.stringValue = t
+            updateSearch()
+        } else if !searchField.stringValue.isEmpty {
+            updateSearch()
+        }
+        window?.makeFirstResponder(searchField)
+    }
+    
+    public func hide() {
+        isHidden = true
+        terminalView?.clearFind()
+        matchLabel.stringValue = ""
+        if let term = terminalView {
+            window?.makeFirstResponder(term)
+        }
+    }
+    
+    @objc private func prevClicked() {
+        guard let term = terminalView else { return }
+        _ = term.findPrevious()
+        updateMatchLabel()
+    }
+    
+    @objc private func nextClicked() {
+        guard let term = terminalView else { return }
+        _ = term.findNext()
+        updateMatchLabel()
+    }
+    
+    @objc private func closeClicked() {
+        hide()
+    }
+    
+    public func controlTextDidChange(_ obj: Notification) {
+        updateSearch()
+    }
+    
+    public func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        if commandSelector == #selector(insertNewline(_:)) {
+            if NSEvent.modifierFlags.contains(.shift) {
+                prevClicked()
+            } else {
+                nextClicked()
+            }
+            return true
+        } else if commandSelector == #selector(cancelOperation(_:)) {
+            hide()
+            return true
+        }
+        return false
+    }
+    
+    private func updateSearch() {
+        guard let term = terminalView else { return }
+        let query = searchField.stringValue
+        _ = term.performFind(query: query)
+        updateMatchLabel()
+    }
+    
+    public func updateMatchLabel() {
+        guard let term = terminalView else {
+            matchLabel.stringValue = ""
+            return
+        }
+        let total = term.currentMatches.count
+        if total == 0 {
+            matchLabel.stringValue = searchField.stringValue.isEmpty ? "" : "0 结果"
+        } else {
+            matchLabel.stringValue = "\(term.currentMatchIndex + 1)/\(total)"
+        }
+    }
+}
+
 public final class NativeTerminalScrollView: NSScrollView {
     public let terminalView = NativeTerminalView()
+    public let searchBarOverlay = TerminalFindBarView()
     
     override public init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -135,8 +293,44 @@ public final class NativeTerminalScrollView: NSScrollView {
         self.contentView.wantsLayer = true
         self.contentView.layerContentsRedrawPolicy = .onSetNeedsDisplay
         
+        // Find Bar Overlay
+        searchBarOverlay.terminalView = terminalView
+        searchBarOverlay.isHidden = true
+        searchBarOverlay.wantsLayer = true
+        searchBarOverlay.layer?.zPosition = 1000
+        self.addSubview(searchBarOverlay)
+        
+        NotificationCenter.default.addObserver(self, selector: #selector(handleTriggerFindNotification), name: NSNotification.Name("TriggerTerminalFind"), object: nil)
+        
         // Register for file drop
         self.registerForDraggedTypes([.fileURL])
+    }
+    
+    override public func layout() {
+        super.layout()
+        let barW: CGFloat = 300
+        let barH: CGFloat = 32
+        let x = max(8, bounds.width - barW - 14)
+        let y = max(8, bounds.height - barH - 8)
+        searchBarOverlay.frame = NSRect(x: x, y: y, width: barW, height: barH)
+    }
+    
+    public func showFindBar() {
+        var initialText: String? = nil
+        if let sel = terminalView.selectedRangeText(), !sel.isEmpty, !sel.contains("\n") {
+            initialText = sel
+        }
+        searchBarOverlay.show(withInitialText: initialText)
+    }
+    
+    public func hideFindBar() {
+        searchBarOverlay.hide()
+    }
+    
+    @objc private func handleTriggerFindNotification(_ note: Notification) {
+        if let win = window, win.isKeyWindow {
+            showFindBar()
+        }
     }
     
     override public func setFrameSize(_ newSize: NSSize) {
@@ -612,9 +806,230 @@ public final class NativeTerminalView: NSTextView {
         }
     }
     
+    // MARK: - Terminal In-View Search State & Navigation
+    
+    public private(set) var currentMatches: [NSRange] = []
+    public private(set) var currentMatchIndex: Int = -1
+    
+    public func selectedRangeText() -> String? {
+        let range = selectedRange()
+        guard range.length > 0, let storage = textStorage, range.location + range.length <= storage.length else { return nil }
+        return (storage.string as NSString).substring(with: range)
+    }
+    
+    public func performFind(query: String) -> Int {
+        clearHighlightAttributes()
+        currentMatches.removeAll()
+        currentMatchIndex = -1
+        
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let storage = self.textStorage else {
+            return 0
+        }
+        
+        let string = storage.string as NSString
+        let totalLength = string.length
+        var searchRange = NSRange(location: 0, length: totalLength)
+        
+        while searchRange.location < totalLength {
+            searchRange.length = totalLength - searchRange.location
+            let found = string.range(of: trimmed, options: .caseInsensitive, range: searchRange)
+            if found.location != NSNotFound {
+                currentMatches.append(found)
+                searchRange.location = found.location + max(1, found.length)
+            } else {
+                break
+            }
+        }
+        
+        if !currentMatches.isEmpty {
+            currentMatchIndex = 0
+            highlightAllMatches()
+            scrollToCurrentMatch()
+        }
+        return currentMatches.count
+    }
+    
+    public func findNext() -> NSRange? {
+        guard !currentMatches.isEmpty else { return nil }
+        currentMatchIndex = (currentMatchIndex + 1) % currentMatches.count
+        highlightAllMatches()
+        scrollToCurrentMatch()
+        return currentMatches[currentMatchIndex]
+    }
+    
+    public func findPrevious() -> NSRange? {
+        guard !currentMatches.isEmpty else { return nil }
+        currentMatchIndex = (currentMatchIndex - 1 + currentMatches.count) % currentMatches.count
+        highlightAllMatches()
+        scrollToCurrentMatch()
+        return currentMatches[currentMatchIndex]
+    }
+    
+    public func clearFind() {
+        clearHighlightAttributes()
+        currentMatches.removeAll()
+        currentMatchIndex = -1
+    }
+    
+    private func highlightAllMatches() {
+        guard let layoutManager = self.layoutManager, let storage = self.textStorage else { return }
+        let fullRange = NSRange(location: 0, length: storage.length)
+        layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: fullRange)
+        
+        let matchBg = NSColor.systemYellow.withAlphaComponent(0.35)
+        let currentBg = NSColor.systemOrange.withAlphaComponent(0.85)
+        
+        for (index, range) in currentMatches.enumerated() {
+            guard range.location + range.length <= storage.length else { continue }
+            let color = (index == currentMatchIndex) ? currentBg : matchBg
+            layoutManager.addTemporaryAttribute(.backgroundColor, value: color, forCharacterRange: range)
+        }
+    }
+    
+    private func clearHighlightAttributes() {
+        guard let layoutManager = self.layoutManager, let storage = self.textStorage, storage.length > 0 else { return }
+        layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: NSRange(location: 0, length: storage.length))
+    }
+    
+    private func scrollToCurrentMatch() {
+        guard currentMatchIndex >= 0 && currentMatchIndex < currentMatches.count else { return }
+        let range = currentMatches[currentMatchIndex]
+        self.scrollRangeToVisible(range)
+    }
+    
+    // MARK: - URL Detection & Cmd+Click Support
+    
+    public struct DetectedURLMatch: Equatable, Sendable {
+        public let url: URL
+        public let range: NSRange
+        public let originalString: String
+        
+        public init(url: URL, range: NSRange, originalString: String) {
+            self.url = url
+            self.range = range
+            self.originalString = originalString
+        }
+    }
+    
+    public nonisolated static func detectURLs(in text: String) -> [DetectedURLMatch] {
+        guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else { return [] }
+        let nsText = text as NSString
+        let rawMatches = detector.matches(in: text, options: [], range: NSRange(location: 0, length: nsText.length))
+        
+        var results: [DetectedURLMatch] = []
+        let trailingPunctuation = CharacterSet(charactersIn: ".,;:)]}>'\"")
+        
+        for match in rawMatches {
+            guard let url = match.url else { continue }
+            var range = match.range
+            var matchStr = nsText.substring(with: range)
+            
+            while let last = matchStr.unicodeScalars.last, trailingPunctuation.contains(last) {
+                matchStr.removeLast()
+                range.length -= 1
+            }
+            
+            if let cleanURL = URL(string: matchStr), (cleanURL.scheme == "http" || cleanURL.scheme == "https" || cleanURL.scheme == "ssh" || cleanURL.scheme == "ftp") {
+                results.append(DetectedURLMatch(url: cleanURL, range: range, originalString: matchStr))
+            } else if let validScheme = url.scheme, validScheme == "http" || validScheme == "https" {
+                results.append(DetectedURLMatch(url: url, range: range, originalString: matchStr))
+            }
+        }
+        return results
+    }
+    
+    public func urlAtPoint(_ point: NSPoint) -> URL? {
+        guard let storage = self.textStorage, storage.length > 0,
+              let layoutManager = self.layoutManager,
+              let textContainer = self.textContainer else { return nil }
+        
+        let glyphIndex = layoutManager.glyphIndex(for: point, in: textContainer)
+        let charIndex = layoutManager.characterIndexForGlyph(at: glyphIndex)
+        guard charIndex < storage.length else { return nil }
+        
+        let lineRect = layoutManager.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil)
+        guard lineRect.insetBy(dx: -4, dy: -4).contains(point) else { return nil }
+        
+        let text = storage.string as NSString
+        let lineRange = text.lineRange(for: NSRange(location: charIndex, length: 0))
+        let lineText = text.substring(with: lineRange)
+        
+        let matches = Self.detectURLs(in: lineText)
+        for match in matches {
+            let globalRange = NSRange(location: lineRange.location + match.range.location, length: match.range.length)
+            if NSLocationInRange(charIndex, globalRange) {
+                return match.url
+            }
+        }
+        return nil
+    }
+    
+    public func getSelectedURL() -> URL? {
+        let range = selectedRange()
+        guard range.length > 0, let storage = textStorage, range.location + range.length <= storage.length else { return nil }
+        let str = (storage.string as NSString).substring(with: range).trimmingCharacters(in: .whitespacesAndNewlines)
+        if let url = URL(string: str), url.scheme == "http" || url.scheme == "https" {
+            return url
+        }
+        return nil
+    }
+    
+    private var trackingArea: NSTrackingArea?
+    
+    override public func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let old = trackingArea {
+            removeTrackingArea(old)
+        }
+        let area = NSTrackingArea(rect: bounds, options: [.mouseMoved, .cursorUpdate, .activeInKeyWindow], owner: self, userInfo: nil)
+        addTrackingArea(area)
+        trackingArea = area
+    }
+    
+    override public func mouseMoved(with event: NSEvent) {
+        super.mouseMoved(with: event)
+        updateCursorForEvent(event)
+    }
+    
+    override public func flagsChanged(with event: NSEvent) {
+        super.flagsChanged(with: event)
+        updateCursorForEvent(event)
+    }
+    
+    private func updateCursorForEvent(_ event: NSEvent) {
+        if event.modifierFlags.contains(.command) {
+            let pt = convert(event.locationInWindow, from: nil)
+            if urlAtPoint(pt) != nil {
+                NSCursor.pointingHand.set()
+                return
+            }
+        }
+        NSCursor.iBeam.set()
+    }
+    
+    override public func cursorUpdate(with event: NSEvent) {
+        if event.modifierFlags.contains(.command) {
+            let pt = convert(event.locationInWindow, from: nil)
+            if urlAtPoint(pt) != nil {
+                NSCursor.pointingHand.set()
+                return
+            }
+        }
+        super.cursorUpdate(with: event)
+    }
+    
     override public func mouseDown(with event: NSEvent) {
         self.window?.makeFirstResponder(self)
         onFocus?()
+        
+        if event.modifierFlags.contains(.command) {
+            let pt = convert(event.locationInWindow, from: nil)
+            if let url = urlAtPoint(pt) {
+                NSWorkspace.shared.open(url)
+                return
+            }
+        }
         super.mouseDown(with: event)
     }
     
@@ -661,11 +1076,25 @@ public final class NativeTerminalView: NSTextView {
     override public func keyDown(with event: NSEvent) {
         self.isPinnedToBottom = true
         
-        // 0. Handle Cmd+K (Clear Screen)
-        if event.modifierFlags.contains(.command), !event.modifierFlags.contains(.shift) {
-            if let chars = event.charactersIgnoringModifiers?.lowercased(), chars == "k" {
-                clearScreen()
-                return
+        // 0. Handle Cmd shortcuts: Cmd+K (Clear), Cmd+F (Find), Cmd+G (Next Match), Cmd+Shift+G (Prev Match)
+        if event.modifierFlags.contains(.command) {
+            if let chars = event.charactersIgnoringModifiers?.lowercased() {
+                if !event.modifierFlags.contains(.shift) && chars == "k" {
+                    clearScreen()
+                    return
+                } else if !event.modifierFlags.contains(.shift) && chars == "f" {
+                    (self.enclosingScrollView as? NativeTerminalScrollView)?.showFindBar()
+                    return
+                } else if chars == "g" {
+                    let sv = self.enclosingScrollView as? NativeTerminalScrollView
+                    if event.modifierFlags.contains(.shift) {
+                        _ = findPrevious()
+                    } else {
+                        _ = findNext()
+                    }
+                    sv?.searchBarOverlay.updateMatchLabel()
+                    return
+                }
             }
         }
         
@@ -701,6 +1130,10 @@ public final class NativeTerminalView: NSTextView {
                 onInput?("\t".data(using: .utf8)!)
                 return
             case 53: // ESC
+                if let sv = self.enclosingScrollView as? NativeTerminalScrollView, !sv.searchBarOverlay.isHidden {
+                    sv.hideFindBar()
+                    return
+                }
                 onInput?("\u{1B}".data(using: .utf8)!)
                 return
             case 126: // Up arrow
@@ -792,6 +1225,24 @@ public final class NativeTerminalView: NSTextView {
         
         let menu = NSMenu(title: "Terminal")
         let hasSelection = self.selectedRange().length > 0
+        let pt = convert(event.locationInWindow, from: nil)
+        
+        // Check if clicked or selected a URL
+        if let clickedURL = urlAtPoint(pt) {
+            let shortURL = clickedURL.absoluteString.count > 30 ? String(clickedURL.absoluteString.prefix(28)) + "..." : clickedURL.absoluteString
+            let urlItem = NSMenuItem(title: "在浏览器中打开链接 (\(shortURL))", action: #selector(openURLAction(_:)), keyEquivalent: "")
+            urlItem.target = self
+            urlItem.representedObject = clickedURL
+            menu.addItem(urlItem)
+            menu.addItem(NSMenuItem.separator())
+        } else if let selectedURL = getSelectedURL() {
+            let shortURL = selectedURL.absoluteString.count > 30 ? String(selectedURL.absoluteString.prefix(28)) + "..." : selectedURL.absoluteString
+            let urlItem = NSMenuItem(title: "在浏览器中打开链接 (\(shortURL))", action: #selector(openURLAction(_:)), keyEquivalent: "")
+            urlItem.target = self
+            urlItem.representedObject = selectedURL
+            menu.addItem(urlItem)
+            menu.addItem(NSMenuItem.separator())
+        }
         
         // 1. 复制 (Copy)
         let copyItem = NSMenuItem(title: "复制 (Copy)", action: #selector(copyMenuAction(_:)), keyEquivalent: "c")
@@ -808,17 +1259,32 @@ public final class NativeTerminalView: NSTextView {
         
         menu.addItem(NSMenuItem.separator())
         
-        // 3. 全选 (Select All)
+        // 3. 查找 (Find)
+        let findItem = NSMenuItem(title: "查找 (Find)...", action: #selector(findMenuAction(_:)), keyEquivalent: "f")
+        findItem.target = self
+        menu.addItem(findItem)
+        
+        // 4. 全选 (Select All)
         let selectAllItem = NSMenuItem(title: "全选 (Select All)", action: #selector(selectAllMenuAction(_:)), keyEquivalent: "a")
         selectAllItem.target = self
         menu.addItem(selectAllItem)
         
-        // 4. 清屏 (Clear Screen)
+        // 5. 清屏 (Clear Screen)
         let clearItem = NSMenuItem(title: "清屏 (Clear Screen)", action: #selector(clearScreenMenuAction(_:)), keyEquivalent: "k")
         clearItem.target = self
         menu.addItem(clearItem)
         
         return menu
+    }
+    
+    @objc private func openURLAction(_ sender: NSMenuItem) {
+        if let url = sender.representedObject as? URL {
+            NSWorkspace.shared.open(url)
+        }
+    }
+    
+    @objc private func findMenuAction(_ sender: Any?) {
+        (self.enclosingScrollView as? NativeTerminalScrollView)?.showFindBar()
     }
     
     @objc private func copyMenuAction(_ sender: Any?) {

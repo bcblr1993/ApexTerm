@@ -653,4 +653,75 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         }
         progress(1.0)
     }
+    
+    private func executeRemoteCommand(_ cmd: String) async throws {
+        await resolvePasswordIfNeeded()
+        let process = Process()
+        let sshpass = self.sshpassExecutablePath
+        let ctrlArgs = [
+            "-o", "ControlMaster=auto",
+            "-o", "ControlPath=\(controlSocketPath)",
+            "-o", "ControlPersist=60s"
+        ]
+        
+        if let pw = resolvedPassword, !pw.isEmpty, let passBin = sshpass {
+            process.executableURL = URL(fileURLWithPath: passBin)
+            process.arguments = [
+                "-p", pw,
+                "/usr/bin/ssh",
+                "-o", "StrictHostKeyChecking=accept-new",
+            ] + ctrlArgs + [
+                "-p", "\(session.port)",
+                "\(session.username)@\(session.host)",
+                cmd
+            ]
+        } else {
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+            process.arguments = [
+                "-o", "StrictHostKeyChecking=accept-new",
+            ] + ctrlArgs + [
+                "-p", "\(session.port)",
+                "\(session.username)@\(session.host)",
+                cmd
+            ]
+        }
+        
+        let errPipe = Pipe()
+        process.standardError = errPipe
+        try process.run()
+        process.waitUntilExit()
+        
+        guard process.terminationStatus == 0 else {
+            let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+            let errMsg = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "Remote command execution failed"
+            throw NSError(domain: "ApexSSH", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: errMsg.isEmpty ? "Operation failed with exit code \(process.terminationStatus)" : errMsg])
+        }
+    }
+    
+    public func removeFile(remotePath: String) async throws {
+        let escaped = remotePath.replacingOccurrences(of: "\"", with: "\\\"")
+        try await executeRemoteCommand("rm -f \"\(escaped)\"")
+    }
+    
+    public func removeDirectory(remotePath: String, recursive: Bool) async throws {
+        let escaped = remotePath.replacingOccurrences(of: "\"", with: "\\\"")
+        let cmd = recursive ? "rm -rf \"\(escaped)\"" : "rmdir \"\(escaped)\""
+        try await executeRemoteCommand(cmd)
+    }
+    
+    public func createDirectory(remotePath: String) async throws {
+        let escaped = remotePath.replacingOccurrences(of: "\"", with: "\\\"")
+        try await executeRemoteCommand("mkdir -p \"\(escaped)\"")
+    }
+    
+    public func createFile(remotePath: String) async throws {
+        let escaped = remotePath.replacingOccurrences(of: "\"", with: "\\\"")
+        try await executeRemoteCommand("touch \"\(escaped)\"")
+    }
+    
+    public func rename(oldPath: String, newPath: String) async throws {
+        let escOld = oldPath.replacingOccurrences(of: "\"", with: "\\\"")
+        let escNew = newPath.replacingOccurrences(of: "\"", with: "\\\"")
+        try await executeRemoteCommand("mv \"\(escOld)\" \"\(escNew)\"")
+    }
 }

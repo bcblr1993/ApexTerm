@@ -213,7 +213,14 @@ public final class MockSSHSession: SSHSessionProtocol, @unchecked Sendable {
                     loadAvg1m: Double.random(in: 0.4...1.8),
                     loadAvg5m: 1.1,
                     loadAvg15m: 0.9,
-                    uptimeSeconds: 86400 * 14
+                    uptimeSeconds: 86400 * 14,
+                    topProcesses: [
+                        ProcessMetricItem(pid: 1248, user: "root", cpuPercent: Double.random(in: 8.5...24.2), memPercent: 3.2, command: "nginx: worker process"),
+                        ProcessMetricItem(pid: 3412, user: "node", cpuPercent: Double.random(in: 5.1...18.4), memPercent: 8.5, command: "node server.js"),
+                        ProcessMetricItem(pid: 892, user: "mysql", cpuPercent: Double.random(in: 2.0...6.0), memPercent: 14.2, command: "mysqld"),
+                        ProcessMetricItem(pid: 4120, user: "redis", cpuPercent: Double.random(in: 0.5...2.5), memPercent: 1.8, command: "redis-server"),
+                        ProcessMetricItem(pid: 9811, user: "root", cpuPercent: Double.random(in: 0.1...1.5), memPercent: 0.8, command: "sshd: root@pts/0")
+                    ]
                 )
                 
                 self.metricsHandler?(snapshot)
@@ -223,33 +230,116 @@ public final class MockSSHSession: SSHSessionProtocol, @unchecked Sendable {
     }
     
     // SFTP mock
-    public func listDirectory(path: String) async throws -> [SFTPItem] {
-        try await Task.sleep(nanoseconds: 80_000_000) // 80ms latency
-        
+    private var mockDirectoryItems: [String: [SFTPItem]] = [:]
+    
+    private func normalizedDirPath(_ path: String) -> String {
+        var p = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        if p.isEmpty { p = "/" }
+        if p.count > 1 && p.hasSuffix("/") { p.removeLast() }
+        return p
+    }
+    
+    private func getInitialItems(for path: String) -> [SFTPItem] {
         let p = path.hasSuffix("/") ? path : "\(path)/"
         return [
             SFTPItem(name: "..", path: (path as NSString).deletingLastPathComponent, isDirectory: true),
-            SFTPItem(name: "bin", path: "\(p)bin", isDirectory: true, size: 4096, permissions: 0o755),
-            SFTPItem(name: "etc", path: "\(p)etc", isDirectory: true, size: 4096, permissions: 0o755),
-            SFTPItem(name: "var", path: "\(p)var", isDirectory: true, size: 4096, permissions: 0o755),
-            SFTPItem(name: "nginx.conf", path: "\(p)nginx.conf", isDirectory: false, size: 2840, permissions: 0o644),
-            SFTPItem(name: "docker-compose.yml", path: "\(p)docker-compose.yml", isDirectory: false, size: 1420, permissions: 0o644),
-            SFTPItem(name: "access.log", path: "\(p)access.log", isDirectory: false, size: 14_850_000, permissions: 0o644),
-            SFTPItem(name: "error.log", path: "\(p)error.log", isDirectory: false, size: 34_200, permissions: 0o644),
-            SFTPItem(name: "deploy.sh", path: "\(p)deploy.sh", isDirectory: false, size: 380, permissions: 0o755)
+            SFTPItem(name: ".bashrc", path: "\(p).bashrc", isDirectory: false, size: 3771, permissions: 0o644, modificationDate: Date(timeIntervalSinceNow: -86400 * 5)),
+            SFTPItem(name: ".profile", path: "\(p).profile", isDirectory: false, size: 807, permissions: 0o644, modificationDate: Date(timeIntervalSinceNow: -86400 * 10)),
+            SFTPItem(name: "bin", path: "\(p)bin", isDirectory: true, size: 4096, permissions: 0o755, modificationDate: Date(timeIntervalSinceNow: -86400 * 30)),
+            SFTPItem(name: "etc", path: "\(p)etc", isDirectory: true, size: 4096, permissions: 0o755, modificationDate: Date(timeIntervalSinceNow: -86400 * 20)),
+            SFTPItem(name: "var", path: "\(p)var", isDirectory: true, size: 4096, permissions: 0o755, modificationDate: Date(timeIntervalSinceNow: -86400 * 15)),
+            SFTPItem(name: "nginx.conf", path: "\(p)nginx.conf", isDirectory: false, size: 2840, permissions: 0o644, modificationDate: Date(timeIntervalSinceNow: -3600 * 4)),
+            SFTPItem(name: "docker-compose.yml", path: "\(p)docker-compose.yml", isDirectory: false, size: 1420, permissions: 0o644, modificationDate: Date(timeIntervalSinceNow: -3600 * 12)),
+            SFTPItem(name: "access.log", path: "\(p)access.log", isDirectory: false, size: 14_850_000, permissions: 0o644, modificationDate: Date(timeIntervalSinceNow: -60)),
+            SFTPItem(name: "error.log", path: "\(p)error.log", isDirectory: false, size: 34_200, permissions: 0o644, modificationDate: Date(timeIntervalSinceNow: -300)),
+            SFTPItem(name: "deploy.sh", path: "\(p)deploy.sh", isDirectory: false, size: 380, permissions: 0o755, modificationDate: Date(timeIntervalSinceNow: -86400 * 2))
         ]
     }
     
-    private func getMockFile(at path: String, fallback: Data) -> Data {
+    private func withFileLock<T>(_ body: () -> T) -> T {
         fileLock.lock()
         defer { fileLock.unlock() }
-        return mockFiles[path] ?? fallback
+        return body()
+    }
+    
+    public func listDirectory(path: String) async throws -> [SFTPItem] {
+        try await Task.sleep(nanoseconds: 30_000_000) // 30ms latency
+        let key = normalizedDirPath(path)
+        return withFileLock {
+            if let existing = mockDirectoryItems[key] {
+                return existing
+            }
+            let initial = getInitialItems(for: key)
+            mockDirectoryItems[key] = initial
+            return initial
+        }
+    }
+    
+    public func removeFile(remotePath: String) async throws {
+        let parent = normalizedDirPath((remotePath as NSString).deletingLastPathComponent)
+        withFileLock {
+            var current = mockDirectoryItems[parent] ?? getInitialItems(for: parent)
+            current.removeAll(where: { $0.path == remotePath })
+            mockDirectoryItems[parent] = current
+        }
+    }
+    
+    public func removeDirectory(remotePath: String, recursive: Bool) async throws {
+        let parent = normalizedDirPath((remotePath as NSString).deletingLastPathComponent)
+        withFileLock {
+            var current = mockDirectoryItems[parent] ?? getInitialItems(for: parent)
+            current.removeAll(where: { $0.path == remotePath })
+            mockDirectoryItems[parent] = current
+        }
+    }
+    
+    public func createDirectory(remotePath: String) async throws {
+        let parent = normalizedDirPath((remotePath as NSString).deletingLastPathComponent)
+        let name = (remotePath as NSString).lastPathComponent
+        withFileLock {
+            var current = mockDirectoryItems[parent] ?? getInitialItems(for: parent)
+            if !current.contains(where: { $0.path == remotePath }) {
+                current.append(SFTPItem(name: name, path: remotePath, isDirectory: true, size: 4096, permissions: 0o755, modificationDate: Date()))
+            }
+            mockDirectoryItems[parent] = current
+        }
+    }
+    
+    public func createFile(remotePath: String) async throws {
+        let parent = normalizedDirPath((remotePath as NSString).deletingLastPathComponent)
+        let name = (remotePath as NSString).lastPathComponent
+        withFileLock {
+            var current = mockDirectoryItems[parent] ?? getInitialItems(for: parent)
+            if !current.contains(where: { $0.path == remotePath }) {
+                current.append(SFTPItem(name: name, path: remotePath, isDirectory: false, size: 0, permissions: 0o644, modificationDate: Date()))
+            }
+            mockDirectoryItems[parent] = current
+        }
+    }
+    
+    public func rename(oldPath: String, newPath: String) async throws {
+        let parent = normalizedDirPath((oldPath as NSString).deletingLastPathComponent)
+        let newName = (newPath as NSString).lastPathComponent
+        withFileLock {
+            var current = mockDirectoryItems[parent] ?? getInitialItems(for: parent)
+            if let idx = current.firstIndex(where: { $0.path == oldPath }) {
+                let old = current[idx]
+                current[idx] = SFTPItem(name: newName, path: newPath, isDirectory: old.isDirectory, isSymlink: old.isSymlink, size: old.size, permissions: old.permissions, modificationDate: Date())
+            }
+            mockDirectoryItems[parent] = current
+        }
+    }
+    
+    private func getMockFile(at path: String, fallback: Data) -> Data {
+        withFileLock {
+            mockFiles[path] ?? fallback
+        }
     }
     
     private func setMockFile(at path: String, data: Data) {
-        fileLock.lock()
-        defer { fileLock.unlock() }
-        mockFiles[path] = data
+        withFileLock {
+            mockFiles[path] = data
+        }
     }
     
     public func downloadFile(remotePath: String, localURL: URL, progress: @Sendable @escaping (Double) -> Void) async throws {

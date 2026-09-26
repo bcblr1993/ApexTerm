@@ -44,6 +44,12 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
     @Published public var currentRemotePath: String
     @Published public var isDirectoryLinkageEnabled: Bool
     @Published public var connectionState: SSHConnectionState = .disconnected
+    @Published public var customTitle: String? = nil
+    @Published public var paneSplitRatio: CGFloat = 0.5
+    
+    public var displayTitle: String {
+        customTitle ?? session.name
+    }
     
     // Split Panes
     @Published public var panes: [TerminalPaneItem] = []
@@ -86,6 +92,24 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
         }
     }
     
+    public func reconnect(pane: TerminalPaneItem) {
+        pane.connectionState = .connecting(step: "正在连接")
+        Task {
+            do {
+                try await pane.sshClient.connect()
+                pane.connectionState = pane.sshClient.connectionState
+            } catch {
+                pane.connectionState = .failed(error.localizedDescription)
+            }
+        }
+    }
+    
+    public func reconnectAll() {
+        for pane in panes {
+            reconnect(pane: pane)
+        }
+    }
+    
     public func split(mode: PaneSplitMode) {
         if panes.count >= 2 {
             self.splitMode = mode
@@ -102,6 +126,7 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
         self.panes.append(newPane)
         self.activePaneId = newPane.id
         self.splitMode = mode
+        self.paneSplitRatio = 0.5
         
         Task {
             newPane.connectionState = .connecting(step: "连接中")
@@ -120,6 +145,7 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
         Task { await pane.sshClient.disconnect() }
         panes.remove(at: idx)
         splitMode = .single
+        paneSplitRatio = 0.5
         if let remaining = panes.first {
             remaining.title = session.name
             activePaneId = remaining.id
@@ -137,6 +163,11 @@ public struct WorkspaceView: View {
     @State private var splitRatio: CGFloat = 0.70
     @State private var splitDragStartRatio: CGFloat?
     @State private var isSFTPVisible = true
+    
+    // Tab Rename
+    @State private var tabToRename: TerminalTabItem?
+    @State private var tabRenameText: String = ""
+    @State private var isShowingTabRenameAlert: Bool = false
     
     public init(
         store: SessionStore,
@@ -182,12 +213,20 @@ public struct WorkspaceView: View {
                         HStack(spacing: 4) {
                             ForEach(activeTabs) { tab in
                                 TabButton(
-                                    title: tab.session.name,
+                                    title: tab.displayTitle,
                                     isSelected: tab.id == currentTab?.id,
                                     colorHex: tab.session.colorHex,
                                     onSelect: { selectedTabId = tab.id },
                                     onClose: { closeTab(tab) },
                                     onDuplicate: { duplicateTab(tab) },
+                                    onRename: {
+                                        tabToRename = tab
+                                        tabRenameText = tab.customTitle ?? tab.session.name
+                                        isShowingTabRenameAlert = true
+                                    },
+                                    onReconnect: {
+                                        tab.reconnectAll()
+                                    },
                                     onSplitVertical: { tab.split(mode: .vertical) },
                                     onSplitHorizontal: { tab.split(mode: .horizontal) },
                                     onCloseOthers: { closeOtherTabs(tab) },
@@ -242,12 +281,18 @@ public struct WorkspaceView: View {
                 }
             }
             
-            // Hidden buttons for split keyboard shortcuts
+            // Hidden buttons for split and reconnect keyboard shortcuts
             Group {
                 Button("") { currentTab?.split(mode: .vertical) }
                     .keyboardShortcut("d", modifiers: .command)
                 Button("") { currentTab?.split(mode: .horizontal) }
                     .keyboardShortcut("d", modifiers: [.command, .shift])
+                Button("") {
+                    if let cur = currentTab, let active = cur.activePane {
+                        cur.reconnect(pane: active)
+                    }
+                }
+                .keyboardShortcut("r", modifiers: .command)
             }
             .frame(width: 0, height: 0)
             .opacity(0)
@@ -299,6 +344,21 @@ public struct WorkspaceView: View {
         }
         .onChange(of: activeTabs.count) { _, count in
             if count < 2 { isBroadcastActive = false }
+        }
+        .alert("重命名标签页", isPresented: $isShowingTabRenameAlert) {
+            TextField("标签页名称", text: $tabRenameText)
+            Button("确定") {
+                if let tab = tabToRename {
+                    let trimmed = tabRenameText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    tab.customTitle = trimmed.isEmpty ? nil : trimmed
+                }
+            }
+            Button("恢复默认名称", role: .destructive) {
+                tabToRename?.customTitle = nil
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("自定义该标签页的显示名称，输入留空或恢复默认将恢复为服务器名称。")
         }
     }
     
@@ -377,7 +437,7 @@ private struct WorkspaceHeaderBar: View {
     var body: some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(tab.session.name)
+                Text(tab.displayTitle)
                     .font(.headline)
                     .lineLimit(1)
                 Text("\(tab.session.username)@\(tab.session.host)")
@@ -451,17 +511,79 @@ private struct WorkspaceActiveTabSplitView: View {
                                 .id(pane.id)
                         }
                     } else if tab.splitMode == .vertical {
-                        HStack(spacing: 4) {
-                            ForEach(tab.panes) { pane in
-                                PaneContainerView(pane: pane, tab: tab, activeTabs: activeTabs, isBroadcastActive: isBroadcastActive)
-                                    .id(pane.id)
+                        GeometryReader { paneGeo in
+                            let totalW = paneGeo.size.width
+                            let leftW = max(80, min(totalW - 88, (totalW - 8) * tab.paneSplitRatio))
+                            let rightW = max(80, totalW - 8 - leftW)
+                            
+                            HStack(spacing: 0) {
+                                if let firstPane = tab.panes.first {
+                                    PaneContainerView(pane: firstPane, tab: tab, activeTabs: activeTabs, isBroadcastActive: isBroadcastActive)
+                                        .frame(width: leftW)
+                                        .id(firstPane.id)
+                                }
+                                
+                                // Vertical draggable divider between panes
+                                VStack {
+                                    Spacer()
+                                    Capsule().fill(Color.secondary.opacity(0.4)).frame(width: 3, height: 32)
+                                    Spacer()
+                                }
+                                .frame(width: 8)
+                                .background(ApexStyle.surface)
+                                .contentShape(Rectangle())
+                                .gesture(
+                                    DragGesture()
+                                        .onChanged { val in
+                                            let newRatio = val.location.x / max(totalW, 100)
+                                            tab.paneSplitRatio = min(max(newRatio, 0.15), 0.85)
+                                        }
+                                )
+                                
+                                if tab.panes.count > 1 {
+                                    let secondPane = tab.panes[1]
+                                    PaneContainerView(pane: secondPane, tab: tab, activeTabs: activeTabs, isBroadcastActive: isBroadcastActive)
+                                        .frame(width: rightW)
+                                        .id(secondPane.id)
+                                }
                             }
                         }
-                    } else {
-                        VStack(spacing: 4) {
-                            ForEach(tab.panes) { pane in
-                                PaneContainerView(pane: pane, tab: tab, activeTabs: activeTabs, isBroadcastActive: isBroadcastActive)
-                                    .id(pane.id)
+                    } else { // horizontal split
+                        GeometryReader { paneGeo in
+                            let totalH = paneGeo.size.height
+                            let topH = max(60, min(totalH - 68, (totalH - 8) * tab.paneSplitRatio))
+                            let bottomH = max(60, totalH - 8 - topH)
+                            
+                            VStack(spacing: 0) {
+                                if let firstPane = tab.panes.first {
+                                    PaneContainerView(pane: firstPane, tab: tab, activeTabs: activeTabs, isBroadcastActive: isBroadcastActive)
+                                        .frame(height: topH)
+                                        .id(firstPane.id)
+                                }
+                                
+                                // Horizontal draggable divider between panes
+                                HStack {
+                                    Spacer()
+                                    Capsule().fill(Color.secondary.opacity(0.4)).frame(width: 32, height: 3)
+                                    Spacer()
+                                }
+                                .frame(height: 8)
+                                .background(ApexStyle.surface)
+                                .contentShape(Rectangle())
+                                .gesture(
+                                    DragGesture()
+                                        .onChanged { val in
+                                            let newRatio = val.location.y / max(totalH, 80)
+                                            tab.paneSplitRatio = min(max(newRatio, 0.15), 0.85)
+                                        }
+                                )
+                                
+                                if tab.panes.count > 1 {
+                                    let secondPane = tab.panes[1]
+                                    PaneContainerView(pane: secondPane, tab: tab, activeTabs: activeTabs, isBroadcastActive: isBroadcastActive)
+                                        .frame(height: bottomH)
+                                        .id(secondPane.id)
+                                }
                             }
                         }
                     }
@@ -542,37 +664,87 @@ private struct PaneContainerView: View {
                 }
             }
             
-            TerminalRepresentable(
-                ringBuffer: pane.ringBuffer,
-                isFocused: isFocused,
-                onFocus: {
-                    if tab.activePaneId != pane.id {
-                        tab.activePaneId = pane.id
-                    }
-                },
-                onResize: { cols, rows in
-                    Task {
-                        try? await pane.sshClient.resizeTerminal(columns: cols, rows: rows)
-                    }
-                },
-                onFileDrop: { localURL in
-                    let targetDir = tab.currentRemotePath
-                    let dest = targetDir.hasSuffix("/") ? "\(targetDir)\(localURL.lastPathComponent)" : "\(targetDir)/\(localURL.lastPathComponent)"
-                    TransferManager.shared.enqueueUpload(session: pane.sshClient, localURL: localURL, remotePath: dest, onResult: { _ in
-                        Task { @MainActor in
-                            NotificationCenter.default.post(name: NSNotification.Name("SFTPDirectoryRefreshNeeded"), object: dest)
+            ZStack {
+                TerminalRepresentable(
+                    ringBuffer: pane.ringBuffer,
+                    isFocused: isFocused,
+                    onFocus: {
+                        if tab.activePaneId != pane.id {
+                            tab.activePaneId = pane.id
                         }
-                    })
+                    },
+                    onResize: { cols, rows in
+                        Task {
+                            try? await pane.sshClient.resizeTerminal(columns: cols, rows: rows)
+                        }
+                    },
+                    onFileDrop: { localURL in
+                        let targetDir = tab.currentRemotePath
+                        let dest = targetDir.hasSuffix("/") ? "\(targetDir)\(localURL.lastPathComponent)" : "\(targetDir)/\(localURL.lastPathComponent)"
+                        TransferManager.shared.enqueueUpload(session: pane.sshClient, localURL: localURL, remotePath: dest, onResult: { _ in
+                            Task { @MainActor in
+                                NotificationCenter.default.post(name: NSNotification.Name("SFTPDirectoryRefreshNeeded"), object: dest)
+                            }
+                        })
+                    }
+                ) { inputData in
+                    if isBroadcastActive {
+                        for t in activeTabs {
+                            for p in t.panes {
+                                p.sshClient.sendInputSync(inputData)
+                            }
+                        }
+                    } else {
+                        pane.sshClient.sendInputSync(inputData)
+                    }
                 }
-            ) { inputData in
-                if isBroadcastActive {
-                    for t in activeTabs {
-                        for p in t.panes {
-                            p.sshClient.sendInputSync(inputData)
+                
+                // Reconnect floating prompt on disconnect or failure
+                if case .disconnected = pane.connectionState {
+                    VStack {
+                        Spacer()
+                        HStack(spacing: 8) {
+                            Circle().fill(Color.secondary).frame(width: 8, height: 8)
+                            Text("会话已断开")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundColor(.primary)
+                            Button("重新连接 (⌘R)") {
+                                tab.reconnect(pane: pane)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
                         }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.3), lineWidth: 1))
+                        .shadow(color: .black.opacity(0.2), radius: 6, y: 2)
+                        .padding(.bottom, 24)
                     }
-                } else {
-                    pane.sshClient.sendInputSync(inputData)
+                    .transition(.opacity)
+                } else if case .failed(let err) = pane.connectionState {
+                    VStack {
+                        Spacer()
+                        HStack(spacing: 8) {
+                            Circle().fill(Color.red).frame(width: 8, height: 8)
+                            Text("连接失败：\(err)")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundColor(.red)
+                                .lineLimit(1)
+                            Button("重新连接 (⌘R)") {
+                                tab.reconnect(pane: pane)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.red.opacity(0.4), lineWidth: 1))
+                        .shadow(color: .black.opacity(0.2), radius: 6, y: 2)
+                        .padding(.bottom, 24)
+                    }
+                    .transition(.opacity)
                 }
             }
         }
@@ -677,6 +849,8 @@ struct TabButton: View {
     let onSelect: () -> Void
     let onClose: () -> Void
     let onDuplicate: () -> Void
+    let onRename: () -> Void
+    let onReconnect: () -> Void
     let onSplitVertical: () -> Void
     let onSplitHorizontal: () -> Void
     let onCloseOthers: () -> Void
@@ -709,7 +883,24 @@ struct TabButton: View {
         .onTapGesture {
             onSelect()
         }
+        .simultaneousGesture(
+            TapGesture(count: 2).onEnded {
+                onRename()
+            }
+        )
         .contextMenu {
+            Button {
+                onReconnect()
+            } label: {
+                Label("重新连接 (⌘R)", systemImage: "arrow.clockwise")
+            }
+            
+            Button {
+                onRename()
+            } label: {
+                Label("重命名标签页...", systemImage: "pencil")
+            }
+            
             Button {
                 onDuplicate()
             } label: {

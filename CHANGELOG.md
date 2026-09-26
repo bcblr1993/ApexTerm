@@ -4,6 +4,27 @@
 
 ---
 
+## [v1.2.2] - 2026-09-26
+
+### ✨ 新增特性 (Features)
+- **SFTP 全场景传输任务中心与记录可视化 (Comprehensive Transfer Tracking & Records)**：
+  - **4 大传输链路 100% 全量入库**：全面打通并接管“点击下载”、“拖拽下载（导出至访达/桌面）”、“点击上传”、“拖拽上传（拖入面板/终端）”全生命周期；
+  - **底层异步任务流统一抽象**：在 `TransferManager` 中增加外部传输生命周期接管能力（`beginExternalTransfer`、`updateExternalProgress`、`completeExternalTransfer`、`failExternalTransfer`），无论是系统拖拽手势还是本地队列均拥有瞬时速率、分片字节、进度与完成时间追踪；
+  - **工具栏与底栏双常驻显式入口**：
+    - SFTP 顶部工具栏新增显式 **“传输记录 (N)”** 按钮，传输中自动呈现动态旋转指示器与“传输中 (N)”高亮徽标，支持一键切换展开/收起；
+    - 顶部传输通知气泡（如“拖拽导出完成: xxx.sql”）升级为**可交互直达链接**，点击即可立即展开任务详情；
+    - 底部状态栏增加实时传输概要指示器（展示进行中任务数、总带宽吞吐或历史总数）；
+  - **任务抽屉体验深度升级 (`TransferDrawer`)**：
+    - 新增 **“全部 / 上传 / 下载”** 三态分类筛选器；
+    - 任务列表明确标识 `[上传]` (蓝) / `[下载]` (绿) 专属标签与端到端完整路径映射；
+    - 已完成的下载任务增加 **“在访达中显示”** (Reveal in Finder) 快捷按钮，支持一键打开本地目录并定位高亮文件。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- **全量测试与 Tart VM 验收门禁**：新增 `testAllFourTransferScenariosRecordInTransferManager`，92 项自动化单元与功能测试 100% 通过（0 failures）；
+- **Swift 6 编译器规范**：严格并发模式下保持 0 警告（Zero Warnings）。
+
+---
+
 ## [v1.2.1] - 2026-09-26
 
 ### ✨ 新增特性 (Features)

@@ -109,6 +109,94 @@ public final class TransferManager: ObservableObject {
         tasks.removeAll { $0.status == .completed || $0.status == .cancelled }
     }
     
+    // MARK: - Externally Driven Transfers (Drag & Drop Export / Streaming)
+    
+    /// Register and begin tracking an externally-driven transfer (e.g. drag & drop export to Finder or drag upload)
+    @discardableResult
+    public func beginExternalTransfer(
+        id: UUID = UUID(),
+        fileName: String,
+        remotePath: String,
+        localURL: URL,
+        direction: TransferDirection,
+        totalBytes: Int64
+    ) -> UUID {
+        let task = TransferTask(
+            id: id,
+            fileName: fileName,
+            remotePath: remotePath,
+            localURL: localURL,
+            direction: direction,
+            totalBytes: totalBytes,
+            transferredBytes: 0,
+            speedBytesPerSec: 0,
+            status: .transferring,
+            startedAt: Date()
+        )
+        tasks.insert(task, at: 0)
+        lastSpeedSampleTime[id] = Date()
+        lastSampledBytes[id] = 0
+        return id
+    }
+    
+    /// Update progress for an externally-driven transfer
+    public func updateExternalProgress(taskId: UUID, fraction: Double, transferredBytes: Int64? = nil) {
+        guard let idx = tasks.firstIndex(where: { $0.id == taskId }) else { return }
+        let total = tasks[idx].totalBytes
+        let transferred: Int64
+        if let direct = transferredBytes {
+            transferred = direct
+        } else if total > 0 {
+            transferred = Int64(Double(total) * fraction)
+        } else {
+            transferred = Int64(fraction * 100)
+        }
+        tasks[idx].transferredBytes = transferred
+        
+        let now = Date()
+        if let lastTime = lastSpeedSampleTime[taskId], let lastBytes = lastSampledBytes[taskId] {
+            let elapsed = now.timeIntervalSince(lastTime)
+            if elapsed >= 0.25 {
+                let deltaBytes = Double(transferred - lastBytes)
+                let speed = deltaBytes / elapsed
+                tasks[idx].speedBytesPerSec = max(0, speed)
+                lastSpeedSampleTime[taskId] = now
+                lastSampledBytes[taskId] = transferred
+            }
+        } else {
+            lastSpeedSampleTime[taskId] = now
+            lastSampledBytes[taskId] = transferred
+        }
+    }
+    
+    /// Mark an externally-driven transfer as completed
+    public func completeExternalTransfer(taskId: UUID) {
+        guard let idx = tasks.firstIndex(where: { $0.id == taskId }) else { return }
+        tasks[idx].transferredBytes = max(tasks[idx].transferredBytes, tasks[idx].totalBytes)
+        tasks[idx].status = .completed
+        tasks[idx].completedAt = Date()
+        lastSpeedSampleTime.removeValue(forKey: taskId)
+        lastSampledBytes.removeValue(forKey: taskId)
+    }
+    
+    /// Mark an externally-driven transfer as failed
+    public func failExternalTransfer(taskId: UUID, error: Error) {
+        guard let idx = tasks.firstIndex(where: { $0.id == taskId }) else { return }
+        tasks[idx].status = .failed(error.localizedDescription)
+        tasks[idx].completedAt = Date()
+        lastSpeedSampleTime.removeValue(forKey: taskId)
+        lastSampledBytes.removeValue(forKey: taskId)
+    }
+    
+    /// Mark an externally-driven transfer as cancelled
+    public func cancelExternalTransfer(taskId: UUID) {
+        guard let idx = tasks.firstIndex(where: { $0.id == taskId }) else { return }
+        tasks[idx].status = .cancelled
+        tasks[idx].completedAt = Date()
+        lastSpeedSampleTime.removeValue(forKey: taskId)
+        lastSampledBytes.removeValue(forKey: taskId)
+    }
+    
     // MARK: - Internal Execution
     
     private func executeUpload(

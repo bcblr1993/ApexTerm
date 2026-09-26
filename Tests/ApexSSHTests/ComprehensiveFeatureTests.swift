@@ -330,4 +330,74 @@ final class ComprehensiveFeatureTests: XCTestCase {
         XCTAssertTrue(provider.hasItemConformingToTypeIdentifier(UTType.pdf.identifier))
         XCTAssertTrue(provider.hasItemConformingToTypeIdentifier(UTType.data.identifier))
     }
+
+    // MARK: - 11. All 4 Transfer Scenarios Record in TransferManager Tests
+    
+    func testAllFourTransferScenariosRecordInTransferManager() async {
+        let manager = TransferManager.shared
+        manager.clearCompleted()
+        
+        let session = MockSSHSession(session: Session(name: "TestServer", host: "127.0.0.1", username: "root"))
+        let tempDir = FileManager.default.temporaryDirectory
+        
+        // 1. Scenario 1: Click to Download (enqueueDownload)
+        let downloadDest = tempDir.appendingPathComponent("click_download.log")
+        let downloadId = manager.enqueueDownload(
+            session: session,
+            remotePath: "/var/log/click_download.log",
+            localURL: downloadDest,
+            totalBytes: 1024
+        )
+        XCTAssertTrue(manager.tasks.contains(where: { $0.id == downloadId && $0.direction == .download }))
+        
+        // 2. Scenario 2: Drag to Download (beginExternalTransfer)
+        let dragDownloadId = UUID()
+        let dragDest = tempDir.appendingPathComponent("drag_download.pdf")
+        manager.beginExternalTransfer(
+            id: dragDownloadId,
+            fileName: "drag_download.pdf",
+            remotePath: "/remote/drag_download.pdf",
+            localURL: dragDest,
+            direction: .download,
+            totalBytes: 50000
+        )
+        XCTAssertTrue(manager.tasks.contains(where: { $0.id == dragDownloadId && $0.direction == .download && $0.status == .transferring }))
+        
+        manager.updateExternalProgress(taskId: dragDownloadId, fraction: 0.5)
+        let taskMid = manager.tasks.first(where: { $0.id == dragDownloadId })
+        XCTAssertEqual(taskMid?.transferredBytes, 25000)
+        
+        manager.completeExternalTransfer(taskId: dragDownloadId)
+        let taskEnd = manager.tasks.first(where: { $0.id == dragDownloadId })
+        XCTAssertEqual(taskEnd?.status, .completed)
+        
+        // 3. Scenario 3: Click to Upload (enqueueUpload)
+        let uploadLocal = tempDir.appendingPathComponent("click_upload.txt")
+        try? "test data".write(to: uploadLocal, atomically: true, encoding: .utf8)
+        let uploadId = manager.enqueueUpload(
+            session: session,
+            localURL: uploadLocal,
+            remotePath: "/home/ubuntu/click_upload.txt"
+        )
+        XCTAssertTrue(manager.tasks.contains(where: { $0.id == uploadId && $0.direction == .upload }))
+        
+        // 4. Scenario 4: Drag to Upload (enqueueUpload via drop)
+        let dragUploadLocal = tempDir.appendingPathComponent("drag_upload.png")
+        try? "image data".write(to: dragUploadLocal, atomically: true, encoding: .utf8)
+        let dragUploadId = manager.enqueueUpload(
+            session: session,
+            localURL: dragUploadLocal,
+            remotePath: "/home/ubuntu/drag_upload.png"
+        )
+        XCTAssertTrue(manager.tasks.contains(where: { $0.id == dragUploadId && $0.direction == .upload }))
+        
+        // Assert all 4 tasks are recorded
+        let uploadTasks = manager.tasks.filter { $0.direction == .upload }
+        let downloadTasks = manager.tasks.filter { $0.direction == .download }
+        XCTAssertGreaterThanOrEqual(uploadTasks.count, 2)
+        XCTAssertGreaterThanOrEqual(downloadTasks.count, 2)
+        
+        // Cleanup
+        manager.clearCompleted()
+    }
 }

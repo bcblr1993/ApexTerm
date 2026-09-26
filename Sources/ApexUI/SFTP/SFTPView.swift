@@ -12,6 +12,7 @@ public struct SFTPView: View {
     @State private var items: [SFTPItem] = []
     @State private var isLoading = false
     @State private var selectedPath: String?
+    @ObservedObject private var transferManager = TransferManager.shared
     @State private var searchFilter = ""
     @State private var editingFile: SFTPItem?
     @State private var editorContent = ""
@@ -56,28 +57,41 @@ public struct SFTPView: View {
                 .help(isLinkageEnabled ? L10n.linkageHelpOn : L10n.linkageHelpOff)
 
                 if let notice = transferNotice {
-                    HStack(spacing: 5) {
-                        Image(systemName: notice.contains("失败") ? "exclamationmark.triangle.fill" : (notice.contains("正在") ? "arrow.up.circle" : "checkmark.circle.fill"))
-                            .foregroundColor(notice.contains("失败") ? .red : (notice.contains("正在") ? ApexStyle.accent : ApexStyle.success))
-                            .font(.system(size: 11))
-                        Text(notice)
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(notice.contains("失败") ? .red : (notice.contains("正在") ? ApexStyle.accent : ApexStyle.success))
-                        if notice.contains("失败") {
-                            Button(action: { transferNotice = nil }) {
-                                Label("关闭传输提示", systemImage: "xmark.circle")
-                            }
-                            .labelStyle(.iconOnly)
-                            .buttonStyle(.borderless)
-                            .controlSize(.small)
+                    Button(action: {
+                        withAnimation(.spring(duration: 0.25)) {
+                            isTransferDrawerExpanded = true
                         }
+                    }) {
+                        HStack(spacing: 5) {
+                            Image(systemName: notice.contains("失败") ? "exclamationmark.triangle.fill" : (notice.contains("正在") ? "arrow.up.circle" : "checkmark.circle.fill"))
+                                .foregroundColor(notice.contains("失败") ? .red : (notice.contains("正在") ? ApexStyle.accent : ApexStyle.success))
+                                .font(.system(size: 11))
+                            Text(notice)
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(notice.contains("失败") ? .red : (notice.contains("正在") ? ApexStyle.accent : ApexStyle.success))
+                            
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 9))
+                                .foregroundColor(.secondary)
+
+                            if notice.contains("失败") {
+                                Button(action: { transferNotice = nil }) {
+                                    Label("关闭传输提示", systemImage: "xmark.circle")
+                                }
+                                .labelStyle(.iconOnly)
+                                .buttonStyle(.borderless)
+                                .controlSize(.small)
+                            }
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(
+                            notice.contains("失败") ? Color.red.opacity(0.12) : (notice.contains("正在") ? ApexStyle.accent.opacity(0.12) : ApexStyle.success.opacity(0.12)),
+                            in: RoundedRectangle(cornerRadius: 6)
+                        )
                     }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(
-                        notice.contains("失败") ? Color.red.opacity(0.12) : (notice.contains("正在") ? ApexStyle.accent.opacity(0.12) : ApexStyle.success.opacity(0.12)),
-                        in: RoundedRectangle(cornerRadius: 6)
-                    )
+                    .buttonStyle(.plain)
+                    .help("点击打开传输任务记录抽屉")
                     .transition(.opacity)
                 }
 
@@ -116,6 +130,35 @@ public struct SFTPView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+
+                // Transfer records drawer toggle button
+                Button(action: {
+                    withAnimation(.spring(duration: 0.25)) {
+                        isTransferDrawerExpanded.toggle()
+                    }
+                }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: transferManager.activeCount > 0 ? "arrow.triangle.2.circlepath" : "arrow.up.arrow.down.circle")
+                            .rotationEffect(.degrees(transferManager.activeCount > 0 ? 360 : 0))
+                            .animation(transferManager.activeCount > 0 ? .linear(duration: 1.5).repeatForever(autoreverses: false) : .default, value: transferManager.activeCount)
+                            .foregroundColor(transferManager.activeCount > 0 ? ApexStyle.accent : .primary)
+                        
+                        if transferManager.activeCount > 0 {
+                            Text("传输中 (\(transferManager.activeCount))")
+                                .foregroundColor(ApexStyle.accent)
+                                .font(.system(size: 11, weight: .semibold))
+                        } else if !transferManager.tasks.isEmpty {
+                            Text("传输记录 (\(transferManager.tasks.count))")
+                                .font(.system(size: 11))
+                        } else {
+                            Text("传输记录")
+                                .font(.system(size: 11))
+                        }
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("查看上传与下载记录 (快捷切换)")
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
@@ -418,6 +461,9 @@ public struct SFTPView: View {
         panel.allowsMultipleSelection = true
         if panel.runModal() == .OK, let s = session {
             let targetDir = self.currentPath
+            withAnimation(.spring(duration: 0.25)) {
+                self.isTransferDrawerExpanded = true
+            }
             for url in panel.urls {
                 let dest = targetDir.hasSuffix("/") ? "\(targetDir)\(url.lastPathComponent)" : "\(targetDir)/\(url.lastPathComponent)"
                 self.transferNotice = "正在上传 \(url.lastPathComponent)..."
@@ -439,13 +485,41 @@ public struct SFTPView: View {
         guard let s = session else { return }
         let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first!
         let localURL = downloads.appendingPathComponent(item.name)
-        TransferManager.shared.enqueueDownload(session: s, remotePath: item.path, localURL: localURL, totalBytes: Int64(item.size))
+        self.transferNotice = "正在下载: \(item.name)..."
+        withAnimation(.spring(duration: 0.25)) {
+            self.isTransferDrawerExpanded = true
+        }
+        TransferManager.shared.enqueueDownload(
+            session: s,
+            remotePath: item.path,
+            localURL: localURL,
+            totalBytes: Int64(item.size),
+            onCompleted: {
+                Task { @MainActor in
+                    self.transferNotice = "下载完成: \(item.name)"
+                }
+            },
+            onResult: { result in
+                Task { @MainActor in
+                    switch result {
+                    case .success:
+                        self.transferNotice = "下载完成: \(item.name)"
+                    case .failure(let error):
+                        self.transferNotice = "下载失败: \(error.localizedDescription)"
+                        self.isTransferDrawerExpanded = true
+                    }
+                }
+            }
+        )
     }
 
     /// Handle local file drop from Finder / Desktop
     private func handleDropUpload(providers: [NSItemProvider]) {
         guard let s = session else { return }
         let targetDirectory = self.currentPath
+        withAnimation(.spring(duration: 0.25)) {
+            self.isTransferDrawerExpanded = true
+        }
         for provider in providers {
             if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
                 provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
@@ -562,11 +636,28 @@ public enum SFTPDragExportHelper {
             }
         }
 
+        // Register drag download task with TransferManager immediately
+        let taskId = UUID()
+        Task { @MainActor in
+            TransferManager.shared.beginExternalTransfer(
+                id: taskId,
+                fileName: item.name,
+                remotePath: item.path,
+                localURL: localURL,
+                direction: .download,
+                totalBytes: Int64(item.size)
+            )
+        }
+
         // Asynchronously start pre-fetching download as soon as user begins dragging
         let downloadTask = Task.detached(priority: .userInitiated) { [session] () -> Bool in
             guard let session = session else { return false }
             do {
-                try await session.downloadFile(remotePath: item.path, localURL: localURL, progress: { _ in })
+                try await session.downloadFile(remotePath: item.path, localURL: localURL, progress: { p in
+                    Task { @MainActor in
+                        TransferManager.shared.updateExternalProgress(taskId: taskId, fraction: p)
+                    }
+                })
                 return true
             } catch {
                 return false
@@ -582,6 +673,9 @@ public enum SFTPDragExportHelper {
                         if let session = session {
                             try await session.downloadFile(remotePath: item.path, localURL: localURL, progress: { p in
                                 progress.completedUnitCount = Int64(Double(item.size) * p)
+                                Task { @MainActor in
+                                    TransferManager.shared.updateExternalProgress(taskId: taskId, fraction: p)
+                                }
                             })
                         } else {
                             throw NSError(domain: "SFTPDragExport", code: 404, userInfo: [NSLocalizedDescriptionKey: "No active SSH session"])
@@ -591,6 +685,9 @@ public enum SFTPDragExportHelper {
                             Task { @MainActor in
                                 onStatusChange("拖拽下载失败: \(error.localizedDescription)")
                             }
+                        }
+                        Task { @MainActor in
+                            TransferManager.shared.failExternalTransfer(taskId: taskId, error: error)
                         }
                         completion(nil, false, error)
                         return
@@ -602,6 +699,9 @@ public enum SFTPDragExportHelper {
                     Task { @MainActor in
                         onStatusChange("拖拽导出完成: \(item.name)")
                     }
+                }
+                Task { @MainActor in
+                    TransferManager.shared.completeExternalTransfer(taskId: taskId)
                 }
                 // Coordinated: false allows standard filesystem destination copying by Finder/Desktop
                 completion(localURL, false, nil)

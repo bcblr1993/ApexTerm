@@ -4,11 +4,35 @@ import ApexSSH
 
 /// Floating transfer status capsule & collapsible task drawer for SFTP operations
 public struct TransferDrawer: View {
+    public enum TransferFilter: String, CaseIterable, Identifiable {
+        case all = "全部"
+        case uploads = "上传"
+        case downloads = "下载"
+        public var id: String { rawValue }
+    }
+    
     @ObservedObject var manager = TransferManager.shared
     @Binding var isExpanded: Bool
+    @State private var filter: TransferFilter = .all
     
     public init(isExpanded: Binding<Bool>) {
         self._isExpanded = isExpanded
+    }
+    
+    private var filteredTasks: [TransferTask] {
+        switch filter {
+        case .all: return manager.tasks
+        case .uploads: return manager.tasks.filter { $0.direction == .upload }
+        case .downloads: return manager.tasks.filter { $0.direction == .download }
+        }
+    }
+    
+    private func count(for f: TransferFilter) -> Int {
+        switch f {
+        case .all: return manager.tasks.count
+        case .uploads: return manager.tasks.filter { $0.direction == .upload }.count
+        case .downloads: return manager.tasks.filter { $0.direction == .download }.count
+        }
     }
     
     public var body: some View {
@@ -27,8 +51,18 @@ public struct TransferDrawer: View {
                         
                         Spacer()
                         
+                        // Category Segmented Filter
+                        Picker("", selection: $filter) {
+                            ForEach(TransferFilter.allCases) { f in
+                                Text("\(f.rawValue) (\(count(for: f)))").tag(f)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .controlSize(.small)
+                        .frame(width: 200)
+                        
                         if manager.tasks.contains(where: { $0.status == .completed || $0.status == .cancelled }) {
-                            Button("清空已完成") {
+                            Button("清空记录") {
                                 manager.clearCompleted()
                             }
                             .buttonStyle(.borderless)
@@ -49,13 +83,13 @@ public struct TransferDrawer: View {
                     Divider()
                     
                     // Task List
-                    if manager.tasks.isEmpty {
+                    if filteredTasks.isEmpty {
                         VStack(spacing: 8) {
                             Spacer()
                             Image(systemName: "tray")
                                 .font(.system(size: 24))
                                 .foregroundColor(.secondary)
-                            Text("暂无传输任务")
+                            Text(manager.tasks.isEmpty ? "暂无传输任务 (支持拖拽/点击上传与下载)" : "当前分类暂无任务")
                                 .font(.system(size: 12))
                                 .foregroundColor(.secondary)
                             Spacer()
@@ -64,7 +98,7 @@ public struct TransferDrawer: View {
                     } else {
                         ScrollView {
                             LazyVStack(spacing: 8) {
-                                ForEach(manager.tasks) { task in
+                                ForEach(filteredTasks) { task in
                                     TransferTaskRow(task: task) {
                                         manager.cancelTask(id: task.id)
                                     }
@@ -72,7 +106,7 @@ public struct TransferDrawer: View {
                             }
                             .padding(10)
                         }
-                        .frame(maxHeight: 220)
+                        .frame(maxHeight: 240)
                     }
                 }
                 .background(ApexStyle.surface)
@@ -100,7 +134,7 @@ public struct TransferDrawer: View {
                                 .rotationEffect(.degrees(manager.activeCount > 0 ? 360 : 0))
                                 .animation(manager.activeCount > 0 ? .linear(duration: 1.5).repeatForever(autoreverses: false) : .default, value: manager.activeCount)
 
-                            Text(manager.activeCount > 0 ? "传输中 (\(manager.activeCount))" : "传输完成")
+                            Text(manager.activeCount > 0 ? "传输中 (\(manager.activeCount))" : "传输记录 (\(manager.tasks.count))")
                                 .font(.system(size: 11, weight: .medium))
                         }
 
@@ -137,20 +171,36 @@ private struct TransferTaskRow: View {
     let onCancel: () -> Void
     
     var body: some View {
-        VStack(spacing: 4) {
+        VStack(spacing: 6) {
             HStack(spacing: 8) {
+                // Direction tag
+                Text(task.direction == .upload ? "上传" : "下载")
+                    .font(.system(size: 9, weight: .bold))
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 2)
+                    .background(task.direction == .upload ? ApexStyle.accent.opacity(0.18) : Color.green.opacity(0.18))
+                    .foregroundColor(task.direction == .upload ? ApexStyle.accent : Color.green)
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                
                 Image(systemName: task.direction == .upload ? "arrow.up.circle.fill" : "arrow.down.circle.fill")
                     .foregroundColor(task.direction == .upload ? ApexStyle.accent : .green)
-                    .font(.system(size: 15))
+                    .font(.system(size: 14))
                 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(task.fileName)
                         .font(.system(size: 12, weight: .medium, design: .monospaced))
                         .lineLimit(1)
                     
+                    // Path detail
+                    Text(pathDescription)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundColor(.secondary.opacity(0.85))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    
                     HStack(spacing: 6) {
                         Text(statusLabel)
-                            .font(.system(size: 10))
+                            .font(.system(size: 10, weight: .medium))
                             .foregroundColor(statusColor)
                         
                         if task.status == .transferring {
@@ -158,12 +208,27 @@ private struct TransferTaskRow: View {
                                 .foregroundColor(.secondary)
                             Text(task.formattedSpeed)
                                 .font(.system(size: 10, design: .monospaced))
-                                .foregroundColor(.secondary)
+                                .foregroundColor(ApexStyle.accent)
                             Text("·")
                                 .foregroundColor(.secondary)
                             Text("\(formattedBytes(task.transferredBytes)) / \(formattedBytes(task.totalBytes))")
                                 .font(.system(size: 10, design: .monospaced))
                                 .foregroundColor(.secondary)
+                        } else {
+                            if task.totalBytes > 0 {
+                                Text("·")
+                                    .foregroundColor(.secondary)
+                                Text(formattedBytes(task.totalBytes))
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundColor(.secondary)
+                            }
+                            if let date = task.completedAt ?? task.startedAt as Date? {
+                                Text("·")
+                                    .foregroundColor(.secondary)
+                                Text(formatTime(date))
+                                    .font(.system(size: 10))
+                                    .foregroundColor(.secondary)
+                            }
                         }
                     }
                 }
@@ -183,12 +248,27 @@ private struct TransferTaskRow: View {
                     .controlSize(.small)
                     .padding(.leading, 4)
                 } else if task.status == .completed {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundColor(ApexStyle.success)
+                    HStack(spacing: 6) {
+                        // Reveal in Finder button for downloads
+                        if task.direction == .download && FileManager.default.fileExists(atPath: task.localURL.path) {
+                            Button {
+                                NSWorkspace.shared.activateFileViewerSelecting([task.localURL])
+                            } label: {
+                                Image(systemName: "magnifyingglass")
+                                    .font(.system(size: 11))
+                            }
+                            .buttonStyle(.borderless)
+                            .controlSize(.small)
+                            .help("在访达中显示此文件")
+                        }
+                        
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 13))
+                            .foregroundColor(ApexStyle.success)
+                    }
                 } else if case .failed = task.status {
                     Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 12))
+                        .font(.system(size: 13))
                         .foregroundColor(.red)
                 }
             }
@@ -202,6 +282,14 @@ private struct TransferTaskRow: View {
         .padding(8)
         .background(ApexStyle.subtleSurface.opacity(0.5))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+    
+    private var pathDescription: String {
+        if task.direction == .upload {
+            return "\(task.localURL.lastPathComponent) → \(task.remotePath)"
+        } else {
+            return "\(task.remotePath) → \(task.localURL.path)"
+        }
     }
     
     private var statusLabel: String {
@@ -226,5 +314,11 @@ private struct TransferTaskRow: View {
     
     private func formattedBytes(_ bytes: Int64) -> String {
         ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+    
+    private func formatTime(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter.string(from: date)
     }
 }

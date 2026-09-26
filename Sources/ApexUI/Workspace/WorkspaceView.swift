@@ -472,6 +472,7 @@ private struct PaneContainerView: View {
 
 private struct WorkspaceBottomStatusBar: View {
     @ObservedObject var tab: TerminalTabItem
+    @ObservedObject var transferManager = TransferManager.shared
     
     var body: some View {
         HStack(spacing: 16) {
@@ -488,6 +489,24 @@ private struct WorkspaceBottomStatusBar: View {
             .toggleStyle(.button)
             .controlSize(.small)
             .help(tab.isDirectoryLinkageEnabled ? L10n.linkageHelpOn : L10n.linkageHelpOff)
+            
+            if !transferManager.tasks.isEmpty {
+                Divider().frame(height: 12)
+                HStack(spacing: 6) {
+                    Image(systemName: transferManager.activeCount > 0 ? "arrow.triangle.2.circlepath" : "arrow.up.arrow.down")
+                        .font(.system(size: 10))
+                        .foregroundColor(transferManager.activeCount > 0 ? ApexStyle.accent : .secondary)
+                    if transferManager.activeCount > 0 {
+                        Text("传输中 \(transferManager.activeCount) 项 · \(transferManager.formattedTotalSpeed)")
+                            .font(.caption.monospaced())
+                            .foregroundColor(ApexStyle.accent)
+                    } else {
+                        Text("传输记录 \(transferManager.tasks.count) 项")
+                            .font(.caption.monospaced())
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
             
             Spacer()
             

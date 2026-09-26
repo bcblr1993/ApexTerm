@@ -3,6 +3,7 @@ import ApexCore
 
 /// SecureCRT-style multi-session broadcast input bar with Chinese localization
 public struct BroadcastBar: View {
+    @ObservedObject private var themeSettings = AppSettings.shared
     @Binding public var isBroadcastActive: Bool
     public let targetCount: Int
     public let onBroadcastSubmit: (String) -> Void
@@ -24,7 +25,7 @@ public struct BroadcastBar: View {
             Toggle(isOn: $isBroadcastActive) {
                 HStack(spacing: 4) {
                     Image(systemName: "antenna.radiowaves.left.and.right")
-                        .foregroundColor(isBroadcastActive ? ApexStyle.warning : .secondary)
+                        .foregroundColor(isBroadcastActive ? ApexStyle.warning : ApexStyle.secondary)
                     Text(String(format: L10n.broadcastToTabs, targetCount))
                         .font(.system(size: 11, weight: .semibold))
                 }
@@ -50,7 +51,7 @@ public struct BroadcastBar: View {
                         broadcastText = ""
                     }
                 }
-                .buttonStyle(.borderedProminent)
+                .apexProminentButton()
                 .tint(ApexStyle.warning)
                 .controlSize(.small)
             }

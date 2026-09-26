@@ -38,43 +38,31 @@ public enum TerminalBellMode: String, CaseIterable, Identifiable, Sendable {
 
 /// Terminal theme presets
 public enum TerminalThemePreset: String, CaseIterable, Identifiable, Sendable {
+    case nativeLight = "经典白色（默认）"
+    case modern = "VS Code Dark Modern"
+    case tokyo = "Tokyo Night"
+    case mocha = "Catppuccin Mocha"
+    case nord = "Nord"
+    case dracula = "Dracula"
+    case latte = "Catppuccin Latte"
+    case onedark = "One Dark Pro"
+    case gruvbox = "Gruvbox Dark"
+    case everforest = "Everforest"
+    case rosepine = "Rosé Pine"
+    case solarized = "Solarized Light"
+    // Preserve saved legacy presets.
     case apexDark = "Apex Dark"
     case oledBlack = "OLED Black"
     case solarizedDark = "Solarized Dark"
     case monokai = "Monokai Pro"
     case oneDark = "One Dark"
-    
+    public static let selectablePresets: [Self] = [.nativeLight, .modern, .tokyo, .mocha, .nord, .dracula, .latte, .onedark, .gruvbox, .everforest, .rosepine, .solarized]
     public var id: String { rawValue }
-    
-    public var backgroundColorHex: String {
-        switch self {
-        case .apexDark: return "#161922"
-        case .oledBlack: return "#000000"
-        case .solarizedDark: return "#002B36"
-        case .monokai: return "#2D2A2E"
-        case .oneDark: return "#282C34"
-        }
-    }
-    
-    public var foregroundColorHex: String {
-        switch self {
-        case .apexDark: return "#F0F4F8"
-        case .oledBlack: return "#FFFFFF"
-        case .solarizedDark: return "#839496"
-        case .monokai: return "#FCFCFA"
-        case .oneDark: return "#ABB2BF"
-        }
-    }
-    
-    public var cursorColorHex: String {
-        switch self {
-        case .apexDark: return "#38BDF8"
-        case .oledBlack: return "#00FF66"
-        case .solarizedDark: return "#268BD2"
-        case .monokai: return "#FFD866"
-        case .oneDark: return "#528BFF"
-        }
-    }
+    public var palette: ThemePalette { ThemePalette.forPreset(self) }
+    public var isDark: Bool { ![Self.nativeLight, .latte, .solarized].contains(self) }
+    public var backgroundColorHex: String { palette.terminal }
+    public var foregroundColorHex: String { palette.foreground }
+    public var cursorColorHex: String { palette.accent }
 }
 
 /// Central application settings manager with reactive publishing and UserDefaults persistence
@@ -90,7 +78,8 @@ public final class AppSettings: ObservableObject {
         static let fontSize = "settings.terminal.fontSize"
         static let cursorShape = "settings.terminal.cursorShape"
         static let isCursorBlinkEnabled = "settings.terminal.cursorBlink"
-        static let themePreset = "settings.terminal.themePreset"
+        // Global appearance starts white even if an older terminal-only preset was saved.
+        static let themePreset = "settings.appearance.themePreset"
         static let isCopyOnSelectEnabled = "settings.terminal.copyOnSelect"
         static let isRightClickPasteEnabled = "settings.terminal.rightClickPaste"
         static let scrollbackMaxLines = "settings.terminal.scrollbackLines"
@@ -201,7 +190,7 @@ public final class AppSettings: ObservableObject {
         if let rawTheme = defaults.string(forKey: Keys.themePreset), let theme = TerminalThemePreset(rawValue: rawTheme) {
             self.themePreset = theme
         } else {
-            self.themePreset = .apexDark
+            self.themePreset = .nativeLight
         }
         
         self.isCopyOnSelectEnabled = defaults.object(forKey: Keys.isCopyOnSelectEnabled) != nil
@@ -249,7 +238,7 @@ public final class AppSettings: ObservableObject {
         fontSize = 13.0
         cursorShape = .bar
         isCursorBlinkEnabled = true
-        themePreset = .apexDark
+        themePreset = .nativeLight
         isCopyOnSelectEnabled = true
         isRightClickPasteEnabled = true
         scrollbackMaxLines = 10_000

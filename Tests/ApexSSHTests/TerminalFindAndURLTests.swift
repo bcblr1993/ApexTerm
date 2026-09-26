@@ -64,7 +64,7 @@ final class TerminalFindAndURLTests: XCTestCase {
     // MARK: - 2. URL Detection Tests
     
     func testURLDetectionVariousFormats() {
-        let logLine = "Listening on http://localhost:3000 and https://api.apexterm.com/v1/metrics (see http://10.0.1.10:8080/dashboard?token=xyz)."
+        let logLine = "Listening on http://localhost:3000 and https://api.apexterm.com/v1/metrics (see http://192.0.2.10:8080/dashboard?token=xyz)."
         let detected = NativeTerminalView.detectURLs(in: logLine)
         
         XCTAssertEqual(detected.count, 3)
@@ -75,8 +75,8 @@ final class TerminalFindAndURLTests: XCTestCase {
         // Second URL: https://api.apexterm.com/v1/metrics
         XCTAssertEqual(detected[1].url.absoluteString, "https://api.apexterm.com/v1/metrics")
         
-        // Third URL: should strip trailing parenthesis and period from http://10.0.1.10:8080/dashboard?token=xyz
-        XCTAssertEqual(detected[2].url.absoluteString, "http://10.0.1.10:8080/dashboard?token=xyz")
+        // Third URL: should strip trailing parenthesis and period from http://192.0.2.10:8080/dashboard?token=xyz
+        XCTAssertEqual(detected[2].url.absoluteString, "http://192.0.2.10:8080/dashboard?token=xyz")
     }
     
     @MainActor

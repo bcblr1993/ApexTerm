@@ -1,16 +1,16 @@
 import SwiftUI
-import Charts
 import ApexCore
 
-/// FinalShell-style live performance monitoring capsule (CPU, RAM, Network, Disk) with Chinese localization & no-stutter charts
+/// FinalShell-style live performance monitoring capsule (CPU, RAM, Network, Disk) with Chinese localization
 public struct MetricCapsuleView: View {
+    @ObservedObject private var themeSettings = AppSettings.shared
     @ObservedObject public var historyStore: ObservableMetricsHistory
     @State private var showingDetail = false
-    
+
     public init(historyStore: ObservableMetricsHistory) {
         self.historyStore = historyStore
     }
-    
+
     public var body: some View {
         Button(action: { showingDetail.toggle() }) {
             HStack(spacing: 12) {
@@ -19,21 +19,21 @@ public struct MetricCapsuleView: View {
                         .foregroundStyle(ApexStyle.accent)
                     Text("监控待命")
                         .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(ApexStyle.secondary)
                 } else {
                     // CPU indicator
                     HStack(spacing: 5) {
                     Image(systemName: "bolt.fill")
                         .font(.system(size: 11, weight: .bold))
                         .foregroundColor(cpuColor)
-                    
+
                     Text(L10n.cpuMetric)
                         .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                        .foregroundColor(.secondary)
-                    
+                        .foregroundColor(ApexStyle.secondary)
+
                     Text(String(format: "%.1f%%", latest?.cpuUsagePercent ?? 0))
                         .font(.system(size: 11, weight: .bold, design: .monospaced))
-                        .foregroundColor(.primary)
+                        .foregroundColor(ApexStyle.primary)
                     }
 
                     Divider().frame(height: 12)
@@ -43,10 +43,10 @@ public struct MetricCapsuleView: View {
                         Image(systemName: "memorychip")
                             .font(.system(size: 11, weight: .bold))
                             .foregroundColor(ApexStyle.accent)
-                        
+
                         Text(formattedMemory)
                             .font(.system(size: 11, weight: .medium, design: .monospaced))
-                            .foregroundColor(.primary)
+                            .foregroundColor(ApexStyle.primary)
                     }
 
                     Divider().frame(height: 12)
@@ -56,30 +56,30 @@ public struct MetricCapsuleView: View {
                         Image(systemName: "internaldrive")
                             .font(.system(size: 11, weight: .bold))
                             .foregroundColor(diskColor)
-                        
+
                         Text(L10n.diskMetric)
                             .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                            .foregroundColor(.secondary)
-                        
+                            .foregroundColor(ApexStyle.secondary)
+
                         Text(formattedDisk)
                             .font(.system(size: 11, weight: .medium, design: .monospaced))
-                            .foregroundColor(.primary)
-                        
+                            .foregroundColor(ApexStyle.primary)
+
                         if let badge = latest?.diskBadgeText {
                             Text(badge)
                                 .font(.system(size: 9, weight: .bold))
                                 .padding(.horizontal, 4)
                                 .padding(.vertical, 1)
-                                .background((latest?.isSSD ?? true) ? Color.teal.opacity(0.18) : Color.orange.opacity(0.18))
-                                .foregroundColor((latest?.isSSD ?? true) ? .teal : .orange)
+                                .background((latest?.isSSD ?? true) ? ApexStyle.accent.opacity(0.18) : ApexStyle.warning.opacity(0.18))
+                                .foregroundColor((latest?.isSSD ?? true) ? ApexStyle.accent : ApexStyle.warning)
                                 .cornerRadius(3)
                         }
                     }
                 }
-                
+
                 Image(systemName: "chevron.down")
                     .font(.system(size: 9, weight: .semibold))
-                    .foregroundColor(.secondary)
+                    .foregroundColor(ApexStyle.secondary)
             }
         }
         .buttonStyle(.bordered)
@@ -87,42 +87,42 @@ public struct MetricCapsuleView: View {
         .help("查看服务器性能")
         .popover(isPresented: $showingDetail, arrowEdge: .bottom) {
             MetricDetailView(historyStore: historyStore)
-                .frame(width: 500, height: 480)
+                .frame(width: 350, height: 226)
         }
     }
-    
+
     private var latest: ServerMetricsSnapshot? {
         historyStore.latest
     }
-    
+
     private var cpuColor: Color {
         let cpu = latest?.cpuUsagePercent ?? 0
-        if cpu > 80 { return .red }
-        if cpu > 50 { return .orange }
-        return .green
+        if cpu > 80 { return ApexStyle.error }
+        if cpu > 50 { return ApexStyle.warning }
+        return ApexStyle.success
     }
-    
+
     private var diskColor: Color {
         let usage = latest?.diskUsagePercent ?? 0
-        if usage > 85 { return .red }
-        if usage > 70 { return .orange }
-        return .teal
+        if usage > 85 { return ApexStyle.error }
+        if usage > 70 { return ApexStyle.warning }
+        return ApexStyle.accent
     }
-    
+
     private var formattedMemory: String {
         guard let m = latest, m.memoryTotalBytes > 0 else { return "0.0/0.0 GB" }
         let usedGB = Double(m.memoryUsedBytes) / (1024 * 1024 * 1024)
         let totalGB = Double(m.memoryTotalBytes) / (1024 * 1024 * 1024)
         return String(format: "%.1f/%.0fG (%.0f%%)", usedGB, totalGB, m.memoryUsagePercent)
     }
-    
+
     private var formattedDisk: String {
         guard let d = latest, d.diskTotalBytes > 0 else { return "0/0G" }
         let usedGB = Double(d.diskUsedBytes) / 1e9
         let totalGB = Double(d.diskTotalBytes) / 1e9
         return String(format: "%.0f/%.0fG", usedGB, totalGB)
     }
-    
+
 }
 
 /// Observable wrapper for SwiftUI reactivity
@@ -130,13 +130,13 @@ public struct MetricCapsuleView: View {
 public final class ObservableMetricsHistory: ObservableObject {
     public let store = MetricsHistoryStore(maxEntries: 40)
     @Published public var snapshots: [ServerMetricsSnapshot] = []
-    
+
     public init() {}
-    
+
     public var latest: ServerMetricsSnapshot? {
         snapshots.last
     }
-    
+
     public func append(_ snapshot: ServerMetricsSnapshot) {
         store.append(snapshot)
         self.snapshots = store.allSnapshots
@@ -145,259 +145,267 @@ public final class ObservableMetricsHistory: ObservableObject {
 
 /// Detailed Swift Charts popup with hardware accelerated metrics curves and no-bounce animation
 public struct MetricDetailView: View {
+    @ObservedObject private var themeSettings = AppSettings.shared
     @ObservedObject var historyStore: ObservableMetricsHistory
-    
+
     public var body: some View {
-        ScrollView(.vertical, showsIndicators: true) {
-            VStack(alignment: .leading, spacing: 14) {
-                // Header
-                HStack(alignment: .center, spacing: 8) {
-                    Label(L10n.serverPerformance, systemImage: "gauge.with.needle")
-                        .font(.headline)
-                    if let cpuModel = historyStore.latest?.cpuModel, !cpuModel.isEmpty {
-                        Text(cpuModel)
-                            .font(.system(size: 10, weight: .medium, design: .monospaced))
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.secondary.opacity(0.12))
-                            .foregroundColor(.secondary)
-                            .cornerRadius(4)
-                            .lineLimit(1)
+        VStack(alignment: .leading, spacing: 7) {
+            // Header
+            HStack(alignment: .center, spacing: 6) {
+                Image(systemName: "gauge.with.needle.fill")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(ApexStyle.accent)
+                Text(L10n.serverPerformance)
+                    .font(.system(size: 11.5, weight: .bold))
+
+                if let cpuModel = latest?.cpuModel, !cpuModel.isEmpty {
+                    Text(cpuModel)
+                        .font(.system(size: 9, weight: .medium, design: .monospaced))
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1.5)
+                        .background(ApexStyle.secondary.opacity(0.12))
+                        .foregroundColor(ApexStyle.secondary)
+                        .cornerRadius(3)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+
+                Spacer()
+
+                if let uptime = latest?.uptimeSeconds {
+                    Text(formatUptime(uptime))
+                        .font(.system(size: 9.5, design: .monospaced))
+                        .foregroundColor(ApexStyle.secondary)
+                }
+            }
+
+            Divider()
+
+            if latest == nil {
+                VStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("等待监控数据...")
+                        .font(.caption)
+                        .foregroundColor(ApexStyle.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                VStack(spacing: 5) {
+                    // CPU Row
+                HStack(spacing: 8) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "bolt.fill")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundColor(cpuColor)
+                            .frame(width: 10)
+                        Text("CPU")
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
                     }
-                    Spacer()
-                    if let uptime = historyStore.latest?.uptimeSeconds {
-                        Text("\(L10n.uptime): \(formatUptime(uptime))")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                    .frame(width: 44, alignment: .leading)
+
+                    ProgressView(value: min(max(latest?.cpuUsagePercent ?? 0, 0), 100), total: 100)
+                        .progressViewStyle(.linear)
+                        .tint(cpuColor)
+
+                    Text(String(format: "%.1f%% (%d核)", latest?.cpuUsagePercent ?? 0, latest?.cpuCores ?? 1))
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .foregroundColor(ApexStyle.primary)
+                        .frame(width: 120, alignment: .trailing)
+                }
+
+                    // Memory Row
+                    HStack(spacing: 8) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "memorychip")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundColor(memColor)
+                                .frame(width: 10)
+                            Text("内存")
+                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        }
+                        .frame(width: 44, alignment: .leading)
+
+                        ProgressView(value: min(max(latest?.memoryUsagePercent ?? 0, 0), 100), total: 100)
+                            .progressViewStyle(.linear)
+                            .tint(memColor)
+
+                        Text(formattedMemoryShort)
+                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                            .foregroundColor(ApexStyle.primary)
+                            .frame(width: 120, alignment: .trailing)
+                    }
+
+                    // Disk Row with SSD/NVMe/HDD Badge
+                    HStack(spacing: 8) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "internaldrive.fill")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundColor(diskColor)
+                                .frame(width: 10)
+                            Text("磁盘")
+                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        }
+                        .frame(width: 44, alignment: .leading)
+
+                        ProgressView(value: min(max(latest?.diskUsagePercent ?? 0, 0), 100), total: 100)
+                            .progressViewStyle(.linear)
+                            .tint(diskColor)
+
+                        HStack(spacing: 3) {
+                            if let badge = latest?.diskBadgeText {
+                                Text(badge)
+                                    .font(.system(size: 7.5, weight: .bold))
+                                    .padding(.horizontal, 3)
+                                    .padding(.vertical, 0.5)
+                                    .background((latest?.isSSD ?? true) ? ApexStyle.accent.opacity(0.18) : ApexStyle.warning.opacity(0.18))
+                                    .foregroundColor((latest?.isSSD ?? true) ? .teal : .orange)
+                                    .cornerRadius(2.5)
+                            }
+                            Text(formattedDiskShort)
+                                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                .foregroundColor(ApexStyle.primary)
+                        }
+                        .frame(width: 120, alignment: .trailing)
+                    }
+
+                    // Network Row
+                    HStack(spacing: 8) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "arrow.up.arrow.down")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundColor(ApexStyle.accent)
+                                .frame(width: 10)
+                            Text("网络")
+                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        }
+                        .frame(width: 44, alignment: .leading)
+
+                        Spacer()
+
+                        HStack(spacing: 12) {
+                            HStack(spacing: 3) {
+                                Text("↓")
+                                    .font(.system(size: 9, weight: .bold))
+                                    .foregroundColor(ApexStyle.success)
+                                Text(formatRate(latest?.networkRxBytesPerSec ?? 0))
+                                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                    .foregroundColor(ApexStyle.success)
+                            }
+                            HStack(spacing: 3) {
+                                Text("↑")
+                                    .font(.system(size: 9, weight: .bold))
+                                    .foregroundColor(.blue)
+                                Text(formatRate(latest?.networkTxBytesPerSec ?? 0))
+                                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                    .foregroundColor(.blue)
+                            }
+                        }
                     }
                 }
-                
+
                 Divider()
 
-                if historyStore.snapshots.isEmpty {
-                    ContentUnavailableView("等待监控数据", systemImage: "waveform.path.ecg", description: Text("连接建立后，指标会显示在这里。"))
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                
-                // CPU Chart
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text(L10n.cpuUtilization)
-                            .font(.subheadline)
-                            .fontWeight(.semibold)
-                        Spacer()
-                        Text(String(format: "%.1f%% (%@: %d)", historyStore.latest?.cpuUsagePercent ?? 0, L10n.cpuCores, historyStore.latest?.cpuCores ?? 1))
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                    
-                    Chart(historyStore.snapshots) { item in
-                        LineMark(
-                            x: .value("Time", item.timestamp),
-                            y: .value("CPU %", item.cpuUsagePercent)
-                        )
-                        .foregroundStyle(Color.green.gradient)
-                        .interpolationMethod(.monotone)
-                        
-                        AreaMark(
-                            x: .value("Time", item.timestamp),
-                            y: .value("CPU %", item.cpuUsagePercent)
-                        )
-                        .foregroundStyle(
-                            LinearGradient(
-                                colors: [Color.green.opacity(0.35), Color.green.opacity(0.02)],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                        )
-                        .interpolationMethod(.monotone)
-                    }
-                    .chartYScale(domain: 0...100)
-                    .animation(nil, value: historyStore.snapshots.count) // Disable bouncy re-interpolation
-                    .frame(height: 90)
-                }
-                
-                // Memory Bar
-                if let mem = historyStore.latest, mem.memoryTotalBytes > 0 {
-                    VStack(alignment: .leading, spacing: 4) {
+                // Top 3 Processes & Load Average
+                if let procs = latest?.topProcesses, !procs.isEmpty {
+                    VStack(alignment: .leading, spacing: 3) {
                         HStack {
-                            Text(L10n.ramMetric)
-                                .font(.subheadline)
-                                .fontWeight(.semibold)
+                            Text("Top 进程占用")
+                                .font(.system(size: 9.5, weight: .semibold))
+                                .foregroundColor(ApexStyle.secondary)
                             Spacer()
-                            Text("\(String(format: "%.1f", Double(mem.memoryUsedBytes) / 1073741824.0)) GB / \(String(format: "%.1f", Double(mem.memoryTotalBytes) / 1073741824.0)) GB (\(String(format: "%.0f%%", mem.memoryUsagePercent)))")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                        ProgressView(value: mem.memoryUsagePercent, total: 100)
-                            .progressViewStyle(.linear)
-                            .tint(mem.memoryUsagePercent > 85 ? .red : ApexStyle.accent)
-                    }
-                }
-                
-                // Network Waterfall Chart
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text(L10n.networkThroughput)
-                            .font(.subheadline)
-                            .fontWeight(.semibold)
-                        Spacer()
-                        HStack(spacing: 8) {
-                            Text("↓ \(formatRate(historyStore.latest?.networkRxBytesPerSec ?? 0))")
-                                .font(.caption)
-                                .foregroundColor(.green)
-                            Text("↑ \(formatRate(historyStore.latest?.networkTxBytesPerSec ?? 0))")
-                                .font(.caption)
-                                .foregroundColor(.blue)
-                        }
-                    }
-                    
-                    Chart {
-                        ForEach(historyStore.snapshots) { item in
-                            LineMark(
-                                x: .value("Time", item.timestamp),
-                                y: .value("Rx KB/s", item.networkRxBytesPerSec / 1024),
-                                series: .value("Stream", L10n.downloadStream)
-                            )
-                            .foregroundStyle(Color.green)
-                            
-                            LineMark(
-                                x: .value("Time", item.timestamp),
-                                y: .value("Tx KB/s", item.networkTxBytesPerSec / 1024),
-                                series: .value("Stream", L10n.uploadStream)
-                            )
-                            .foregroundStyle(Color.blue)
-                        }
-                    }
-                    .animation(nil, value: historyStore.snapshots.count) // Disable bouncy re-interpolation
-                    .frame(height: 80)
-                }
-                
-                // Disk Storage & Hardware Type (SSD vs HDD)
-                if let disk = historyStore.latest, disk.diskTotalBytes > 0 {
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack(alignment: .center) {
-                            HStack(spacing: 5) {
-                                Image(systemName: "internaldrive.fill")
-                                    .foregroundColor(disk.isSSD ? .teal : .orange)
-                                Text("磁盘存储")
-                                    .font(.subheadline)
-                                    .fontWeight(.semibold)
+                            if let l1 = latest?.loadAvg1m, let l5 = latest?.loadAvg5m, let l15 = latest?.loadAvg15m {
+                                Text(String(format: "系统负载: %.2f  %.2f  %.2f", l1, l5, l15))
+                                    .font(.system(size: 8.5, design: .monospaced))
+                                    .foregroundColor(ApexStyle.secondary)
                             }
-                            
-                            // Prominent SSD/HDD Tag
-                            HStack(spacing: 3) {
-                                Image(systemName: disk.isSSD ? "bolt.horizontal.fill" : "opticaldisc")
-                                    .font(.system(size: 9))
-                                Text(disk.diskBadgeText)
-                                    .font(.system(size: 10, weight: .bold))
-                            }
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(disk.isSSD ? Color.teal.opacity(0.18) : Color.orange.opacity(0.18))
-                            .foregroundColor(disk.isSSD ? .teal : .orange)
-                            .cornerRadius(4)
-                            
-                            if !disk.diskDevice.isEmpty {
-                                Text(disk.diskDevice)
-                                    .font(.system(size: 10, design: .monospaced))
-                                    .foregroundColor(.secondary)
-                            }
-                            
-                            Spacer()
-                            
-                            Text("\(String(format: "%.1f", Double(disk.diskUsedBytes) / 1e9)) GB / \(String(format: "%.1f", Double(disk.diskTotalBytes) / 1e9)) GB (\(String(format: "%.0f%%", disk.diskUsagePercent)))")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
                         }
-                        
-                        ProgressView(value: disk.diskUsagePercent, total: 100)
-                            .progressViewStyle(.linear)
-                            .tint(disk.diskUsagePercent > 85 ? .red : (disk.diskUsagePercent > 70 ? .orange : (disk.isSSD ? .teal : .blue)))
-                        
-                        HStack {
-                            Text("挂载点: \(disk.diskMountPoint)")
-                                .font(.caption2.monospaced())
-                                .foregroundColor(.secondary)
-                            Spacer()
-                            Text("可用空间: \(String(format: "%.1f GB", Double(disk.diskFreeBytes) / 1e9))")
-                                .font(.caption2.monospaced())
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                    .padding(10)
-                    .background(Color(NSColor.controlBackgroundColor).opacity(0.4))
-                    .cornerRadius(8)
-                }
-                
-                // Top 5 Processes Table
-                if let procs = historyStore.latest?.topProcesses, !procs.isEmpty {
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            Text("Top 进程资源占用")
-                                .font(.subheadline)
-                                .fontWeight(.semibold)
-                            Spacer()
-                            Text("按 CPU 占用排序")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                        }
-                        
-                        VStack(spacing: 3) {
-                            HStack {
-                                Text("PID").frame(width: 46, alignment: .leading)
-                                Text("用户").frame(width: 55, alignment: .leading)
-                                Text("CPU %").frame(width: 52, alignment: .trailing)
-                                Text("内存 %").frame(width: 52, alignment: .trailing)
-                                Text("命令").frame(maxWidth: .infinity, alignment: .leading)
-                            }
-                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                            .foregroundColor(.secondary)
-                            .padding(.bottom, 2)
-                            
-                            Divider()
-                            
-                            ForEach(procs) { p in
-                                HStack {
-                                    Text("\(p.pid)").frame(width: 46, alignment: .leading)
-                                    Text(p.user).frame(width: 55, alignment: .leading)
-                                    Text(String(format: "%.1f%%", p.cpuPercent))
-                                        .frame(width: 52, alignment: .trailing)
-                                        .foregroundColor(p.cpuPercent > 50 ? .red : (p.cpuPercent > 20 ? .orange : .primary))
-                                    Text(String(format: "%.1f%%", p.memPercent))
-                                        .frame(width: 52, alignment: .trailing)
+
+                        VStack(spacing: 2) {
+                            ForEach(procs.prefix(3)) { p in
+                                HStack(spacing: 4) {
+                                    Text("\(p.pid)")
+                                        .font(.system(size: 8.5, design: .monospaced))
+                                        .foregroundColor(ApexStyle.secondary)
+                                        .frame(width: 34, alignment: .leading)
                                     Text(p.command)
+                                        .font(.system(size: 8.5, weight: .medium, design: .monospaced))
                                         .lineLimit(1)
                                         .truncationMode(.tail)
                                         .frame(maxWidth: .infinity, alignment: .leading)
+                                    Text(String(format: "%.1f%%", p.cpuPercent))
+                                        .font(.system(size: 8.5, weight: .semibold, design: .monospaced))
+                                        .foregroundColor(p.cpuPercent > 50 ? ApexStyle.error : (p.cpuPercent > 20 ? ApexStyle.warning : ApexStyle.primary))
+                                        .frame(width: 40, alignment: .trailing)
+                                    Text(String(format: "%.1f%%", p.memPercent))
+                                        .font(.system(size: 8.5, design: .monospaced))
+                                        .foregroundColor(ApexStyle.secondary)
+                                        .frame(width: 36, alignment: .trailing)
                                 }
-                                .font(.system(size: 10, design: .monospaced))
-                                .padding(.vertical, 1)
+                                .padding(.vertical, 0.5)
                             }
                         }
-                        .padding(8)
-                        .background(Color(NSColor.controlBackgroundColor).opacity(0.4))
-                        .cornerRadius(6)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(ApexStyle.surface.opacity(0.6))
+                        .cornerRadius(4)
                     }
                 }
-                }
             }
-            .padding(18)
         }
+        .padding(11)
         .background(ApexStyle.surface)
     }
-    
+
+    private var latest: ServerMetricsSnapshot? {
+        historyStore.latest
+    }
+
+    private var cpuColor: Color {
+        let cpu = latest?.cpuUsagePercent ?? 0
+        if cpu > 80 { return ApexStyle.error }
+        if cpu > 50 { return ApexStyle.warning }
+        return ApexStyle.success
+    }
+
+    private var memColor: Color {
+        let mem = latest?.memoryUsagePercent ?? 0
+        if mem > 85 { return ApexStyle.error }
+        if mem > 70 { return ApexStyle.warning }
+        return ApexStyle.accent
+    }
+
+    private var diskColor: Color {
+        let usage = latest?.diskUsagePercent ?? 0
+        if usage > 85 { return ApexStyle.error }
+        if usage > 70 { return ApexStyle.warning }
+        return (latest?.isSSD ?? true) ? ApexStyle.accent : ApexStyle.accent
+    }
+
+    private var formattedMemoryShort: String {
+        guard let m = latest, m.memoryTotalBytes > 0 else { return "--" }
+        let usedGB = Double(m.memoryUsedBytes) / 1073741824.0
+        let totalGB = Double(m.memoryTotalBytes) / 1073741824.0
+        return String(format: "%.1f/%.0fG (%.0f%%)", usedGB, totalGB, m.memoryUsagePercent)
+    }
+
+    private var formattedDiskShort: String {
+        guard let d = latest, d.diskTotalBytes > 0 else { return "--" }
+        let usedGB = Double(d.diskUsedBytes) / 1e9
+        let totalGB = Double(d.diskTotalBytes) / 1e9
+        return String(format: "%.0f/%.0fG", usedGB, totalGB)
+    }
+
     private func formatRate(_ b: Double) -> String {
         if b < 1024 { return String(format: "%.0f B/s", b) }
         if b < 1024 * 1024 { return String(format: "%.1f KB/s", b / 1024) }
         return String(format: "%.2f MB/s", b / 1024 / 1024)
     }
-    
+
     private func formatUptime(_ s: UInt64) -> String {
         let days = s / 86400
         let hours = (s % 86400) / 3600
         let mins = (s % 3600) / 60
-        if days > 0 { return "\(days)天 \(hours)小时" }
-        return "\(hours)小时 \(mins)分"
+        if days > 0 { return "运行 \(days)天 \(hours)时" }
+        return "运行 \(hours)时 \(mins)分"
     }
 }

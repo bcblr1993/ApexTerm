@@ -4,7 +4,12 @@ import ApexCore
 /// High-fidelity mock SSH session for UI preview, offline testing, and metrics simulation
 public final class MockSSHSession: SSHSessionProtocol, @unchecked Sendable {
     public let session: Session
-    public private(set) var connectionState: SSHConnectionState = .disconnected
+    private let stateLock = NSLock()
+    private var storedConnectionState: SSHConnectionState = .disconnected
+    public private(set) var connectionState: SSHConnectionState {
+        get { stateLock.withLock { storedConnectionState } }
+        set { stateLock.withLock { storedConnectionState = newValue } }
+    }
     
     private var outputHandler: (@Sendable (Data) -> Void)?
     private var metricsHandler: (@Sendable (ServerMetricsSnapshot) -> Void)?
@@ -59,7 +64,7 @@ public final class MockSSHSession: SSHSessionProtocol, @unchecked Sendable {
         \u{001B}[0;37m  Kernel: Linux 6.6.0-generic aarch64 | ProMotion 120Hz Accelerated\u{001B}[0m
         \u{001B}[1;36m====================================================================\u{001B}[0m
         
-        Last login: \(Date().description) from 192.168.1.100
+        Last login: \(Date().description) from 198.51.100.100
         \u{001B}[1;32m\(session.username)@\(session.name)\u{001B}[0m:\u{001B}[1;34m~\u{001B}[0m# 
         """
         emit(banner)

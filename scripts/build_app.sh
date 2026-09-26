@@ -15,8 +15,18 @@ DIST_ARCHIVE="${BUILD_DIR}/ApexTerm-v${VERSION}-macos-arm64.tar.gz"
 DIST_DMG="${BUILD_DIR}/ApexTerm-v${VERSION}-macos-arm64.dmg"
 SHA_FILE="${BUILD_DIR}/SHA256SUMS.txt"
 
-echo "🧹 [Clean] Removing all previous local build artifacts and archives..."
-rm -rf "${APP_DIR}" "${BUILD_DIR}"/*.dmg "${BUILD_DIR}"/*.tar.gz "${BUILD_DIR}"/*.txt "${BUILD_DIR}"/arm64-apple-macosx/release/ApexTerm* /tmp/apexterm_* 2>/dev/null || true
+if [ -n "$(git status --porcelain)" ]; then
+    echo "❌ Release requires a clean committed working tree."
+    exit 1
+fi
+if [ "$(git branch --show-current)" != "master" ] && [ "$(git branch --show-current)" != "main" ]; then
+    echo "❌ Release must be built from master or main."
+    exit 1
+fi
+# Preserve previous packages for rollback instead of deleting them.
+if [ -d "${APP_DIR}" ]; then
+    mv "${APP_DIR}" "${BUILD_DIR}/ApexTerm-previous-$(date +%Y%m%d%H%M%S).app"
+fi
 
 echo "🧪 [Pre-Release Quality Gate] Executing Tart VM acceptance and automated test gate..."
 if ! ./scripts/test_vm_acceptance.sh; then
@@ -94,34 +104,33 @@ if [ -n "${LEAKS}" ]; then
     echo "${LEAKS}"
     exit 1
 fi
+python3 scripts/verify_bundle_security.py "${APP_DIR}"
 echo "✅ [Security Scan] Clean! No private keys or developer credentials leaked."
 
 # Code Signing
-SIGNING_IDENTITY="${SIGNING_IDENTITY:-}"
-if [ -z "${SIGNING_IDENTITY}" ]; then
-    SIGNING_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null | grep "Developer ID Application:" | head -1 | awk -F '"' '{print $2}' || true)
+SIGNING_IDENTITY="Developer ID Application: YanNan Chen (5984KQD4D7)"
+if ! security find-identity -v -p codesigning | grep -Fq "$SIGNING_IDENTITY"; then
+    echo "❌ Required Developer ID certificate unavailable."
+    exit 1
 fi
-if [ -z "${SIGNING_IDENTITY}" ]; then
-    SIGNING_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null | grep "Apple Development:" | head -1 | awk -F '"' '{print $2}' || true)
+if [ -f "${MACOS_DIR}/sshpass" ]; then
+    codesign --force --sign "${SIGNING_IDENTITY}" --options runtime --timestamp "${MACOS_DIR}/sshpass"
 fi
-
-if [ -n "${SIGNING_IDENTITY}" ]; then
-    echo "🔏 Signing with certificate: ${SIGNING_IDENTITY}..."
-    if [ -f "${MACOS_DIR}/sshpass" ]; then
-        codesign --force --sign "${SIGNING_IDENTITY}" --options runtime --timestamp=none "${MACOS_DIR}/sshpass"
-    fi
-    codesign --force --deep --sign "${SIGNING_IDENTITY}" --options runtime --timestamp=none "${APP_DIR}"
-else
-    echo "⚠️ No certificates found, using ad-hoc signature..."
-    codesign --force --deep --sign - "${APP_DIR}"
-fi
+codesign --force --deep --sign "${SIGNING_IDENTITY}" --options runtime --timestamp "${APP_DIR}"
 
 # Verify signature
 echo "🔍 Verifying code signature..."
 codesign -vvv --deep --strict "${APP_DIR}"
 
-# Create Distribution Archive
-echo "📦 Creating compressed archive: ${DIST_ARCHIVE}..."
+# Notarize and staple the app before producing either distribution format.
+NOTARY_PROFILE="${NOTARY_PROFILE:-AetherRoute-Notary}"
+NOTARY_ZIP="${BUILD_DIR}/ApexTerm-notarization.zip"
+ditto -c -k --keepParent "${APP_DIR}" "${NOTARY_ZIP}"
+xcrun notarytool submit "${NOTARY_ZIP}" --keychain-profile "${NOTARY_PROFILE}" --wait --output-format json > "${BUILD_DIR}/notarization-app.json"
+python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["status"] == "Accepted", "Apple notarization rejected"' "${BUILD_DIR}/notarization-app.json"
+xcrun stapler staple "${APP_DIR}"
+xcrun stapler validate "${APP_DIR}"
+spctl --assess --type execute --verbose=2 "${APP_DIR}"
 tar -czf "${DIST_ARCHIVE}" -C "${BUILD_DIR}" "${APP_NAME}"
 
 # Create Distribution DMG
@@ -134,14 +143,24 @@ if command -v hdiutil >/dev/null 2>&1; then
     rm -rf "${TMP_DMG_DIR}"
 fi
 
+codesign --force --sign "${SIGNING_IDENTITY}" --timestamp "${DIST_DMG}"
+xcrun notarytool submit "${DIST_DMG}" --keychain-profile "${NOTARY_PROFILE}" --wait --output-format json > "${BUILD_DIR}/notarization-dmg.json"
+python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["status"] == "Accepted", "DMG notarization rejected"' "${BUILD_DIR}/notarization-dmg.json"
+xcrun stapler staple "${DIST_DMG}"
+xcrun stapler validate "${DIST_DMG}"
+
 # Generate Checksums
 echo "🔐 Generating SHA256 distribution checksums..."
-shasum -a 256 "${DIST_DMG}" "${DIST_ARCHIVE}" > "${SHA_FILE}"
+(cd "${BUILD_DIR}" && shasum -a 256 "$(basename "${DIST_DMG}")" "$(basename "${DIST_ARCHIVE}")") > "${SHA_FILE}"
 cat "${SHA_FILE}"
 
 if [ -d "/Applications" ]; then
     echo "📲 Updating local /Applications/ApexTerm.app..."
-    rm -rf "/Applications/ApexTerm.app"
+    if [ -d "/Applications/ApexTerm.app" ]; then
+        BACKUP_DIR="${BUILD_DIR}/installed-backup-$(date +%Y%m%d%H%M%S)"
+        mkdir -p "${BACKUP_DIR}"
+        mv "/Applications/ApexTerm.app" "${BACKUP_DIR}/ApexTerm.app"
+    fi
     cp -R "${APP_DIR}" "/Applications/ApexTerm.app"
 fi
 

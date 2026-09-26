@@ -6,9 +6,26 @@ import XCTest
 
 final class SplitPaneIntegrationTests: XCTestCase {
     
+    func testConcurrentMockConnectionStateUpdates() async throws {
+        let session = Session(name: "concurrent-state", host: "example.invalid", username: "demo", agentlessMonitorEnabled: false)
+        let client = MockSSHSession(session: session)
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for _ in 0..<32 {
+                group.addTask {
+                    try await client.connect()
+                    _ = client.connectionState
+                    await client.disconnect()
+                }
+            }
+            try await group.waitForAll()
+        }
+        await client.disconnect()
+        XCTAssertEqual(client.connectionState, .disconnected)
+    }
+
     @MainActor
     func testSplitPaneCreationAndIndependence() {
-        let session = Session(name: "dev-server", host: "10.0.1.10", username: "developer")
+        let session = Session(name: "dev-server", host: "192.0.2.10", username: "developer")
         let client = MockSSHSession(session: session)
         let tab = TerminalTabItem(session: session, sshClient: client)
         
@@ -53,7 +70,7 @@ final class SplitPaneIntegrationTests: XCTestCase {
     
     @MainActor
     func testDirectoryLinkageToggle() async {
-        let session = Session(name: "linkage-test", host: "10.0.1.10", username: "root", sftpAutoSyncEnabled: true)
+        let session = Session(name: "linkage-test", host: "192.0.2.10", username: "root", sftpAutoSyncEnabled: true)
         let client = MockSSHSession(session: session)
         let tab = TerminalTabItem(session: session, sshClient: client)
         
@@ -76,7 +93,7 @@ final class SplitPaneIntegrationTests: XCTestCase {
     
     @MainActor
     func testSplitPaneRehydrationAndFocusManagement() {
-        let session = Session(name: "rehydration-test", host: "10.0.1.10", username: "ubuntu")
+        let session = Session(name: "rehydration-test", host: "192.0.2.10", username: "ubuntu")
         let client = MockSSHSession(session: session)
         let tab = TerminalTabItem(session: session, sshClient: client)
         
@@ -110,7 +127,7 @@ final class SplitPaneIntegrationTests: XCTestCase {
     
     @MainActor
     func testSplitPaneModeTogglingAndTitleReset() {
-        let session = Session(name: "prod-server", host: "10.0.1.10", username: "root")
+        let session = Session(name: "prod-server", host: "192.0.2.10", username: "root")
         let client = MockSSHSession(session: session)
         let tab = TerminalTabItem(session: session, sshClient: client)
         
@@ -139,7 +156,7 @@ final class SplitPaneIntegrationTests: XCTestCase {
     
     @MainActor
     func testPaneSplitRatioAndCustomTitleAndReconnect() async {
-        let session = Session(name: "ratio-test", host: "10.0.1.10", username: "root")
+        let session = Session(name: "ratio-test", host: "192.0.2.10", username: "root")
         let client = MockSSHSession(session: session)
         let tab = TerminalTabItem(session: session, sshClient: client)
         

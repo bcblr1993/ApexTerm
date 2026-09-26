@@ -6,10 +6,14 @@ import ApexCore
 public struct SettingsView: View {
     @ObservedObject private var settings = AppSettings.shared
     
-    public init() {}
+    @State private var selectedTab: Int
+
+    public init(initialTab: Int = 0) {
+        _selectedTab = State(initialValue: initialTab)
+    }
     
     public var body: some View {
-        TabView {
+        TabView(selection: $selectedTab) {
             GeneralSettingsTab(settings: settings)
                 .tabItem {
                     Label(L10n.settingsTabGeneral, systemImage: "gearshape")
@@ -58,7 +62,7 @@ private struct GeneralSettingsTab: View {
                 HStack {
                     Text("当前版本: v\(updateManager.currentVersion) (Build \(updateManager.currentBuild))")
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(ApexStyle.secondary)
                     
                     Spacer()
                     
@@ -132,8 +136,8 @@ private struct AppearanceSettingsTab: View {
             }
             
             Section {
-                Picker(L10n.themeLabel, selection: $settings.themePreset) {
-                    ForEach(TerminalThemePreset.allCases) { preset in
+                Picker("全局主题", selection: $settings.themePreset) {
+                    ForEach(TerminalThemePreset.selectablePresets + (TerminalThemePreset.selectablePresets.contains(settings.themePreset) ? [] : [settings.themePreset])) { preset in
                         HStack {
                             Circle()
                                 .fill(Color(hex: preset.backgroundColorHex) ?? .black)
@@ -148,13 +152,13 @@ private struct AppearanceSettingsTab: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("效果实时预览:")
                         .font(.caption2)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(ApexStyle.secondary)
                     
                     HStack(spacing: 4) {
                         Text("user@apexterm:~$")
                             .foregroundColor(Color(hex: settings.themePreset.foregroundColorHex) ?? .white)
                         Text("uname -a")
-                            .foregroundColor(.green)
+                            .foregroundColor(Color(hex: settings.themePreset.palette.success) ?? .primary)
                         Rectangle()
                             .fill(Color(hex: settings.themePreset.cursorColorHex) ?? .cyan)
                             .frame(width: settings.cursorShape == .bar ? 2 : 8, height: settings.cursorShape == .underline ? 2 : 14)
@@ -171,7 +175,7 @@ private struct AppearanceSettingsTab: View {
                 }
                 .padding(.top, 4)
             } header: {
-                Text(L10n.themeSettings)
+                Text("界面与终端主题")
             }
         }
         .formStyle(.grouped)
@@ -189,7 +193,7 @@ private struct BehaviorSettingsTab: View {
                     Toggle(L10n.copyOnSelectLabel, isOn: $settings.isCopyOnSelectEnabled)
                     Text(L10n.copyOnSelectDesc)
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(ApexStyle.secondary)
                 }
                 
                 Divider()
@@ -198,7 +202,7 @@ private struct BehaviorSettingsTab: View {
                     Toggle(L10n.rightClickPasteLabel, isOn: $settings.isRightClickPasteEnabled)
                     Text(L10n.rightClickPasteDesc)
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(ApexStyle.secondary)
                 }
             } header: {
                 Text(L10n.settingsTabBehavior)
@@ -237,7 +241,7 @@ private struct SFTPSettingsTab: View {
                         Text(L10n.defaultDownloadPath)
                         Text(settings.defaultDownloadDirectory)
                             .font(.caption)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(ApexStyle.secondary)
                             .lineLimit(1)
                             .truncationMode(.middle)
                     }
@@ -276,6 +280,7 @@ private struct SFTPSettingsTab: View {
 
 // MARK: - Tab 5: Data Backup & Migration
 private struct BackupSettingsTab: View {
+    @ObservedObject private var themeSettings = AppSettings.shared
     @State private var alertMessage: String?
     @State private var isShowingAlert = false
     
@@ -288,7 +293,7 @@ private struct BackupSettingsTab: View {
                     
                     Text(L10n.backupDesc)
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(ApexStyle.secondary)
                     
                     HStack(spacing: 12) {
                         Button {

@@ -116,7 +116,7 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
             return
         }
         let newClient: SSHSessionProtocol
-        if session.host == "10.0.1.10" {
+        if session.host == "192.0.2.10" {
             newClient = MockSSHSession(session: session)
         } else {
             newClient = NativeSSHSession(session: session)
@@ -155,6 +155,7 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
 
 /// Central workspace view with tabs, terminal, SFTP split, and FinalShell live dashboard
 public struct WorkspaceView: View {
+    @ObservedObject private var themeSettings = AppSettings.shared
     @ObservedObject public var store: SessionStore
     @Binding public var activeTabs: [TerminalTabItem]
     @Binding public var selectedTabId: UUID?
@@ -185,27 +186,7 @@ public struct WorkspaceView: View {
     
     public var body: some View {
         VStack(spacing: 0) {
-            if let tab = currentTab {
-                WorkspaceHeaderBar(
-                    tab: tab,
-                    isSFTPVisible: $isSFTPVisible,
-                    onDuplicate: { duplicateTab(tab) }
-                )
-            } else {
-                HStack(spacing: 12) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("工作台")
-                            .font(.headline)
-                        Text("选择左侧会话开始连接")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-                .background(ApexStyle.surface)
-            }
+            workspaceHeader
 
             if !activeTabs.isEmpty {
                 HStack(spacing: 8) {
@@ -239,7 +220,7 @@ public struct WorkspaceView: View {
                                 if let cur = currentTab {
                                     duplicateTab(cur)
                                 } else if let first = store.sessions.first {
-                                    let client: SSHSessionProtocol = first.host == "10.0.1.10" ? MockSSHSession(session: first) : NativeSSHSession(session: first)
+                                    let client: SSHSessionProtocol = first.host == "192.0.2.10" ? MockSSHSession(session: first) : NativeSSHSession(session: first)
                                     let newTab = TerminalTabItem(session: first, sshClient: client)
                                     activeTabs.append(newTab)
                                     selectedTabId = newTab.id
@@ -252,7 +233,7 @@ public struct WorkspaceView: View {
                             }) {
                                 Image(systemName: "plus")
                                     .font(.system(size: 11, weight: .semibold))
-                                    .foregroundColor(.secondary)
+                                    .foregroundColor(ApexStyle.secondary)
                                     .frame(width: 24, height: 24)
                                     .background(ApexStyle.surface, in: RoundedRectangle(cornerRadius: 6))
                             }
@@ -319,7 +300,7 @@ public struct WorkspaceView: View {
                         .font(.title2.weight(.semibold))
                     Text("在左侧选择主机，然后点击连接按钮")
                         .font(.subheadline)
-                        .foregroundColor(.secondary.opacity(0.8))
+                        .foregroundColor(ApexStyle.secondary.opacity(0.8))
                     Spacer()
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -334,7 +315,7 @@ public struct WorkspaceView: View {
                 HStack {
                     Text(L10n.readyStatus)
                         .font(.system(size: 11))
-                        .foregroundColor(.secondary)
+                        .foregroundColor(ApexStyle.secondary)
                     Spacer()
                 }
                 .padding(.horizontal, 12)
@@ -362,10 +343,36 @@ public struct WorkspaceView: View {
         }
     }
     
+    @ViewBuilder
+    private var workspaceHeader: some View {
+            if let tab = currentTab {
+                WorkspaceHeaderBar(
+                    tab: tab,
+                    isSFTPVisible: $isSFTPVisible,
+                    onDuplicate: { duplicateTab(tab) }
+                )
+            } else {
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("工作台")
+                            .font(.headline)
+                        Text("选择左侧会话开始连接")
+                            .font(.subheadline)
+                            .foregroundStyle(ApexStyle.secondary)
+                    }
+                    Spacer()
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .background(ApexStyle.surface)
+            }
+
+    }
+
     public func duplicateTab(_ tab: TerminalTabItem) {
         let session = tab.session
         let client: SSHSessionProtocol
-        if session.host == "10.0.1.10" {
+        if session.host == "192.0.2.10" {
             client = MockSSHSession(session: session)
         } else {
             client = NativeSSHSession(session: session)
@@ -430,6 +437,7 @@ public struct WorkspaceView: View {
 }
 
 private struct WorkspaceHeaderBar: View {
+    @ObservedObject private var themeSettings = AppSettings.shared
     @ObservedObject var tab: TerminalTabItem
     @Binding var isSFTPVisible: Bool
     let onDuplicate: () -> Void
@@ -442,7 +450,7 @@ private struct WorkspaceHeaderBar: View {
                     .lineLimit(1)
                 Text("\(tab.session.username)@\(tab.session.host)")
                     .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(ApexStyle.secondary)
                     .lineLimit(1)
             }
             Spacer(minLength: 12)
@@ -493,6 +501,7 @@ private struct WorkspaceHeaderBar: View {
 }
 
 private struct WorkspaceActiveTabSplitView: View {
+    @ObservedObject private var themeSettings = AppSettings.shared
     @ObservedObject var tab: TerminalTabItem
     let activeTabs: [TerminalTabItem]
     let isBroadcastActive: Bool
@@ -526,7 +535,7 @@ private struct WorkspaceActiveTabSplitView: View {
                                 // Vertical draggable divider between panes
                                 VStack {
                                     Spacer()
-                                    Capsule().fill(Color.secondary.opacity(0.4)).frame(width: 3, height: 32)
+                                    Capsule().fill(ApexStyle.secondary.opacity(0.4)).frame(width: 3, height: 32)
                                     Spacer()
                                 }
                                 .frame(width: 8)
@@ -564,7 +573,7 @@ private struct WorkspaceActiveTabSplitView: View {
                                 // Horizontal draggable divider between panes
                                 HStack {
                                     Spacer()
-                                    Capsule().fill(Color.secondary.opacity(0.4)).frame(width: 32, height: 3)
+                                    Capsule().fill(ApexStyle.secondary.opacity(0.4)).frame(width: 32, height: 3)
                                     Spacer()
                                 }
                                 .frame(height: 8)
@@ -594,7 +603,7 @@ private struct WorkspaceActiveTabSplitView: View {
                     // Split Divider with draggable handle
                     HStack {
                         Spacer()
-                        Capsule().fill(Color.secondary.opacity(0.5)).frame(width: 36, height: 3)
+                        Capsule().fill(ApexStyle.secondary.opacity(0.5)).frame(width: 36, height: 3)
                         Spacer()
                     }
                     .frame(height: 8)
@@ -627,6 +636,7 @@ private struct WorkspaceActiveTabSplitView: View {
 }
 
 private struct PaneContainerView: View {
+    @ObservedObject private var themeSettings = AppSettings.shared
     @ObservedObject var pane: TerminalPaneItem
     @ObservedObject var tab: TerminalTabItem
     let activeTabs: [TerminalTabItem]
@@ -641,11 +651,11 @@ private struct PaneContainerView: View {
             if tab.panes.count > 1 {
                 HStack(spacing: 6) {
                     Circle()
-                        .fill(isFocused ? ApexStyle.accent : Color.secondary.opacity(0.5))
+                        .fill(isFocused ? ApexStyle.accent : ApexStyle.secondary.opacity(0.5))
                         .frame(width: 6, height: 6)
                     Text(pane.title)
                         .font(.system(size: 11, weight: isFocused ? .semibold : .regular, design: .monospaced))
-                        .foregroundColor(isFocused ? .primary : .secondary)
+                        .foregroundColor(isFocused ? ApexStyle.primary : ApexStyle.secondary)
                     Spacer()
                     Button(action: { tab.closePane(id: pane.id) }) {
                         Label("关闭此分屏", systemImage: "xmark")
@@ -704,20 +714,20 @@ private struct PaneContainerView: View {
                     VStack {
                         Spacer()
                         HStack(spacing: 8) {
-                            Circle().fill(Color.secondary).frame(width: 8, height: 8)
+                            Circle().fill(ApexStyle.secondary).frame(width: 8, height: 8)
                             Text("会话已断开")
                                 .font(.system(size: 12, weight: .medium))
-                                .foregroundColor(.primary)
+                                .foregroundColor(ApexStyle.primary)
                             Button("重新连接 (⌘R)") {
                                 tab.reconnect(pane: pane)
                             }
-                            .buttonStyle(.borderedProminent)
+                            .apexProminentButton()
                             .controlSize(.small)
                         }
                         .padding(.horizontal, 14)
                         .padding(.vertical, 8)
                         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
-                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.3), lineWidth: 1))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(ApexStyle.secondary.opacity(0.3), lineWidth: 1))
                         .shadow(color: .black.opacity(0.2), radius: 6, y: 2)
                         .padding(.bottom, 24)
                     }
@@ -726,21 +736,21 @@ private struct PaneContainerView: View {
                     VStack {
                         Spacer()
                         HStack(spacing: 8) {
-                            Circle().fill(Color.red).frame(width: 8, height: 8)
+                            Circle().fill(ApexStyle.error).frame(width: 8, height: 8)
                             Text("连接失败：\(err)")
                                 .font(.system(size: 12, weight: .medium))
-                                .foregroundColor(.red)
+                                .foregroundColor(ApexStyle.error)
                                 .lineLimit(1)
                             Button("重新连接 (⌘R)") {
                                 tab.reconnect(pane: pane)
                             }
-                            .buttonStyle(.borderedProminent)
+                            .apexProminentButton()
                             .controlSize(.small)
                         }
                         .padding(.horizontal, 14)
                         .padding(.vertical, 8)
                         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
-                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.red.opacity(0.4), lineWidth: 1))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(ApexStyle.error.opacity(0.4), lineWidth: 1))
                         .shadow(color: .black.opacity(0.2), radius: 6, y: 2)
                         .padding(.bottom, 24)
                     }
@@ -757,6 +767,7 @@ private struct PaneContainerView: View {
 }
 
 private struct WorkspaceBottomStatusBar: View {
+    @ObservedObject private var themeSettings = AppSettings.shared
     @ObservedObject var tab: TerminalTabItem
     @ObservedObject var transferManager = TransferManager.shared
     
@@ -766,7 +777,7 @@ private struct WorkspaceBottomStatusBar: View {
             
             Text("UTF-8")
                 .font(.caption.monospaced())
-                .foregroundColor(.secondary)
+                .foregroundColor(ApexStyle.secondary)
             
             Toggle(isOn: $tab.isDirectoryLinkageEnabled) {
                 Label(tab.isDirectoryLinkageEnabled ? L10n.linkageOn : L10n.linkageOff,
@@ -781,7 +792,7 @@ private struct WorkspaceBottomStatusBar: View {
                 HStack(spacing: 6) {
                     Image(systemName: transferManager.activeCount > 0 ? "arrow.triangle.2.circlepath" : "arrow.up.arrow.down")
                         .font(.system(size: 10))
-                        .foregroundColor(transferManager.activeCount > 0 ? ApexStyle.accent : .secondary)
+                        .foregroundColor(transferManager.activeCount > 0 ? ApexStyle.accent : ApexStyle.secondary)
                     if transferManager.activeCount > 0 {
                         Text("传输中 \(transferManager.activeCount) 项 · \(transferManager.formattedTotalSpeed)")
                             .font(.caption.monospaced())
@@ -789,7 +800,7 @@ private struct WorkspaceBottomStatusBar: View {
                     } else {
                         Text("传输记录 \(transferManager.tasks.count) 项")
                             .font(.caption.monospaced())
-                            .foregroundColor(.secondary)
+                            .foregroundColor(ApexStyle.secondary)
                     }
                 }
             }
@@ -815,20 +826,20 @@ private struct WorkspaceBottomStatusBar: View {
                             .font(.system(size: 8, weight: .bold))
                             .padding(.horizontal, 3)
                             .padding(.vertical, 0.5)
-                            .background(metric.isSSD ? Color.teal.opacity(0.2) : Color.orange.opacity(0.2))
-                            .foregroundColor(metric.isSSD ? .teal : .orange)
+                            .background(metric.isSSD ? ApexStyle.accent.opacity(0.2) : ApexStyle.warning.opacity(0.2))
+                            .foregroundColor(metric.isSSD ? ApexStyle.accent : ApexStyle.warning)
                             .cornerRadius(3)
                     }
                 }
                 .font(.caption2.monospaced())
-                .foregroundColor(.secondary)
+                .foregroundColor(ApexStyle.secondary)
             }
             
             Spacer()
             
             Text("\(L10n.currentDirectory): \(tab.currentRemotePath)")
                 .font(.caption.monospaced())
-                .foregroundColor(.secondary)
+                .foregroundColor(ApexStyle.secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
         }
@@ -839,6 +850,7 @@ private struct WorkspaceBottomStatusBar: View {
 }
 
 private struct ConnectionStatusView: View {
+    @ObservedObject private var themeSettings = AppSettings.shared
     @ObservedObject var tab: TerminalTabItem
 
     var body: some View {
@@ -864,15 +876,16 @@ private struct ConnectionStatusView: View {
     private var statusColor: Color {
         let state = tab.connectionState
         switch state {
-        case .disconnected: return .secondary
-        case .connecting: return .orange
-        case .connected: return .green
-        case .failed: return .red
+        case .disconnected: return ApexStyle.secondary
+        case .connecting: return ApexStyle.warning
+        case .connected: return ApexStyle.success
+        case .failed: return ApexStyle.error
         }
     }
 }
 
 struct TabButton: View {
+    @ObservedObject private var themeSettings = AppSettings.shared
     let title: String
     let isSelected: Bool
     let colorHex: String?
@@ -894,7 +907,7 @@ struct TabButton: View {
             
             Text(title)
                 .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
-                .foregroundColor(isSelected ? .primary : .secondary)
+                .foregroundColor(isSelected ? ApexStyle.primary : ApexStyle.secondary)
             
             Button(action: onClose) {
                 Label("关闭 \(title)", systemImage: "xmark")

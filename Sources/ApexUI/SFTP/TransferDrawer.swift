@@ -4,6 +4,7 @@ import ApexSSH
 
 /// Floating transfer status capsule & collapsible task drawer for SFTP operations
 public struct TransferDrawer: View {
+    @ObservedObject private var themeSettings = AppSettings.shared
     public enum TransferFilter: String, CaseIterable, Identifiable {
         case all = "全部"
         case uploads = "上传"
@@ -88,10 +89,10 @@ public struct TransferDrawer: View {
                             Spacer()
                             Image(systemName: "tray")
                                 .font(.system(size: 24))
-                                .foregroundColor(.secondary)
+                                .foregroundColor(ApexStyle.secondary)
                             Text(manager.tasks.isEmpty ? "暂无传输任务 (支持拖拽/点击上传与下载)" : "当前分类暂无任务")
                                 .font(.system(size: 12))
-                                .foregroundColor(.secondary)
+                                .foregroundColor(ApexStyle.secondary)
                             Spacer()
                         }
                         .frame(height: 140)
@@ -113,7 +114,7 @@ public struct TransferDrawer: View {
                 .clipShape(RoundedRectangle(cornerRadius: 12))
                 .overlay(
                     RoundedRectangle(cornerRadius: 12)
-                        .stroke(Color.secondary.opacity(0.2), lineWidth: 1)
+                        .stroke(ApexStyle.secondary.opacity(0.2), lineWidth: 1)
                 )
                 .shadow(color: Color.black.opacity(0.18), radius: 12, x: 0, y: 4)
                 .padding(.horizontal, 16)
@@ -140,7 +141,7 @@ public struct TransferDrawer: View {
 
                         if manager.activeCount > 0 {
                             Text("·")
-                                .foregroundColor(.secondary)
+                                .foregroundColor(ApexStyle.secondary)
                             Text(manager.formattedTotalSpeed)
                                 .font(.system(size: 11, design: .monospaced))
                                 .foregroundColor(ApexStyle.accent)
@@ -148,12 +149,12 @@ public struct TransferDrawer: View {
 
                         Image(systemName: isExpanded ? "chevron.down" : "chevron.up")
                             .font(.system(size: 9, weight: .bold))
-                            .foregroundColor(.secondary)
+                            .foregroundColor(ApexStyle.secondary)
                     }
                     .padding(.horizontal, 10)
                     .padding(.vertical, 5)
                     .background(ApexStyle.surface, in: Capsule())
-                    .overlay(Capsule().stroke(Color.secondary.opacity(0.25), lineWidth: 1))
+                    .overlay(Capsule().stroke(ApexStyle.secondary.opacity(0.25), lineWidth: 1))
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(isExpanded ? "收起传输任务" : "展开传输任务")
@@ -167,6 +168,7 @@ public struct TransferDrawer: View {
 }
 
 private struct TransferTaskRow: View {
+    @ObservedObject private var themeSettings = AppSettings.shared
     let task: TransferTask
     let onCancel: () -> Void
     
@@ -178,12 +180,12 @@ private struct TransferTaskRow: View {
                     .font(.system(size: 9, weight: .bold))
                     .padding(.horizontal, 5)
                     .padding(.vertical, 2)
-                    .background(task.direction == .upload ? ApexStyle.accent.opacity(0.18) : Color.green.opacity(0.18))
-                    .foregroundColor(task.direction == .upload ? ApexStyle.accent : Color.green)
+                    .background(task.direction == .upload ? ApexStyle.accent.opacity(0.18) : ApexStyle.success.opacity(0.18))
+                    .foregroundColor(task.direction == .upload ? ApexStyle.accent : ApexStyle.success)
                     .clipShape(RoundedRectangle(cornerRadius: 4))
                 
                 Image(systemName: task.direction == .upload ? "arrow.up.circle.fill" : "arrow.down.circle.fill")
-                    .foregroundColor(task.direction == .upload ? ApexStyle.accent : .green)
+                    .foregroundColor(task.direction == .upload ? ApexStyle.accent : ApexStyle.success)
                     .font(.system(size: 14))
                 
                 VStack(alignment: .leading, spacing: 2) {
@@ -194,7 +196,7 @@ private struct TransferTaskRow: View {
                     // Path detail
                     Text(pathDescription)
                         .font(.system(size: 10, design: .monospaced))
-                        .foregroundColor(.secondary.opacity(0.85))
+                        .foregroundColor(ApexStyle.secondary.opacity(0.85))
                         .lineLimit(1)
                         .truncationMode(.middle)
                     
@@ -205,29 +207,29 @@ private struct TransferTaskRow: View {
                         
                         if task.status == .transferring {
                             Text("·")
-                                .foregroundColor(.secondary)
+                                .foregroundColor(ApexStyle.secondary)
                             Text(task.formattedSpeed)
                                 .font(.system(size: 10, design: .monospaced))
                                 .foregroundColor(ApexStyle.accent)
                             Text("·")
-                                .foregroundColor(.secondary)
+                                .foregroundColor(ApexStyle.secondary)
                             Text("\(formattedBytes(task.transferredBytes)) / \(formattedBytes(task.totalBytes))")
                                 .font(.system(size: 10, design: .monospaced))
-                                .foregroundColor(.secondary)
+                                .foregroundColor(ApexStyle.secondary)
                         } else {
                             if task.totalBytes > 0 {
                                 Text("·")
-                                    .foregroundColor(.secondary)
+                                    .foregroundColor(ApexStyle.secondary)
                                 Text(formattedBytes(task.totalBytes))
                                     .font(.system(size: 10, design: .monospaced))
-                                    .foregroundColor(.secondary)
+                                    .foregroundColor(ApexStyle.secondary)
                             }
                             if let date = task.completedAt ?? task.startedAt as Date? {
                                 Text("·")
-                                    .foregroundColor(.secondary)
+                                    .foregroundColor(ApexStyle.secondary)
                                 Text(formatTime(date))
                                     .font(.system(size: 10))
-                                    .foregroundColor(.secondary)
+                                    .foregroundColor(ApexStyle.secondary)
                             }
                         }
                     }
@@ -269,7 +271,7 @@ private struct TransferTaskRow: View {
                 } else if case .failed = task.status {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.system(size: 13))
-                        .foregroundColor(.red)
+                        .foregroundColor(ApexStyle.error)
                 }
             }
             
@@ -304,11 +306,11 @@ private struct TransferTaskRow: View {
     
     private var statusColor: Color {
         switch task.status {
-        case .queued: return .secondary
+        case .queued: return ApexStyle.secondary
         case .transferring: return ApexStyle.accent
         case .completed: return ApexStyle.success
-        case .failed: return .red
-        case .cancelled: return .secondary
+        case .failed: return ApexStyle.error
+        case .cancelled: return ApexStyle.secondary
         }
     }
     

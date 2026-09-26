@@ -4,6 +4,7 @@ import ApexCore
 
 /// Interactive sheet presenting update status, release notes, and download actions
 public struct UpdateSheetView: View {
+    @ObservedObject private var themeSettings = AppSettings.shared
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var updateManager = UpdateManager.shared
     
@@ -18,7 +19,7 @@ public struct UpdateSheetView: View {
                         .scaleEffect(1.2)
                     Text(L10n.checkingForUpdates)
                         .font(.system(size: 14, weight: .medium))
-                        .foregroundColor(.secondary)
+                        .foregroundColor(ApexStyle.secondary)
                 }
                 .frame(width: 380, height: 180)
                 
@@ -34,7 +35,7 @@ public struct UpdateSheetView: View {
                                 .font(.headline)
                             Text("新版本: v\(release.version) (当前: v\(updateManager.currentVersion))")
                                 .font(.subheadline)
-                                .foregroundColor(.secondary)
+                                .foregroundColor(ApexStyle.secondary)
                         }
                         Spacer()
                     }
@@ -42,7 +43,7 @@ public struct UpdateSheetView: View {
                     VStack(alignment: .leading, spacing: 6) {
                         Text("更新日志与新特性：")
                             .font(.caption)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(ApexStyle.secondary)
                         
                         ScrollView {
                             Text(release.notes)
@@ -75,7 +76,7 @@ public struct UpdateSheetView: View {
                         } label: {
                             Text(L10n.updateNow)
                         }
-                        .buttonStyle(.borderedProminent)
+                        .apexProminentButton()
                         .keyboardShortcut(.defaultAction)
                     }
                 }
@@ -86,21 +87,21 @@ public struct UpdateSheetView: View {
                 VStack(spacing: 14) {
                     Image(systemName: "checkmark.seal.fill")
                         .font(.system(size: 42))
-                        .foregroundColor(.green)
+                        .foregroundColor(ApexStyle.success)
                     
                     Text(L10n.upToDateTitle)
                         .font(.headline)
                     
                     Text(String(format: L10n.upToDateDesc, currentVersion as CVarArg))
                         .font(.subheadline)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(ApexStyle.secondary)
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 10)
                     
                     Button("完成") {
                         dismiss()
                     }
-                    .buttonStyle(.borderedProminent)
+                    .apexProminentButton()
                     .controlSize(.regular)
                     .keyboardShortcut(.defaultAction)
                     .padding(.top, 6)
@@ -112,14 +113,14 @@ public struct UpdateSheetView: View {
                 VStack(spacing: 14) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.system(size: 40))
-                        .foregroundColor(.orange)
+                        .foregroundColor(ApexStyle.warning)
                     
                     Text("检查更新失败")
                         .font(.headline)
                     
                     Text(message)
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(ApexStyle.secondary)
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 10)
                     
@@ -133,7 +134,7 @@ public struct UpdateSheetView: View {
                                 await updateManager.checkForUpdates(manual: true)
                             }
                         }
-                        .buttonStyle(.borderedProminent)
+                        .apexProminentButton()
                     }
                     .padding(.top, 6)
                 }

@@ -40,15 +40,16 @@ struct ApexTermApp: App {
                 )
             }
             .navigationSplitViewStyle(.balanced)
+            .apexTheme()
             .frame(minWidth: 960, minHeight: 640)
             .sheet(isPresented: $isAboutPresented) {
-                AboutView()
+                AboutView().apexTheme()
             }
             .sheet(isPresented: $isShortcutsPresented) {
-                ShortcutsSheetView()
+                ShortcutsSheetView().apexTheme()
             }
             .sheet(isPresented: $updateManager.isUpdateSheetPresented) {
-                UpdateSheetView()
+                UpdateSheetView().apexTheme()
             }
             .task {
                 if settings.checkForUpdatesOnLaunch {
@@ -181,7 +182,7 @@ struct ApexTermApp: App {
         }
         
         Settings {
-            SettingsView()
+            SettingsView().apexTheme()
         }
     }
     
@@ -212,7 +213,7 @@ struct ApexTermApp: App {
     private func duplicateCurrentSession() {
         guard let current = activeTabs.first(where: { $0.id == selectedTabId }) else { return }
         let session = current.session
-        let client: SSHSessionProtocol = session.host == "10.0.1.10" ? MockSSHSession(session: session) : NativeSSHSession(session: session)
+        let client: SSHSessionProtocol = session.host == "192.0.2.10" ? MockSSHSession(session: session) : NativeSSHSession(session: session)
         let tab = TerminalTabItem(session: session, sshClient: client)
         tab.currentRemotePath = current.currentRemotePath
         tab.isDirectoryLinkageEnabled = current.isDirectoryLinkageEnabled
@@ -236,9 +237,9 @@ struct ApexTermApp: App {
     }
 
     private func connectToSession(_ session: Session) {
-        // Only synthetic demo host 10.0.1.10 uses Mock; real IPs (including 192.168.x.x Tart VMs) use NativeSSHSession
+        // Only synthetic demo host 192.0.2.10 uses Mock; real IPs (including 192.168.x.x Tart VMs) use NativeSSHSession
         let client: SSHSessionProtocol
-        if session.host == "10.0.1.10" {
+        if session.host == "192.0.2.10" {
             client = MockSSHSession(session: session)
         } else {
             client = NativeSSHSession(session: session)

@@ -3,6 +3,7 @@ import ApexCore
 
 /// Modal sheet for creating or editing an SSH session with password/key authentication and Chinese localization
 public struct SessionEditModal: View {
+    @ObservedObject private var themeSettings = AppSettings.shared
     public let initialSession: Session?
     public let onSave: (Session) -> Void
     
@@ -46,7 +47,7 @@ public struct SessionEditModal: View {
                         .font(.system(size: 18, weight: .semibold))
                     Text("填写连接信息，保存后可从侧栏快速访问")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(ApexStyle.secondary)
                 }
                 Spacer()
             }
@@ -65,7 +66,7 @@ public struct SessionEditModal: View {
                     if !port.isEmpty && !isValidPort {
                         Text("端口请输入 1–65535 之间的数字")
                             .font(.caption)
-                            .foregroundStyle(.red)
+                            .foregroundStyle(ApexStyle.error)
                     }
                     
                     TextField(L10n.usernameLabel, text: $username)
@@ -102,10 +103,10 @@ public struct SessionEditModal: View {
                     } else {
                         HStack {
                             Image(systemName: "key.fill")
-                                .foregroundColor(.secondary)
+                                .foregroundColor(ApexStyle.secondary)
                             Text("使用 macOS 本机 SSH Agent 或 ~/.ssh 默认私钥自动鉴权")
                                 .font(.caption)
-                                .foregroundColor(.secondary)
+                                .foregroundColor(ApexStyle.secondary)
                         }
                         .padding(.vertical, 2)
                     }
@@ -124,7 +125,7 @@ public struct SessionEditModal: View {
                                     .fill(Color(hex: hex) ?? ApexStyle.accent)
                                     .frame(width: 18, height: 18)
                                     .padding(3)
-                                    .overlay(Circle().stroke(colorHex == hex ? Color.primary : .clear, lineWidth: 1.5))
+                                    .overlay(Circle().stroke(colorHex == hex ? ApexStyle.primary : .clear, lineWidth: 1.5))
                             }
                             .buttonStyle(.plain)
                             .accessibilityLabel("选择标识颜色 \(hex)")
@@ -145,14 +146,14 @@ public struct SessionEditModal: View {
                 if let saveError {
                     Text(saveError)
                         .font(.caption)
-                        .foregroundStyle(.red)
+                        .foregroundStyle(ApexStyle.error)
                         .lineLimit(2)
                 }
                 Spacer()
                 Button(L10n.cancel) { dismiss() }
                     .keyboardShortcut(.cancelAction)
                 Button(L10n.save) { saveSession() }
-                    .buttonStyle(.borderedProminent)
+                    .apexProminentButton()
                     .tint(ApexStyle.accent)
                     .disabled(host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !isValidPort)
                     .keyboardShortcut(.defaultAction)

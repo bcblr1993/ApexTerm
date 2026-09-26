@@ -3,6 +3,7 @@ import ApexCore
 
 /// Keyboard Shortcuts Cheat Sheet modal
 public struct ShortcutsSheetView: View {
+    @ObservedObject private var themeSettings = AppSettings.shared
     @Environment(\.dismiss) private var dismiss
     
     public init() {}
@@ -92,7 +93,7 @@ public struct ShortcutsSheetView: View {
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 18))
-                        .foregroundColor(.secondary)
+                        .foregroundColor(ApexStyle.secondary)
                 }
                 .buttonStyle(.plain)
             }
@@ -117,7 +118,7 @@ public struct ShortcutsSheetView: View {
                                     HStack {
                                         Text(item.description)
                                             .font(.system(size: 13))
-                                            .foregroundColor(.primary)
+                                            .foregroundColor(ApexStyle.primary)
                                         
                                         Spacer()
                                         
@@ -127,11 +128,11 @@ public struct ShortcutsSheetView: View {
                                                     .font(.system(size: 11, weight: .semibold, design: .monospaced))
                                                     .padding(.horizontal, 6)
                                                     .padding(.vertical, 3)
-                                                    .background(Color(nsColor: .controlBackgroundColor))
+                                                    .background(ApexStyle.subtleSurface)
                                                     .cornerRadius(4)
                                                     .overlay(
                                                         RoundedRectangle(cornerRadius: 4)
-                                                            .stroke(Color.primary.opacity(0.15), lineWidth: 1)
+                                                            .stroke(ApexStyle.primary.opacity(0.15), lineWidth: 1)
                                                     )
                                                     .shadow(color: Color.black.opacity(0.05), radius: 1, x: 0, y: 1)
                                             }
@@ -139,7 +140,7 @@ public struct ShortcutsSheetView: View {
                                     }
                                     .padding(.vertical, 4)
                                     .padding(.horizontal, 8)
-                                    .background(Color.primary.opacity(0.02))
+                                    .background(ApexStyle.primary.opacity(0.02))
                                     .cornerRadius(6)
                                 }
                             }

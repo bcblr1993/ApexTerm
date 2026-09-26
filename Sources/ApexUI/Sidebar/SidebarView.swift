@@ -3,6 +3,7 @@ import ApexCore
 
 /// Native macOS Sidebar with session tree, folders, tags, quick snippets, and full Chinese localization
 public struct SidebarView: View {
+    @ObservedObject private var themeSettings = AppSettings.shared
     @ObservedObject var store: SessionStore
     @Binding var selectedSession: Session?
     let onConnect: (Session) -> Void
@@ -35,7 +36,7 @@ public struct SidebarView: View {
                 Spacer()
                 Text("\(store.sessions.count) 台主机")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(ApexStyle.secondary)
             }
             .padding(.horizontal, 14)
             .padding(.top, 18)
@@ -57,7 +58,7 @@ public struct SidebarView: View {
                     Label(L10n.addSessionHelp, systemImage: "plus")
                 }
                 .labelStyle(.iconOnly)
-                .buttonStyle(.borderedProminent)
+                .apexProminentButton()
                 .help(L10n.addSessionHelp)
             }
             .padding(.horizontal, 14)
@@ -75,11 +76,11 @@ public struct SidebarView: View {
                     VStack(spacing: 6) {
                         Text(L10n.emptySessionTitle)
                             .font(.headline)
-                            .foregroundColor(.primary)
+                            .foregroundColor(ApexStyle.primary)
                         
                         Text(L10n.emptySessionSubtitle)
                             .font(.subheadline)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(ApexStyle.secondary)
                             .multilineTextAlignment(.center)
                             .padding(.horizontal, 20)
                     }
@@ -87,7 +88,7 @@ public struct SidebarView: View {
                     Button(action: { showingAddSheet = true }) {
                         Label(L10n.addFirstSessionButton, systemImage: "plus")
                     }
-                    .buttonStyle(.borderedProminent)
+                    .apexProminentButton()
                     .controlSize(.regular)
                     
                     Spacer()
@@ -112,6 +113,7 @@ public struct SidebarView: View {
                                             session: session,
                                             onConnect: { onConnect(session) }
                                         )
+                                        .listRowBackground(selectedSession?.id == session.id ? ApexStyle.selection : ApexStyle.subtleSurface)
                                         .tag(session.id)
                                         .contextMenu {
                                             Button(L10n.connectAction) {
@@ -136,16 +138,16 @@ public struct SidebarView: View {
                                 label: {
                                     HStack {
                                         Image(systemName: folderIcon(for: folder))
-                                            .foregroundColor(.secondary)
+                                            .foregroundColor(ApexStyle.secondary)
                                         Text(folder)
                                             .font(.system(size: 12, weight: .medium))
                                         Spacer()
                                         Text("\(sessionsInFolder(folder).count)")
                                             .font(.system(size: 10))
-                                            .foregroundColor(.secondary)
+                                            .foregroundColor(ApexStyle.secondary)
                                             .padding(.horizontal, 5)
                                             .padding(.vertical, 1)
-                                            .background(Color.primary.opacity(0.06))
+                                            .background(ApexStyle.primary.opacity(0.06))
                                             .cornerRadius(4)
                                     }
                                 }
@@ -263,6 +265,7 @@ public struct SidebarView: View {
 }
 
 struct SessionRow: View {
+    @ObservedObject private var themeSettings = AppSettings.shared
     let session: Session
     let onConnect: () -> Void
     
@@ -275,11 +278,11 @@ struct SessionRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(session.name)
                     .font(.subheadline.weight(.medium))
-                    .foregroundColor(.primary)
+                    .foregroundColor(ApexStyle.primary)
                 
                 Text("\(session.username)@\(session.host)")
                     .font(.caption.monospaced())
-                    .foregroundColor(.secondary)
+                    .foregroundColor(ApexStyle.secondary)
             }
             
             Spacer(minLength: 4)

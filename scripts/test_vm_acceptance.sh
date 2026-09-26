@@ -25,9 +25,8 @@ echo "======================================================="
 TART_BIN=$(which tart 2>/dev/null || echo "/opt/homebrew/bin/tart")
 if [ ! -x "${TART_BIN}" ]; then
     echo "⚠️  [Tart VM Gate] Tart CLI not found in PATH or /opt/homebrew/bin/tart."
-    echo "    Falling back to high-fidelity native quality gate."
-    swift test
-    exit 0
+    echo "❌ Release requires a reachable Tart VM; refusing local-only fallback."
+    exit 1
 fi
 
 echo "🔍 [Tart VM Gate] Checking Tart VM '${VM_NAME}' status..."
@@ -36,9 +35,8 @@ if ! echo "${VM_LIST_OUT}" | grep -q "${VM_NAME}"; then
     echo "⚠️  [Tart VM Gate] Tart VM '${VM_NAME}' not found in local registry."
     echo "    Available VMs:"
     echo "${VM_LIST_OUT}"
-    echo "    Running comprehensive host quality gate (80+ test cases + 8 benchmarks)..."
-    swift test
-    exit 0
+    echo "❌ Release requires a reachable Tart VM; refusing local-only fallback."
+    exit 1
 fi
 
 VM_STATE=$(echo "${VM_LIST_OUT}" | awk -v v="${VM_NAME}" '$2 == v {print $NF}')
@@ -68,12 +66,17 @@ if [ "${IS_VM_SSH_READY}" = "true" ]; then
     
     # Run test suite with live VM integration tests enabled
     swift test 2>&1 | tee "${REPORT_DIR}/vm_test_report.log"
+    swift test -c release --filter FullPerformanceBenchmarkTests 2>&1 | tee "${REPORT_DIR}/release_benchmarks.log"
+    python3 "${ROOT_DIR}/scripts/verify_release_benchmarks.py" "${REPORT_DIR}/release_benchmarks.log"
+    if grep -Eq 'warning:|error:' "${REPORT_DIR}/vm_test_report.log" "${REPORT_DIR}/release_benchmarks.log"; then
+        echo "❌ Compiler or test diagnostics detected; refusing release."
+        exit 1
+    fi
     echo "✅ [Tart VM Gate] All VM Integration and Local tests passed successfully!"
 else
     echo "📋 [Tart VM Gate] VM '${VM_NAME}' network access is host-isolated or offline."
-    echo "    Executing full-fidelity local quality gates (90+ tests & 8 benchmarks)..."
-    swift test 2>&1 | tee "${REPORT_DIR}/local_test_report.log"
-    echo "✅ [Tart VM Gate] Host automated quality gates passed 100%!"
+    echo "❌ Release requires live VM integration; fix SSH connectivity before retrying."
+    exit 1
 fi
 
 echo "======================================================="

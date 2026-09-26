@@ -6,7 +6,7 @@ import XCTest
 final class ApexSSHTests: XCTestCase {
 
     func testMockFileEditorRoundTrip() async throws {
-        let session = Session(name: "UI Preview", host: "10.0.1.10", username: "root")
+        let session = Session(name: "UI Preview", host: "192.0.2.10", username: "root")
         let client = MockSSHSession(session: session)
         let source = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let result = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -91,7 +91,7 @@ final class ApexSSHTests: XCTestCase {
     
     func testVTParserANSISequence() {
         let parser = VTParser()
-        let raw = "\u{001B}[1;31mERROR\u{001B}[0m: Database connection failed at \u{001B}[32m10.0.1.10\u{001B}[0m"
+        let raw = "\u{001B}[1;31mERROR\u{001B}[0m: Database connection failed at \u{001B}[32m192.0.2.10\u{001B}[0m"
         let spans = parser.parseANSI(raw)
         
         XCTAssertEqual(spans.count, 3)
@@ -103,7 +103,7 @@ final class ApexSSHTests: XCTestCase {
         XCTAssertNil(spans[1].foregroundColorHex)
         XCTAssertFalse(spans[1].isBold)
         
-        XCTAssertEqual(spans[2].text, "10.0.1.10")
+        XCTAssertEqual(spans[2].text, "192.0.2.10")
         XCTAssertEqual(spans[2].foregroundColorHex, "#30D158")
     }
     

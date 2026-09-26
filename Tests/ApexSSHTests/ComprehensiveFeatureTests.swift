@@ -13,7 +13,7 @@ final class ComprehensiveFeatureTests: XCTestCase {
     func testSSHSessionConnectionStates() async {
         let session = Session(
             name: "Test Cluster",
-            host: "10.0.1.10",
+            host: "192.0.2.10",
             port: 22,
             username: "root",
             authMethod: .password(keychainRef: "secret")
@@ -142,7 +142,7 @@ final class ComprehensiveFeatureTests: XCTestCase {
     func testTransferManagerEnqueueAndCancel() {
         let manager = TransferManager.shared
         
-        let session = Session(name: "Transfer Test", host: "10.0.1.10", port: 22, username: "root")
+        let session = Session(name: "Transfer Test", host: "192.0.2.10", port: 22, username: "root")
         let client = MockSSHSession(session: session)
         
         let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("test_transfer_\(UUID().uuidString).txt")
@@ -222,7 +222,7 @@ final class ComprehensiveFeatureTests: XCTestCase {
     // MARK: - 7. Terminal Split Panes & Multi-Tab Model
     
     func testTerminalTabItemSplits() {
-        let session = Session(name: "Split Test", host: "10.0.1.10", port: 22, username: "root")
+        let session = Session(name: "Split Test", host: "192.0.2.10", port: 22, username: "root")
         let client = MockSSHSession(session: session)
         let tab = TerminalTabItem(session: session, sshClient: client)
         
@@ -406,7 +406,7 @@ final class ComprehensiveFeatureTests: XCTestCase {
     func testDuplicateTabSessionStateAndInheritance() async {
         let session = Session(
             name: "Prod Cluster",
-            host: "10.0.1.10",
+            host: "192.0.2.10",
             port: 22,
             username: "ubuntu",
             authMethod: .password(keychainRef: "secret")
@@ -425,7 +425,7 @@ final class ComprehensiveFeatureTests: XCTestCase {
         // Assertions
         XCTAssertNotEqual(tab1.id, tab2.id)
         XCTAssertEqual(tab2.session.name, "Prod Cluster")
-        XCTAssertEqual(tab2.session.host, "10.0.1.10")
+        XCTAssertEqual(tab2.session.host, "192.0.2.10")
         XCTAssertEqual(tab2.session.username, "ubuntu")
         XCTAssertEqual(tab2.currentRemotePath, "/var/www/html")
         XCTAssertTrue(tab2.isDirectoryLinkageEnabled)

@@ -2,6 +2,28 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.3.0] - 2026-09-26
+
+### ✨ 新增特性 (Features)
+- 新增 12 种全局主题：经典白色（默认）、VS Code Dark Modern、Tokyo Night、Catppuccin Mocha / Latte、Nord、Dracula、One Dark Pro、Gruvbox Dark、Everforest、Rosé Pine、Solarized Light。
+- 主题覆盖侧栏、工作区、设置、弹窗、按钮、状态、文字、选区、终端及查找栏；切换无需重连 SSH，已有 ANSI 索引色输出同步更新，显式 TrueColor 保持原样。
+- 包含服务器硬件、磁盘 SSD / NVMe / HDD 类型展示及紧凑监控详情界面。
+
+### ⚡️ 体验优化 (Improvements)
+- UI 文字、状态色及主题终端索引色自动调整明度，至少保持 4.5:1 对比度；原生控件跟随主题明暗外观。
+- 统一主题持久化与恢复默认行为，兼容旧终端预设名称。
+
+### 🐞 问题修复 (Bug Fixes)
+- 修复 SGR TrueColor 中 0 / 1 通道被误判为重置或加粗，以及切换配色覆盖历史 TrueColor 的问题。
+- 修复模拟 SSH 会话并发连接、重连时连接状态的内存竞争。
+- 示例主机使用文档保留地址，避免真实私网地址被当作模拟会话。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- 全量 117 项测试零失败，其中 4 项未配置公共服务器的测试跳过；真实 Tart VM 的 PTY / SFTP 往返 / 指标 / 磁盘 4 项全部通过。
+- 优化构建 8 项基准全部达标：134,584 行/秒（13.60 MB/秒）、406,348 spans/秒、RSS 102.66 MB、2,201,121 writes/秒、指标 12,891 次/秒、125,043 hosts/秒、1,108 tasks/秒、单键 8.76 微秒。
+- 新增主题对比度、历史输出切换、ANSI / TrueColor 与并发模拟连接回归测试；12 种主题均完成窗口渲染检查。
+- 正式包强制 Developer ID、安全时间戳、Apple 公证和 stapling；扫描二进制与资源中的凭据及私网端点，保留旧安装备份。
+
 ## [v1.2.5] - 2026-09-26
 
 ### ✨ 新增特性 (Features)

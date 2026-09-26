@@ -4,11 +4,13 @@ public struct FormattedSpan: Sendable, Equatable {
     public let text: String
     public let foregroundColorHex: String?
     public let isBold: Bool
+    public let ansiColorIndex: Int?
     
-    public init(text: String, foregroundColorHex: String? = nil, isBold: Bool = false) {
+    public init(text: String, foregroundColorHex: String? = nil, isBold: Bool = false, ansiColorIndex: Int? = nil) {
         self.text = text
         self.foregroundColorHex = foregroundColorHex
         self.isBold = isBold
+        self.ansiColorIndex = ansiColorIndex
     }
 }
 
@@ -22,13 +24,14 @@ public final class VTParser: Sendable {
         var currentText = ""
         var currentColor: String? = nil
         var currentBold = false
+        var currentIndex: Int? = nil
         
         var i = raw.startIndex
         while i < raw.endIndex {
             if raw[i] == "\u{001B}" { // ESC
                 // Flush accumulated text
                 if !currentText.isEmpty {
-                    spans.append(FormattedSpan(text: currentText, foregroundColorHex: currentColor, isBold: currentBold))
+                    spans.append(FormattedSpan(text: currentText, foregroundColorHex: currentColor, isBold: currentBold, ansiColorIndex: currentIndex))
                     currentText = ""
                 }
                 
@@ -51,45 +54,11 @@ public final class VTParser: Sendable {
                         let finalChar = raw[j]
                         if finalChar == "m" { // SGR color/style
                             let codes = csiParam.split(separator: ";").compactMap { Int($0) }
-                            if codes.isEmpty || codes.contains(0) {
-                                currentColor = nil
-                                currentBold = false
-                            }
-                            if codes.contains(1) {
-                                currentBold = true
-                            }
-                            // Check for 24-bit TrueColor RGB: 38;2;r;g;b
-                            if codes.count >= 5 && codes[0] == 38 && codes[1] == 2 {
-                                let r = max(0, min(255, codes[2]))
-                                let g = max(0, min(255, codes[3]))
-                                let b = max(0, min(255, codes[4]))
-                                currentColor = String(format: "#%02X%02X%02X", r, g, b)
-                            } else if codes.count >= 3 && codes[0] == 38 && codes[1] == 5 {
-                                // 256-color palette
-                                currentColor = Self.colorFrom256Palette(codes[2])
-                            } else {
-                                for code in codes {
-                                    switch code {
-                                    case 30: currentColor = "#1E1E1E"
-                                    case 31: currentColor = "#FF453A" // Red
-                                    case 32: currentColor = "#30D158" // Green
-                                    case 33: currentColor = "#FFD60A" // Yellow
-                                    case 34: currentColor = "#0A84FF" // Blue
-                                    case 35: currentColor = "#BF5AF2" // Magenta
-                                    case 36: currentColor = "#64D2FF" // Cyan
-                                    case 37: currentColor = "#FFFFFF" // White
-                                    case 39: currentColor = nil       // Default foreground
-                                    case 90: currentColor = "#8E8E93" // Bright Black / Gray
-                                    case 91: currentColor = "#FF6961"
-                                    case 92: currentColor = "#77DD77"
-                                    case 93: currentColor = "#FDFD96"
-                                    case 94: currentColor = "#84B6F4"
-                                    case 95: currentColor = "#FDCAE1"
-                                    case 96: currentColor = "#B2FBA5"
-                                    default: break
-                                    }
-                                }
-                            }
+                            var style = SGRStyle(foreground: currentColor, index: currentIndex, bold: currentBold)
+                            style.apply(codes)
+                            currentColor = style.foreground
+                            currentIndex = style.index
+                            currentBold = style.bold
                         }
                         i = j
                     } else {
@@ -118,7 +87,7 @@ public final class VTParser: Sendable {
         }
         
         if !currentText.isEmpty {
-            spans.append(FormattedSpan(text: currentText, foregroundColorHex: currentColor, isBold: currentBold))
+            spans.append(FormattedSpan(text: currentText, foregroundColorHex: currentColor, isBold: currentBold, ansiColorIndex: currentIndex))
         }
         return spans
     }

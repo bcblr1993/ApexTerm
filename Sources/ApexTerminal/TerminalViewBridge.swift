@@ -117,22 +117,35 @@ public final class TerminalFindBarView: NSView, NSTextFieldDelegate {
         fatalError("init(coder:) has not been implemented")
     }
     
+    public func applyTheme() {
+        let p = AppSettings.shared.themePreset.palette
+        appearance = NSAppearance(named: AppSettings.shared.themePreset.isDark ? .darkAqua : .aqua)
+        layer?.backgroundColor = NSColor(hex: p.surface)?.cgColor
+        layer?.borderColor = NSColor(hex: p.border)?.cgColor
+        searchField.backgroundColor = NSColor(hex: p.sidebar) ?? .controlBackgroundColor
+        searchField.textColor = NSColor(hex: p.foreground)
+        matchLabel.textColor = NSColor(hex: p.secondary)
+        for button in [prevButton, nextButton, closeButton] {
+            button.contentTintColor = NSColor(hex: p.foreground)
+        }
+    }
+
     private func setupUI() {
         wantsLayer = true
         layer?.cornerRadius = 8
         layer?.masksToBounds = true
         layer?.borderWidth = 1
         layer?.borderColor = NSColor.separatorColor.cgColor
-        layer?.backgroundColor = NSColor(red: 0.14, green: 0.15, blue: 0.18, alpha: 0.96).cgColor
+        layer?.backgroundColor = NSColor(hex: AppSettings.shared.themePreset.palette.surface)?.cgColor
         
         searchField.placeholderString = "查找 (⌘F)..."
         searchField.isBezeled = false
         searchField.drawsBackground = true
-        searchField.backgroundColor = NSColor(white: 0.25, alpha: 0.6)
+        searchField.backgroundColor = NSColor(hex: AppSettings.shared.themePreset.palette.sidebar) ?? .controlBackgroundColor
         searchField.wantsLayer = true
         searchField.layer?.cornerRadius = 5
         searchField.font = NSFont.systemFont(ofSize: 12)
-        searchField.textColor = .white
+        searchField.textColor = .labelColor
         searchField.focusRingType = .none
         searchField.delegate = self
         
@@ -413,7 +426,6 @@ public final class NativeTerminalView: NSTextView {
     // High-performance styling cache for zero-allocation 120Hz rendering
     private var cachedBaseFont: NSFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
     private var cachedBoldFont: NSFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .bold)
-    private static let defaultTextColor = NSColor(red: 0.90, green: 0.92, blue: 0.95, alpha: 1.0)
     private static var colorCache: [String: NSColor] = [:]
     private static let colorCacheLock = NSLock()
     
@@ -615,7 +627,23 @@ public final class NativeTerminalView: NSTextView {
         let fg = NSColor(hex: theme.foregroundColorHex) ?? NSColor(red: 0.92, green: 0.93, blue: 0.95, alpha: 1.0)
         self.backgroundColor = bg
         self.enclosingScrollView?.backgroundColor = bg
-        self.textColor = fg
+        self.typingAttributes[.foregroundColor] = fg
+        self.appearance = NSAppearance(named: theme.isDark ? .darkAqua : .aqua)
+        self.insertionPointColor = NSColor(hex: theme.cursorColorHex) ?? fg
+        self.selectedTextAttributes = [.backgroundColor: NSColor(hex: theme.palette.selection) ?? bg, .foregroundColor: fg]
+        if let scroll = enclosingScrollView as? NativeTerminalScrollView { scroll.searchBarOverlay.applyTheme() }
+        // Recolor already-rendered scrollback without reconnecting or clearing the buffer.
+        if let storage = textStorage {
+            storage.beginEditing()
+            storage.enumerateAttribute(NSAttributedString.Key("ApexThemeColor"), in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+                guard let index = value as? Int else { return }
+                if index == -1 { storage.addAttribute(.foregroundColor, value: fg, range: range) }
+                else if index >= 0, let color = NSColor(hex: theme.palette.terminalColor(at: index)) {
+                    storage.addAttribute(.foregroundColor, value: color, range: range)
+                }
+            }
+            storage.endEditing()
+        }
         
         // 3. Cursor
         if !settings.isCursorBlinkEnabled {
@@ -628,6 +656,7 @@ public final class NativeTerminalView: NSTextView {
         // 4. Copy behavior
         self.isCopyOnSelectEnabled = settings.isCopyOnSelectEnabled
         
+        if !currentMatches.isEmpty { highlightAllMatches() }
         self.notifyDimensionsChangedIfNeeded()
         self.needsDisplay = true
     }
@@ -877,19 +906,25 @@ public final class NativeTerminalView: NSTextView {
         let fullRange = NSRange(location: 0, length: storage.length)
         layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: fullRange)
         
-        let matchBg = NSColor.systemYellow.withAlphaComponent(0.35)
-        let currentBg = NSColor.systemOrange.withAlphaComponent(0.85)
+        layoutManager.removeTemporaryAttribute(.foregroundColor, forCharacterRange: fullRange)
+        let palette = AppSettings.shared.themePreset.palette
+        let matchBg = NSColor(hex: palette.selection) ?? .selectedTextBackgroundColor
+        let currentBg = NSColor(hex: palette.accent) ?? .selectedTextBackgroundColor
+        let currentForeground = NSColor(hex: ThemePalette.contrast("#FFFFFF", palette.accent) >= 4.5 ? "#FFFFFF" : "#000000") ?? .labelColor
         
         for (index, range) in currentMatches.enumerated() {
             guard range.location + range.length <= storage.length else { continue }
             let color = (index == currentMatchIndex) ? currentBg : matchBg
             layoutManager.addTemporaryAttribute(.backgroundColor, value: color, forCharacterRange: range)
+            layoutManager.addTemporaryAttribute(.foregroundColor, value: index == currentMatchIndex ? currentForeground : (NSColor(hex: palette.foreground) ?? .labelColor), forCharacterRange: range)
         }
     }
     
     private func clearHighlightAttributes() {
         guard let layoutManager = self.layoutManager, let storage = self.textStorage, storage.length > 0 else { return }
-        layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: NSRange(location: 0, length: storage.length))
+        let range = NSRange(location: 0, length: storage.length)
+        layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: range)
+        layoutManager.removeTemporaryAttribute(.foregroundColor, forCharacterRange: range)
     }
     
     private func scrollToCurrentMatch() {
@@ -1444,7 +1479,8 @@ public final class NativeTerminalView: NSTextView {
         
         let baseFont = self.font ?? cachedBaseFont
         let boldFont = self.cachedBoldFont
-        let defaultColor = Self.defaultTextColor
+        let palette = AppSettings.shared.themePreset.palette
+        let defaultColor = NSColor(hex: palette.foreground) ?? .labelColor
         
         for span in spans {
             var textColor = defaultColor
@@ -1463,10 +1499,14 @@ public final class NativeTerminalView: NSTextView {
                     }
                 }
             }
-            let attrs: [NSAttributedString.Key: Any] = [
+            if let index = span.ansiColorIndex {
+                textColor = NSColor(hex: palette.terminalColor(at: index)) ?? defaultColor
+            }
+            var attrs: [NSAttributedString.Key: Any] = [
                 .font: span.isBold ? boldFont : baseFont,
                 .foregroundColor: textColor
             ]
+            attrs[NSAttributedString.Key("ApexThemeColor")] = span.ansiColorIndex ?? (span.foregroundColorHex == nil ? -1 : -2)
             attrString.append(NSAttributedString(string: span.text, attributes: attrs))
         }
         return attrString

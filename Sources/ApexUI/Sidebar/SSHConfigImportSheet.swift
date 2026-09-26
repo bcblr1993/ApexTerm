@@ -3,6 +3,7 @@ import ApexCore
 
 /// Modal sheet for discovering, previewing, and importing hosts from ~/.ssh/config
 public struct SSHConfigImportSheet: View {
+    @ObservedObject private var themeSettings = AppSettings.shared
     @ObservedObject public var store: SessionStore
     @Environment(\.dismiss) private var dismiss
     
@@ -31,7 +32,7 @@ public struct SSHConfigImportSheet: View {
                         .font(.headline)
                     Text("自动扫描系统已知配置与密钥，一键导入 ApexTerm 会话库")
                         .font(.subheadline)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(ApexStyle.secondary)
                 }
                 Spacer()
             }
@@ -44,7 +45,7 @@ public struct SSHConfigImportSheet: View {
             HStack(spacing: 12) {
                 Text("分组名称:")
                     .font(.subheadline)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(ApexStyle.secondary)
                 TextField("目标文件夹", text: $targetFolder)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 140)
@@ -99,14 +100,14 @@ public struct SSHConfigImportSheet: View {
                                 if host.hostPattern != host.hostName {
                                     Text("(\(host.hostName))")
                                         .font(.system(size: 11, design: .monospaced))
-                                        .foregroundColor(.secondary)
+                                        .foregroundColor(ApexStyle.secondary)
                                 }
                             }
                             
                             HStack(spacing: 10) {
                                 Text("\(host.user.isEmpty ? "当前用户" : host.user):\(host.port)")
                                     .font(.system(size: 11, design: .monospaced))
-                                    .foregroundColor(.secondary)
+                                    .foregroundColor(ApexStyle.secondary)
                                 
                                 if let key = host.identityFile {
                                     HStack(spacing: 3) {
@@ -115,7 +116,7 @@ public struct SSHConfigImportSheet: View {
                                         Text((key as NSString).lastPathComponent)
                                             .font(.system(size: 10, design: .monospaced))
                                     }
-                                    .foregroundColor(.orange)
+                                    .foregroundColor(ApexStyle.warning)
                                 }
                             }
                         }
@@ -146,7 +147,7 @@ public struct SSHConfigImportSheet: View {
                     Text("导入选中的 \(selectedHostIds.count) 台主机")
                 }
                 .keyboardShortcut(.defaultAction)
-                .buttonStyle(.borderedProminent)
+                .apexProminentButton()
                 .tint(ApexStyle.accent)
                 .disabled(selectedHostIds.isEmpty)
             }

@@ -13,7 +13,7 @@ final class SFTPOperationsTests: XCTestCase {
         session = Session(
             id: UUID(),
             name: "Mock Server",
-            host: "10.0.1.10",
+            host: "192.0.2.10",
             port: 22,
             username: "root",
             authMethod: .password(keychainRef: "test-ref")

@@ -83,7 +83,7 @@ public enum L10n {
     public static let sessionNameLabel = "会话名称"
     public static let sessionNamePlaceholder = "例如：生产环境主控机 (k8s-master)"
     public static let hostLabel = "主机地址 / IP"
-    public static let hostPlaceholder = "例如：192.168.64.12 或 example.com"
+    public static let hostPlaceholder = "例如：192.0.2.12 或 example.com"
     public static let portLabel = "SSH 端口"
     public static let usernameLabel = "登录用户名"
     public static let authMethodSection = "身份认证方式"

@@ -16,7 +16,7 @@ final class ProductFeatureTests: XCTestCase {
         XCTAssertEqual(settings.fontSize, 13.0)
         XCTAssertEqual(settings.cursorShape, .bar)
         XCTAssertTrue(settings.isCursorBlinkEnabled)
-        XCTAssertEqual(settings.themePreset, .apexDark)
+        XCTAssertEqual(settings.themePreset, .nativeLight)
         XCTAssertTrue(settings.isCopyOnSelectEnabled)
         XCTAssertTrue(settings.isRightClickPasteEnabled)
         XCTAssertTrue(settings.showHiddenFiles)

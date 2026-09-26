@@ -4,6 +4,7 @@ import ApexCore
 
 /// Custom native macOS About dialog
 public struct AboutView: View {
+    @ObservedObject private var themeSettings = AppSettings.shared
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var updateManager = UpdateManager.shared
     
@@ -47,11 +48,11 @@ public struct AboutView: View {
                         
                         Text("\(L10n.buildNumber) \(updateManager.currentBuild) • Apple Silicon arm64")
                             .font(.system(size: 12))
-                            .foregroundColor(.secondary)
+                            .foregroundColor(ApexStyle.secondary)
                         
                         Text(L10n.appTagline)
                             .font(.system(size: 12))
-                            .foregroundColor(.secondary)
+                            .foregroundColor(ApexStyle.secondary)
                             .lineLimit(2)
                             .padding(.top, 2)
                     }
@@ -60,10 +61,10 @@ public struct AboutView: View {
                 
                 // Tech badges
                 HStack(spacing: 10) {
-                    techBadge(icon: "bolt.fill", title: "Apple Silicon", color: .orange)
+                    techBadge(icon: "bolt.fill", title: "Apple Silicon", color: ApexStyle.warning)
                     techBadge(icon: "display", title: "Metal 120Hz", color: .blue)
-                    techBadge(icon: "lock.shield.fill", title: "Native SSH / SFTP", color: .green)
-                    techBadge(icon: "swift", title: "Swift 6 Native", color: .red)
+                    techBadge(icon: "lock.shield.fill", title: "Native SSH / SFTP", color: ApexStyle.success)
+                    techBadge(icon: "swift", title: "Swift 6 Native", color: ApexStyle.error)
                 }
                 
                 Divider()
@@ -87,7 +88,7 @@ public struct AboutView: View {
                         }
                         .frame(minWidth: 110)
                     }
-                    .buttonStyle(.borderedProminent)
+                    .apexProminentButton()
                     .controlSize(.regular)
                     .disabled(updateManager.isChecking)
                     
@@ -118,14 +119,14 @@ public struct AboutView: View {
                     case .checking:
                         Text(L10n.checkingForUpdates)
                             .font(.caption)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(ApexStyle.secondary)
                     case .upToDate(let ver):
                         HStack(spacing: 4) {
                             Image(systemName: "checkmark.circle.fill")
-                            .foregroundColor(.green)
+                            .foregroundColor(ApexStyle.success)
                             Text(String(format: L10n.upToDateDesc, ver as CVarArg))
                                 .font(.caption)
-                                .foregroundColor(.secondary)
+                                .foregroundColor(ApexStyle.secondary)
                         }
                     case .updateAvailable(let rel):
                         HStack(spacing: 8) {
@@ -143,7 +144,7 @@ public struct AboutView: View {
                     case .failed(let err):
                         Text("检查失败: \(err)")
                             .font(.caption)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(ApexStyle.secondary)
                     case .idle:
                         EmptyView()
                     }
@@ -154,11 +155,11 @@ public struct AboutView: View {
                 VStack(spacing: 4) {
                     Text(L10n.copyright)
                         .font(.system(size: 11))
-                        .foregroundColor(.secondary)
+                        .foregroundColor(ApexStyle.secondary)
                     
                     Text("Designed with ❤️ for Mac developers & engineers")
                         .font(.system(size: 10))
-                        .foregroundColor(.secondary.opacity(0.8))
+                        .foregroundColor(ApexStyle.secondary.opacity(0.8))
                 }
                 .padding(.bottom, 6)
             }
@@ -171,7 +172,7 @@ public struct AboutView: View {
                 Image(systemName: "xmark.circle.fill")
                     .font(.system(size: 20))
                     .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(ApexStyle.secondary)
             }
             .buttonStyle(.plain)
             .padding(14)
@@ -199,7 +200,7 @@ public struct AboutView: View {
                 .foregroundColor(color)
             Text(title)
                 .font(.system(size: 10, weight: .medium))
-                .foregroundColor(.primary.opacity(0.85))
+                .foregroundColor(ApexStyle.primary.opacity(0.85))
         }
         .padding(.horizontal, 7)
         .padding(.vertical, 3)

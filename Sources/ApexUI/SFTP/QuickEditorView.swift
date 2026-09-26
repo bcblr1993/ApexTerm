@@ -4,6 +4,7 @@ import ApexSSH
 
 /// In-place code and configuration editor with live ⌘S streaming save, line numbers, search and status indicators
 public struct QuickEditorView: View {
+    @ObservedObject private var themeSettings = AppSettings.shared
     public let item: SFTPItem
     @Binding public var content: String
     public let onSave: (String) async throws -> Void
@@ -52,7 +53,7 @@ public struct QuickEditorView: View {
                         
                         if hasUnsavedChanges {
                             Circle()
-                                .fill(Color.orange)
+                                .fill(ApexStyle.warning)
                                 .frame(width: 7, height: 7)
                                 .help("包含未保存更改 (按 ⌘S 保存)")
                         }
@@ -60,7 +61,7 @@ public struct QuickEditorView: View {
                     
                     Text(item.path)
                         .font(.system(size: 11, design: .monospaced))
-                        .foregroundColor(.secondary)
+                        .foregroundColor(ApexStyle.secondary)
                         .lineLimit(1)
                 }
                 
@@ -76,7 +77,7 @@ public struct QuickEditorView: View {
                     
                     Text("\(lines.count) 行 · \(item.formattedSize)")
                         .font(.system(size: 11, design: .monospaced))
-                        .foregroundColor(.secondary)
+                        .foregroundColor(ApexStyle.secondary)
                 }
                 
                 Divider().frame(height: 18)
@@ -130,7 +131,7 @@ public struct QuickEditorView: View {
                         let matches = countMatches()
                         Text("\(matches) 处匹配")
                             .font(.system(size: 11))
-                            .foregroundColor(.secondary)
+                            .foregroundColor(ApexStyle.secondary)
                         
                         Button(action: { searchText = "" }) {
                             Label("清除查找", systemImage: "xmark.circle.fill")
@@ -155,7 +156,7 @@ public struct QuickEditorView: View {
                         ForEach(1...max(lines.count, 1), id: \.self) { lineNum in
                             Text("\(lineNum)")
                                 .font(.system(size: 12, design: .monospaced))
-                                .foregroundColor(Color.secondary.opacity(0.45))
+                                .foregroundColor(ApexStyle.secondary.opacity(0.45))
                                 .frame(height: 19)
                         }
                     }
@@ -175,7 +176,7 @@ public struct QuickEditorView: View {
                     .padding(.horizontal, 10)
                     .padding(.top, 8)
                     .scrollContentBackground(.hidden)
-                    .background(Color(nsColor: .textBackgroundColor))
+                    .background(ApexStyle.surface)
                     .onChange(of: content) { _, newVal in
                         hasUnsavedChanges = (newVal != initialContent)
                     }
@@ -189,7 +190,7 @@ public struct QuickEditorView: View {
                     Circle().fill(ApexStyle.success).frame(width: 6, height: 6)
                     Text("UTF-8 · 远程流式直连")
                         .font(.caption.monospaced())
-                        .foregroundColor(.secondary)
+                        .foregroundColor(ApexStyle.secondary)
                 }
                 
                 if let notice = saveNotice {
@@ -199,7 +200,7 @@ public struct QuickEditorView: View {
                         Text(notice)
                             .font(.system(size: 11, design: .monospaced))
                     }
-                    .foregroundColor(saveNoticeIsError ? .red : ApexStyle.success)
+                    .foregroundColor(saveNoticeIsError ? ApexStyle.error : ApexStyle.success)
                     .transition(.opacity)
                 }
                 
@@ -220,7 +221,7 @@ public struct QuickEditorView: View {
                     }
                 }
                 .keyboardShortcut("s", modifiers: .command)
-                .buttonStyle(.borderedProminent)
+                .apexProminentButton()
                 .tint(ApexStyle.accent)
                 .controlSize(.small)
                 .disabled(isSaving)

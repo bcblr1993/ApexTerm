@@ -5,6 +5,7 @@ import ApexSSH
 
 /// High-performance integrated SFTP file manager (electerm-style with OSC 7 sync and drag-and-drop upload/download)
 public struct SFTPView: View {
+    @ObservedObject private var themeSettings = AppSettings.shared
     @Binding public var currentPath: String
     @Binding public var isLinkageEnabled: Bool
     public let session: SSHSessionProtocol?
@@ -90,15 +91,15 @@ public struct SFTPView: View {
                     }) {
                         HStack(spacing: 5) {
                             Image(systemName: notice.contains("失败") ? "exclamationmark.triangle.fill" : (notice.contains("正在") ? "arrow.up.circle" : "checkmark.circle.fill"))
-                                .foregroundColor(notice.contains("失败") ? .red : (notice.contains("正在") ? ApexStyle.accent : ApexStyle.success))
+                                .foregroundColor(notice.contains("失败") ? ApexStyle.error : (notice.contains("正在") ? ApexStyle.accent : ApexStyle.success))
                                 .font(.system(size: 11))
                             Text(notice)
                                 .font(.system(size: 11, weight: .medium))
-                                .foregroundColor(notice.contains("失败") ? .red : (notice.contains("正在") ? ApexStyle.accent : ApexStyle.success))
+                                .foregroundColor(notice.contains("失败") ? ApexStyle.error : (notice.contains("正在") ? ApexStyle.accent : ApexStyle.success))
                             
                             Image(systemName: "chevron.right")
                                 .font(.system(size: 9))
-                                .foregroundColor(.secondary)
+                                .foregroundColor(ApexStyle.secondary)
 
                             if notice.contains("失败") {
                                 Button(action: { transferNotice = nil }) {
@@ -112,7 +113,7 @@ public struct SFTPView: View {
                         .padding(.horizontal, 8)
                         .padding(.vertical, 3)
                         .background(
-                            notice.contains("失败") ? Color.red.opacity(0.12) : (notice.contains("正在") ? ApexStyle.accent.opacity(0.12) : ApexStyle.success.opacity(0.12)),
+                            notice.contains("失败") ? ApexStyle.error.opacity(0.12) : (notice.contains("正在") ? ApexStyle.accent.opacity(0.12) : ApexStyle.success.opacity(0.12)),
                             in: RoundedRectangle(cornerRadius: 6)
                         )
                     }
@@ -203,7 +204,7 @@ public struct SFTPView: View {
                         Image(systemName: transferManager.activeCount > 0 ? "arrow.triangle.2.circlepath" : "arrow.up.arrow.down.circle")
                             .rotationEffect(.degrees(transferManager.activeCount > 0 ? 360 : 0))
                             .animation(transferManager.activeCount > 0 ? .linear(duration: 1.5).repeatForever(autoreverses: false) : .default, value: transferManager.activeCount)
-                            .foregroundColor(transferManager.activeCount > 0 ? ApexStyle.accent : .primary)
+                            .foregroundColor(transferManager.activeCount > 0 ? ApexStyle.accent : ApexStyle.primary)
                         
                         if transferManager.activeCount > 0 {
                             Text("传输中 (\(transferManager.activeCount))")
@@ -260,13 +261,13 @@ public struct SFTPView: View {
                     }
                 }
                 .buttonStyle(.plain)
-                .foregroundColor(sortField == .name ? ApexStyle.accent : .secondary)
+                .foregroundColor(sortField == .name ? ApexStyle.accent : ApexStyle.secondary)
 
                 Spacer()
 
                 Text("权限")
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(.secondary)
+                    .foregroundColor(ApexStyle.secondary)
                     .frame(width: 80, alignment: .trailing)
 
                 Button(action: { toggleSort(.size) }) {
@@ -282,7 +283,7 @@ public struct SFTPView: View {
                     .frame(width: 70, alignment: .trailing)
                 }
                 .buttonStyle(.plain)
-                .foregroundColor(sortField == .size ? ApexStyle.accent : .secondary)
+                .foregroundColor(sortField == .size ? ApexStyle.accent : ApexStyle.secondary)
 
                 Button(action: { toggleSort(.date) }) {
                     HStack(spacing: 4) {
@@ -297,7 +298,7 @@ public struct SFTPView: View {
                     .frame(width: 110, alignment: .trailing)
                 }
                 .buttonStyle(.plain)
-                .foregroundColor(sortField == .date ? ApexStyle.accent : .secondary)
+                .foregroundColor(sortField == .date ? ApexStyle.accent : ApexStyle.secondary)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 4)
@@ -342,19 +343,20 @@ public struct SFTPView: View {
 
                             Text(item.permissionString)
                                 .font(.system(size: 11, design: .monospaced))
-                                .foregroundColor(.secondary)
+                                .foregroundColor(ApexStyle.secondary)
                                 .frame(width: 80, alignment: .trailing)
 
                             Text(item.formattedSize)
                                 .font(.system(size: 11, design: .monospaced))
-                                .foregroundColor(.secondary)
+                                .foregroundColor(ApexStyle.secondary)
                                 .frame(width: 70, alignment: .trailing)
 
                             Text(formatDate(item.modificationDate))
                                 .font(.system(size: 11))
-                                .foregroundColor(.secondary)
+                                .foregroundColor(ApexStyle.secondary)
                                 .frame(width: 110, alignment: .trailing)
                         }
+                        .listRowBackground(selectedPath == item.path ? ApexStyle.selection : ApexStyle.surface)
                         .padding(.vertical, 3)
                         .padding(.horizontal, 6)
                         .contentShape(Rectangle())
@@ -920,11 +922,11 @@ public struct SFTPView: View {
         if item.isSymlink { return .cyan }
         let ext = (item.name as NSString).pathExtension.lowercased()
         switch ext {
-        case "sh": return .green
+        case "sh": return ApexStyle.success
         case "log": return .yellow
-        case "tar", "gz", "zip": return .orange
+        case "tar", "gz", "zip": return ApexStyle.warning
         case "conf", "yaml", "json": return .purple
-        default: return .secondary
+        default: return ApexStyle.secondary
         }
     }
 

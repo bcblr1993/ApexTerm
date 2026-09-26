@@ -59,7 +59,7 @@ final class FullPerformanceBenchmarkTests: XCTestCase {
         
         XCTAssertEqual(ringBuffer.committedLineCount, maxLines)
         XCTAssertEqual(ringBuffer.totalCommittedCount, Int64(lineCount))
-        XCTAssertGreaterThan(linesPerSec, 80_000, "Throughput should exceed 80,000 lines/sec")
+        PerformanceThreshold.assertGreaterThan(linesPerSec, 80_000, "Throughput should exceed 80,000 lines/sec")
     }
     
     /// 2. VTParser 24-bit TrueColor 与 256 颜色极速解析性能
@@ -92,7 +92,7 @@ final class FullPerformanceBenchmarkTests: XCTestCase {
         print("=======================================================\n")
         
         XCTAssertGreaterThan(spans.count, count)
-        XCTAssertGreaterThan(spansPerSec, 50_000, "ANSI parser should exceed 50,000 spans/sec")
+        PerformanceThreshold.assertGreaterThan(spansPerSec, 50_000, "ANSI parser should exceed 50,000 spans/sec")
     }
     
     /// 3. 内存驻留集 (RSS) 与防暴涨安全水位测试 (Memory Bounds)
@@ -167,7 +167,7 @@ final class FullPerformanceBenchmarkTests: XCTestCase {
         print("=======================================================\n")
         
         XCTAssertEqual(ringBuffer.totalCommittedCount, Int64(totalWrites))
-        XCTAssertGreaterThan(writesPerSec, 50_000, "Concurrent throughput under lock should exceed 50,000/s")
+        PerformanceThreshold.assertGreaterThan(writesPerSec, 50_000, "Concurrent throughput under lock should exceed 50,000/s")
     }
     
     /// 5. 无代理监控解析耗时极速压测 (Agentless Monitor Parsing Speed)
@@ -204,7 +204,7 @@ final class FullPerformanceBenchmarkTests: XCTestCase {
         print("  - 单次解析延迟:   \(String(format: "%.2f", microsecPerParse)) 微秒 (μs)")
         print("=======================================================\n")
         
-        XCTAssertLessThan(microsecPerParse, 150.0, "Average parse latency must be under 150 microseconds")
+        PerformanceThreshold.assertLessThan(microsecPerParse, 150.0, "Average parse latency must be under 150 microseconds")
     }
     
     /// 6. OpenSSH 配置文件解析吞吐测试
@@ -240,7 +240,7 @@ final class FullPerformanceBenchmarkTests: XCTestCase {
         print("  - 解析速率:       \(String(format: "%.0f", hostsPerSec)) hosts/秒")
         print("=======================================================\n")
         
-        XCTAssertGreaterThan(hostsPerSec, 20_000, "Should parse at least 20,000 hosts per second")
+        PerformanceThreshold.assertGreaterThan(hostsPerSec, 20_000, "Should parse at least 20,000 hosts per second")
     }
     
     /// 7. 传输任务中心 100 任务并发调度耗时测试

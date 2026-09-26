@@ -54,7 +54,7 @@ final class VTParserStressTests: XCTestCase {
         let elapsed = CFAbsoluteTimeGetCurrent() - start
         
         XCTAssertGreaterThan(spans.count, 1500)
-        XCTAssertLessThan(elapsed, 0.25, "1000 ANSI color transitions should parse in under 250ms (actual: \(elapsed)s)")
+        PerformanceThreshold.assertLessThan(elapsed, 0.25, "1000 ANSI color transitions should parse in under 250ms")
     }
     
     /// Test 4: Multibyte Chinese UTF-8 preservation in colored spans

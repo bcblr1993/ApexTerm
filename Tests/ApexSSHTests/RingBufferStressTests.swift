@@ -51,7 +51,7 @@ final class RingBufferStressTests: XCTestCase {
         XCTAssertEqual(tail[2], "Log message #99999: [INFO] Worker process heartbeat ok")
         
         // Performance assert: 100,000 lines processed in under 2.5 seconds
-        XCTAssertLessThan(elapsed, 2.5, "100K lines streaming should complete rapidly (actual: \(String(format: "%.3f", elapsed))s)")
+        PerformanceThreshold.assertLessThan(elapsed, 2.5, "100K lines streaming should complete rapidly")
     }
     
     /// Test 2: Wrap-around accuracy across multiple circular buffer cycles

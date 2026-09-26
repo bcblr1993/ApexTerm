@@ -57,7 +57,7 @@ public final class UpdateManager: ObservableObject {
     }
     
     /// Default releases URL (GitHub Releases API or static JSON manifest)
-    public var updateManifestURL: URL? = URL(string: "https://api.github.com/repos/apexterm/apexterm/releases/latest")
+    public var updateManifestURL: URL? = URL(string: "https://api.github.com/repos/bcblr1993/ApexTerm/releases/latest")
     
     public init() {}
     

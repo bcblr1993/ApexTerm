@@ -162,19 +162,19 @@ struct ApexTermApp: App {
                 Divider()
                 
                 Button(L10n.menuDocumentation) {
-                    if let url = URL(string: "https://github.com/apexterm/apexterm#readme") {
+                    if let url = URL(string: "https://github.com/bcblr1993/ApexTerm#readme") {
                         NSWorkspace.shared.open(url)
                     }
                 }
                 
                 Button(L10n.menuGitHubRepo) {
-                    if let url = URL(string: "https://github.com/apexterm/apexterm") {
+                    if let url = URL(string: "https://github.com/bcblr1993/ApexTerm") {
                         NSWorkspace.shared.open(url)
                     }
                 }
                 
                 Button(L10n.menuReportIssue) {
-                    if let url = URL(string: "https://github.com/apexterm/apexterm/issues/new") {
+                    if let url = URL(string: "https://github.com/bcblr1993/ApexTerm/issues/new") {
                         NSWorkspace.shared.open(url)
                     }
                 }

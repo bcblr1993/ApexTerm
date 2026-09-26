@@ -93,7 +93,7 @@ public struct AboutView: View {
                     .disabled(updateManager.isChecking)
                     
                     Button {
-                        if let url = URL(string: "https://github.com/apexterm/apexterm") {
+                        if let url = URL(string: "https://github.com/bcblr1993/ApexTerm") {
                             NSWorkspace.shared.open(url)
                         }
                     } label: {

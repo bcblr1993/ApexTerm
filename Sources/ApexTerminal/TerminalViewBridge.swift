@@ -5,19 +5,25 @@ import ApexCore
 /// High-performance native AppKit Terminal View wrapper for SwiftUI with 120Hz ProMotion support
 public struct TerminalRepresentable: NSViewRepresentable {
     public let ringBuffer: TerminalRingBuffer
-    public let onInput: (Data) -> Void
+    public var isFocused: Bool = false
+    public var onFocus: (() -> Void)? = nil
     public var isCopyOnSelectEnabled: Bool = true
     public var onResize: ((Int, Int) -> Void)? = nil
     public var onFileDrop: ((URL) -> Void)? = nil
+    public let onInput: (Data) -> Void
     
     public init(
         ringBuffer: TerminalRingBuffer,
+        isFocused: Bool = false,
+        onFocus: (() -> Void)? = nil,
         isCopyOnSelectEnabled: Bool = true,
         onResize: ((Int, Int) -> Void)? = nil,
         onFileDrop: ((URL) -> Void)? = nil,
         onInput: @escaping (Data) -> Void
     ) {
         self.ringBuffer = ringBuffer
+        self.isFocused = isFocused
+        self.onFocus = onFocus
         self.isCopyOnSelectEnabled = isCopyOnSelectEnabled
         self.onResize = onResize
         self.onFileDrop = onFileDrop
@@ -31,26 +37,56 @@ public struct TerminalRepresentable: NSViewRepresentable {
         scrollView.terminalView.isCopyOnSelectEnabled = isCopyOnSelectEnabled
         scrollView.terminalView.onResize = onResize
         scrollView.terminalView.onFileDrop = onFileDrop
+        scrollView.terminalView.onFocus = onFocus
         context.coordinator.scrollView = scrollView
-        
-        // Auto-focus the terminal view on load and sync initial PTY window size
-        DispatchQueue.main.async {
-            scrollView.window?.makeFirstResponder(scrollView.terminalView)
-            scrollView.terminalView.notifyDimensionsChangedIfNeeded()
-        }
         
         // 120Hz Coalesced real-time listener: batch stream updates to prevent UI overload
         ringBuffer.onUpdate = { [weak scrollView] in
             scrollView?.terminalView.scheduleRefresh()
         }
         
+        // Immediate full rehydration of any existing buffer content (fixes blank pane after split)
+        scrollView.terminalView.refresh()
+        
+        // Auto-focus if this pane is focused and sync initial PTY window size
+        DispatchQueue.main.async {
+            if isFocused {
+                scrollView.window?.makeFirstResponder(scrollView.terminalView)
+            }
+            scrollView.terminalView.notifyDimensionsChangedIfNeeded()
+            scrollView.terminalView.scrollToBottom(forceLayout: true)
+        }
+        
         return scrollView
     }
     
     public func updateNSView(_ nsView: NativeTerminalScrollView, context: Context) {
-        nsView.terminalView.isCopyOnSelectEnabled = isCopyOnSelectEnabled
-        nsView.terminalView.onResize = onResize
-        nsView.terminalView.onFileDrop = onFileDrop
+        let terminal = nsView.terminalView
+        if terminal.ringBuffer !== ringBuffer {
+            terminal.ringBuffer = ringBuffer
+        }
+        terminal.onInput = onInput
+        terminal.isCopyOnSelectEnabled = isCopyOnSelectEnabled
+        terminal.onResize = onResize
+        terminal.onFileDrop = onFileDrop
+        terminal.onFocus = onFocus
+        
+        ringBuffer.onUpdate = { [weak nsView] in
+            nsView?.terminalView.scheduleRefresh()
+        }
+        
+        // If textStorage is empty but ringBuffer already contains output, force immediate rehydration
+        if (terminal.textStorage?.length ?? 0) == 0 && (ringBuffer.totalCommittedCount > 0 || !ringBuffer.currentActiveLine.isEmpty) {
+            terminal.refresh()
+        }
+        
+        if isFocused {
+            if let window = nsView.window, window.firstResponder != terminal {
+                DispatchQueue.main.async {
+                    window.makeFirstResponder(terminal)
+                }
+            }
+        }
     }
     
     public func makeCoordinator() -> Coordinator {
@@ -116,6 +152,7 @@ public final class NativeTerminalScrollView: NSScrollView {
     
     override public func mouseDown(with event: NSEvent) {
         self.window?.makeFirstResponder(terminalView)
+        terminalView.onFocus?()
         super.mouseDown(with: event)
     }
     
@@ -144,11 +181,21 @@ public final class NativeTerminalScrollView: NSScrollView {
 /// Native Terminal View with full macOS Chinese IME (拼音/五笔) support and incremental 120Hz rendering
 @MainActor
 public final class NativeTerminalView: NSTextView {
-    public var ringBuffer: TerminalRingBuffer?
+    public var ringBuffer: TerminalRingBuffer? {
+        didSet {
+            if oldValue !== ringBuffer {
+                lastCommittedIndex = 0
+                activeLineStartLocation = 0
+                textStorage?.setAttributedString(NSAttributedString())
+                scheduleRefresh()
+            }
+        }
+    }
     public var onInput: ((Data) -> Void)?
     public var isCopyOnSelectEnabled: Bool = true
     public var onResize: ((Int, Int) -> Void)?
     public var onFileDrop: ((URL) -> Void)?
+    public var onFocus: (() -> Void)? = nil
     
     private var lastReportedDimensions: (cols: Int, rows: Int)? = nil
     private var resizeDebounceTask: Task<Void, Never>? = nil
@@ -404,6 +451,7 @@ public final class NativeTerminalView: NSTextView {
         if ok {
             isFocused = true
             startCursorBlink()
+            onFocus?()
         }
         return ok
     }
@@ -425,6 +473,7 @@ public final class NativeTerminalView: NSTextView {
             startCursorBlink()
             NotificationCenter.default.addObserver(self, selector: #selector(windowDidBecomeKey), name: NSWindow.didBecomeKeyNotification, object: win)
             NotificationCenter.default.addObserver(self, selector: #selector(windowDidResignKey), name: NSWindow.didResignKeyNotification, object: win)
+            scheduleRefresh()
         } else {
             stopCursorBlink()
         }
@@ -565,6 +614,7 @@ public final class NativeTerminalView: NSTextView {
     
     override public func mouseDown(with event: NSEvent) {
         self.window?.makeFirstResponder(self)
+        onFocus?()
         super.mouseDown(with: event)
     }
     
@@ -584,6 +634,7 @@ public final class NativeTerminalView: NSTextView {
     
     override public func rightMouseDown(with event: NSEvent) {
         self.window?.makeFirstResponder(self)
+        onFocus?()
         
         // If Shift is pressed or right-click paste is disabled in settings, allow standard context menu popup
         if event.modifierFlags.contains(.shift) || !AppSettings.shared.isRightClickPasteEnabled {

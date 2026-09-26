@@ -4,6 +4,25 @@
 
 ---
 
+## [v1.2.4] - 2026-09-26
+
+### 🐞 问题修复 (Bug Fixes)
+- **修复分屏后原终端黑屏无内容及切换后无法输入缺陷 (Split Pane Black Screen & Input Loss)**：
+  - **终端视图即刻重水化渲染机制 (Buffer Rehydration)**：修复在执行分屏（垂直分屏 `⌘D` 或水平分屏 `⌘⇧D`）及关闭分屏回退到单屏时，原处于就绪/空闲状态的会话因无新网络字节流到达而导致终端全黑的问题。在 `TerminalRepresentable.makeNSView` 挂载瞬间立即调度 `refresh()`，从底层 `RingBuffer` 瞬间同步恢复所有历史行、ANSI 配色与当前命令行 Prompt；
+  - **AppKit 与 SwiftUI 跨层双向焦点无缝联动 (Bidirectional Focus Coordination)**：
+    - 移除分屏外层容器冲突的 `.contentShape(Rectangle()).onTapGesture`，消除对 AppKit 鼠标点击事件的拦截遮蔽；
+    - 在终端获取第一响应者（`becomeFirstResponder`、`mouseDown`、`rightMouseDown`）时派发 `onFocus` 回调，实时对齐 SwiftUI 中的 `tab.activePaneId`；
+    - 当分屏激活状态变更（`isFocused == true`）时，`updateNSView` 自动通知窗口 `makeFirstResponder`，确保键盘事件精准路由至对应分屏；
+  - **分屏模式平滑横纵切换与标题智能规范**：
+    - 当已有 2 个分屏时，按下 `⌘D` 或 `⌘⇧D` 支持直接在横向与纵向分屏模式之间平滑切换；
+    - 关闭某一分屏后，剩余分屏名称自动规整复原为干净主机名，消除残留的“（分屏）”后缀。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- **全量测试与 Tart VM 验收门禁**：新增 `testSplitPaneRehydrationAndFocusManagement` 与 `testSplitPaneModeTogglingAndTitleReset` 单元测试，全量 95 项自动化测试 100% 通过（0 failures）；
+- **Swift 6 编译器规范**：严格并发模式下保持 0 警告（Zero Warnings）。
+
+---
+
 ## [v1.2.3] - 2026-09-26
 
 ### ✨ 新增特性 (Features)

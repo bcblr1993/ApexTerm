@@ -15,7 +15,7 @@ public final class TerminalPaneItem: Identifiable, ObservableObject {
     public let session: Session
     public let sshClient: SSHSessionProtocol
     public let ringBuffer = TerminalRingBuffer(maxLines: 50_000)
-    public let title: String
+    @Published public var title: String
     @Published public var connectionState: SSHConnectionState = .disconnected
     
     public init(session: Session, sshClient: SSHSessionProtocol, title: String) {
@@ -87,7 +87,10 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
     }
     
     public func split(mode: PaneSplitMode) {
-        guard panes.count < 2 else { return }
+        if panes.count >= 2 {
+            self.splitMode = mode
+            return
+        }
         let newClient: SSHSessionProtocol
         if session.host == "10.0.1.10" {
             newClient = MockSSHSession(session: session)
@@ -117,7 +120,10 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
         Task { await pane.sshClient.disconnect() }
         panes.remove(at: idx)
         splitMode = .single
-        activePaneId = panes.first?.id
+        if let remaining = panes.first {
+            remaining.title = session.name
+            activePaneId = remaining.id
+        }
     }
 }
 
@@ -442,17 +448,20 @@ private struct WorkspaceActiveTabSplitView: View {
                     if tab.splitMode == .single || tab.panes.count < 2 {
                         if let pane = tab.panes.first {
                             PaneContainerView(pane: pane, tab: tab, activeTabs: activeTabs, isBroadcastActive: isBroadcastActive)
+                                .id(pane.id)
                         }
                     } else if tab.splitMode == .vertical {
                         HStack(spacing: 4) {
                             ForEach(tab.panes) { pane in
                                 PaneContainerView(pane: pane, tab: tab, activeTabs: activeTabs, isBroadcastActive: isBroadcastActive)
+                                    .id(pane.id)
                             }
                         }
                     } else {
                         VStack(spacing: 4) {
                             ForEach(tab.panes) { pane in
                                 PaneContainerView(pane: pane, tab: tab, activeTabs: activeTabs, isBroadcastActive: isBroadcastActive)
+                                    .id(pane.id)
                             }
                         }
                     }
@@ -527,10 +536,20 @@ private struct PaneContainerView: View {
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
                 .background(isFocused ? ApexStyle.accent.opacity(0.12) : ApexStyle.subtleSurface)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    tab.activePaneId = pane.id
+                }
             }
             
             TerminalRepresentable(
                 ringBuffer: pane.ringBuffer,
+                isFocused: isFocused,
+                onFocus: {
+                    if tab.activePaneId != pane.id {
+                        tab.activePaneId = pane.id
+                    }
+                },
                 onResize: { cols, rows in
                     Task {
                         try? await pane.sshClient.resizeTerminal(columns: cols, rows: rows)
@@ -562,10 +581,6 @@ private struct PaneContainerView: View {
             RoundedRectangle(cornerRadius: 6)
                 .stroke(isFocused && tab.panes.count > 1 ? ApexStyle.accent.opacity(0.85) : Color.clear, lineWidth: 1.5)
         )
-        .contentShape(Rectangle())
-        .onTapGesture {
-            tab.activePaneId = pane.id
-        }
     }
 }
 

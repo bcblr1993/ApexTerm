@@ -155,11 +155,22 @@ public struct ShortcutsSheetView: View {
                 Button("关闭") {
                     dismiss()
                 }
+                .keyboardShortcut(.cancelAction)
                 .keyboardShortcut(.defaultAction)
                 .controlSize(.regular)
             }
             .padding()
             .background(ApexStyle.subtleSurface)
         }
+        .onExitCommand {
+            dismiss()
+        }
+        .background(
+            Button("") {
+                dismiss()
+            }
+            .keyboardShortcut("w", modifiers: .command)
+            .opacity(0)
+        )
     }
 }

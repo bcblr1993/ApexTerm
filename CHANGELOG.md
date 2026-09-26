@@ -4,6 +4,29 @@
 
 ---
 
+## [v1.2.1] - 2026-09-26
+
+### ✨ 新增特性 (Features)
+- **SFTP 远程文件与目录无缝拖拽至本地任意目录 (Drag & Drop to Finder)**：
+  - 突破传统 SFTP 仅支持右键菜单下载的限制，支持直接在远程文件列表中抓取任意文件或目录，自由拖拽至 macOS Finder 窗口、桌面或任意本地文件夹；
+  - 深度实现 AppKit / UniformTypeIdentifiers 标准契约，在 `NSItemProvider` 注册 `UTType.fileURL` (`public.file-url`)、文件特定 MIME/扩展类型以及通用二进制流，消除 Finder 拖拽拦截符号；
+  - 拖拽手势触发瞬间即在后台异步并发预下载（Pre-fetch），并在用户释放（Drop）时提供进度追踪与无缝落盘；
+  - SCP 传输引擎深度增强：全面支持递归传输 (`-r`) 与私钥路径参数 (`-i`)，支持多级嵌套子目录完整拖拽下载；
+  - 封装高复用性与强可测性的 `SFTPDragExportHelper` 组件，并补齐端到端单元测试。
+
+### 🐞 问题修复 (Bug Fixes)
+- **修复“关于”面板缺少关闭操作通道问题**：
+  - 在“关于”面板 (`AboutView`) 右上角引入原生标准圆形关闭按钮 (`xmark.circle.fill`)；
+  - 在操作链接栏新增显式“关闭”按钮；
+  - 深度绑定键盘响应机制：完整支持 `Esc` 键、`⌘W` 快捷键与 Enter/Space 键一键退出面板；
+  - 同步为快捷键速查面板 (`ShortcutsSheetView`) 补齐 `.onExitCommand` 与 `⌘W` 关闭支持。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- **全量测试与 Tart VM 验收门禁**：91 项自动化单元与功能测试 100% 通过（0 failures）；
+- **Swift 6 编译器规范**：严格并发模式下保持 0 警告（Zero Warnings）。
+
+---
+
 ## [v1.2.0] - 2026-09-25
 
 ### ✨ 新增特性 (Features)

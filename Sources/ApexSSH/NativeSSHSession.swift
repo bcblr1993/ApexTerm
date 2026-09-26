@@ -580,24 +580,26 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         await resolvePasswordIfNeeded()
         let process = Process()
         let sshpass = self.sshpassExecutablePath
+        
+        var baseArgs: [String] = [
+            "-r",
+            "-o", "StrictHostKeyChecking=accept-new"
+        ]
+        if case .privateKey(let keyPath, _) = session.authMethod, !keyPath.isEmpty {
+            baseArgs.append(contentsOf: ["-i", keyPath])
+        }
+        baseArgs.append(contentsOf: [
+            "-P", "\(session.port)",
+            "\(session.username)@\(session.host):\(remotePath)",
+            localURL.path
+        ])
+        
         if let pw = resolvedPassword, !pw.isEmpty, let passBin = sshpass {
             process.executableURL = URL(fileURLWithPath: passBin)
-            process.arguments = [
-                "-p", pw,
-                "/usr/bin/scp",
-                "-o", "StrictHostKeyChecking=accept-new",
-                "-P", "\(session.port)",
-                "\(session.username)@\(session.host):\(remotePath)",
-                localURL.path
-            ]
+            process.arguments = ["-p", pw, "/usr/bin/scp"] + baseArgs
         } else {
             process.executableURL = URL(fileURLWithPath: "/usr/bin/scp")
-            process.arguments = [
-                "-o", "StrictHostKeyChecking=accept-new",
-                "-P", "\(session.port)",
-                "\(session.username)@\(session.host):\(remotePath)",
-                localURL.path
-            ]
+            process.arguments = baseArgs
         }
         let outPipe = Pipe()
         let errPipe = Pipe()
@@ -617,24 +619,26 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         await resolvePasswordIfNeeded()
         let process = Process()
         let sshpass = self.sshpassExecutablePath
+        
+        var baseArgs: [String] = [
+            "-r",
+            "-o", "StrictHostKeyChecking=accept-new"
+        ]
+        if case .privateKey(let keyPath, _) = session.authMethod, !keyPath.isEmpty {
+            baseArgs.append(contentsOf: ["-i", keyPath])
+        }
+        baseArgs.append(contentsOf: [
+            "-P", "\(session.port)",
+            localURL.path,
+            "\(session.username)@\(session.host):\(remotePath)"
+        ])
+        
         if let pw = resolvedPassword, !pw.isEmpty, let passBin = sshpass {
             process.executableURL = URL(fileURLWithPath: passBin)
-            process.arguments = [
-                "-p", pw,
-                "/usr/bin/scp",
-                "-o", "StrictHostKeyChecking=accept-new",
-                "-P", "\(session.port)",
-                localURL.path,
-                "\(session.username)@\(session.host):\(remotePath)"
-            ]
+            process.arguments = ["-p", pw, "/usr/bin/scp"] + baseArgs
         } else {
             process.executableURL = URL(fileURLWithPath: "/usr/bin/scp")
-            process.arguments = [
-                "-o", "StrictHostKeyChecking=accept-new",
-                "-P", "\(session.port)",
-                localURL.path,
-                "\(session.username)@\(session.host):\(remotePath)"
-            ]
+            process.arguments = baseArgs
         }
         let outPipe = Pipe()
         let errPipe = Pipe()

@@ -495,26 +495,11 @@ public struct SFTPView: View {
         }
     }
 
-    /// Handle dragging a remote file item to download
+    /// Handle dragging a remote file item to download to Finder / Desktop / Any local directory
     private func handleDragDownload(for item: SFTPItem) -> NSItemProvider {
-        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("ApexTermTransfers")
-        try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        let localURL = tempDir.appendingPathComponent(item.name)
-
-        let provider = NSItemProvider()
-        provider.suggestedName = item.name
-        provider.registerFileRepresentation(forTypeIdentifier: UTType.item.identifier, fileOptions: [], visibility: .all) { completion in
-            Task {
-                do {
-                    try await session?.downloadFile(remotePath: item.path, localURL: localURL, progress: { _ in })
-                    completion(localURL, true, nil)
-                } catch {
-                    completion(nil, false, error)
-                }
-            }
-            return nil
+        SFTPDragExportHelper.makeItemProvider(for: item, session: session) { [self] notice in
+            self.transferNotice = notice
         }
-        return provider
     }
 
     private func fileIcon(for item: SFTPItem) -> String {
@@ -551,3 +536,93 @@ public struct SFTPView: View {
         return formatter.string(from: date)
     }
 }
+
+// MARK: - SFTP Drag & Drop Export Helper
+public enum SFTPDragExportHelper {
+    public static func makeItemProvider(
+        for item: SFTPItem,
+        session: (any SSHSessionProtocol)?,
+        onStatusChange: (@Sendable @MainActor (String) -> Void)? = nil
+    ) -> NSItemProvider {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("ApexTermTransfers", isDirectory: true)
+        try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        let localURL = tempDir.appendingPathComponent(item.name)
+
+        let provider = NSItemProvider()
+        provider.suggestedName = item.name
+
+        // Determine specific UTType based on file extension
+        let ext = (item.name as NSString).pathExtension
+        let specificType: UTType = item.isDirectory ? .folder : (UTType(filenameExtension: ext) ?? .data)
+
+        // Show immediate visual feedback
+        if let onStatusChange {
+            Task { @MainActor in
+                onStatusChange("正在下载并导出: \(item.name)...")
+            }
+        }
+
+        // Asynchronously start pre-fetching download as soon as user begins dragging
+        let downloadTask = Task.detached(priority: .userInitiated) { [session] () -> Bool in
+            guard let session = session else { return false }
+            do {
+                try await session.downloadFile(remotePath: item.path, localURL: localURL, progress: { _ in })
+                return true
+            } catch {
+                return false
+            }
+        }
+
+        let loadHandler: @Sendable (@escaping @Sendable (URL?, Bool, (any Error)?) -> Void) -> Progress? = { completion in
+            let progress = Progress(totalUnitCount: Int64(max(item.size, 1)))
+            Task {
+                let success = await downloadTask.value
+                if !success || !FileManager.default.fileExists(atPath: localURL.path) {
+                    do {
+                        if let session = session {
+                            try await session.downloadFile(remotePath: item.path, localURL: localURL, progress: { p in
+                                progress.completedUnitCount = Int64(Double(item.size) * p)
+                            })
+                        } else {
+                            throw NSError(domain: "SFTPDragExport", code: 404, userInfo: [NSLocalizedDescriptionKey: "No active SSH session"])
+                        }
+                    } catch {
+                        if let onStatusChange {
+                            Task { @MainActor in
+                                onStatusChange("拖拽下载失败: \(error.localizedDescription)")
+                            }
+                        }
+                        completion(nil, false, error)
+                        return
+                    }
+                }
+                
+                progress.completedUnitCount = Int64(max(item.size, 1))
+                if let onStatusChange {
+                    Task { @MainActor in
+                        onStatusChange("拖拽导出完成: \(item.name)")
+                    }
+                }
+                // Coordinated: false allows standard filesystem destination copying by Finder/Desktop
+                completion(localURL, false, nil)
+            }
+            return progress
+        }
+
+        // 1. Finder & Desktop require public.file-url
+        provider.registerFileRepresentation(forTypeIdentifier: UTType.fileURL.identifier, fileOptions: [], visibility: .all, loadHandler: loadHandler)
+
+        // 2. Specific file content type (e.g. public.plain-text, public.image, public.folder)
+        if specificType != .fileURL {
+            provider.registerFileRepresentation(forTypeIdentifier: specificType.identifier, fileOptions: [], visibility: .all, loadHandler: loadHandler)
+        }
+
+        // 3. Generic data fallback
+        if specificType != .data {
+            provider.registerFileRepresentation(forTypeIdentifier: UTType.data.identifier, fileOptions: [], visibility: .all, loadHandler: loadHandler)
+        }
+
+        return provider
+    }
+}
+

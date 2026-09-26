@@ -24,17 +24,18 @@ final class ProductFeatureTests: XCTestCase {
         XCTAssertTrue(settings.checkForUpdatesOnLaunch)
         
         // Mutate properties
-        var notificationReceived = false
+        final class FlagBox: @unchecked Sendable { var value = false }
+        let flag = FlagBox()
         let token = NotificationCenter.default.addObserver(
             forName: AppSettings.didChangeNotification,
             object: nil,
             queue: .main
         ) { _ in
-            notificationReceived = true
+            flag.value = true
         }
         
         settings.fontSize = 16.0
-        XCTAssertTrue(notificationReceived)
+        XCTAssertTrue(flag.value)
         XCTAssertEqual(settings.fontSize, 16.0)
         
         settings.cursorShape = .block

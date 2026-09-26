@@ -1,4 +1,5 @@
 import XCTest
+import UniformTypeIdentifiers
 @testable import ApexCore
 @testable import ApexSSH
 @testable import ApexTerminal
@@ -305,5 +306,28 @@ final class ComprehensiveFeatureTests: XCTestCase {
         XCTAssertEqual(settings.maxConcurrentTransfers, 5)
         
         settings.resetToDefaults()
+    }
+
+    // MARK: - 10. SFTP Drag-and-Drop Item Provider Export Tests
+    
+    func testSFTPDragItemProviderExport() async {
+        let fileItem = SFTPItem(
+            name: "test_report.pdf",
+            path: "/var/log/test_report.pdf",
+            isDirectory: false,
+            isSymlink: false,
+            size: 2048,
+            permissions: 0o644,
+            modificationDate: Date()
+        )
+        
+        let session = MockSSHSession(session: Session(name: "Test", host: "localhost", username: "test"))
+        
+        let provider = SFTPDragExportHelper.makeItemProvider(for: fileItem, session: session)
+        
+        XCTAssertEqual(provider.suggestedName, "test_report.pdf")
+        XCTAssertTrue(provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier))
+        XCTAssertTrue(provider.hasItemConformingToTypeIdentifier(UTType.pdf.identifier))
+        XCTAssertTrue(provider.hasItemConformingToTypeIdentifier(UTType.data.identifier))
     }
 }

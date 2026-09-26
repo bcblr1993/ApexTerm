@@ -51,6 +51,10 @@ public enum L10n {
     public static let downloadStream = "下行"
     public static let uploadStream = "上行"
     public static let rootStorage = "系统盘空间"
+    public static let diskTypeLabel = "磁盘类型"
+    public static let ssdBadge = "SSD 固态"
+    public static let nvmeBadge = "NVMe 固态"
+    public static let hddBadge = "HDD 机械"
     
     // SFTP 文件管理
     public static let remotePath = "远程路径"

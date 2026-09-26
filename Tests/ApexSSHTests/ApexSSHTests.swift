@@ -195,4 +195,97 @@ final class ApexSSHTests: XCTestCase {
         XCTAssertEqual(ringBuffer.committedLineCount, 0)
         XCTAssertEqual(ringBuffer.currentActiveLine, "ubuntu@server:~$ ")
     }
+    
+    func testDiskAndHardwareTypeDetectionLinuxNVMe() {
+        let sampleLinux = """
+        cpu  1000 200 800 8000 100 50 20 0 0 0
+        cpu0 500 100 400 4000 50 25 10 0 0 0
+        MemTotal:       16384000 kB
+        MemFree:         4096000 kB
+        ---DF---
+        /dev/nvme0n1p2 104857600 26214400 78643200 25% /
+        ---UPTIME---
+        123456.78 987654.32
+        ---LOAD---
+        0.45 0.78 1.12
+        ---TOP---
+        1234 root 2.5 1.0 nginx
+        ---CPUMODEL---
+        Intel(R) Xeon(R) Gold 6248R CPU @ 3.00GHz
+        ---DISKTYPE---
+        NVMe SSD
+        """
+        let monitor = AgentlessMonitor()
+        var prevCpu: AgentlessMonitor.CpuTickState? = AgentlessMonitor.CpuTickState(idle: 7000, total: 8000)
+        var prevNet: AgentlessMonitor.NetTickState? = nil
+        let snapshot = monitor.parseLinuxOutput(sampleLinux, prevCpu: &prevCpu, prevNet: &prevNet)
+        
+        XCTAssertEqual(snapshot.cpuModel, "Intel(R) Xeon(R) Gold 6248R CPU @ 3.00GHz")
+        XCTAssertEqual(snapshot.diskDevice, "/dev/nvme0n1p2")
+        XCTAssertEqual(snapshot.diskMountPoint, "/")
+        XCTAssertEqual(snapshot.diskType, "NVMe SSD")
+        XCTAssertTrue(snapshot.isSSD)
+        XCTAssertEqual(snapshot.diskBadgeText, "NVMe 固态")
+        XCTAssertEqual(snapshot.disks.count, 1)
+        XCTAssertEqual(snapshot.disks[0].badgeText, "NVMe 固态")
+        XCTAssertEqual(snapshot.disks[0].filesystem, "/dev/nvme0n1p2")
+        XCTAssertEqual(snapshot.diskFreeBytes, 78643200 * 1024)
+    }
+
+    func testDiskAndHardwareTypeDetectionLinuxHDD() {
+        let sampleLinux = """
+        cpu  1000 200 800 8000 100 50 20 0 0 0
+        MemTotal:       32768000 kB
+        MemFree:        16384000 kB
+        ---DF---
+        /dev/sdb1 500000000 200000000 300000000 40% /data
+        ---UPTIME---
+        50000.00
+        ---LOAD---
+        1.0 1.0 1.0
+        ---CPUMODEL---
+        AMD EPYC 7742 64-Core Processor
+        ---DISKTYPE---
+        HDD
+        """
+        let monitor = AgentlessMonitor()
+        var prevCpu: AgentlessMonitor.CpuTickState? = nil
+        var prevNet: AgentlessMonitor.NetTickState? = nil
+        let snapshot = monitor.parseLinuxOutput(sampleLinux, prevCpu: &prevCpu, prevNet: &prevNet)
+        
+        XCTAssertEqual(snapshot.cpuModel, "AMD EPYC 7742 64-Core Processor")
+        XCTAssertEqual(snapshot.diskDevice, "/dev/sdb1")
+        XCTAssertEqual(snapshot.diskMountPoint, "/data")
+        XCTAssertEqual(snapshot.diskType, "HDD")
+        XCTAssertFalse(snapshot.isSSD)
+        XCTAssertEqual(snapshot.diskBadgeText, "HDD 机械")
+        XCTAssertEqual(snapshot.disks.first?.badgeText, "HDD 机械")
+    }
+
+    func testDiskAndHardwareTypeDetectionMacOS() {
+        let sampleMacOS = """
+        CPU usage: 5.0% user, 5.0% sys, 90.0% idle
+        PhysMem: 16G used, 16G unused.
+        ---CORES---
+        12
+        ---DF---
+        /dev/disk3s1s1 480000000 120000000 360000000 25% /
+        ---UPTIME---
+        12:00 up 2 days, 1 user, load averages: 1.0 1.0 1.0
+        ---CPUMODEL---
+        Apple M3 Max
+        ---DISKTYPE---
+        NVMe SSD
+        """
+        let monitor = AgentlessMonitor()
+        var prevCpu: AgentlessMonitor.CpuTickState? = nil
+        var prevNet: AgentlessMonitor.NetTickState? = nil
+        let snapshot = monitor.parseOutput(sampleMacOS, prevCpu: &prevCpu, prevNet: &prevNet)
+        
+        XCTAssertEqual(snapshot.cpuModel, "Apple M3 Max")
+        XCTAssertEqual(snapshot.diskDevice, "/dev/disk3s1s1")
+        XCTAssertEqual(snapshot.diskType, "NVMe SSD")
+        XCTAssertTrue(snapshot.isSSD)
+        XCTAssertEqual(snapshot.diskBadgeText, "NVMe 固态")
+    }
 }

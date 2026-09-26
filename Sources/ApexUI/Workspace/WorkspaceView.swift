@@ -794,6 +794,36 @@ private struct WorkspaceBottomStatusBar: View {
                 }
             }
             
+            if let metric = tab.metricsHistory.latest {
+                Divider().frame(height: 12)
+                HStack(spacing: 8) {
+                    HStack(spacing: 3) {
+                        Image(systemName: "cpu")
+                            .font(.system(size: 10))
+                        Text(String(format: "%.0f%%", metric.cpuUsagePercent))
+                    }
+                    HStack(spacing: 3) {
+                        Image(systemName: "memorychip")
+                            .font(.system(size: 10))
+                        Text(String(format: "%.0f%%", metric.memoryUsagePercent))
+                    }
+                    HStack(spacing: 3) {
+                        Image(systemName: "internaldrive")
+                            .font(.system(size: 10))
+                        Text(String(format: "%.0f%%", metric.diskUsagePercent))
+                        Text(metric.diskBadgeText)
+                            .font(.system(size: 8, weight: .bold))
+                            .padding(.horizontal, 3)
+                            .padding(.vertical, 0.5)
+                            .background(metric.isSSD ? Color.teal.opacity(0.2) : Color.orange.opacity(0.2))
+                            .foregroundColor(metric.isSSD ? .teal : .orange)
+                            .cornerRadius(3)
+                    }
+                }
+                .font(.caption2.monospaced())
+                .foregroundColor(.secondary)
+            }
+            
             Spacer()
             
             Text("\(L10n.currentDirectory): \(tab.currentRemotePath)")

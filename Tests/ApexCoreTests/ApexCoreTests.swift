@@ -99,4 +99,49 @@ final class ApexCoreTests: XCTestCase {
         XCTAssertFalse(L10n.passwordLabel.isEmpty)
         XCTAssertEqual(L10n.passwordLabel, "登录密码")
     }
+    
+    func testDiskPartitionAndHardwareMetrics() {
+        let part1 = DiskPartitionItem(
+            filesystem: "/dev/nvme0n1p2",
+            mountPoint: "/",
+            totalBytes: 500_000_000_000,
+            usedBytes: 150_000_000_000,
+            isSSD: true,
+            diskType: "NVMe SSD"
+        )
+        XCTAssertEqual(part1.usagePercent, 30.0)
+        XCTAssertEqual(part1.freeBytes, 350_000_000_000)
+        XCTAssertEqual(part1.badgeText, "NVMe 固态")
+        
+        let part2 = DiskPartitionItem(
+            filesystem: "/dev/sdb1",
+            mountPoint: "/data",
+            totalBytes: 2_000_000_000_000,
+            usedBytes: 1_000_000_000_000,
+            isSSD: false,
+            diskType: "HDD"
+        )
+        XCTAssertEqual(part2.usagePercent, 50.0)
+        XCTAssertEqual(part2.freeBytes, 1_000_000_000_000)
+        XCTAssertEqual(part2.badgeText, "HDD 机械")
+        
+        let snapshot = ServerMetricsSnapshot(
+            cpuUsagePercent: 12.5,
+            cpuCores: 16,
+            cpuModel: "Intel(R) Xeon(R) Platinum",
+            diskTotalBytes: 500_000_000_000,
+            diskUsedBytes: 150_000_000_000,
+            diskDevice: "/dev/nvme0n1p2",
+            diskMountPoint: "/",
+            diskType: "NVMe SSD",
+            isSSD: true,
+            disks: [part1, part2]
+        )
+        
+        XCTAssertEqual(snapshot.cpuModel, "Intel(R) Xeon(R) Platinum")
+        XCTAssertEqual(snapshot.diskFreeBytes, 350_000_000_000)
+        XCTAssertEqual(snapshot.diskBadgeText, "NVMe 固态")
+        XCTAssertTrue(snapshot.isSSD)
+        XCTAssertEqual(snapshot.disks.count, 2)
+    }
 }

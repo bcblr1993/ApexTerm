@@ -7,12 +7,12 @@ public final class AgentlessMonitor: Sendable {
     
     /// Script payload sent to remote Linux host over lightweight SSH channel
     public static let linuxProbeCommand = """
-    cat /proc/stat /proc/meminfo /proc/net/dev 2>/dev/null; echo "---DF---"; df -k / 2>/dev/null | tail -1; echo "---UPTIME---"; cat /proc/uptime 2>/dev/null; echo "---LOAD---"; cat /proc/loadavg 2>/dev/null; echo "---TOP---"; ps -eo pid,user,%cpu,%mem,comm --sort=-%cpu 2>/dev/null | head -6
+    cat /proc/stat /proc/meminfo /proc/net/dev 2>/dev/null; echo "---DF---"; df -k / 2>/dev/null | tail -1; echo "---UPTIME---"; cat /proc/uptime 2>/dev/null; echo "---LOAD---"; cat /proc/loadavg 2>/dev/null; echo "---TOP---"; ps -eo pid,user,%cpu,%mem,comm --sort=-%cpu 2>/dev/null | head -6; echo "---CPUMODEL---"; (grep -m1 "model name" /proc/cpuinfo 2>/dev/null || grep -m1 "Hardware" /proc/cpuinfo 2>/dev/null || uname -m) | cut -d: -f2 | sed 's/^[ \t]*//'; echo "---DISKTYPE---"; ROOT_DEV=$(df / 2>/dev/null | tail -1 | awk '{print $1}' | sed 's|/dev/||'); PARENT_DEV=$(echo "$ROOT_DEV" | sed -E 's/p?[0-9]+$//'); if [ -f "/sys/block/$PARENT_DEV/queue/rotational" ]; then if [ "$(cat /sys/block/$PARENT_DEV/queue/rotational 2>/dev/null)" = "0" ]; then if echo "$ROOT_DEV" | grep -q "nvme"; then echo "NVMe SSD"; else echo "SSD"; fi; else echo "HDD"; fi; elif echo "$ROOT_DEV" | grep -q "nvme"; then echo "NVMe SSD"; elif lsblk -d -n -o rota "/dev/$PARENT_DEV" 2>/dev/null | grep -q "0"; then echo "SSD"; elif lsblk -d -n -o rota "/dev/$PARENT_DEV" 2>/dev/null | grep -q "1"; then echo "HDD"; else echo "SSD"; fi
     """
     
     /// Script payload sent to remote macOS host
     public static let macosProbeCommand = """
-    top -l 1 -n 0 -s 0 | grep -E "CPU usage|PhysMem"; echo "---CORES---"; sysctl -n hw.ncpu 2>/dev/null || echo "8"; echo "---DF---"; df -k / | tail -1; echo "---UPTIME---"; uptime; echo "---NET---"; netstat -ib -n -I en0 2>/dev/null | grep -E "en0" | head -1; echo "---TOP---"; ps -eo pid,user,%cpu,%mem,comm -r 2>/dev/null | head -6
+    top -l 1 -n 0 -s 0 | grep -E "CPU usage|PhysMem"; echo "---CORES---"; sysctl -n hw.ncpu 2>/dev/null || echo "8"; echo "---DF---"; df -k / | tail -1; echo "---UPTIME---"; uptime; echo "---NET---"; netstat -ib -n -I en0 2>/dev/null | grep -E "en0" | head -1; echo "---TOP---"; ps -eo pid,user,%cpu,%mem,comm -r 2>/dev/null | head -6; echo "---CPUMODEL---"; sysctl -n machdep.cpu.brand_string 2>/dev/null || sysctl -n hw.model; echo "---DISKTYPE---"; if diskutil info / 2>/dev/null | grep -q "Solid State: *Yes"; then if diskutil info / 2>/dev/null | grep -E -q "Apple Fabric|PCI-Express|NVMe"; then echo "NVMe SSD"; else echo "SSD"; fi; else echo "HDD"; fi
     """
     
     /// Auto-detecting multi-OS probe command
@@ -66,12 +66,17 @@ public final class AgentlessMonitor: Sendable {
     ) -> ServerMetricsSnapshot {
         var cpuPercent = 0.0
         var cpuCores = 8
+        var cpuModel = ""
         var memTotal: UInt64 = 0
         var memUsed: UInt64 = 0
         var netRxTotal: UInt64 = 0
         var netTxTotal: UInt64 = 0
         var diskTotal: UInt64 = 0
         var diskUsed: UInt64 = 0
+        var diskDevice = ""
+        var diskMountPoint = "/"
+        var diskType = ""
+        var isSSD = true
         var load1 = 0.0
         var load5 = 0.0
         var load15 = 0.0
@@ -87,6 +92,21 @@ public final class AgentlessMonitor: Sendable {
             
             if trimmed.hasPrefix("---") && trimmed.hasSuffix("---") {
                 currentSection = trimmed
+                continue
+            }
+            
+            if currentSection == "---CPUMODEL---" {
+                if cpuModel.isEmpty && !trimmed.isEmpty {
+                    cpuModel = trimmed
+                }
+                continue
+            }
+            
+            if currentSection == "---DISKTYPE---" {
+                if diskType.isEmpty && !trimmed.isEmpty {
+                    diskType = trimmed
+                    isSSD = !trimmed.contains("HDD")
+                }
                 continue
             }
             
@@ -113,6 +133,10 @@ public final class AgentlessMonitor: Sendable {
             } else if currentSection == "---DF---" {
                 let parts = trimmed.split(whereSeparator: { $0.isWhitespace })
                 if parts.count >= 4 {
+                    diskDevice = String(parts[0])
+                    if parts.count >= 6 {
+                        diskMountPoint = String(parts[5])
+                    }
                     if let total1K = UInt64(parts[1]), let used1K = UInt64(parts[2]) {
                         diskTotal = total1K * 1024
                         diskUsed = used1K * 1024
@@ -165,10 +189,28 @@ public final class AgentlessMonitor: Sendable {
         }
         prevNet = NetTickState(rx: netRxTotal, tx: netTxTotal, timestamp: now)
         
+        if cpuModel.isEmpty {
+            cpuModel = "Apple Silicon"
+        }
+        if diskType.isEmpty {
+            diskType = "NVMe SSD"
+            isSSD = true
+        }
+        
+        let rootPartition = DiskPartitionItem(
+            filesystem: diskDevice.isEmpty ? "/dev/disk3s1s1" : diskDevice,
+            mountPoint: diskMountPoint,
+            totalBytes: diskTotal,
+            usedBytes: diskUsed,
+            isSSD: isSSD,
+            diskType: diskType
+        )
+        
         return ServerMetricsSnapshot(
             timestamp: now,
             cpuUsagePercent: cpuPercent,
             cpuCores: cpuCores,
+            cpuModel: cpuModel,
             memoryTotalBytes: memTotal,
             memoryUsedBytes: memUsed,
             memoryCachedBytes: 0,
@@ -176,6 +218,11 @@ public final class AgentlessMonitor: Sendable {
             networkTxBytesPerSec: txRate,
             diskTotalBytes: diskTotal,
             diskUsedBytes: diskUsed,
+            diskDevice: diskDevice,
+            diskMountPoint: diskMountPoint,
+            diskType: diskType,
+            isSSD: isSSD,
+            disks: [rootPartition],
             loadAvg1m: load1,
             loadAvg5m: load5,
             loadAvg15m: load15,
@@ -235,6 +282,7 @@ public final class AgentlessMonitor: Sendable {
     ) -> ServerMetricsSnapshot {
         var cpuPercent = 0.0
         var cpuCores = 0
+        var cpuModel = ""
         var memTotal: UInt64 = 0
         var memAvailable: UInt64 = 0
         var memFree: UInt64 = 0
@@ -244,6 +292,10 @@ public final class AgentlessMonitor: Sendable {
         var netTxTotal: UInt64 = 0
         var diskTotal: UInt64 = 0
         var diskUsed: UInt64 = 0
+        var diskDevice = ""
+        var diskMountPoint = "/"
+        var diskType = ""
+        var isSSD = true
         var load1 = 0.0
         var load5 = 0.0
         var load15 = 0.0
@@ -259,6 +311,21 @@ public final class AgentlessMonitor: Sendable {
             
             if trimmed.hasPrefix("---") && trimmed.hasSuffix("---") {
                 currentSection = trimmed
+                continue
+            }
+            
+            if currentSection == "---CPUMODEL---" {
+                if cpuModel.isEmpty && !trimmed.isEmpty {
+                    cpuModel = trimmed
+                }
+                continue
+            }
+            
+            if currentSection == "---DISKTYPE---" {
+                if diskType.isEmpty && !trimmed.isEmpty {
+                    diskType = trimmed
+                    isSSD = !trimmed.contains("HDD")
+                }
                 continue
             }
             
@@ -281,6 +348,10 @@ public final class AgentlessMonitor: Sendable {
                 let parts = trimmed.split(whereSeparator: { $0.isWhitespace })
                 if parts.count >= 4 {
                     // Filesystem 1K-blocks Used Available Use% Mounted on
+                    diskDevice = String(parts[0])
+                    if parts.count >= 6 {
+                        diskMountPoint = String(parts[5])
+                    }
                     if let total1K = UInt64(parts[1]), let used1K = UInt64(parts[2]) {
                         diskTotal = total1K * 1024
                         diskUsed = used1K * 1024
@@ -377,10 +448,32 @@ public final class AgentlessMonitor: Sendable {
         }
         prevNet = NetTickState(rx: netRxTotal, tx: netTxTotal, timestamp: now)
         
+        if cpuModel.isEmpty {
+            cpuModel = "Linux Server"
+        }
+        if diskType.isEmpty {
+            if diskDevice.contains("nvme") {
+                diskType = "NVMe SSD"
+                isSSD = true
+            } else {
+                diskType = "SSD"
+                isSSD = true
+            }
+        }
+        let rootPartition = DiskPartitionItem(
+            filesystem: diskDevice.isEmpty ? "/dev/sda1" : diskDevice,
+            mountPoint: diskMountPoint,
+            totalBytes: diskTotal,
+            usedBytes: diskUsed,
+            isSSD: isSSD,
+            diskType: diskType
+        )
+        
         return ServerMetricsSnapshot(
             timestamp: now,
             cpuUsagePercent: min(max(cpuPercent, 0.0), 100.0),
             cpuCores: max(cpuCores, 1),
+            cpuModel: cpuModel,
             memoryTotalBytes: memTotal,
             memoryUsedBytes: memUsed,
             memoryCachedBytes: memCached,
@@ -388,6 +481,11 @@ public final class AgentlessMonitor: Sendable {
             networkTxBytesPerSec: txRate,
             diskTotalBytes: diskTotal,
             diskUsedBytes: diskUsed,
+            diskDevice: diskDevice,
+            diskMountPoint: diskMountPoint,
+            diskType: diskType,
+            isSSD: isSSD,
+            disks: [rootPartition],
             loadAvg1m: load1,
             loadAvg5m: load5,
             loadAvg15m: load15,

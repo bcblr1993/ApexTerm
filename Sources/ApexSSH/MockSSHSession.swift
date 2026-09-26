@@ -199,10 +199,20 @@ public final class MockSSHSession: SSHSessionProtocol, @unchecked Sendable {
                 let newMem = Int64(self.mockMemUsed) + deltaMem
                 self.mockMemUsed = UInt64(max(min(newMem, Int64(self.mockMemTotal - 500_000_000)), 2 * 1024 * 1024 * 1024))
                 
+                let rootPart = DiskPartitionItem(
+                    filesystem: "/dev/nvme0n1p2",
+                    mountPoint: "/",
+                    totalBytes: 100 * 1024 * 1024 * 1024,
+                    usedBytes: 26 * 1024 * 1024 * 1024,
+                    isSSD: true,
+                    diskType: "NVMe SSD"
+                )
+                
                 let snapshot = ServerMetricsSnapshot(
                     timestamp: Date(),
                     cpuUsagePercent: self.mockCpu,
                     cpuCores: 8,
+                    cpuModel: "Apple M3 Pro / ARM64",
                     memoryTotalBytes: self.mockMemTotal,
                     memoryUsedBytes: self.mockMemUsed,
                     memoryCachedBytes: 2 * 1024 * 1024 * 1024,
@@ -210,6 +220,11 @@ public final class MockSSHSession: SSHSessionProtocol, @unchecked Sendable {
                     networkTxBytesPerSec: txRate,
                     diskTotalBytes: 100 * 1024 * 1024 * 1024,
                     diskUsedBytes: 26 * 1024 * 1024 * 1024,
+                    diskDevice: "/dev/nvme0n1p2",
+                    diskMountPoint: "/",
+                    diskType: "NVMe SSD",
+                    isSSD: true,
+                    disks: [rootPart],
                     loadAvg1m: Double.random(in: 0.4...1.8),
                     loadAvg5m: 1.1,
                     loadAvg15m: 0.9,

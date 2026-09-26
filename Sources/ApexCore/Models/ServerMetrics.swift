@@ -8,6 +8,7 @@ public struct ServerMetricsSnapshot: Sendable, Codable, Equatable, Identifiable 
     // CPU
     public var cpuUsagePercent: Double // 0.0 - 100.0
     public var cpuCores: Int
+    public var cpuModel: String // e.g. "Apple M1 Max", "Intel Xeon E5-2680", etc.
     
     // Memory
     public var memoryTotalBytes: UInt64
@@ -23,13 +24,32 @@ public struct ServerMetricsSnapshot: Sendable, Codable, Equatable, Identifiable 
     public var networkRxBytesPerSec: Double
     public var networkTxBytesPerSec: Double
     
-    // Disk root partition
+    // Disk root partition & hardware attributes
     public var diskTotalBytes: UInt64
     public var diskUsedBytes: UInt64
+    public var diskDevice: String // e.g. "/dev/nvme0n1p2" or "/dev/sda1"
+    public var diskMountPoint: String // e.g. "/"
+    public var diskType: String // e.g. "NVMe SSD", "SSD", "HDD"
+    public var isSSD: Bool // true = SSD / NVMe, false = HDD
+    public var disks: [DiskPartitionItem]
     
     public var diskUsagePercent: Double {
         guard diskTotalBytes > 0 else { return 0.0 }
         return Double(diskUsedBytes) / Double(diskTotalBytes) * 100.0
+    }
+    
+    public var diskFreeBytes: UInt64 {
+        diskTotalBytes > diskUsedBytes ? (diskTotalBytes - diskUsedBytes) : 0
+    }
+    
+    public var diskBadgeText: String {
+        if diskType.contains("NVMe") {
+            return "NVMe 固态"
+        } else if isSSD {
+            return "SSD 固态"
+        } else {
+            return "HDD 机械"
+        }
     }
     
     // Load average (1m, 5m, 15m)
@@ -48,6 +68,7 @@ public struct ServerMetricsSnapshot: Sendable, Codable, Equatable, Identifiable 
         timestamp: Date = Date(),
         cpuUsagePercent: Double = 0.0,
         cpuCores: Int = 1,
+        cpuModel: String = "",
         memoryTotalBytes: UInt64 = 0,
         memoryUsedBytes: UInt64 = 0,
         memoryCachedBytes: UInt64 = 0,
@@ -55,6 +76,11 @@ public struct ServerMetricsSnapshot: Sendable, Codable, Equatable, Identifiable 
         networkTxBytesPerSec: Double = 0.0,
         diskTotalBytes: UInt64 = 0,
         diskUsedBytes: UInt64 = 0,
+        diskDevice: String = "",
+        diskMountPoint: String = "/",
+        diskType: String = "SSD",
+        isSSD: Bool = true,
+        disks: [DiskPartitionItem] = [],
         loadAvg1m: Double = 0.0,
         loadAvg5m: Double = 0.0,
         loadAvg15m: Double = 0.0,
@@ -65,6 +91,7 @@ public struct ServerMetricsSnapshot: Sendable, Codable, Equatable, Identifiable 
         self.timestamp = timestamp
         self.cpuUsagePercent = cpuUsagePercent
         self.cpuCores = cpuCores
+        self.cpuModel = cpuModel
         self.memoryTotalBytes = memoryTotalBytes
         self.memoryUsedBytes = memoryUsedBytes
         self.memoryCachedBytes = memoryCachedBytes
@@ -72,11 +99,55 @@ public struct ServerMetricsSnapshot: Sendable, Codable, Equatable, Identifiable 
         self.networkTxBytesPerSec = networkTxBytesPerSec
         self.diskTotalBytes = diskTotalBytes
         self.diskUsedBytes = diskUsedBytes
+        self.diskDevice = diskDevice
+        self.diskMountPoint = diskMountPoint
+        self.diskType = diskType
+        self.isSSD = isSSD
+        self.disks = disks
         self.loadAvg1m = loadAvg1m
         self.loadAvg5m = loadAvg5m
         self.loadAvg15m = loadAvg15m
         self.uptimeSeconds = uptimeSeconds
         self.topProcesses = topProcesses
+    }
+}
+
+/// Partition-level disk metric item
+public struct DiskPartitionItem: Sendable, Codable, Equatable, Identifiable {
+    public var id: String { mountPoint }
+    public let filesystem: String
+    public let mountPoint: String
+    public let totalBytes: UInt64
+    public let usedBytes: UInt64
+    public let isSSD: Bool
+    public let diskType: String // e.g. "NVMe SSD", "SSD", "HDD"
+    
+    public var usagePercent: Double {
+        guard totalBytes > 0 else { return 0.0 }
+        return Double(usedBytes) / Double(totalBytes) * 100.0
+    }
+    
+    public var freeBytes: UInt64 {
+        totalBytes > usedBytes ? (totalBytes - usedBytes) : 0
+    }
+    
+    public var badgeText: String {
+        if diskType.contains("NVMe") {
+            return "NVMe 固态"
+        } else if isSSD {
+            return "SSD 固态"
+        } else {
+            return "HDD 机械"
+        }
+    }
+    
+    public init(filesystem: String, mountPoint: String, totalBytes: UInt64, usedBytes: UInt64, isSSD: Bool, diskType: String) {
+        self.filesystem = filesystem
+        self.mountPoint = mountPoint
+        self.totalBytes = totalBytes
+        self.usedBytes = usedBytes
+        self.isSSD = isSSD
+        self.diskType = diskType
     }
 }
 

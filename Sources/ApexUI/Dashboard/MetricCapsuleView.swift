@@ -40,13 +40,40 @@ public struct MetricCapsuleView: View {
 
                     // Memory indicator
                     HStack(spacing: 5) {
-                    Image(systemName: "memorychip")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(ApexStyle.accent)
-                    
-                    Text(formattedMemory)
-                        .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundColor(.primary)
+                        Image(systemName: "memorychip")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundColor(ApexStyle.accent)
+                        
+                        Text(formattedMemory)
+                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            .foregroundColor(.primary)
+                    }
+
+                    Divider().frame(height: 12)
+
+                    // Disk indicator with SSD badge
+                    HStack(spacing: 5) {
+                        Image(systemName: "internaldrive")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundColor(diskColor)
+                        
+                        Text(L10n.diskMetric)
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                            .foregroundColor(.secondary)
+                        
+                        Text(formattedDisk)
+                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            .foregroundColor(.primary)
+                        
+                        if let badge = latest?.diskBadgeText {
+                            Text(badge)
+                                .font(.system(size: 9, weight: .bold))
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 1)
+                                .background((latest?.isSSD ?? true) ? Color.teal.opacity(0.18) : Color.orange.opacity(0.18))
+                                .foregroundColor((latest?.isSSD ?? true) ? .teal : .orange)
+                                .cornerRadius(3)
+                        }
                     }
                 }
                 
@@ -60,7 +87,7 @@ public struct MetricCapsuleView: View {
         .help("查看服务器性能")
         .popover(isPresented: $showingDetail, arrowEdge: .bottom) {
             MetricDetailView(historyStore: historyStore)
-                .frame(width: 480, height: 440)
+                .frame(width: 500, height: 480)
         }
     }
     
@@ -75,11 +102,25 @@ public struct MetricCapsuleView: View {
         return .green
     }
     
+    private var diskColor: Color {
+        let usage = latest?.diskUsagePercent ?? 0
+        if usage > 85 { return .red }
+        if usage > 70 { return .orange }
+        return .teal
+    }
+    
     private var formattedMemory: String {
         guard let m = latest, m.memoryTotalBytes > 0 else { return "0.0/0.0 GB" }
         let usedGB = Double(m.memoryUsedBytes) / (1024 * 1024 * 1024)
         let totalGB = Double(m.memoryTotalBytes) / (1024 * 1024 * 1024)
         return String(format: "%.1f/%.0fG (%.0f%%)", usedGB, totalGB, m.memoryUsagePercent)
+    }
+    
+    private var formattedDisk: String {
+        guard let d = latest, d.diskTotalBytes > 0 else { return "0/0G" }
+        let usedGB = Double(d.diskUsedBytes) / 1e9
+        let totalGB = Double(d.diskTotalBytes) / 1e9
+        return String(format: "%.0f/%.0fG", usedGB, totalGB)
     }
     
 }
@@ -110,9 +151,19 @@ public struct MetricDetailView: View {
         ScrollView(.vertical, showsIndicators: true) {
             VStack(alignment: .leading, spacing: 14) {
                 // Header
-                HStack {
+                HStack(alignment: .center, spacing: 8) {
                     Label(L10n.serverPerformance, systemImage: "gauge.with.needle")
                         .font(.headline)
+                    if let cpuModel = historyStore.latest?.cpuModel, !cpuModel.isEmpty {
+                        Text(cpuModel)
+                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.secondary.opacity(0.12))
+                            .foregroundColor(.secondary)
+                            .cornerRadius(4)
+                            .lineLimit(1)
+                    }
                     Spacer()
                     if let uptime = historyStore.latest?.uptimeSeconds {
                         Text("\(L10n.uptime): \(formatUptime(uptime))")
@@ -166,6 +217,24 @@ public struct MetricDetailView: View {
                     .frame(height: 90)
                 }
                 
+                // Memory Bar
+                if let mem = historyStore.latest, mem.memoryTotalBytes > 0 {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text(L10n.ramMetric)
+                                .font(.subheadline)
+                                .fontWeight(.semibold)
+                            Spacer()
+                            Text("\(String(format: "%.1f", Double(mem.memoryUsedBytes) / 1073741824.0)) GB / \(String(format: "%.1f", Double(mem.memoryTotalBytes) / 1073741824.0)) GB (\(String(format: "%.0f%%", mem.memoryUsagePercent)))")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        ProgressView(value: mem.memoryUsagePercent, total: 100)
+                            .progressViewStyle(.linear)
+                            .tint(mem.memoryUsagePercent > 85 ? .red : ApexStyle.accent)
+                    }
+                }
+                
                 // Network Waterfall Chart
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
@@ -204,17 +273,61 @@ public struct MetricDetailView: View {
                     .frame(height: 80)
                 }
                 
-                // Disk Bar
+                // Disk Storage & Hardware Type (SSD vs HDD)
                 if let disk = historyStore.latest, disk.diskTotalBytes > 0 {
-                    HStack {
-                        Text("\(L10n.rootStorage): \(String(format: "%.1f", Double(disk.diskUsedBytes) / 1e9)) GB / \(String(format: "%.1f", Double(disk.diskTotalBytes) / 1e9)) GB (\(String(format: "%.0f%%", disk.diskUsagePercent)))")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        Spacer()
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(alignment: .center) {
+                            HStack(spacing: 5) {
+                                Image(systemName: "internaldrive.fill")
+                                    .foregroundColor(disk.isSSD ? .teal : .orange)
+                                Text("磁盘存储")
+                                    .font(.subheadline)
+                                    .fontWeight(.semibold)
+                            }
+                            
+                            // Prominent SSD/HDD Tag
+                            HStack(spacing: 3) {
+                                Image(systemName: disk.isSSD ? "bolt.horizontal.fill" : "opticaldisc")
+                                    .font(.system(size: 9))
+                                Text(disk.diskBadgeText)
+                                    .font(.system(size: 10, weight: .bold))
+                            }
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(disk.isSSD ? Color.teal.opacity(0.18) : Color.orange.opacity(0.18))
+                            .foregroundColor(disk.isSSD ? .teal : .orange)
+                            .cornerRadius(4)
+                            
+                            if !disk.diskDevice.isEmpty {
+                                Text(disk.diskDevice)
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundColor(.secondary)
+                            }
+                            
+                            Spacer()
+                            
+                            Text("\(String(format: "%.1f", Double(disk.diskUsedBytes) / 1e9)) GB / \(String(format: "%.1f", Double(disk.diskTotalBytes) / 1e9)) GB (\(String(format: "%.0f%%", disk.diskUsagePercent)))")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        
+                        ProgressView(value: disk.diskUsagePercent, total: 100)
+                            .progressViewStyle(.linear)
+                            .tint(disk.diskUsagePercent > 85 ? .red : (disk.diskUsagePercent > 70 ? .orange : (disk.isSSD ? .teal : .blue)))
+                        
+                        HStack {
+                            Text("挂载点: \(disk.diskMountPoint)")
+                                .font(.caption2.monospaced())
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Text("可用空间: \(String(format: "%.1f GB", Double(disk.diskFreeBytes) / 1e9))")
+                                .font(.caption2.monospaced())
+                                .foregroundColor(.secondary)
+                        }
                     }
-                    ProgressView(value: disk.diskUsagePercent, total: 100)
-                        .progressViewStyle(.linear)
-                        .tint(disk.diskUsagePercent > 85 ? .red : ApexStyle.accent)
+                    .padding(10)
+                    .background(Color(NSColor.controlBackgroundColor).opacity(0.4))
+                    .cornerRadius(8)
                 }
                 
                 // Top 5 Processes Table

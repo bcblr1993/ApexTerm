@@ -149,7 +149,11 @@ public struct WorkspaceView: View {
     public var body: some View {
         VStack(spacing: 0) {
             if let tab = currentTab {
-                WorkspaceHeaderBar(tab: tab, isSFTPVisible: $isSFTPVisible)
+                WorkspaceHeaderBar(
+                    tab: tab,
+                    isSFTPVisible: $isSFTPVisible,
+                    onDuplicate: { duplicateTab(tab) }
+                )
             } else {
                 HStack(spacing: 12) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -176,9 +180,39 @@ public struct WorkspaceView: View {
                                     isSelected: tab.id == currentTab?.id,
                                     colorHex: tab.session.colorHex,
                                     onSelect: { selectedTabId = tab.id },
-                                    onClose: { closeTab(tab) }
+                                    onClose: { closeTab(tab) },
+                                    onDuplicate: { duplicateTab(tab) },
+                                    onSplitVertical: { tab.split(mode: .vertical) },
+                                    onSplitHorizontal: { tab.split(mode: .horizontal) },
+                                    onCloseOthers: { closeOtherTabs(tab) },
+                                    onCloseRight: { closeTabsToTheRight(tab) }
                                 )
                             }
+                            
+                            // + Button to duplicate current session or open new tab
+                            Button(action: {
+                                if let cur = currentTab {
+                                    duplicateTab(cur)
+                                } else if let first = store.sessions.first {
+                                    let client: SSHSessionProtocol = first.host == "10.0.1.10" ? MockSSHSession(session: first) : NativeSSHSession(session: first)
+                                    let newTab = TerminalTabItem(session: first, sshClient: client)
+                                    activeTabs.append(newTab)
+                                    selectedTabId = newTab.id
+                                    Task {
+                                        newTab.connectionState = .connecting(step: "正在连接")
+                                        try? await client.connect()
+                                        newTab.connectionState = client.connectionState
+                                    }
+                                }
+                            }) {
+                                Image(systemName: "plus")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundColor(.secondary)
+                                    .frame(width: 24, height: 24)
+                                    .background(ApexStyle.surface, in: RoundedRectangle(cornerRadius: 6))
+                            }
+                            .buttonStyle(.plain)
+                            .help("复制当前会话 (⌘T)")
                         }
                         .padding(.horizontal, 12)
                     }
@@ -262,6 +296,37 @@ public struct WorkspaceView: View {
         }
     }
     
+    public func duplicateTab(_ tab: TerminalTabItem) {
+        let session = tab.session
+        let client: SSHSessionProtocol
+        if session.host == "10.0.1.10" {
+            client = MockSSHSession(session: session)
+        } else {
+            client = NativeSSHSession(session: session)
+        }
+        
+        let newTab = TerminalTabItem(session: session, sshClient: client)
+        newTab.currentRemotePath = tab.currentRemotePath
+        newTab.isDirectoryLinkageEnabled = tab.isDirectoryLinkageEnabled
+        
+        if let idx = activeTabs.firstIndex(where: { $0.id == tab.id }) {
+            activeTabs.insert(newTab, at: idx + 1)
+        } else {
+            activeTabs.append(newTab)
+        }
+        selectedTabId = newTab.id
+        
+        Task {
+            newTab.connectionState = .connecting(step: "正在连接")
+            do {
+                try await client.connect()
+                newTab.connectionState = client.connectionState
+            } catch {
+                newTab.connectionState = .failed(error.localizedDescription)
+            }
+        }
+    }
+    
     private func closeTab(_ tab: TerminalTabItem) {
         for pane in tab.panes {
             Task { await pane.sshClient.disconnect() }
@@ -271,11 +336,37 @@ public struct WorkspaceView: View {
             selectedTabId = activeTabs.first?.id
         }
     }
+    
+    private func closeOtherTabs(_ tab: TerminalTabItem) {
+        let toClose = activeTabs.filter { $0.id != tab.id }
+        for t in toClose {
+            for pane in t.panes {
+                Task { await pane.sshClient.disconnect() }
+            }
+        }
+        activeTabs = [tab]
+        selectedTabId = tab.id
+    }
+    
+    private func closeTabsToTheRight(_ tab: TerminalTabItem) {
+        guard let idx = activeTabs.firstIndex(where: { $0.id == tab.id }) else { return }
+        let toClose = Array(activeTabs.suffix(from: idx + 1))
+        for t in toClose {
+            for pane in t.panes {
+                Task { await pane.sshClient.disconnect() }
+            }
+        }
+        activeTabs.removeSubrange((idx + 1)...)
+        if !activeTabs.contains(where: { $0.id == selectedTabId }) {
+            selectedTabId = tab.id
+        }
+    }
 }
 
 private struct WorkspaceHeaderBar: View {
     @ObservedObject var tab: TerminalTabItem
     @Binding var isSFTPVisible: Bool
+    let onDuplicate: () -> Void
     
     var body: some View {
         HStack(spacing: 12) {
@@ -290,8 +381,16 @@ private struct WorkspaceHeaderBar: View {
             }
             Spacer(minLength: 12)
             
-            // Split Buttons
+            // Action Buttons: Duplicate Session + Split
             HStack(spacing: 4) {
+                Button(action: onDuplicate) {
+                    Image(systemName: "plus.square.on.square")
+                        .font(.system(size: 11))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("复制此会话到新标签页 (⌘T)")
+                
                 Button(action: { tab.split(mode: .vertical) }) {
                     Image(systemName: "rectangle.split.2x1")
                         .font(.system(size: 11))
@@ -562,6 +661,11 @@ struct TabButton: View {
     let colorHex: String?
     let onSelect: () -> Void
     let onClose: () -> Void
+    let onDuplicate: () -> Void
+    let onSplitVertical: () -> Void
+    let onSplitHorizontal: () -> Void
+    let onCloseOthers: () -> Void
+    let onCloseRight: () -> Void
     
     var body: some View {
         HStack(spacing: 7) {
@@ -589,6 +693,47 @@ struct TabButton: View {
         .contentShape(Rectangle())
         .onTapGesture {
             onSelect()
+        }
+        .contextMenu {
+            Button {
+                onDuplicate()
+            } label: {
+                Label("复制会话", systemImage: "plus.square.on.square")
+            }
+            
+            Divider()
+            
+            Button {
+                onSplitVertical()
+            } label: {
+                Label("垂直分屏 (⌘D)", systemImage: "rectangle.split.2x1")
+            }
+            
+            Button {
+                onSplitHorizontal()
+            } label: {
+                Label("水平分屏 (⌘⇧D)", systemImage: "rectangle.split.1x2")
+            }
+            
+            Divider()
+            
+            Button(role: .destructive) {
+                onClose()
+            } label: {
+                Label("关闭标签页 (⌘W)", systemImage: "xmark")
+            }
+            
+            Button {
+                onCloseOthers()
+            } label: {
+                Label("关闭其他标签页", systemImage: "xmark.circle")
+            }
+            
+            Button {
+                onCloseRight()
+            } label: {
+                Label("关闭右侧标签页", systemImage: "arrow.right.to.line")
+            }
         }
     }
 }

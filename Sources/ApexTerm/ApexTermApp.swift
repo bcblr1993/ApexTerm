@@ -71,12 +71,19 @@ struct ApexTermApp: App {
             }
             
             CommandGroup(replacing: .newItem) {
-                Button(L10n.menuNewTab) {
-                    if let selected = selectedSidebarSession ?? sessionStore.sessions.first {
+                Button("复制当前会话 / 新建标签页") {
+                    if activeTabs.contains(where: { $0.id == selectedTabId }) {
+                        duplicateCurrentSession()
+                    } else if let selected = selectedSidebarSession ?? sessionStore.sessions.first {
                         connectToSession(selected)
                     }
                 }
                 .keyboardShortcut("t", modifiers: .command)
+                
+                Button("复制当前会话") {
+                    duplicateCurrentSession()
+                }
+                .keyboardShortcut("t", modifiers: [.command, .shift])
                 
                 Divider()
                 
@@ -90,6 +97,13 @@ struct ApexTermApp: App {
             }
             
             CommandMenu(L10n.menuSession) {
+                Button("复制此会话到新标签页") {
+                    duplicateCurrentSession()
+                }
+                .disabled(activeTabs.isEmpty)
+                
+                Divider()
+                
                 Button(L10n.menuDisconnect) {
                     if let current = activeTabs.first(where: { $0.id == selectedTabId }) {
                         if current.panes.count > 1, let activeId = current.activePaneId {
@@ -188,6 +202,32 @@ struct ApexTermApp: App {
         }
     }
     
+    private func duplicateCurrentSession() {
+        guard let current = activeTabs.first(where: { $0.id == selectedTabId }) else { return }
+        let session = current.session
+        let client: SSHSessionProtocol = session.host == "10.0.1.10" ? MockSSHSession(session: session) : NativeSSHSession(session: session)
+        let tab = TerminalTabItem(session: session, sshClient: client)
+        tab.currentRemotePath = current.currentRemotePath
+        tab.isDirectoryLinkageEnabled = current.isDirectoryLinkageEnabled
+        
+        if let idx = activeTabs.firstIndex(where: { $0.id == current.id }) {
+            activeTabs.insert(tab, at: idx + 1)
+        } else {
+            activeTabs.append(tab)
+        }
+        selectedTabId = tab.id
+        
+        Task {
+            tab.connectionState = .connecting(step: "正在连接")
+            do {
+                try await client.connect()
+                tab.connectionState = client.connectionState
+            } catch {
+                tab.connectionState = .failed(error.localizedDescription)
+            }
+        }
+    }
+
     private func connectToSession(_ session: Session) {
         // Only synthetic demo host 10.0.1.10 uses Mock; real IPs (including 192.168.x.x Tart VMs) use NativeSSHSession
         let client: SSHSessionProtocol

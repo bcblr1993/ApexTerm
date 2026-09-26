@@ -25,9 +25,11 @@ public struct ShortcutsSheetView: View {
             title: "会话与标签管理",
             icon: "macwindow.on.rectangle",
             items: [
-                ShortcutItem(keys: ["⌘", "T"], description: "新建终端标签 (连接当前选中会话)"),
+                ShortcutItem(keys: ["⌘", "T"], description: "复制当前会话 / 新建标签页"),
+                ShortcutItem(keys: ["⌘", "⇧", "T"], description: "复制当前活动会话到新标签页"),
                 ShortcutItem(keys: ["⌘", "W"], description: "关闭当前终端标签或当前活动分屏"),
-                ShortcutItem(keys: ["⌘", "1...9"], description: "快速切换至指定编号的标签页")
+                ShortcutItem(keys: ["⌘", "1...9"], description: "快速切换至指定编号的标签页"),
+                ShortcutItem(keys: ["标签右键"], description: "复制会话、分屏、关闭其他/右侧标签")
             ]
         ),
         ShortcutGroup(

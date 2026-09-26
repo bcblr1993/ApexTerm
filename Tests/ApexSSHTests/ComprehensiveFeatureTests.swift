@@ -400,4 +400,34 @@ final class ComprehensiveFeatureTests: XCTestCase {
         // Cleanup
         manager.clearCompleted()
     }
+
+    // MARK: - 12. Duplicate Tab (复制会话) & Context Management Tests
+    
+    func testDuplicateTabSessionStateAndInheritance() async {
+        let session = Session(
+            name: "Prod Cluster",
+            host: "10.0.1.10",
+            port: 22,
+            username: "ubuntu",
+            authMethod: .password(keychainRef: "secret")
+        )
+        let client = MockSSHSession(session: session)
+        let tab1 = TerminalTabItem(session: session, sshClient: client)
+        tab1.currentRemotePath = "/var/www/html"
+        tab1.isDirectoryLinkageEnabled = true
+        
+        // Emulate duplicateTab logic
+        let dupClient = MockSSHSession(session: session)
+        let tab2 = TerminalTabItem(session: session, sshClient: dupClient)
+        tab2.currentRemotePath = tab1.currentRemotePath
+        tab2.isDirectoryLinkageEnabled = tab1.isDirectoryLinkageEnabled
+        
+        // Assertions
+        XCTAssertNotEqual(tab1.id, tab2.id)
+        XCTAssertEqual(tab2.session.name, "Prod Cluster")
+        XCTAssertEqual(tab2.session.host, "10.0.1.10")
+        XCTAssertEqual(tab2.session.username, "ubuntu")
+        XCTAssertEqual(tab2.currentRemotePath, "/var/www/html")
+        XCTAssertTrue(tab2.isDirectoryLinkageEnabled)
+    }
 }

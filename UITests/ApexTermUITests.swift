@@ -68,6 +68,19 @@ final class ApexTermUITests: XCTestCase {
         add(attachment)
     }
 
+    private func clickVisibleMenuItem(_ item: XCUIElement) {
+        let visible = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            let rect = item.frame
+            return item.exists && rect.origin.x.isFinite && rect.origin.y.isFinite
+                && rect.width.isFinite && rect.height.isFinite && rect.width > 0 && rect.height > 0
+        }, object: item)
+        XCTAssertEqual(XCTWaiter.wait(for: [visible], timeout: 5), .completed,
+                       "Menu item must have a visible, finite screen rectangle")
+        // XCTest's menu click hover path can resolve an infinite point on macOS 27.
+        // Click the actual visible center without invoking that hover path.
+        item.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
+    }
+
     func testSearchEmptyAndRecovery() {
         launch()
         let search = app.textFields.matching(NSPredicate(format: "label CONTAINS %@", "搜索会话")).firstMatch
@@ -821,10 +834,10 @@ final class ApexTermUITests: XCTestCase {
             app.menuBars.menuBarItems["验收主题"].click()
             let item = app.menuItems[theme]
             XCTAssertTrue(item.waitForExistence(timeout: 3), "Missing theme: \(theme)")
-            item.click()
+            clickVisibleMenuItem(item)
             for page in pages {
                 app.menuBars.menuBarItems["验收页面"].click()
-                app.menuItems[page].click()
+                clickVisibleMenuItem(app.menuItems[page])
                 XCTAssertTrue(app.windows.firstMatch.exists)
                 XCTAssertGreaterThan(app.windows.firstMatch.frame.width, 300)
                 switch page {

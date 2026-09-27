@@ -23,6 +23,7 @@ if [ "$(git branch --show-current)" != "master" ] && [ "$(git branch --show-curr
     echo "❌ Release must be built from master or main."
     exit 1
 fi
+bash scripts/test_ui_acceptance.sh --preflight-only
 # Keep only the current build outputs; old packages must not accumulate on disk.
 python3 scripts/prune_build_artifacts.py
 

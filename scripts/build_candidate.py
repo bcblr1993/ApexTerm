@@ -44,6 +44,7 @@ def main():
     running = subprocess.check_output(['ps', '-axo', 'comm='], text=True).splitlines()
     if any('/candidate/ApexTerm Candidate.app/' in line for line in running):
         raise SystemExit('Close the previous candidate before rebuilding.')
+    run('bash', 'scripts/test_ui_acceptance.sh', '--preflight-only')
     images = plistlib.loads(subprocess.check_output(['hdiutil', 'info', '-plist']))
     previous_dmg = OUT / 'ApexTerm-Candidate-arm64.dmg'
     if any(pathlib.Path(image.get('image-path', '')).resolve() == previous_dmg.resolve()

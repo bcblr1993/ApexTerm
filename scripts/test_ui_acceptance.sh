@@ -2,6 +2,10 @@
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+if [[ $# -gt 1 || ( $# -eq 1 && "$1" != "--preflight-only" ) ]]; then
+    echo 'Usage: test_ui_acceptance.sh [--preflight-only]' >&2
+    exit 2
+fi
 REPORT_DIR="${APEX_UI_REPORT_ROOT:-$ROOT_DIR/outputs/ui-acceptance}/$(date +%Y%m%d-%H%M%S)-$$"
 mkdir -p "$REPORT_DIR"
 STAGE=prerequisites
@@ -23,6 +27,11 @@ automationmodetool help > "$REPORT_DIR/automation-mode.txt" 2>&1
 if ! grep -q 'Automation Mode is enabled' "$REPORT_DIR/automation-mode.txt"; then
     echo "UI acceptance requires Automation Mode. Enable it with user authentication before testing."
     exit 1
+fi
+if [[ "${1:-}" == "--preflight-only" ]]; then
+    STAGE=prerequisites-passed
+    echo "UI prerequisites passed; full UI execution is still required before packaging."
+    exit 0
 fi
 STAGE=product-build
 swift build -c release --jobs 2 2>&1 | tee "$REPORT_DIR/product-build.log"

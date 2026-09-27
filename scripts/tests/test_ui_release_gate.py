@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class UIReleaseGateTests(unittest.TestCase):
-    def run_gate(self, configured, enabled=False, preflight=True):
+    def run_gate(self, configured, enabled=False, preflight=True, bash="bash"):
         with tempfile.TemporaryDirectory() as directory:
             tools = Path(directory)
             marker = tools / 'build-started'
@@ -29,7 +29,7 @@ class UIReleaseGateTests(unittest.TestCase):
             environment.pop('APEX_UI_TEST_USER', None)
             if configured:
                 environment.update(APEX_UI_TEST_HOST='example.com', APEX_UI_TEST_USER='synthetic')
-            command = ['bash', str(ROOT / 'scripts/test_ui_acceptance.sh')]
+            command = [bash, str(ROOT / 'scripts/test_ui_acceptance.sh')]
             if preflight:
                 command.append('--preflight-only')
             result = subprocess.run(command,
@@ -51,7 +51,9 @@ class UIReleaseGateTests(unittest.TestCase):
             return result.stdout + result.stderr
 
     def test_missing_real_host_stops_gate(self):
-        self.assertIn('APEX_UI_TEST_HOST', self.run_gate(False))
+        for bash in ['bash', '/bin/bash']:
+            with self.subTest(bash=bash):
+                self.assertIn('APEX_UI_TEST_HOST', self.run_gate(False, bash=bash))
 
     def test_idle_disabled_mode_requires_activation_at_execution(self):
         self.assertIn('authenticated activation', self.run_gate(True))

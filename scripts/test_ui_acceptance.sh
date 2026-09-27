@@ -26,8 +26,16 @@ shasum -a 256 UITests/ApexTermUITests.swift > "$REPORT_DIR/test-source-sha256.tx
 # Requires an unlocked macOS desktop and Xcode UI-testing permissions.
 # Failure, missing tools or denied permissions stop the release; no silent fallback.
 command -v xcodebuild >/dev/null
-: "${APEX_UI_TEST_HOST:?Set APEX_UI_TEST_HOST to the dedicated SSH test machine}"
-: "${APEX_UI_TEST_USER:?Set APEX_UI_TEST_USER to the dedicated SSH test user}"
+# Bash 3.2 can report zero after a parameter-expansion error with an EXIT trap.
+# Explicit exits preserve fail-closed behavior on the system shell as well as Bash 5.
+if [[ -z "${APEX_UI_TEST_HOST:-}" ]]; then
+    echo 'Set APEX_UI_TEST_HOST to the dedicated SSH test machine' >&2
+    exit 1
+fi
+if [[ -z "${APEX_UI_TEST_USER:-}" ]]; then
+    echo 'Set APEX_UI_TEST_USER to the dedicated SSH test user' >&2
+    exit 1
+fi
 automationmodetool help > "$REPORT_DIR/automation-mode.txt" 2>&1
 if ! grep -qi 'Automation Mode is enabled' "$REPORT_DIR/automation-mode.txt"; then
     echo "Automation Mode is currently disabled; Xcode must obtain authenticated activation when UI tests start."

@@ -36,3 +36,5 @@ APEX_UI_TEST_HOST=<测试主机> APEX_UI_TEST_USER=<测试用户> bash scripts/t
 本机目标配置：入口自动读取被Git忽略的`.ui-acceptance.env`，仅配置测试端点与用户，不存储密码或私钥。环境变量可覆盖默认配置，APEX_UI_CONFIG_FILE可指定其他配置文件。远程SSH使用临时agent转发，测试启动时传递有效SSH_AUTH_SOCK；不复制私钥。运行结束后SSH转发随连接关闭，诊断目录保留供审阅。该配置不进入应用资源。
 
 远程运行每轮为QA宿主分配独立应用标识，XCUITest通过绝对应用路径启动；qa-host.json记录路径、应用标识和可执行文件SHA256，避免Launch Services缓存导致误测旧宿主。结果压缩后一次传回，诊断子集仅供修复定位；发布入口不传选择器，必须执行全部测试并严格验证数量、名称、失败与跳过。
+
+CI兼容性补证：c2c680f的CI36321964220在脚本回归失败。已在本机/usr/bin优先PATH复现：Bash3.2配合EXIT trap时，缺少主机的`${VAR:?}`参数展开错误最终返回0，Bash5返回1。发布门禁改为显式空值检查和exit1，并在测试中覆盖PATH默认bash及/bin/bash。19项脚本回归、系统Bash下4项门禁回归全部通过。此修复确保缺少配置拒绝发布，而非放宽测试；云端仍需新提交实际通过。

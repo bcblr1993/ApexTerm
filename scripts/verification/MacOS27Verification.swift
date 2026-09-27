@@ -23,6 +23,7 @@ struct ThemeVerificationApp: App {
     @State private var updatePresented = true
     @State private var editorPresented = true
     @State private var importPresented = true
+    @State private var editorSaveAttempts = 0
     private let telemetry = QAProcessTelemetry()
     private let tab: TerminalTabItem
     private let importConfigURL: URL
@@ -81,10 +82,13 @@ struct ThemeVerificationApp: App {
                 .frame(width: 900, height: 650)
                 .sheet(isPresented: $editorPresented) {
                     QuickEditorView(item: SFTPItem(name: "demo.conf", path: "/demo.conf", isDirectory: false), content: $editorContent, onSave: { _ in
+                        editorSaveAttempts += 1
+                        let attempt = editorSaveAttempts
                         let requestedDelay = Double(ProcessInfo.processInfo.environment["APEX_QA_EDITOR_SAVE_DELAY"] ?? "") ?? 2
                         let delay = requestedDelay.isFinite ? min(15, max(0, requestedDelay)) : 2
                         try await Task.sleep(for: .seconds(delay))
-                        if ProcessInfo.processInfo.environment["APEX_QA_EDITOR_SAVE"] == "failure" {
+                        let mode = ProcessInfo.processInfo.environment["APEX_QA_EDITOR_SAVE"]
+                        if mode == "failure" || (mode == "failure-once" && attempt == 1) {
                             throw NSError(domain: "ApexTerm.QA", code: 13, userInfo: [NSLocalizedDescriptionKey: "验收模拟：远端写入权限不足"])
                         }
                     }, onReload: { "# 远端配置\nserver=demo\n" })

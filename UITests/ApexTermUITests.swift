@@ -436,6 +436,28 @@ final class ApexTermUITests: XCTestCase {
         app.buttons["继续编辑"].click()
     }
 
+    func testEditorSaveFailureRetryRecovers() {
+        launch("editor-sheet", extra: ["APEX_QA_EDITOR_SAVE": "failure-once"])
+        let editor = app.textViews["文件内容"]
+        XCTAssertTrue(editor.waitForExistence(timeout: 5))
+        editor.click()
+        editor.typeText("\nretry_revision=true")
+        let save = app.buttons["保存 (⌘S)"]
+        save.click()
+        let error = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "保存失败:")).firstMatch
+        XCTAssertTrue(error.waitForExistence(timeout: 10))
+        XCTAssertTrue(save.isEnabled)
+        XCTAssertTrue((editor.value as? String)?.contains("retry_revision=true") == true)
+        save.click()
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "已保存并上传至服务器")).firstMatch.waitForExistence(timeout: 10))
+        XCTAssertFalse(error.exists)
+        XCTAssertTrue((editor.value as? String)?.contains("retry_revision=true") == true)
+        capture("editor-save-retry-recovered")
+        app.buttons["关闭"].click()
+        XCTAssertFalse(app.sheets.firstMatch.exists)
+        XCTAssertFalse(app.buttons["继续编辑"].exists)
+    }
+
     func testEditorChangesDuringSaveRemainUnsaved() {
         launch("editor-sheet", extra: ["APEX_QA_EDITOR_SAVE_DELAY": "8"])
         let editor = app.textViews.firstMatch

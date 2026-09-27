@@ -5,8 +5,14 @@ import ApexSSH
 import ApexUI
 import ApexTerminal
 
+@MainActor
+final class VerificationAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+}
+
 @main
 struct ThemeVerificationApp: App {
+    @NSApplicationDelegateAdaptor(VerificationAppDelegate.self) private var appDelegate
     @ObservedObject private var settings = AppSettings.shared
     private let store: SessionStore
     @State private var tabs: [TerminalTabItem] = []

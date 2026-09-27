@@ -201,10 +201,17 @@ struct ThemeVerificationApp: App {
     }
     @MainActor
     private func runSoak() async {
+        let realSSH = ProcessInfo.processInfo.environment["APEX_QA_REAL_HOST"] != nil
+        let remoteDirectory = ProcessInfo.processInfo.environment["APEX_QA_REMOTE_PATH"] ?? ""
+        guard !realSSH || remoteDirectory.hasPrefix("/tmp/apexterm-soak-") else {
+            NSLog("Real SSH soak requires its own /tmp/apexterm-soak- directory")
+            NSApplication.shared.terminate(nil)
+            return
+        }
+        let remotePayload = realSSH ? remoteDirectory + "/qa-payload.bin" : "/qa-payload.bin"
         let root = qaRepositoryRoot.appendingPathComponent("outputs/macos27/soak")
         try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let upload = root.appendingPathComponent("payload.bin")
-        let download = root.appendingPathComponent("roundtrip.bin")
         let payload = Data(repeating: 0x5A, count: 256 * 1024)
         try? payload.write(to: upload)
         let start = ContinuousClock.now
@@ -214,7 +221,7 @@ struct ThemeVerificationApp: App {
         var failures: [String] = []
         let manager = TransferManager.shared
         func report(completed: Bool) {
-            let data: [String: Any] = ["completed": completed, "elapsed": start.duration(to: .now).description,
+            let data: [String: Any] = ["completed": completed, "outputSource": realSSH ? "real SSH PTY output" : "synthetic RingBuffer load", "elapsed": start.duration(to: .now).description,
                 "outputLines": cycle * 80, "committedLines": tab.ringBuffer.committedLineCount,
                 "historyLimit": tab.ringBuffer.maxLines, "transferChecks": transfers,
                 "transferRecords": manager.tasks.count, "inputChecks": echoes, "metricHistory": tab.metricsHistory.snapshots.count,
@@ -225,17 +232,38 @@ struct ThemeVerificationApp: App {
         }
         while start.duration(to: .now) < .seconds(1800) && !Task.isCancelled {
             let logs = (0..<80).map { "[QA] cycle=\(cycle) row=\($0) status=OK simulated output for bounded scrollback\n" }.joined()
-            tab.ringBuffer.appendStream(logs)
+            if realSSH {
+                let command = "for i in {0..79}; do printf '[QA] cycle=\(cycle) row=%s status=OK\\n' \"$i\"; done\r"
+                do { try await tab.sshClient.sendInput(Data(command.utf8)) }
+                catch { failures.append("Output command failed: \(error.localizedDescription)") }
+            } else {
+                tab.ringBuffer.appendStream(logs)
+            }
             if cycle % 100 == 0 {
                 let marker = "QA_INPUT_\(cycle)"
-                try? await tab.sshClient.sendInput(Data((marker + "\n").utf8))
-                if tab.ringBuffer.tailLines(count: 20).contains(where: { $0.contains(marker) }) { echoes += 1 }
-                else { failures.append("Missing input marker at cycle \(cycle)") }
+                do {
+                    let input = realSSH ? "printf '%s\\n' '\(marker)'\r" : marker + "\n"
+                    try await tab.sshClient.sendInput(Data(input.utf8))
+                    func hasEcho() -> Bool {
+                        tab.ringBuffer.tailLines(count: 200).contains {
+                            realSSH ? $0.trimmingCharacters(in: .whitespacesAndNewlines) == marker : $0.contains(marker)
+                        }
+                    }
+                    let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+                    while !hasEcho(),
+                          ContinuousClock.now < deadline, !Task.isCancelled {
+                        try await Task.sleep(for: .milliseconds(20))
+                    }
+                    if hasEcho() { echoes += 1 }
+                    else { failures.append("Missing input marker at cycle \(cycle)") }
+                } catch { failures.append("Input failed at cycle \(cycle): \(error.localizedDescription)") }
             }
             if cycle % 300 == 0 {
-                manager.enqueueUpload(session: tab.sshClient, localURL: upload, remotePath: "/qa-payload.bin")
+                // A fresh destination prevents stale bytes from passing a failed download.
+                let download = root.appendingPathComponent("roundtrip-\(UUID().uuidString).bin")
+                manager.enqueueUpload(session: tab.sshClient, localURL: upload, remotePath: remotePayload)
                 while manager.activeCount > 0 && !Task.isCancelled { try? await Task.sleep(for: .milliseconds(20)) }
-                manager.enqueueDownload(session: tab.sshClient, remotePath: "/qa-payload.bin", localURL: download, totalBytes: Int64(payload.count))
+                manager.enqueueDownload(session: tab.sshClient, remotePath: remotePayload, localURL: download, totalBytes: Int64(payload.count))
                 while manager.activeCount > 0 && !Task.isCancelled { try? await Task.sleep(for: .milliseconds(20)) }
                 if (try? Data(contentsOf: download)) == payload { transfers += 1 }
                 else { failures.append("Transfer contents mismatch at cycle \(cycle)") }

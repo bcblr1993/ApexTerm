@@ -39,8 +39,15 @@ final class TerminalCompositionTests: XCTestCase {
         terminal.textStorage?.setAttributedString(NSAttributedString(string: "host % "))
         terminal.layoutManager?.ensureLayout(for: try XCTUnwrap(terminal.textContainer))
         func pixels() throws -> Data {
-            let bitmap = try XCTUnwrap(terminal.bitmapImageRepForCachingDisplay(in: terminal.bounds))
-            terminal.cacheDisplay(in: terminal.bounds, to: bitmap)
+            // A CI worker can have no WindowServer backing; draw into a real offscreen bitmap.
+            let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 420, pixelsHigh: 100,
+                bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+            let context = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: bitmap))
+            NSGraphicsContext.saveGraphicsState()
+            defer { NSGraphicsContext.restoreGraphicsState() }
+            NSGraphicsContext.current = context
+            terminal.draw(terminal.bounds)
             return try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
         }
         let before = try pixels()
@@ -71,7 +78,8 @@ final class TerminalCompositionTests: XCTestCase {
         XCTAssertEqual(actual, NSRange(location: 7, length: 2))
         XCTAssertGreaterThan(rect.width, 12)
         XCTAssertGreaterThan(rect.height, 0)
-        XCTAssertTrue(window.frame.intersects(rect))
+        let local = terminal.convert(window.convertFromScreen(rect), from: nil)
+        XCTAssertTrue(terminal.bounds.intersects(local), "Candidate must remain at the terminal in window coordinates")
     }
 
 }

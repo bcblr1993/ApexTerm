@@ -293,3 +293,9 @@
 - QA 应用关闭最后一个窗口后退出；LifecycleCheck 编译无诊断，尚未进行该退出行为的 GUI 复验。
 - 候选、正式与 QA 打包入口补充 NSLocalNetworkUsageDescription，解释 SSH/SFTP/监控的本地网络用途。Python/Shell 语法检查、候选脚本两项测试通过。
 - Apple TN3179 说明命令行与应用正常启动可能具有不同本地网络权限归属，符合先前直接运行成功/open 失败的现象，但不证明本机根因；未修改系统授权，正常启动仍待实际验收。参考：https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy
+
+### 候选 2026092706 DMG 本地阻塞收尾
+
+- notarytool 62653 采样停在 xar_open_digest_verify/open，未见网络 socket；hdiutil info 将候选 DMG 关联至无挂载点的 disk8，diskimages-helper 持有该文件。仅正常 detach 此映像后，原提交以格式校验失败 64 退出。
+- 只重试同一 DMG，Apple 返回 Accepted，submission ec5e53e3-0ab0-40cf-bc4d-114189c54133；staple/validate、只读挂载根目录、包内 deep/strict 签名及 DMG/tar.gz SHA256 校验通过。卸载命令退出 0，后续无挂载与文件占用。证据 candidate/notarization-dmg-retry.json、candidate/dmg-settings-inspection.json、candidate/SHA256SUMS.txt。
+- 来源仍为 19766a6，未包含后续产品修复；此包不是最终交付。候选脚本新增清理前已连接映像检查，避免删除仍在使用的旧 DMG；Python 语法及原两项清理测试通过。

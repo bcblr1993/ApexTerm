@@ -44,6 +44,11 @@ def main():
     running = subprocess.check_output(['ps', '-axo', 'comm='], text=True).splitlines()
     if any('/candidate/ApexTerm Candidate.app/' in line for line in running):
         raise SystemExit('Close the previous candidate before rebuilding.')
+    images = plistlib.loads(subprocess.check_output(['hdiutil', 'info', '-plist']))
+    previous_dmg = OUT / 'ApexTerm-Candidate-arm64.dmg'
+    if any(pathlib.Path(image.get('image-path', '')).resolve() == previous_dmg.resolve()
+           for image in images.get('images', [])):
+        raise SystemExit('Detach the previous candidate disk image before rebuilding.')
     build = int(datetime.date.today().strftime("%Y%m%d") + "01")
     if (APP / 'Contents/Info.plist').is_file():
         with (APP / 'Contents/Info.plist').open('rb') as file:

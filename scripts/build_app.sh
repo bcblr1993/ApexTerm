@@ -84,6 +84,8 @@ cat << EOF > "${CONTENTS_DIR}/Info.plist"
     <string>${BUILD_NUMBER}</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>连接你选择的局域网 SSH 服务器，并进行 SFTP 文件传输和系统监控。</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSSupportsAutomaticGraphicsSwitching</key>

@@ -65,6 +65,7 @@ def main():
                       'CFBundleName': 'ApexTerm Candidate', 'CFBundleDisplayName': 'ApexTerm Candidate',
                       'CFBundleIconFile': 'ApexTerm', 'CFBundlePackageType': 'APPL',
                       'CFBundleShortVersionString': version, 'CFBundleVersion': str(build),
+                      'NSLocalNetworkUsageDescription': '连接你选择的局域网 SSH 服务器，并进行 SFTP 文件传输和系统监控。',
                       'LSMinimumSystemVersion': '14.0', 'NSHighResolutionCapable': True, 'NSRequiresAquaSystemAppearance': False}, file)
     run('python3', 'scripts/verify_bundle_security.py', str(APP))
     run('codesign', '--force', '--deep', '--sign', IDENTITY, '--options', 'runtime', '--timestamp', str(APP))

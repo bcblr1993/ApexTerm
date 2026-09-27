@@ -286,3 +286,10 @@
 - 实际文件右键下载至 Downloads；任务中心同时显示上传(1)/下载(1)，两条记录均完成。下载文件存在，源/远端/下载 SHA256 均为 59f410ae5e17962412e2aed4f815918f634932f2abf084f00bb638c4db017850。
 - real-click-roundtrip-proof.json 与 real-click-roundtrip-records.txt 记录哈希及任务状态；点击下载记录“在访达中显示”实际选中下载文件。
 - 未覆盖双向拖拽、取消或重复文件处理；直接启动 QA 仍不替代正常应用启动验收。
+
+### 验收实例生命周期与正常启动权限排查
+
+- 清理本轮遗留的 34 个 QA 应用及 19 个子进程，确认宿主无 QA 可执行进程残留。验收构建脚本现在在发现任何已有 QA 实例时停止；绝对与相对可执行路径均已验证，且停止发生在编译与创建 bundle 之前。
+- QA 应用关闭最后一个窗口后退出；LifecycleCheck 编译无诊断，尚未进行该退出行为的 GUI 复验。
+- 候选、正式与 QA 打包入口补充 NSLocalNetworkUsageDescription，解释 SSH/SFTP/监控的本地网络用途。Python/Shell 语法检查、候选脚本两项测试通过。
+- Apple TN3179 说明命令行与应用正常启动可能具有不同本地网络权限归属，符合先前直接运行成功/open 失败的现象，但不证明本机根因；未修改系统授权，正常启动仍待实际验收。参考：https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy

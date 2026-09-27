@@ -37,3 +37,5 @@ Nord进一步定位：保持Nord设置重新启动候选App、打开并激活外
 2714表单Tab遍历12步已记录session-tab-flow-2714.json：可确认名称、地址、密码、标签之间循环，部分步骤工具未提供focused元素，未覆盖认证按钮、开关与底部按钮；不能宣称全键盘通过。当前系统键盘导航设置另行只读核查，不修改用户设置。
 
 颜色选择无障碍修复：SessionEditModal颜色按钮新增selected trait及已选中/未选中值。swift build通过；复用现有调试验收App，真实AX默认蓝色selected，点击绿色后仅绿色selected，其他未选中（main-command-smoke/color-ax-default.txt、color-ax-green.txt），未保存表单并退出。签名候选2714尚未包含此源码修复。
+
+会话搜索复核：2714无匹配后清空恢复三个会话；空状态英文已改为中文原生ContentUnavailableView。Debug编译通过，复用调试App真实画面中文字换行完整、AX文案对应，清空后恢复会话（main-command-smoke/search-empty-localized.jpeg/.txt）。此修复尚未进入2714。

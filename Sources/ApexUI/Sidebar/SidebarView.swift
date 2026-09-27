@@ -160,7 +160,8 @@ public struct SidebarView: View {
                         $0.host.localizedCaseInsensitiveContains(searchFilter) ||
                         $0.tags.contains(where: { $0.localizedCaseInsensitiveContains(searchFilter) })
                     }) {
-                        ContentUnavailableView.search(text: searchFilter)
+                        ContentUnavailableView("未找到匹配会话", systemImage: "magnifyingglass",
+                                               description: Text("检查会话名称、标签或主机地址，或清空搜索重试。"))
                     }
                     
                     if !store.snippets.isEmpty {

@@ -121,6 +121,17 @@ struct ApexTermApp: App {
                 .keyboardShortcut("f", modifiers: .command)
             }
             
+            CommandGroup(replacing: .saveItem) {
+                Button("关闭当前窗格 / 标签页") {
+                    if activeTabs.contains(where: { $0.id == selectedTabId }) {
+                        closeCurrentConnection()
+                    } else {
+                        NSApplication.shared.keyWindow?.performClose(nil)
+                    }
+                }
+                .keyboardShortcut("w", modifiers: .command)
+            }
+
             CommandMenu(L10n.menuSession) {
                 Button("复制此会话到新标签页") {
                     duplicateCurrentSession()
@@ -130,19 +141,9 @@ struct ApexTermApp: App {
                 Divider()
                 
                 Button(L10n.menuDisconnect) {
-                    if let current = activeTabs.first(where: { $0.id == selectedTabId }) {
-                        if current.panes.count > 1, let activeId = current.activePaneId {
-                            current.closePane(id: activeId)
-                        } else {
-                            for pane in current.panes {
-                                Task { await pane.sshClient.disconnect() }
-                            }
-                            activeTabs.removeAll(where: { $0.id == current.id })
-                            selectedTabId = activeTabs.first?.id
-                        }
-                    }
+                    closeCurrentConnection()
                 }
-                .keyboardShortcut("w", modifiers: .command)
+                .disabled(!activeTabs.contains(where: { $0.id == selectedTabId }))
                 
                 Divider()
                 
@@ -227,6 +228,19 @@ struct ApexTermApp: App {
         }
     }
     
+    private func closeCurrentConnection() {
+        guard let current = activeTabs.first(where: { $0.id == selectedTabId }) else { return }
+        if current.panes.count > 1, let activeId = current.activePaneId {
+            current.closePane(id: activeId)
+        } else {
+            for pane in current.panes {
+                Task { await pane.sshClient.disconnect() }
+            }
+            activeTabs.removeAll(where: { $0.id == current.id })
+            selectedTabId = activeTabs.first?.id
+        }
+    }
+
     private func duplicateCurrentSession() {
         guard let current = activeTabs.first(where: { $0.id == selectedTabId }) else { return }
         let session = current.session

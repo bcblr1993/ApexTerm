@@ -34,6 +34,7 @@ final class TerminalCompositionTests: XCTestCase {
     }
     @MainActor
     func testPreeditRendersWithoutChangingRemoteOutputAndDisappearsOnCancel() throws {
+        _ = NSApplication.shared
         let terminal = NativeTerminalView()
         terminal.frame = NSRect(x: 0, y: 0, width: 420, height: 100)
         terminal.isVerticallyResizable = false
@@ -56,6 +57,7 @@ final class TerminalCompositionTests: XCTestCase {
             context.cgContext.scaleBy(x: 1, y: -1)
             NSGraphicsContext.current = NSGraphicsContext(cgContext: context.cgContext, flipped: true)
             terminal.draw(terminal.bounds)
+            XCTAssertNotNil(NSGraphicsContext.current, "AppKit must retain the offscreen drawing context")
             context.flushGraphics()
             return try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
         }

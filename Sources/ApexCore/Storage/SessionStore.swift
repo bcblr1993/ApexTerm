@@ -18,7 +18,7 @@ public final class SessionStore: ObservableObject {
             self.baseDirectory = baseDirectory
         } else {
             let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            self.baseDirectory = appSupport.appendingPathComponent("ApexTerm", isDirectory: true)
+            self.baseDirectory = Self.defaultDirectory(appSupport: appSupport, bundleIdentifier: Bundle.main.bundleIdentifier)
         }
         
         try? fileManager.createDirectory(at: self.baseDirectory, withIntermediateDirectories: true)
@@ -27,6 +27,11 @@ public final class SessionStore: ObservableObject {
         if triggers.isEmpty {
             seedDefaultTriggers()
         }
+    }
+
+    static func defaultDirectory(appSupport: URL, bundleIdentifier: String?) -> URL {
+        let name = bundleIdentifier == "com.apexterm.candidate" ? "ApexTerm Candidate" : "ApexTerm"
+        return appSupport.appendingPathComponent(name, isDirectory: true)
     }
     
     private var sessionsFileURL: URL {
@@ -124,4 +129,3 @@ public final class SessionStore: ObservableObject {
         saveAll()
     }
 }
-

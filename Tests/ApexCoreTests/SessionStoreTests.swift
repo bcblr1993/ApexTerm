@@ -2,6 +2,22 @@ import XCTest
 @testable import ApexCore
 
 final class SessionStoreTests: XCTestCase {
+    @MainActor
+    func testCandidateStoreDoesNotLoadOrModifyProductionSessions() throws {
+        let productionURL = SessionStore.defaultDirectory(appSupport: tempDirectory, bundleIdentifier: "com.apexterm.app")
+        let candidateURL = SessionStore.defaultDirectory(appSupport: tempDirectory, bundleIdentifier: "com.apexterm.candidate")
+        XCTAssertNotEqual(productionURL, candidateURL)
+        XCTAssertEqual(productionURL.lastPathComponent, "ApexTerm")
+        let production = SessionStore(baseDirectory: productionURL)
+        production.addSession(Session(name: "Existing", host: "192.0.2.1", username: "demo", authMethod: .agent))
+        let file = productionURL.appendingPathComponent("sessions.json")
+        let original = try Data(contentsOf: file)
+        let candidate = SessionStore(baseDirectory: candidateURL)
+        XCTAssertTrue(candidate.sessions.isEmpty)
+        candidate.addSession(Session(name: "Candidate", host: "192.0.2.2", username: "qa", authMethod: .agent))
+        XCTAssertEqual(try Data(contentsOf: file), original)
+        XCTAssertEqual(SessionStore(baseDirectory: productionURL).sessions.map(\.name), ["Existing"])
+    }
     
     private var tempDirectory: URL!
     

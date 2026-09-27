@@ -44,6 +44,9 @@ class UIReleaseGateTests(unittest.TestCase):
             self.assertEqual((reports[0] / 'run-status.txt').read_text(),
                              f'stage={"prerequisites-passed" if successful else "prerequisites"}\nexit_code={result.returncode}\n')
             self.assertTrue((reports[0] / 'source-commit.txt').read_text().strip())
+            self.assertEqual((reports[0] / 'ApexTermUITests.swift').read_bytes(),
+                             (ROOT / 'UITests/ApexTermUITests.swift').read_bytes())
+            self.assertTrue((reports[0] / 'test-source-sha256.txt').read_text().strip())
             return result.stdout + result.stderr
 
     def test_missing_real_host_stops_gate(self):

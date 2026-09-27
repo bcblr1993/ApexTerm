@@ -18,6 +18,8 @@ finish_report() {
 }
 trap finish_report EXIT
 git rev-parse HEAD > "$REPORT_DIR/source-commit.txt"
+cp UITests/ApexTermUITests.swift "$REPORT_DIR/ApexTermUITests.swift"
+shasum -a 256 UITests/ApexTermUITests.swift > "$REPORT_DIR/test-source-sha256.txt"
 # Requires an unlocked macOS desktop and Xcode UI-testing permissions.
 # Failure, missing tools or denied permissions stop the release; no silent fallback.
 command -v xcodebuild >/dev/null
@@ -76,6 +78,10 @@ xcrun xcresulttool get test-results summary --path "$REPORT_DIR/UI.xcresult" --c
     > "$REPORT_DIR/summary.json"
 xcrun xcresulttool get test-results tests --path "$REPORT_DIR/UI.xcresult" --compact \
     > "$REPORT_DIR/test-cases.json"
-python3 scripts/verify_ui_results.py "$REPORT_DIR/summary.json" --details "$REPORT_DIR/test-cases.json"
+if ! cmp -s UITests/ApexTermUITests.swift "$REPORT_DIR/ApexTermUITests.swift"; then
+    echo 'UI test source changed during acceptance; rerun before packaging.' >&2
+    exit 1
+fi
+python3 scripts/verify_ui_results.py "$REPORT_DIR/summary.json" --details "$REPORT_DIR/test-cases.json" --source "$REPORT_DIR/ApexTermUITests.swift"
 STAGE=passed
 echo "UI acceptance passed: $REPORT_DIR/UI.xcresult"

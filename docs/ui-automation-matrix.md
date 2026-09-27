@@ -2,7 +2,7 @@
 
 每次正式发布与签名候选构建必须执行 `bash scripts/test_ui_acceptance.sh`。入口已接入 `scripts/build_app.sh` 和 `scripts/build_candidate.py`，任何编译、权限、连接或断言失败都停止后续打包，不允许跳过。两个构建入口在清理旧产物或启动虚拟机之前先执行--preflight-only；预检查通过只证明前置条件，不替代后面的全量UI执行。CI编译测试工程；本地发布机执行实际窗口测试，两者不可互相替代。
 
-测试工程为 `UITests/ApexTermUITests.xcodeproj`，使用XCUITest实际点击、输入和键盘操作。隔离QA宿主链接当前Release产品模块，每次自动化启动使用UUID独立会话目录，恢复QA默认偏好，不读取正式应用会话库。偏好重置要求QA应用标识前缀，避免应用标识配置错误时改写正式偏好。系统主题、输入法、安全权限不由脚本静默修改。报告按每次运行独立保存到 `outputs/ui-acceptance/<时间>-<PID>/UI.xcresult`，包含截图、断言和失败日志；前置条件检查即创建报告，run-status.txt记录失败阶段与退出码，构建和执行分别留日志；不进入分发包或Git。
+测试工程为 `UITests/ApexTermUITests.xcodeproj`，使用XCUITest实际点击、输入和键盘操作。隔离QA宿主链接当前Release产品模块，每次自动化启动使用UUID独立会话目录，恢复QA默认偏好，不读取正式应用会话库。偏好重置要求QA应用标识前缀，避免应用标识配置错误时改写正式偏好。系统主题、输入法、安全权限不由脚本静默修改。报告按每次运行独立保存到 `outputs/ui-acceptance/<时间>-<PID>/UI.xcresult`，包含截图、断言和失败日志；前置条件检查即创建报告，run-status.txt记录失败阶段与退出码，测试源码快照和SHA256随报告保存，运行期间测试源码变化会拒绝打包，构建和执行分别留日志；不进入分发包或Git。
 
 运行前需要解锁的macOS桌面、完整Xcode、已通过用户认证开启的Automation Mode、可无交互SSH登录的专用测试机器。测试主机通过 `APEX_UI_TEST_HOST`、`APEX_UI_TEST_USER` 配置，不在代码内保留地址或凭据。缺少配置直接失败，真实连接测试没有skip回退。
 

@@ -306,3 +306,11 @@
 - DMG挂载卷名ApexTerm Candidate，根目录仅候选应用及Applications链接；包内严格签名/票据通过，detach退出0。证据candidate/dmg-current-inspection.json。
 - VM启用Gatekeeper，安装2707于 /tmp/apexterm-current.msHjeA，严格签名/票据/assess接受；LaunchServices正常启动实际进程90173来自该新路径，随后仅退出此实例，无残留。未将进程启动当作界面验收。证据candidate/vm-current-install.log、candidate/vm-current-launch-proof.json。
 - QA最后窗口关闭已通过实际AX点击与ps核验，qa/lifecycle-close-proof.json。正常启动ad-hoc QA仍No route to host，同期CLI SSH成功；Developer ID签名后窗口读取两次超时，工具禁止访问UserNotificationCenter，结果未验证，已退出唯一QA实例。没有修改系统授权。证据qa/normal-launch-network-failure.txt、qa/developer-id-normal-launch-diagnostic.json。
+
+### 隔离会话与产品键盘流程复验
+
+- f7d9563候选2026092708完成135项测试（4公网跳过、0失败）、5真实VM测试、8 Release基准、应用/DMG公证与票据及SHA256检查。实际候选启动显示0主机，正式目录三个文件的SHA256保持不变；证据candidate/production-store-isolation-proof.json。后续命令修复尚未纳入2708，不能将其作为最终源码交付。
+- 2c458a9空库⌘T打开新增面板；本体Debug smoke通过GUI保存RFC示例192.0.2.10 Mock会话、连接及再次⌘T复制第二标签。证据main-command-smoke/command-t-proof.txt、duplicate-tabs-proof.txt。
+- 2b42d41将默认Close及会话⌘W合并为唯一saveItem命令，Debug编译通过。实际2标签→1标签且窗口保留；左右/上下2窗格→1窗格，标签保留且焦点落在剩余终端。证据main-command-smoke/command-w-fixed-before.txt、command-w-fixed-after.txt、pane-close-proof.json。仅一个验收实例，结束后ps确认无残留。
+- SwiftUI模板短录制/导出已可用；5秒真实分屏/标签操作trace正常退出，约150MB。18518条SwiftUI更新关联ApexTerm PID93619，视图更新P95 0.036041ms、最大3.864041ms；这不是显示帧持续时间。hitches-updates为空，显示帧仍未关联应用，不计帧P95通过。证据interaction-app-update-analysis.json。
+- 系统本地网络列表只读检查可见ApexTerm.app授权on；独立候选条目未识别，不能推断其授权。未切换设置。证据local-network-permission-observation.json。

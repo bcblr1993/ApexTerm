@@ -75,8 +75,10 @@ public final class UpdateManager: ObservableObject {
         let clean1 = v1.trimmingCharacters(in: CharacterSet(charactersIn: "vV \t\r\n"))
         let clean2 = v2.trimmingCharacters(in: CharacterSet(charactersIn: "vV \t\r\n"))
         
-        let parts1 = clean1.split(separator: "-")[0].split(separator: ".").compactMap { Int($0) }
-        let parts2 = clean2.split(separator: "-")[0].split(separator: ".").compactMap { Int($0) }
+        guard let core1 = clean1.split(separator: "-").first,
+              let core2 = clean2.split(separator: "-").first else { return false }
+        let parts1 = core1.split(separator: ".").compactMap { Int($0) }
+        let parts2 = core2.split(separator: ".").compactMap { Int($0) }
         
         let maxCount = max(parts1.count, parts2.count)
         for i in 0..<maxCount {
@@ -154,6 +156,10 @@ public final class UpdateManager: ObservableObject {
         }
         
         let version = gh.tag_name.trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
+        guard let core = version.split(separator: "-", omittingEmptySubsequences: false).first else { return nil }
+        let components = core.split(separator: ".", omittingEmptySubsequences: false)
+        guard components.count == 3,
+              components.allSatisfy({ !$0.isEmpty && $0.allSatisfy(\.isNumber) && Int($0) != nil }) else { return nil }
         let title = gh.name ?? "ApexTerm \(gh.tag_name)"
         let notes = gh.body ?? "包含稳定性增强与性能优化。"
         let date = gh.published_at?.prefix(10).description ?? ""

@@ -22,6 +22,21 @@ final class UpdateCheckTests: XCTestCase {
         XCTAssertFalse(manager.isChecking)
     }
 
+    func testInvalidReleaseVersionsFailWithoutReportingLatest() async throws {
+        for version in ["", "v", "---", "v1.two.3", "v1..3", "v-1.2.3"] {
+            let data = try JSONSerialization.data(withJSONObject: ["tag_name": version, "html_url": "https://example.com/release"])
+            let manager = UpdateManager { request in
+                (data, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+            }
+            await manager.checkForUpdates(manual: true)
+            guard case .failed = manager.status else { return XCTFail("Invalid version accepted: \(version)") }
+            XCTAssertFalse(manager.isChecking)
+            XCTAssertNil(manager.latestRelease)
+        }
+        XCTAssertFalse(UpdateManager.isVersion("", higherThan: "1.2.0"))
+        XCTAssertFalse(UpdateManager.isVersion("1.2.0", higherThan: ""))
+    }
+
     func testManualNetworkFailureIsFailure() async {
         let manager = UpdateManager { _ in throw URLError(.notConnectedToInternet) }
         await manager.checkForUpdates(manual: true)

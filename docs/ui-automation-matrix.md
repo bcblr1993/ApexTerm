@@ -21,7 +21,7 @@ APEX_UI_TEST_HOST=<测试主机> APEX_UI_TEST_USER=<测试用户> bash scripts/t
 | 复制与组合回调 | TerminalCopyAndContextMenuTests、TerminalCompositionTests | 快捷键字节路由、组合提交/取消；回调测试不代替系统输入法 |
 | SFTP完整流程 | VMIntegrationTests、SFTPOperationsTests | 真实协议与字节完整性；双向拖拽、记录可见路径、新建/重命名/删除/重复/失败/取消的GUI自动化待补 |
 | 编辑器 | testEditorUnsavedCancelSaveAndClose、testEditorSaveFailureKeepsChanges、testEditorReloadCancelAndDiscard、testEditorChangesDuringSaveRemainUnsaved、testEditorKeyboardFindUndoAndSave；QuickEditorAndSFTPItemTests；主题页面截图 | 已编写真实sheet修改、未保存关闭取消、保存禁用/完成/关闭、失败保留内容断言；编译通过但Automation Mode未授权，尚未运行。已编写重载取消保留草稿/放弃后远端内容替换断言；另覆盖保存途中继续编辑后仍提示未保存、再次保存后关闭；新增原生查找不改变内容、撤销/重做及⌘S/⌘W流程断言；失败恢复重试待补 |
-| 主窗口 | UIStateTests、SplitPaneIntegrationTests；主题页面截图 | 状态与分屏模型；全屏、最小尺寸、非激活、分隔比例与标签关闭实际窗口断言待补 |
+| 主窗口 | testTerminalSplitOrientationAndClose；UIStateTests、SplitPaneIntegrationTests；主题页面截图 | 新增受控终端左右/上下分屏的窗口位置、两窗格计数及关闭后单窗格断言；状态与分屏模型已有单元测试；全屏、最小尺寸、非激活、分隔比例与标签关闭实际窗口断言待补 |
 | 系统无障碍 | 既有AX操作证据与主题对比度测试 | VoiceOver、全键盘访问、增强对比度、减少透明度/动态效果、系统外观尚未转为自动化；需隔离桌面及授权，不修改日常系统设置 |
 | 性能稳定性 | test_vm_acceptance.sh、FullPerformanceBenchmarkTests；外部RSS采样工具 | 八项基准已有发布门禁；30分钟真实负载、应用归属帧P95与同条件基线尚需接入自动化报告与阈值 |
 

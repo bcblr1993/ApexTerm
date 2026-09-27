@@ -200,6 +200,38 @@ final class ApexTermUITests: XCTestCase {
         capture("sftp-path-submitted")
     }
 
+    func testTerminalSplitOrientationAndClose() {
+        launch("main", extra: ["APEX_QA_CONNECT": "1"])
+        XCTAssertTrue(app.textViews.firstMatch.waitForExistence(timeout: 10))
+        let split = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "分屏")).firstMatch
+        XCTAssertTrue(split.isHittable)
+        split.click()
+        app.menuItems["垂直分屏"].click()
+        let twoPanes = XCTNSPredicateExpectation(predicate: NSPredicate { [app] _, _ in
+            app?.textViews.count == 2
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [twoPanes], timeout: 10), .completed)
+        let left = app.textViews.element(boundBy: 0).frame
+        let right = app.textViews.element(boundBy: 1).frame
+        XCTAssertGreaterThan(abs(left.midX - right.midX), 100)
+        XCTAssertLessThan(abs(left.midY - right.midY), 30)
+        capture("terminal-split-vertical")
+        split.click()
+        app.menuItems["水平分屏"].click()
+        let top = app.textViews.element(boundBy: 0).frame
+        let bottom = app.textViews.element(boundBy: 1).frame
+        XCTAssertGreaterThan(abs(top.midY - bottom.midY), 50)
+        XCTAssertLessThan(abs(top.midX - bottom.midX), 30)
+        capture("terminal-split-horizontal")
+        app.buttons["关闭此分屏"].firstMatch.click()
+        let onePane = XCTNSPredicateExpectation(predicate: NSPredicate { [app] _, _ in
+            app?.textViews.count == 1
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [onePane], timeout: 5), .completed)
+        XCTAssertFalse(app.buttons["关闭此分屏"].exists)
+        capture("terminal-split-closed")
+    }
+
     func testRealSSHConfiguredHostIsMandatory() throws {
         let environment = ProcessInfo.processInfo.environment
         guard let host = environment["APEX_UI_TEST_HOST"], !host.isEmpty,

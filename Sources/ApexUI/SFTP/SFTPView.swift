@@ -257,6 +257,23 @@ public struct SFTPView: View {
             HStack {
                 TextField(L10n.filterFiles, text: $searchFilter)
                     .focused($isFilterFocused)
+                    .onExitCommand {
+                        // Restore table focus after SwiftUI removes the search field.
+                        isFilterFocused = false
+                        isFilterVisible = false
+                        searchFilter = ""
+                        Task { @MainActor in
+                            await Task.yield()
+                            guard let window = windowReference.window else { return }
+                            func fileTable(in view: NSView) -> NSTableView? {
+                                if let table = view as? NSTableView, table.tableColumns.count == 4 { return table }
+                                return view.subviews.lazy.compactMap { fileTable(in: $0) }.first
+                            }
+                            if let content = window.contentView, let table = fileTable(in: content) {
+                                window.makeFirstResponder(table)
+                            }
+                        }
+                    }
                     .task {
                         await Task.yield()
                         if isFilterVisible { isFilterFocused = true }

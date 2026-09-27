@@ -88,3 +88,10 @@
 - 实现提交 cfe61a7 的 CI run 36291260780 已完成成功；后续仅验收文档提交 224530d 的 CI 仍独立跟踪。
 
 - 有界帧采样复试：xctrace Animation Hitches 请求 5 秒录制，超过 35 秒仍未完成，保护逻辑终止该录制进程；`frame-resumed-result.json` 记录退出码 1。未得到有效帧时间，仍不计为通过。下一步需更换可正常导出的采样路径并覆盖实际交互。
+
+
+## 文件筛选键盘闭环
+
+- 实际窗口发现 Escape 不退出文件筛选，已补齐关闭、清空筛选与文件表格焦点恢复。等待 SwiftUI 移除输入框后恢复焦点，避免焦点落回窗口。
+- KeyboardFocus 真实窗口按 ⌘L → ⌘F → 输入 nginx → Escape：筛选隐藏、完整目录恢复，焦点为文件 outline；Down 选中首行后 ⌘F 再次进入筛选输入框。证据 `qa/keyboard-filter-exit.txt`。
+- `tests-filter-escape.log` 全量 130 项测试零失败，9 项未配置网络环境跳过；编译无 warning/error。此次仅文件筛选交互变更，不将旧签名候选包声称为包含该修复的最终包，收尾时须更新候选包。

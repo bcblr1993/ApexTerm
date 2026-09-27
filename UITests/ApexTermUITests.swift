@@ -119,6 +119,19 @@ final class ApexTermUITests: XCTestCase {
         XCTAssertFalse(app.sheets.firstMatch.exists)
     }
 
+    func testUpdateAvailableVersionNotesAndEscape() {
+        launch("update", extra: ["APEX_QA_UPDATE_STATE": "available"])
+        XCTAssertTrue(app.staticTexts["发现新版本可用"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "新版本: v9.9.9")).firstMatch.exists)
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "UI验收更新说明")).firstMatch.exists)
+        XCTAssertTrue(app.buttons["前往下载更新"].isHittable)
+        XCTAssertTrue(app.buttons["稍后提醒"].isHittable)
+        capture("update-available-version-notes")
+        app.typeKey(XCUIKeyboardKey.escape, modifierFlags: [])
+        XCTAssertFalse(app.sheets.firstMatch.exists)
+        XCTAssertTrue(app.buttons["显示更新弹窗"].isHittable)
+    }
+
     func testSFTPEmptyLoadingAndFailureStates() {
         for mode in ["empty", "loading", "failure"] {
             launch("main", extra: ["APEX_QA_FILES": mode, "APEX_QA_CONNECT": "1"])

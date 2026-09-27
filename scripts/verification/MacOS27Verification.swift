@@ -184,6 +184,7 @@ struct ThemeVerificationApp: App {
                     switch ProcessInfo.processInfo.environment["APEX_QA_UPDATE_STATE"] {
                     case "checking": UpdateManager.shared.status = .checking
                     case "failed": UpdateManager.shared.status = .failed("验收模拟：更新服务器暂时不可用，请稍后重试。")
+                    case "available": UpdateManager.shared.status = .updateAvailable(ReleaseInfo(version: "9.9.9", releaseDate: "2026-09-27", title: "UI验收版本", notes: "UI验收更新说明：保留主题与会话设置。", downloadUrl: "https://example.com/apexterm-ui-fixture"))
                     default: UpdateManager.shared.status = .upToDate(currentVersion: "1.3.0")
                     }
                 }

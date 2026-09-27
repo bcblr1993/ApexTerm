@@ -399,6 +399,38 @@ final class ApexTermUITests: XCTestCase {
         capture("sftp-hidden-files-keyboard-hidden")
     }
 
+    func testSFTPDeleteConfirmationCancelAndRemoveOwnFixture() {
+        launch("main", extra: ["APEX_QA_CONNECT": "1"])
+        XCTAssertTrue(app.staticTexts["nginx.conf"].waitForExistence(timeout: 10))
+        app.buttons["更多文件操作"].click()
+        app.menuItems["新建文件"].click()
+        let name = app.textFields["文件名 (例如 test.sh)"]
+        XCTAssertTrue(name.waitForExistence(timeout: 5))
+        name.click()
+        name.typeText("ui-own-delete-fixture.txt")
+        app.buttons["创建"].click()
+        let fixture = app.staticTexts["ui-own-delete-fixture.txt"]
+        XCTAssertTrue(fixture.waitForExistence(timeout: 10))
+        fixture.click()
+        fixture.rightClick()
+        app.menuItems["删除"].click()
+        let confirm = app.buttons["永久删除「ui-own-delete-fixture.txt」"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+        capture("sftp-delete-confirmation")
+        app.buttons["取消"].click()
+        XCTAssertTrue(fixture.exists)
+        XCTAssertFalse(confirm.exists)
+        fixture.click()
+        fixture.rightClick()
+        app.menuItems["删除"].click()
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+        confirm.click()
+        let removed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: fixture)
+        XCTAssertEqual(XCTWaiter.wait(for: [removed], timeout: 10), .completed)
+        XCTAssertTrue(app.staticTexts["nginx.conf"].exists)
+        capture("sftp-own-fixture-deleted")
+    }
+
     func testRealSSHConfiguredHostIsMandatory() throws {
         let environment = ProcessInfo.processInfo.environment
         guard let host = environment["APEX_UI_TEST_HOST"], !host.isEmpty,

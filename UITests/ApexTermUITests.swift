@@ -172,6 +172,34 @@ final class ApexTermUITests: XCTestCase {
         capture("sftp-retry-restored")
     }
 
+    func testSFTPPathDraftCancelEmptyAndSubmit() {
+        launch("main", extra: ["APEX_QA_FILES": "normal", "APEX_QA_CONNECT": "1"])
+        XCTAssertTrue(app.staticTexts["nginx.conf"].waitForExistence(timeout: 10))
+        let path = app.textFields["远程路径"]
+        XCTAssertTrue(path.exists)
+        let original = path.value as? String
+        XCTAssertNotNil(original)
+        path.click()
+        path.typeKey("a", modifierFlags: .command)
+        path.typeText("/ui-unsubmitted-draft")
+        path.typeKey(XCUIKeyboardKey.escape, modifierFlags: [])
+        XCTAssertEqual(path.value as? String, original)
+        XCTAssertTrue(app.staticTexts["nginx.conf"].exists)
+        path.click()
+        path.typeKey("a", modifierFlags: .command)
+        path.typeText("   ")
+        path.typeKey(XCUIKeyboardKey.return, modifierFlags: [])
+        XCTAssertEqual(path.value as? String, original)
+        path.click()
+        path.typeKey("a", modifierFlags: .command)
+        path.typeText("  /ui-synthetic-directory  ")
+        path.typeKey(XCUIKeyboardKey.return, modifierFlags: [])
+        let submitted = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "/ui-synthetic-directory"), object: path)
+        XCTAssertEqual(XCTWaiter.wait(for: [submitted], timeout: 5), .completed)
+        XCTAssertTrue(app.staticTexts["nginx.conf"].waitForExistence(timeout: 10))
+        capture("sftp-path-submitted")
+    }
+
     func testRealSSHConfiguredHostIsMandatory() throws {
         let environment = ProcessInfo.processInfo.environment
         guard let host = environment["APEX_UI_TEST_HOST"], !host.isEmpty,

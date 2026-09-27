@@ -5,6 +5,13 @@ import re
 import sys
 
 root = pathlib.Path(sys.argv[1]) / 'Contents'
+for required in ('MacOS', 'Resources'):
+    if not (root / required).is_dir():
+        print(f'Missing required bundle directory: Contents/{required}', file=sys.stderr)
+        sys.exit(1)
+if not any(path.is_file() for path in (root / 'MacOS').iterdir()):
+    print('Bundle MacOS directory contains no executable files', file=sys.stderr)
+    sys.exit(1)
 private_ip = re.compile(rb'(?<![\d.])(?:10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+)(?![\d.])')
 key_marker = re.compile(rb'-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----')
 failed = False

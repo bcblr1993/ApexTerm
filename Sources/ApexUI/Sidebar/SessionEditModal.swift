@@ -66,9 +66,12 @@ public struct SessionEditModal: View {
                 // 1. 主机与连接信息
                 Section(L10n.hostDetailsSection) {
                     TextField(L10n.sessionNameLabel, text: $name, prompt: Text(L10n.sessionNamePlaceholder))
+                    .accessibilityLabel(L10n.sessionNameLabel)
                     
                     TextField(L10n.hostLabel, text: $host, prompt: Text(L10n.hostPlaceholder))
+                    .accessibilityLabel(L10n.hostLabel)
                     TextField(L10n.portLabel, text: $port)
+                    .accessibilityLabel(L10n.portLabel)
                     if !port.isEmpty && !isValidPort {
                         Text("端口请输入 1–65535 之间的数字")
                             .font(.caption)
@@ -76,6 +79,7 @@ public struct SessionEditModal: View {
                     }
                     
                     TextField(L10n.usernameLabel, text: $username)
+                    .accessibilityLabel(L10n.usernameLabel)
                 }
                 
                 // 2. 身份认证 (密码 / 密钥)
@@ -92,9 +96,11 @@ public struct SessionEditModal: View {
                         HStack {
                             if isPasswordVisible {
                                 TextField(L10n.passwordLabel, text: $password, prompt: Text(L10n.passwordPlaceholder))
+                                .accessibilityLabel(L10n.passwordLabel)
                                     .font(.system(.body, design: .monospaced))
                             } else {
                                 SecureField(L10n.passwordLabel, text: $password, prompt: Text(L10n.passwordPlaceholder))
+                                .accessibilityLabel(L10n.passwordLabel)
                                     .font(.system(.body, design: .monospaced))
                             }
                             
@@ -122,7 +128,9 @@ public struct SessionEditModal: View {
                 // 3. 分组与组织
                 Section(L10n.organizationSection) {
                     TextField(L10n.folderLabel, text: $folder)
+                    .accessibilityLabel(L10n.folderLabel)
                     TextField(L10n.tagsLabel, text: $tags, prompt: Text(L10n.tagsPlaceholder))
+                    .accessibilityLabel(L10n.tagsLabel)
                     HStack(spacing: 9) {
                         Text("标识颜色")
                         Spacer()

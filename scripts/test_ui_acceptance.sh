@@ -64,6 +64,7 @@ for target in targets:
     target.setdefault('EnvironmentVariables', {}).update({
         'APEX_UI_TEST_HOST': os.environ['APEX_UI_TEST_HOST'],
         'APEX_UI_TEST_USER': os.environ['APEX_UI_TEST_USER'],
+        'APEX_UI_APP_PATH': str(pathlib.Path('outputs/macos27/qa/Verification.app').resolve()),
     })
 # Keep alongside build products so __TESTROOT__ paths still resolve correctly.
 source.write_bytes(plistlib.dumps(config))

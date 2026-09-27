@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run UI tests on a dedicated Mac or one existing, unlocked Tart guest."""
 import os
+import re
 from pathlib import Path
 import shlex
 import subprocess
@@ -13,6 +14,9 @@ def run(arguments, **kwargs):
 
 def main():
     report = Path(sys.argv[1]).resolve()
+    selections = sys.argv[2:]
+    if any(not re.fullmatch(r'ApexTermUITests/ApexTermUITests/test[A-Za-z0-9_]+', selection) for selection in selections):
+        raise ValueError('Invalid diagnostic test identifier')
     root = Path(__file__).resolve().parents[1]
     user = os.environ.get('APEX_UI_RUNNER_USER', os.environ.get('USER', ''))
     if not user or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-' for c in user):
@@ -39,10 +43,16 @@ def main():
 cd "$1"
 tar -xzf input.tar.gz
 mkdir -p reports
-/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f outputs/macos27/qa/Verification.app
-xcodebuild build-for-testing -project UITests/ApexTermUITests.xcodeproj -scheme ApexTermUITests -destination 'platform=macOS,arch=arm64' -derivedDataPath outputs/ui-acceptance/RemoteDerivedData -jobs 2 2>&1 | tee reports/remote-build.log
+xcodebuild build-for-testing -project UITests/ApexTermUITests.xcodeproj -scheme ApexTermUITests -destination 'platform=macOS,arch=arm64' -derivedDataPath outputs/ui-acceptance/RemoteDerivedData -jobs 2 ONLY_ACTIVE_ARCH=YES 2>&1 | tee reports/remote-build.log
 python3 - <<'PY'
-import os, pathlib, plistlib
+import hashlib, json, os, pathlib, plistlib, uuid
+app = pathlib.Path('outputs/macos27/qa/Verification.app').resolve()
+metadata = app / 'Contents/Info.plist'
+info = plistlib.loads(metadata.read_bytes())
+assert info['CFBundleIdentifier'].startswith('com.apexterm.qa.')
+info['CFBundleIdentifier'] += '.' + uuid.uuid4().hex
+metadata.write_bytes(plistlib.dumps(info))
+pathlib.Path('reports/qa-host.json').write_text(json.dumps({'path': str(app), 'bundleIdentifier': info['CFBundleIdentifier'], 'executableSHA256': hashlib.sha256((app / 'Contents/MacOS/Verification').read_bytes()).hexdigest()}, indent=2))
 def targets(config):
     result = [t for g in config.get('TestConfigurations', []) for t in g.get('TestTargets', [])]
     return result or [v for k, v in config.items() if k != '__xctestrun_metadata__' and isinstance(v, dict)]
@@ -52,19 +62,24 @@ environment = targets(plistlib.loads(source.read_bytes()))[0].get('EnvironmentVa
 config = plistlib.loads(destination.read_bytes())
 for target in targets(config):
     target.setdefault('EnvironmentVariables', {}).update({key: environment[key] for key in ['APEX_UI_TEST_HOST', 'APEX_UI_TEST_USER']})
+    target['EnvironmentVariables']['APEX_UI_APP_PATH'] = str(app)
     if os.environ.get('SSH_AUTH_SOCK'):
         target['EnvironmentVariables']['SSH_AUTH_SOCK'] = os.environ['SSH_AUTH_SOCK']
 destination.write_bytes(plistlib.dumps(config))
 PY
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f outputs/macos27/qa/Verification.app
 files=(outputs/ui-acceptance/RemoteDerivedData/Build/Products/*.xctestrun)
 [[ ${#files[@]} == 1 ]]
-xcodebuild test-without-building -xctestrun "${files[0]}" -destination 'platform=macOS,arch=arm64' -jobs 2 -parallel-testing-enabled NO -resultBundlePath reports/UI.xcresult 2>&1 | tee reports/ui-tests.log
+xcodebuild test-without-building -xctestrun "${files[0]}" -destination 'platform=macOS,arch=arm64' -jobs 2 -parallel-testing-enabled NO -resultBundlePath reports/UI.xcresult "${@:2}" 2>&1 | tee reports/ui-tests.log
 '''
-    result = subprocess.run(ssh + [shlex.join(['bash', '-s', '--', workspace])],
+    result = subprocess.run(ssh + [shlex.join(['bash', '-s', '--', workspace] + ['-only-testing:' + selection for selection in selections])],
                             input=script, text=True)
     # Preserve failures as well as successes; the caller validates exact case results.
-    run(['scp', '-q', '-r', '-o', 'BatchMode=yes',
-         f'{target}:{workspace}/reports/.', str(report)])
+    run(ssh + [shlex.join(['tar', '-czf', workspace + '/results.tar.gz', '-C', workspace + '/reports', '.'])])
+    results = report / 'remote-results.tar.gz'
+    run(['scp', '-q', '-o', 'BatchMode=yes',
+         f'{target}:{workspace}/results.tar.gz', str(results)])
+    run(['tar', '-xzf', str(results), '-C', str(report)])
     if result.returncode:
         raise subprocess.CalledProcessError(result.returncode, 'guest UI execution')
 

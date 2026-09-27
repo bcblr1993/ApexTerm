@@ -95,6 +95,7 @@ public struct SFTPView: View {
                 }
                 .focused($isPathFocused)
                 .onExitCommand { pathInput = currentPath; isPathFocused = false }
+                .autocorrectionDisabled()
                 .textFieldStyle(.roundedBorder)
                 .font(.system(size: 12, design: .monospaced))
 
@@ -477,6 +478,7 @@ public struct SFTPView: View {
         }
         .alert("新建文件夹", isPresented: $isShowingNewFolderAlert) {
             TextField("文件夹名称", text: $newFolderName)
+                .autocorrectionDisabled()
             Button("创建") {
                 performCreateFolder(name: newFolderName)
             }
@@ -486,6 +488,7 @@ public struct SFTPView: View {
         }
         .alert("新建空白文件", isPresented: $isShowingNewFileAlert) {
             TextField("文件名 (例如 test.sh)", text: $newFileName)
+                .autocorrectionDisabled()
             Button("创建") {
                 performCreateFile(name: newFileName)
             }
@@ -495,6 +498,7 @@ public struct SFTPView: View {
         }
         .alert("重命名", isPresented: $isShowingRenameAlert) {
             TextField("新名称", text: $renameText)
+                .autocorrectionDisabled()
             Button("确定") {
                 if let item = itemToRename {
                     performRename(item: item, newName: renameText)

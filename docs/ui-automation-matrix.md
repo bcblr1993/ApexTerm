@@ -12,11 +12,11 @@ APEX_UI_TEST_HOST=<测试主机> APEX_UI_TEST_USER=<测试用户> bash scripts/t
 
 | 验收类别 | 当前自动化入口 | 验证范围与剩余项 |
 | --- | --- | --- |
-| 会话搜索 | testSearchEmptyAndRecovery | 无匹配中文状态、清空恢复；当前实现仍需实际Runner运行验证 |
+| 会话搜索 | testSearchEmptyAndRecovery | 无匹配中文状态、清空恢复；已在专用Mac真实执行通过 |
 | 会话表单 | testSessionEmptyInvalidPortAndCancel、testSessionValidPortRecoveryAndSave；ProductFeatureTests | 空表单禁用、无效端口、Escape取消；认证元数据保留有单元测试。已编写无效端口恢复有效、保存后计数增加及搜索可见断言；标签、颜色、复制表单和其余键盘路径待扩充 |
 | 更新 | testUpdateFailureCloseAndReopen、testUpdateLoadingAndSuccess、testUpdateAvailableVersionNotesAndEscape；UpdateCheckTests | 实际sheet加载/失败/成功与关闭；另覆盖受控新版本标题、版本号、更新说明、按钮可点击及Escape关闭，不点击下载链接；HTTP错误、无效响应、去重有受控测试。真实故障注入待补 |
 | 文件列表状态 | testSFTPEmptyLoadingAndFailureStates、testSFTPFilterEmptyClearAndEscape、testSFTPDirectoryFailureRetryRecovers、testSFTPPathDraftCancelEmptyAndSubmit、testSFTPHiddenFilesToggleAndKeyboardRecovery；SFTPOperationsTests | 空、加载、失败界面；新增过滤无匹配、清空恢复、匹配项/排除项及Escape收起恢复断言；新增一次失败后点击重试恢复文件列表且移除错误状态断言；新增路径草稿Escape还原、空白提交还原、有效路径去除首尾空格的窗口断言；新增菜单显示点文件、⌘⇧.隐藏点文件及普通文件保留断言；后端请求次数及终端联动仍待自动化验证 |
-| 主题与页面 | testAllThemesAndPagesRender；ThemeSupportTests | 12主题×9页面及5个设置标签遍历，增加会话/编辑器/更新/传输/导入关键控件存在或可点击断言、设置标签选中及滑块/开关检查；尚未实际运行。截图采集不等同像素/裁切验证，需补截图基线与不同窗口尺寸 |
+| 主题与页面 | testAllThemesAndPagesRender；ThemeSupportTests | 12主题×9页面及5个设置标签遍历，增加会话/编辑器/更新/传输/导入关键控件存在或可点击断言、设置标签选中及滑块/开关检查；已在专用Mac完整运行通过。截图采集不等同像素/裁切验证，需补截图基线与不同窗口尺寸 |
 | 真实终端 | testRealSSHConfiguredHostIsMandatory、testTerminalDisconnectedReconnectRestoresInput；VMIntegrationTests、PublicServerIntegrationTests | 真实键盘→PTY→输出断言，并新增实际SSH客户端断开、点击重连及重连后新标记命令输出断言，尚未Runner实跑；另新增模拟连接实际disconnect、提示/重连按钮、恢复连接后键入可见断言，不代替真实主机重连；输入法候选、UTF8粘贴、选区负载保留、分屏关联与中断恢复边界待扩充 |
 | 复制与组合回调 | TerminalCopyAndContextMenuTests、TerminalCompositionTests | 快捷键字节路由、组合提交/取消；回调测试不代替系统输入法 |
 | SFTP完整流程 | testSFTPCreateFileCancelAndSuccessfulListing、testSFTPRenameCancelAndSuccessfulListing、testSFTPCreateFolderCancelAndSuccessfulListing、testSFTPDeleteConfirmationCancelAndRemoveOwnFixture；VMIntegrationTests、SFTPOperationsTests | 已编写隔离模拟目录的新建取消不产生条目、提交后条目可见且原条目保留断言；新增文件夹取消不产生条目、名称去除首尾空格、创建后可见及双击进入路径断言；新增重命名取消保留原名、成功后新名出现/旧名消失且无关条目保留断言；真实协议与字节完整性已有集成测试；新增仅删除本用例创建的模拟文件、取消确认保留条目、确认后移除且无关条目保留断言；双向拖拽、记录可见路径、新增真实SSH用例创建专用临时目录、GUI新建文件、远端test -f确认、GUI删除并rmdir清理断言，尚未实跑；双向字节传输、重复/失败/任务取消的GUI自动化待补 |
@@ -27,10 +27,12 @@ APEX_UI_TEST_HOST=<测试主机> APEX_UI_TEST_USER=<测试用户> bash scripts/t
 | 系统无障碍 | 既有AX操作证据与主题对比度测试 | VoiceOver、全键盘访问、增强对比度、减少透明度/动态效果、系统外观尚未转为自动化；需隔离桌面及授权，不修改日常系统设置 |
 | 性能稳定性 | test_vm_acceptance.sh、FullPerformanceBenchmarkTests；外部RSS采样工具 | 八项基准已有发布门禁；30分钟真实负载、应用归属帧P95与同条件基线尚需接入自动化报告与阈值 |
 
-当前状态：测试工程已在Xcode27/Swift6编译通过。本机通过Xcode界面启动后，已实际执行部分用例并发现断言失败。专用Mac通过系统认证成功启用自动化；修正静态文本AXValue查询后，搜索空状态与恢复用例实际通过（1 test, 0 failures），完整31条套件正在排查，尚无全量通过结果。Tart首次运行报“Timed out while enabling automation mode”，正在验证虚拟机桌面与授权流程。Automation Mode在空闲时disabled不代表没有执行权限：Xcode可能在执行期间临时启用，执行后关闭，因此预检查只记录此状态，实际执行与结果校验仍为强制门禁。没有将零条执行或编译成功计为UI通过。上述待补项表示全量UI自动化仍未完成，本门禁是可执行基础，不能据此声称历史UI验收全部覆盖。
+当前状态：2026-09-27在用户指定的专用Mac实际运行完整发布入口，31条UI测试全部通过，0失败、0跳过，严格数量与名称门禁通过。最终报告为`outputs/ui-acceptance/20260927-205543-63739`，run-status为passed、exit_code为0。实际覆盖12主题×9页面与5设置标签，编辑器查找、保存/重载失败重试及关闭，会话表单，SFTP目录与文件操作，SSH配置导入，分屏、传输记录和更新窗口；真实SSH/SFTP用例完成终端输入、断线重连、创建文件、编辑保存、SSH读取核对内容和清理自有临时文件。测试发现XCTest按钮焦点切换可能插入Tab，重载重试用例改用真实坐标鼠标点击并严格核对重载后的全文，完整套件已验证通过。连续键入两个空格会触发系统句号替换；裁剪测试使用首尾各一个空格验证应用裁剪逻辑，此项不构成关闭系统句号替换的证明。Tart不再启动，本轮在专用Mac执行。Automation Mode在空闲时disabled不代表没有执行权限：Xcode可能在执行期间临时启用，执行后关闭，因此预检查只记录此状态，实际执行与结果校验仍为强制门禁。脚本回归19项通过，8项Release性能基准达到阈值；普通Swift测试无失败但有11项集成环境跳过，不能等同完整集成验收。表中待补场景与原macOS27全流程验收仍需继续，31条通过不代表所有历史UI需求均已覆盖，也不代表新签名候选包已交付。
 
 后续新增UI修复必须在表中找到对应场景或新增场景，并将真实窗口行为纳入断言。无需真实网络的受控UI状态和真实SSH/SFTP场景分别记录，所有release-required场景应由同一入口执行。截屏、人眼历史记录、窄单元测试均不代替实际窗口行为断言。
 
 结果门禁：xcresulttool导出summary后，verify_ui_results.py要求Passed、当前全部测试数量一致、零失败/跳过/预期失败。结果校验的3项Python测试通过，实际Automation Mode失败xcresult也已实测被拒绝。另逐条核对测试名称及结果，重复测试不能替代漏跑测试。此校验是执行完整性检查，不等于全量历史UI需求覆盖证明。
 
 本机目标配置：入口自动读取被Git忽略的`.ui-acceptance.env`，仅配置测试端点与用户，不存储密码或私钥。环境变量可覆盖默认配置，APEX_UI_CONFIG_FILE可指定其他配置文件。远程SSH使用临时agent转发，测试启动时传递有效SSH_AUTH_SOCK；不复制私钥。运行结束后SSH转发随连接关闭，诊断目录保留供审阅。该配置不进入应用资源。
+
+远程运行每轮为QA宿主分配独立应用标识，XCUITest通过绝对应用路径启动；qa-host.json记录路径、应用标识和可执行文件SHA256，避免Launch Services缓存导致误测旧宿主。结果压缩后一次传回，诊断子集仅供修复定位；发布入口不传选择器，必须执行全部测试并严格验证数量、名称、失败与跳过。

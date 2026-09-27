@@ -28,10 +28,10 @@ class RemoteUIRunnerTests(unittest.TestCase):
                 self.assertIn('-A', command)
                 self.assertIn('test-without-building', execution.call_args.kwargs['input'])
                 self.assertIn('SSH_AUTH_SOCK', execution.call_args.kwargs['input'])
-                last_command = transport.call_args.args[0]
-                self.assertEqual(last_command[0], 'scp')
-                self.assertIn('/reports/.', last_command[-2])
-                self.assertEqual(last_command[-1], str(Path(directory).resolve()))
+                collections = [call.args[0] for call in transport.call_args_list if call.args[0][0] == 'scp']
+                self.assertIn('/results.tar.gz', collections[-1][-2])
+                self.assertEqual(collections[-1][-1], str(Path(directory).resolve() / 'remote-results.tar.gz'))
+                self.assertEqual(transport.call_args.args[0][0], 'tar')
                 self.assertTrue((Path(directory) / 'guest-workspace.txt').exists())
 
     def test_success_collects_result_bundle(self):

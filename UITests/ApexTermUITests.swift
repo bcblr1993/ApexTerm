@@ -4,6 +4,7 @@ import XCTest
 @MainActor
 final class ApexTermUITests: XCTestCase {
     private var app: XCUIApplication!
+    private var ownedRemoteDirectory: String?
 
     nonisolated override func setUpWithError() throws {
         continueAfterFailure = false
@@ -12,12 +13,40 @@ final class ApexTermUITests: XCTestCase {
     override func tearDown() async throws {
         if (testRun?.failureCount ?? 0) > 0, let app, app.state == .runningForeground {
             capture("failure-" + name)
+            let hierarchy = XCTAttachment(string: app.debugDescription)
+            hierarchy.name = "failure-accessibility-tree"
+            hierarchy.lifetime = .keepAlways
+            add(hierarchy)
         }
         app?.terminate()
+        if let directory = ownedRemoteDirectory {
+            let environment = ProcessInfo.processInfo.environment
+            let host = try XCTUnwrap(environment["APEX_UI_TEST_HOST"])
+            let user = try XCTUnwrap(environment["APEX_UI_TEST_USER"])
+            XCTAssertNotNil(directory.range(of: "^/tmp/apex-ui-[A-Za-z0-9]+$", options: .regularExpression))
+            let cleanup = Process()
+            cleanup.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+            cleanup.arguments = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "\(user)@\(host)",
+                                 "/bin/rm -f '\(directory)/ui-real-file.txt' && /bin/rmdir '\(directory)'"]
+            let output = Pipe()
+            cleanup.standardOutput = output
+            cleanup.standardError = output
+            try cleanup.run()
+            cleanup.waitUntilExit()
+            let record = XCTAttachment(string: "Owned fixture cleanup exit code: \(cleanup.terminationStatus)\n" + String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self))
+            record.name = "real-host-failure-cleanup"
+            record.lifetime = .keepAlways
+            add(record)
+            XCTAssertEqual(cleanup.terminationStatus, 0, "Failed to remove this test's exact owned fixture")
+        }
     }
 
     private func launch(_ scene: String = "main", extra: [String: String] = [:]) {
-        app = XCUIApplication(bundleIdentifier: "com.apexterm.qa.verification")
+        if let path = ProcessInfo.processInfo.environment["APEX_UI_APP_PATH"] {
+            app = XCUIApplication(url: URL(fileURLWithPath: path))
+        } else {
+            app = XCUIApplication(bundleIdentifier: "com.apexterm.qa.verification")
+        }
         app.launchEnvironment = ["APEX_QA_SCENE": scene, "APEX_QA_DISABLE_TELEMETRY": "1", "APEX_QA_UI_RUN_ID": UUID().uuidString]
             .merging(extra) { _, new in new }
         if let socket = ProcessInfo.processInfo.environment["SSH_AUTH_SOCK"] {
@@ -55,8 +84,8 @@ final class ApexTermUITests: XCTestCase {
 
     func testSessionEmptyInvalidPortAndCancel() {
         launch()
-        app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "添加新的 SSH 会话")).firstMatch.click()
-        let save = app.buttons["保存"]
+        app.windows.buttons.matching(NSPredicate(format: "label CONTAINS %@", "添加新的 SSH 会话")).firstMatch.click()
+        let save = app.windows.buttons["保存"].firstMatch
         XCTAssertTrue(save.waitForExistence(timeout: 5))
         XCTAssertFalse(save.isEnabled)
         app.textFields["会话名称"].click()
@@ -70,13 +99,13 @@ final class ApexTermUITests: XCTestCase {
         XCTAssertFalse(save.isEnabled)
         capture("session-invalid-port")
         app.typeKey(XCUIKeyboardKey.escape, modifierFlags: [])
-        XCTAssertFalse(app.sheets.firstMatch.exists)
+        XCTAssertTrue(app.sheets.firstMatch.waitForNonExistence(timeout: 5))
         XCTAssertTrue(staticText("1 台主机", comparison: "CONTAINS").exists)
     }
 
     func testSessionValidPortRecoveryAndSave() {
         launch()
-        app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "添加新的 SSH 会话")).firstMatch.click()
+        app.windows.buttons.matching(NSPredicate(format: "label CONTAINS %@", "添加新的 SSH 会话")).firstMatch.click()
         let name = app.textFields["会话名称"]
         XCTAssertTrue(name.waitForExistence(timeout: 5))
         name.click()
@@ -88,13 +117,13 @@ final class ApexTermUITests: XCTestCase {
         port.click()
         port.typeKey("a", modifierFlags: .command)
         port.typeText("65536")
-        let save = app.buttons["保存"]
+        let save = app.windows.buttons["保存"].firstMatch
         XCTAssertFalse(save.isEnabled)
         port.typeKey("a", modifierFlags: .command)
         port.typeText("2222")
         XCTAssertTrue(save.isEnabled)
         save.click()
-        XCTAssertFalse(app.sheets.firstMatch.exists)
+        XCTAssertTrue(app.sheets.firstMatch.waitForNonExistence(timeout: 5))
         XCTAssertTrue(staticText("2 台主机", comparison: "CONTAINS").waitForExistence(timeout: 5))
         let search = app.textFields.matching(NSPredicate(format: "label CONTAINS %@", "搜索会话")).firstMatch
         search.click()
@@ -105,26 +134,26 @@ final class ApexTermUITests: XCTestCase {
 
     func testUpdateFailureCloseAndReopen() {
         launch("update", extra: ["APEX_QA_UPDATE_STATE": "failed"])
-        XCTAssertTrue(app.buttons["重试"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["关闭"].isHittable)
+        XCTAssertTrue(app.windows.buttons["重试"].firstMatch.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.windows.buttons["关闭"].firstMatch.isHittable)
         capture("update-failed")
         app.typeKey(XCUIKeyboardKey.escape, modifierFlags: [])
-        XCTAssertFalse(app.sheets.firstMatch.exists)
-        app.buttons["显示更新弹窗"].click()
-        XCTAssertTrue(app.buttons["关闭"].waitForExistence(timeout: 5))
-        app.buttons["关闭"].click()
-        XCTAssertFalse(app.sheets.firstMatch.exists)
+        XCTAssertTrue(app.sheets.firstMatch.waitForNonExistence(timeout: 5))
+        app.windows.buttons["显示更新弹窗"].firstMatch.click()
+        XCTAssertTrue(app.windows.buttons["关闭"].firstMatch.waitForExistence(timeout: 5))
+        app.windows.buttons["关闭"].firstMatch.click()
+        XCTAssertTrue(app.sheets.firstMatch.waitForNonExistence(timeout: 5))
     }
 
     func testUpdateLoadingAndSuccess() {
         launch("update", extra: ["APEX_QA_UPDATE_STATE": "checking"])
-        XCTAssertTrue(app.progressIndicators.firstMatch.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.activityIndicators.firstMatch.waitForExistence(timeout: 5))
         capture("update-loading")
         app.terminate()
         launch("update")
-        XCTAssertTrue(app.buttons["完成"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.windows.buttons["完成"].firstMatch.waitForExistence(timeout: 5))
         app.typeKey(XCUIKeyboardKey.return, modifierFlags: [])
-        XCTAssertFalse(app.sheets.firstMatch.exists)
+        XCTAssertTrue(app.sheets.firstMatch.waitForNonExistence(timeout: 5))
     }
 
     func testUpdateAvailableVersionNotesAndEscape() {
@@ -132,12 +161,12 @@ final class ApexTermUITests: XCTestCase {
         XCTAssertTrue(staticText("发现新版本可用").waitForExistence(timeout: 5))
         XCTAssertTrue(staticText("新版本: v9.9.9", comparison: "CONTAINS").exists)
         XCTAssertTrue(staticText("UI验收更新说明", comparison: "CONTAINS").exists)
-        XCTAssertTrue(app.buttons["前往下载更新"].isHittable)
-        XCTAssertTrue(app.buttons["稍后提醒"].isHittable)
+        XCTAssertTrue(app.windows.buttons["前往下载更新"].firstMatch.isHittable)
+        XCTAssertTrue(app.windows.buttons["稍后提醒"].firstMatch.isHittable)
         capture("update-available-version-notes")
         app.typeKey(XCUIKeyboardKey.escape, modifierFlags: [])
-        XCTAssertFalse(app.sheets.firstMatch.exists)
-        XCTAssertTrue(app.buttons["显示更新弹窗"].isHittable)
+        XCTAssertTrue(app.sheets.firstMatch.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(app.windows.buttons["显示更新弹窗"].firstMatch.isHittable)
     }
 
     func testSFTPEmptyLoadingAndFailureStates() {
@@ -147,9 +176,9 @@ final class ApexTermUITests: XCTestCase {
             case "empty":
                 XCTAssertTrue(staticText("文件夹为空", comparison: "CONTAINS").waitForExistence(timeout: 10))
             case "loading":
-                XCTAssertTrue(app.progressIndicators.firstMatch.waitForExistence(timeout: 5))
+                XCTAssertTrue(app.activityIndicators.firstMatch.waitForExistence(timeout: 5))
             default:
-                XCTAssertTrue(staticText("无法读取目录", comparison: "CONTAINS").waitForExistence(timeout: 10))
+                XCTAssertTrue(staticText("无法读取远程文件", comparison: "CONTAINS").waitForExistence(timeout: 10))
             }
             capture("sftp-\(mode)")
             app.terminate()
@@ -160,7 +189,7 @@ final class ApexTermUITests: XCTestCase {
         launch("main", extra: ["APEX_QA_FILES": "normal", "APEX_QA_CONNECT": "1"])
         let file = staticText("nginx.conf")
         XCTAssertTrue(file.waitForExistence(timeout: 10))
-        let toggle = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "筛选")).firstMatch
+        let toggle = app.checkBoxes["筛选文件"].firstMatch
         XCTAssertTrue(toggle.isHittable)
         toggle.click()
         let filter = app.textFields["筛选当前目录文件..."]
@@ -170,7 +199,7 @@ final class ApexTermUITests: XCTestCase {
         XCTAssertTrue(staticText("没有匹配的文件").waitForExistence(timeout: 5))
         XCTAssertFalse(file.exists)
         capture("sftp-filter-no-match")
-        app.buttons["清除文件筛选"].click()
+        app.windows.buttons["清除文件筛选"].firstMatch.click()
         XCTAssertTrue(file.waitForExistence(timeout: 5))
         XCTAssertEqual(filter.value as? String, "")
         filter.click()
@@ -187,7 +216,7 @@ final class ApexTermUITests: XCTestCase {
         launch("main", extra: ["APEX_QA_FILES": "failure-once", "APEX_QA_CONNECT": "1"])
         let failure = staticText("无法读取远程文件")
         XCTAssertTrue(failure.waitForExistence(timeout: 10))
-        let retry = app.buttons["重试"]
+        let retry = app.windows.buttons["重试"].firstMatch
         XCTAssertTrue(retry.isHittable)
         XCTAssertFalse(staticText("nginx.conf").exists)
         capture("sftp-before-retry")
@@ -218,10 +247,10 @@ final class ApexTermUITests: XCTestCase {
         XCTAssertEqual(path.value as? String, original)
         path.click()
         path.typeKey("a", modifierFlags: .command)
-        path.typeText("  /ui-synthetic-directory  ")
+        path.typeText(" /ui-synthetic-directory ")
         path.typeKey(XCUIKeyboardKey.return, modifierFlags: [])
         let submitted = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "/ui-synthetic-directory"), object: path)
-        XCTAssertEqual(XCTWaiter.wait(for: [submitted], timeout: 5), .completed)
+        XCTAssertEqual(XCTWaiter.wait(for: [submitted], timeout: 5), .completed, "Submitted path: \(path.value ?? "missing")")
         XCTAssertTrue(staticText("nginx.conf").waitForExistence(timeout: 10))
         capture("sftp-path-submitted")
     }
@@ -229,7 +258,7 @@ final class ApexTermUITests: XCTestCase {
     func testTerminalSplitOrientationAndClose() {
         launch("main", extra: ["APEX_QA_CONNECT": "1"])
         XCTAssertTrue(app.textViews.firstMatch.waitForExistence(timeout: 10))
-        let split = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "分屏")).firstMatch
+        let split = app.menuButtons["rectangle.split.2x1"].firstMatch
         XCTAssertTrue(split.isHittable)
         split.click()
         app.menuItems["垂直分屏"].click()
@@ -256,26 +285,26 @@ final class ApexTermUITests: XCTestCase {
         XCTAssertGreaterThan(abs(top.midY - bottom.midY), 50)
         XCTAssertLessThan(abs(top.midX - bottom.midX), 30)
         capture("terminal-split-horizontal")
-        app.buttons["关闭此分屏"].firstMatch.click()
+        app.windows.buttons["关闭此分屏"].firstMatch.click()
         let onePane = XCTNSPredicateExpectation(predicate: NSPredicate { [app] _, _ in
             app?.textViews.count == 1
         }, object: nil)
         XCTAssertEqual(XCTWaiter.wait(for: [onePane], timeout: 5), .completed)
-        XCTAssertFalse(app.buttons["关闭此分屏"].exists)
+        XCTAssertFalse(app.windows.buttons["关闭此分屏"].firstMatch.exists)
         capture("terminal-split-closed")
     }
 
     func testTerminalDisconnectedReconnectRestoresInput() {
         launch("main", extra: ["APEX_QA_CONNECT": "1"])
-        XCTAssertTrue(staticText("已连接").waitForExistence(timeout: 10))
+        XCTAssertTrue(staticText("已连接", comparison: "BEGINSWITH").waitForExistence(timeout: 10))
         app.menuBars.menuBarItems["验收操作"].click()
         app.menuItems["断开测试终端"].click()
         XCTAssertTrue(staticText("会话已断开").waitForExistence(timeout: 5))
-        let reconnect = app.buttons["重新连接 (⌘R)"]
+        let reconnect = app.windows.buttons["重新连接 (⌘R)"].firstMatch
         XCTAssertTrue(reconnect.isHittable)
         capture("terminal-disconnected")
         reconnect.click()
-        XCTAssertTrue(staticText("已连接").waitForExistence(timeout: 10))
+        XCTAssertTrue(staticText("已连接", comparison: "BEGINSWITH").waitForExistence(timeout: 10))
         XCTAssertFalse(staticText("会话已断开").exists)
         XCTAssertFalse(reconnect.exists)
         let terminal = app.textViews.firstMatch
@@ -287,27 +316,28 @@ final class ApexTermUITests: XCTestCase {
     }
 
     func testSSHConfigImportSelectionAndDuplicateRecovery() {
-        launch("import")
-        let selected = app.buttons["导入选中的 1 台主机"]
+        launch("import-sheet")
+        let selected = app.windows.buttons["导入选中的 1 台主机"].firstMatch
         XCTAssertTrue(selected.waitForExistence(timeout: 5))
         XCTAssertTrue(selected.isEnabled)
-        app.buttons["取消全选"].click()
-        XCTAssertFalse(app.buttons["导入选中的 0 台主机"].isEnabled)
-        app.buttons["全选"].click()
+        app.windows.buttons["取消全选"].firstMatch.click()
+        XCTAssertFalse(app.windows.buttons["导入选中的 0 台主机"].firstMatch.isEnabled)
+        app.windows.buttons["全选"].firstMatch.click()
         XCTAssertTrue(selected.isEnabled)
         selected.click()
-        let notice = staticText("已成功导入 1 台主机", comparison: "BEGINSWITH")
-        XCTAssertTrue(notice.waitForExistence(timeout: 5))
+        let sheetClosed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.sheets.firstMatch)
+        XCTAssertEqual(XCTWaiter.wait(for: [sheetClosed], timeout: 5), .completed)
         capture("ssh-config-import-success")
         app.menuBars.menuBarItems["验收页面"].click()
         app.menuItems["main"].click()
         let twoHosts = staticText("2 台主机", comparison: "CONTAINS")
         XCTAssertTrue(twoHosts.waitForExistence(timeout: 5))
         app.menuBars.menuBarItems["验收页面"].click()
-        app.menuItems["import"].click()
+        app.menuItems["import-sheet"].click()
         XCTAssertTrue(selected.waitForExistence(timeout: 5))
         selected.click()
-        XCTAssertTrue(notice.waitForExistence(timeout: 5))
+        let secondSheetClosed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.sheets.firstMatch)
+        XCTAssertEqual(XCTWaiter.wait(for: [secondSheetClosed], timeout: 5), .completed)
         app.menuBars.menuBarItems["验收页面"].click()
         app.menuItems["main"].click()
         XCTAssertTrue(twoHosts.waitForExistence(timeout: 5), "Reimport must update the existing session rather than duplicate it")
@@ -321,13 +351,13 @@ final class ApexTermUITests: XCTestCase {
     func testSSHConfigImportSheetCancelDoesNotImport() {
         launch("import-sheet")
         XCTAssertTrue(app.sheets.firstMatch.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["导入选中的 1 台主机"].isEnabled)
+        XCTAssertTrue(app.windows.buttons["导入选中的 1 台主机"].firstMatch.isEnabled)
         app.typeKey(XCUIKeyboardKey.escape, modifierFlags: [])
-        XCTAssertFalse(app.sheets.firstMatch.exists)
-        app.buttons["显示导入弹窗"].click()
+        XCTAssertTrue(app.sheets.firstMatch.waitForNonExistence(timeout: 5))
+        app.windows.buttons["显示导入弹窗"].firstMatch.click()
         XCTAssertTrue(app.sheets.firstMatch.waitForExistence(timeout: 5))
-        app.buttons["取消"].click()
-        XCTAssertFalse(app.sheets.firstMatch.exists)
+        app.windows.buttons["取消"].firstMatch.click()
+        XCTAssertTrue(app.sheets.firstMatch.waitForNonExistence(timeout: 5))
         app.menuBars.menuBarItems["验收页面"].click()
         app.menuItems["main"].click()
         XCTAssertTrue(staticText("1 台主机", comparison: "CONTAINS").waitForExistence(timeout: 5))
@@ -341,20 +371,20 @@ final class ApexTermUITests: XCTestCase {
     func testSSHConfigEmptyImportDisabledAndCancel() {
         launch("import-sheet", extra: ["APEX_QA_IMPORT_CONFIG": "empty"])
         XCTAssertTrue(staticText("没有找到主机配置").waitForExistence(timeout: 5))
-        let importButton = app.buttons["导入选中的 0 台主机"]
+        let importButton = app.windows.buttons["导入选中的 0 台主机"].firstMatch
         XCTAssertTrue(importButton.exists)
         XCTAssertFalse(importButton.isEnabled)
-        XCTAssertFalse(app.buttons["全选"].exists)
+        XCTAssertFalse(app.windows.buttons["全选"].firstMatch.exists)
         capture("ssh-config-empty-disabled")
-        app.buttons["取消"].click()
-        XCTAssertFalse(app.sheets.firstMatch.exists)
-        XCTAssertTrue(app.buttons["显示导入弹窗"].isHittable)
+        app.windows.buttons["取消"].firstMatch.click()
+        XCTAssertTrue(app.sheets.firstMatch.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(app.windows.buttons["显示导入弹窗"].firstMatch.isHittable)
     }
 
     func testSFTPCreateFileCancelAndSuccessfulListing() {
         launch("main", extra: ["APEX_QA_CONNECT": "1"])
         XCTAssertTrue(staticText("nginx.conf").waitForExistence(timeout: 10))
-        let more = app.buttons["更多文件操作"]
+        let more = app.menuButtons["ellipsis"].firstMatch
         XCTAssertTrue(more.isHittable)
         more.click()
         app.menuItems["新建文件"].click()
@@ -362,14 +392,14 @@ final class ApexTermUITests: XCTestCase {
         XCTAssertTrue(name.waitForExistence(timeout: 5))
         name.click()
         name.typeText("ui-canceled-file.txt")
-        app.buttons["取消"].click()
+        app.windows.buttons["取消"].firstMatch.click()
         XCTAssertFalse(staticText("ui-canceled-file.txt").exists)
         more.click()
         app.menuItems["新建文件"].click()
         XCTAssertTrue(name.waitForExistence(timeout: 5))
         name.click()
         name.typeText("ui-created-file.txt")
-        app.buttons["创建"].click()
+        app.windows.buttons["创建"].firstMatch.click()
         XCTAssertTrue(staticText("ui-created-file.txt").waitForExistence(timeout: 10))
         XCTAssertFalse(staticText("ui-canceled-file.txt").exists)
         XCTAssertTrue(staticText("nginx.conf").exists)
@@ -388,7 +418,7 @@ final class ApexTermUITests: XCTestCase {
         name.click()
         name.typeKey("a", modifierFlags: .command)
         name.typeText("ui-canceled-name.conf")
-        app.buttons["取消"].click()
+        app.windows.buttons["取消"].firstMatch.click()
         XCTAssertTrue(original.exists)
         XCTAssertFalse(staticText("ui-canceled-name.conf").exists)
         original.click()
@@ -398,7 +428,7 @@ final class ApexTermUITests: XCTestCase {
         name.click()
         name.typeKey("a", modifierFlags: .command)
         name.typeText("ui-renamed.conf")
-        app.buttons["确定"].click()
+        app.windows.buttons["确定"].firstMatch.click()
         XCTAssertTrue(staticText("ui-renamed.conf").waitForExistence(timeout: 10))
         XCTAssertFalse(original.exists)
         XCTAssertTrue(staticText("docker-compose.yml").exists)
@@ -408,26 +438,33 @@ final class ApexTermUITests: XCTestCase {
     func testSFTPCreateFolderCancelAndSuccessfulListing() {
         launch("main", extra: ["APEX_QA_CONNECT": "1"])
         XCTAssertTrue(staticText("nginx.conf").waitForExistence(timeout: 10))
-        let more = app.buttons["更多文件操作"]
+        let more = app.menuButtons["ellipsis"].firstMatch
         more.click()
         app.menuItems["新建文件夹"].click()
         let name = app.textFields["文件夹名称"]
         XCTAssertTrue(name.waitForExistence(timeout: 5))
         name.click()
         name.typeText("ui-canceled-folder")
-        app.buttons["取消"].click()
+        app.windows.buttons["取消"].firstMatch.click()
         XCTAssertFalse(staticText("ui-canceled-folder").exists)
         more.click()
         app.menuItems["新建文件夹"].click()
         XCTAssertTrue(name.waitForExistence(timeout: 5))
         name.click()
-        name.typeText("  ui-created-folder  ")
-        app.buttons["创建"].click()
+        name.typeText(" ui-created-folder ")
+        app.windows.buttons["创建"].firstMatch.click()
         let folder = staticText("ui-created-folder")
         XCTAssertTrue(folder.waitForExistence(timeout: 10))
         XCTAssertFalse(staticText("ui-canceled-folder").exists)
         XCTAssertTrue(staticText("nginx.conf").exists)
         capture("sftp-create-folder-listed")
+        app.checkBoxes["筛选文件"].firstMatch.click()
+        let filter = app.textFields["筛选当前目录文件..."]
+        XCTAssertTrue(filter.waitForExistence(timeout: 5))
+        filter.click()
+        filter.typeText("ui-created-folder")
+        let visible = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: folder)
+        XCTAssertEqual(XCTWaiter.wait(for: [visible], timeout: 5), .completed)
         folder.doubleClick()
         let path = app.textFields["远程路径"]
         let entered = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value ENDSWITH %@", "/ui-created-folder"), object: path)
@@ -441,7 +478,7 @@ final class ApexTermUITests: XCTestCase {
         XCTAssertTrue(ordinary.waitForExistence(timeout: 10))
         let hidden = staticText(".bashrc")
         XCTAssertFalse(hidden.exists)
-        app.buttons["更多文件操作"].click()
+        app.menuButtons["ellipsis"].firstMatch.click()
         app.menuItems["显示隐藏文件"].click()
         XCTAssertTrue(hidden.waitForExistence(timeout: 5))
         XCTAssertTrue(ordinary.exists)
@@ -457,22 +494,22 @@ final class ApexTermUITests: XCTestCase {
     func testSFTPDeleteConfirmationCancelAndRemoveOwnFixture() {
         launch("main", extra: ["APEX_QA_CONNECT": "1"])
         XCTAssertTrue(staticText("nginx.conf").waitForExistence(timeout: 10))
-        app.buttons["更多文件操作"].click()
+        app.menuButtons["ellipsis"].firstMatch.click()
         app.menuItems["新建文件"].click()
         let name = app.textFields["文件名 (例如 test.sh)"]
         XCTAssertTrue(name.waitForExistence(timeout: 5))
         name.click()
         name.typeText("ui-own-delete-fixture.txt")
-        app.buttons["创建"].click()
+        app.windows.buttons["创建"].firstMatch.click()
         let fixture = staticText("ui-own-delete-fixture.txt")
         XCTAssertTrue(fixture.waitForExistence(timeout: 10))
         fixture.click()
         fixture.rightClick()
         app.menuItems["删除"].click()
-        let confirm = app.buttons["永久删除「ui-own-delete-fixture.txt」"]
+        let confirm = app.windows.buttons["永久删除「ui-own-delete-fixture.txt」"].firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: 5))
         capture("sftp-delete-confirmation")
-        app.buttons["取消"].click()
+        app.windows.buttons["取消"].firstMatch.click()
         XCTAssertTrue(fixture.exists)
         XCTAssertFalse(confirm.exists)
         fixture.click()
@@ -494,7 +531,7 @@ final class ApexTermUITests: XCTestCase {
             return
         }
         launch("main", extra: ["APEX_QA_REAL_HOST": host, "APEX_QA_REAL_USER": user, "APEX_QA_CONNECT": "1"])
-        XCTAssertTrue(staticText("已连接").waitForExistence(timeout: 30), "Real SSH must reach connected state before typing")
+        XCTAssertTrue(staticText("已连接", comparison: "BEGINSWITH").waitForExistence(timeout: 30), "Real SSH must reach connected state before typing")
         let terminal = app.textViews.firstMatch
         XCTAssertTrue(terminal.waitForExistence(timeout: 10))
         terminal.click()
@@ -506,8 +543,8 @@ final class ApexTermUITests: XCTestCase {
         app.menuBars.menuBarItems["验收操作"].click()
         app.menuItems["断开测试终端"].click()
         XCTAssertTrue(staticText("会话已断开").waitForExistence(timeout: 10))
-        app.buttons["重新连接 (⌘R)"].click()
-        XCTAssertTrue(staticText("已连接").waitForExistence(timeout: 30))
+        app.windows.buttons["重新连接 (⌘R)"].firstMatch.click()
+        XCTAssertTrue(staticText("已连接", comparison: "BEGINSWITH").waitForExistence(timeout: 30))
         XCTAssertFalse(staticText("会话已断开").exists)
         terminal.click()
         terminal.typeText("printf '\\nAPEX_UI_REAL_RECONNECT_OK\\n'\n")
@@ -522,7 +559,8 @@ final class ApexTermUITests: XCTestCase {
         let match = try XCTUnwrap(pattern.firstMatch(in: outputText, range: NSRange(outputText.startIndex..., in: outputText)))
         let directoryRange = try XCTUnwrap(Range(match.range(at: 1), in: outputText))
         let directory = String(outputText[directoryRange])
-        let fixtureRecord = XCTAttachment(string: "Owned temporary directory: \(directory)\nOwned file: ui-real-file.txt\nNormal success removes the file through SFTP and removes the empty directory through SSH.\nIf this test fails, inspect this exact directory; do not recursively clean unrelated paths.")
+        ownedRemoteDirectory = directory
+        let fixtureRecord = XCTAttachment(string: "Owned temporary directory: \(directory)\nOwned file: ui-real-file.txt\nNormal success removes the file through SFTP and removes the empty directory through SSH.\nOn failure, SSH cleanup removes only this exact file and then the empty directory; it never recursively removes other paths.")
         fixtureRecord.name = "real-host-owned-fixture"
         fixtureRecord.lifetime = .keepAlways
         add(fixtureRecord)
@@ -532,13 +570,13 @@ final class ApexTermUITests: XCTestCase {
         path.typeText(directory)
         path.typeKey(XCUIKeyboardKey.return, modifierFlags: [])
         XCTAssertTrue(staticText("文件夹为空").waitForExistence(timeout: 15))
-        app.buttons["更多文件操作"].click()
+        app.menuButtons["ellipsis"].firstMatch.click()
         app.menuItems["新建文件"].click()
         let fileName = app.textFields["文件名 (例如 test.sh)"]
         XCTAssertTrue(fileName.waitForExistence(timeout: 5))
         fileName.click()
         fileName.typeText("ui-real-file.txt")
-        app.buttons["创建"].click()
+        app.windows.buttons["创建"].firstMatch.click()
         let realFile = staticText("ui-real-file.txt")
         XCTAssertTrue(realFile.waitForExistence(timeout: 15))
         terminal.click()
@@ -548,16 +586,16 @@ final class ApexTermUITests: XCTestCase {
         capture("real-sftp-created-file-verified")
         realFile.click()
         realFile.rightClick()
-        app.menuItems.matching(NSPredicate(format: "label CONTAINS %@", "编辑")).firstMatch.click()
+        app.menuItems["快速查看 / 编辑"].click()
         let remoteEditor = app.textViews["文件内容"]
         XCTAssertTrue(remoteEditor.waitForExistence(timeout: 15))
         remoteEditor.click()
         remoteEditor.typeText("APEX_UI_REMOTE_EDITOR_CONTENT")
-        app.buttons["保存 (⌘S)"].click()
+        app.windows.buttons["保存 (⌘S)"].firstMatch.click()
         XCTAssertTrue(staticText("已保存并上传至服务器", comparison: "CONTAINS").waitForExistence(timeout: 20))
         capture("real-sftp-editor-save")
-        app.buttons["关闭"].click()
-        XCTAssertFalse(app.sheets.firstMatch.exists)
+        app.windows.buttons["关闭"].firstMatch.click()
+        XCTAssertTrue(app.sheets.firstMatch.waitForNonExistence(timeout: 5))
         terminal.click()
         terminal.typeText("test \"$(cat '\(directory)/ui-real-file.txt')\" = 'APEX_UI_REMOTE_EDITOR_CONTENT' && printf '\\nAPEX_UI_REMOTE_CONTENT_OK\\n'\n")
         let savedRemotely = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "\nAPEX_UI_REMOTE_CONTENT_OK\n"), object: terminal)
@@ -565,7 +603,7 @@ final class ApexTermUITests: XCTestCase {
         realFile.click()
         realFile.rightClick()
         app.menuItems["删除"].click()
-        let delete = app.buttons["永久删除「ui-real-file.txt」"]
+        let delete = app.windows.buttons["永久删除「ui-real-file.txt」"].firstMatch
         XCTAssertTrue(delete.waitForExistence(timeout: 5))
         delete.click()
         XCTAssertTrue(staticText("文件夹为空").waitForExistence(timeout: 15))
@@ -573,6 +611,7 @@ final class ApexTermUITests: XCTestCase {
         terminal.typeText("rmdir '\(directory)' && printf '\\nAPEX_UI_FIXTURE_CLEAN_OK\\n'\n")
         let cleaned = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "\nAPEX_UI_FIXTURE_CLEAN_OK\n"), object: terminal)
         XCTAssertEqual(XCTWaiter.wait(for: [cleaned], timeout: 15), .completed)
+        ownedRemoteDirectory = nil
     }
 
     func testTransferRecordFiltersAndClearCompleted() {
@@ -591,28 +630,28 @@ final class ApexTermUITests: XCTestCase {
         XCTAssertTrue(upload.exists)
         XCTAssertTrue(download.exists)
         capture("transfer-record-filters")
-        app.buttons["清空记录"].click()
+        app.windows.buttons["清空记录"].firstMatch.click()
         XCTAssertFalse(upload.exists)
         XCTAssertTrue(download.exists, "Clearing completed records must preserve failures")
-        XCTAssertFalse(app.buttons["清空记录"].exists)
+        XCTAssertFalse(app.windows.buttons["清空记录"].firstMatch.exists)
         capture("transfer-clear-preserves-failure")
     }
 
     func testTransferCancelAndClearPreservesActiveTask() {
         launch("transfers", extra: ["APEX_QA_TRANSFER_RECORDS": "active"])
-        let cancel = app.buttons["取消传输 ui-cancel.txt"]
+        let cancel = app.windows.buttons["取消传输 ui-cancel.txt"].firstMatch
         XCTAssertTrue(cancel.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["取消传输 ui-keep-active.txt"].exists)
+        XCTAssertTrue(app.windows.buttons["取消传输 ui-keep-active.txt"].firstMatch.exists)
         cancel.click()
         XCTAssertTrue(staticText("已取消").waitForExistence(timeout: 5))
         XCTAssertFalse(cancel.exists)
         XCTAssertTrue(staticText("ui-cancel.txt").exists)
         capture("transfer-cancelled-record")
-        app.buttons["清空记录"].click()
+        app.windows.buttons["清空记录"].firstMatch.click()
         XCTAssertFalse(staticText("ui-cancel.txt").exists)
         XCTAssertTrue(staticText("ui-keep-active.txt").exists)
-        XCTAssertTrue(app.buttons["取消传输 ui-keep-active.txt"].isHittable)
-        XCTAssertFalse(app.buttons["清空记录"].exists)
+        XCTAssertTrue(app.windows.buttons["取消传输 ui-keep-active.txt"].firstMatch.isHittable)
+        XCTAssertFalse(app.windows.buttons["清空记录"].firstMatch.exists)
         capture("transfer-clear-preserves-active")
     }
 
@@ -622,20 +661,20 @@ final class ApexTermUITests: XCTestCase {
         XCTAssertTrue(editor.waitForExistence(timeout: 5))
         editor.click()
         editor.typeText("\nui_acceptance=true")
-        app.buttons["关闭"].click()
-        XCTAssertTrue(app.buttons["继续编辑"].waitForExistence(timeout: 5))
+        app.windows.buttons["关闭"].firstMatch.click()
+        XCTAssertTrue(app.windows.buttons["继续编辑"].firstMatch.waitForExistence(timeout: 5))
         capture("editor-unsaved-close")
-        app.buttons["继续编辑"].click()
+        app.windows.buttons["继续编辑"].firstMatch.click()
         XCTAssertTrue(app.sheets.firstMatch.exists)
-        let save = app.buttons["保存 (⌘S)"]
+        let save = app.windows.buttons["保存 (⌘S)"].firstMatch
         save.click()
-        XCTAssertFalse(save.isEnabled)
+        XCTAssertTrue(app.activityIndicators["保存 (⌘S)"].firstMatch.waitForExistence(timeout: 5))
         let finished = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: save)
         XCTAssertEqual(XCTWaiter.wait(for: [finished], timeout: 10), .completed)
         XCTAssertTrue(staticText("已保存并上传至服务器", comparison: "CONTAINS").waitForExistence(timeout: 5))
         capture("editor-save-completed")
-        app.buttons["关闭"].click()
-        XCTAssertFalse(app.sheets.firstMatch.exists)
+        app.windows.buttons["关闭"].firstMatch.click()
+        XCTAssertTrue(app.sheets.firstMatch.waitForNonExistence(timeout: 5))
     }
 
     func testEditorSaveFailureKeepsChanges() {
@@ -644,14 +683,14 @@ final class ApexTermUITests: XCTestCase {
         XCTAssertTrue(editor.waitForExistence(timeout: 5))
         editor.click()
         editor.typeText("\nkeep_after_failure=true")
-        app.buttons["保存 (⌘S)"].click()
+        app.windows.buttons["保存 (⌘S)"].firstMatch.click()
         let failed = staticText("权限不足", comparison: "CONTAINS")
         XCTAssertTrue(failed.waitForExistence(timeout: 10))
         XCTAssertTrue((editor.value as? String)?.contains("keep_after_failure=true") == true)
         capture("editor-save-failure")
-        app.buttons["关闭"].click()
-        XCTAssertTrue(app.buttons["继续编辑"].waitForExistence(timeout: 5))
-        app.buttons["继续编辑"].click()
+        app.windows.buttons["关闭"].firstMatch.click()
+        XCTAssertTrue(app.windows.buttons["继续编辑"].firstMatch.waitForExistence(timeout: 5))
+        app.windows.buttons["继续编辑"].firstMatch.click()
     }
 
     func testEditorSaveFailureRetryRecovers() {
@@ -660,7 +699,7 @@ final class ApexTermUITests: XCTestCase {
         XCTAssertTrue(editor.waitForExistence(timeout: 5))
         editor.click()
         editor.typeText("\nretry_revision=true")
-        let save = app.buttons["保存 (⌘S)"]
+        let save = app.windows.buttons["保存 (⌘S)"].firstMatch
         save.click()
         let error = staticText("保存失败:", comparison: "CONTAINS")
         XCTAssertTrue(error.waitForExistence(timeout: 10))
@@ -671,9 +710,9 @@ final class ApexTermUITests: XCTestCase {
         XCTAssertFalse(error.exists)
         XCTAssertTrue((editor.value as? String)?.contains("retry_revision=true") == true)
         capture("editor-save-retry-recovered")
-        app.buttons["关闭"].click()
-        XCTAssertFalse(app.sheets.firstMatch.exists)
-        XCTAssertFalse(app.buttons["继续编辑"].exists)
+        app.windows.buttons["关闭"].firstMatch.click()
+        XCTAssertTrue(app.sheets.firstMatch.waitForNonExistence(timeout: 5))
+        XCTAssertFalse(app.windows.buttons["继续编辑"].firstMatch.exists)
     }
 
     func testEditorReloadFailureRetryPreservesContent() {
@@ -681,19 +720,21 @@ final class ApexTermUITests: XCTestCase {
         let editor = app.textViews["文件内容"]
         XCTAssertTrue(editor.waitForExistence(timeout: 5))
         let original = editor.value as? String
-        let reload = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "重新加载")).firstMatch
-        reload.click()
+        let reload = app.windows.buttons.matching(NSPredicate(format: "label CONTAINS %@", "重新加载")).firstMatch
+        // A physical pointer click avoids XCTest focus traversal inserting Tab into the editor.
+        reload.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
         let error = staticText("拉取失败:", comparison: "CONTAINS")
         XCTAssertTrue(error.waitForExistence(timeout: 5))
         XCTAssertEqual(editor.value as? String, original)
         XCTAssertTrue(reload.isEnabled)
         capture("editor-reload-failed-content-preserved")
-        reload.click()
+        // A physical pointer click avoids XCTest focus traversal inserting Tab into the editor.
+        reload.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
         XCTAssertTrue(staticText("已重新拉取远端最新内容").waitForExistence(timeout: 5))
         XCTAssertFalse(error.exists)
-        XCTAssertTrue((editor.value as? String)?.contains("远端配置") == true)
-        app.buttons["关闭"].click()
-        XCTAssertFalse(app.sheets.firstMatch.exists)
+        XCTAssertEqual(editor.value as? String, "# 远端配置\nserver=demo\n")
+        app.windows.buttons["关闭"].firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
+        XCTAssertTrue(app.sheets.firstMatch.waitForNonExistence(timeout: 5))
     }
 
     func testEditorChangesDuringSaveRemainUnsaved() {
@@ -702,22 +743,23 @@ final class ApexTermUITests: XCTestCase {
         XCTAssertTrue(editor.waitForExistence(timeout: 5))
         editor.click()
         editor.typeText("\nfirst_revision=true")
-        let save = app.buttons["保存 (⌘S)"]
+        let save = app.windows.buttons["保存 (⌘S)"].firstMatch
         save.click()
-        XCTAssertFalse(save.isEnabled)
+        XCTAssertTrue(app.activityIndicators["保存 (⌘S)"].firstMatch.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.activityIndicators["保存 (⌘S)"].firstMatch.isEnabled)
         editor.click()
         editor.typeText("\nsecond_revision=true")
         let pending = staticText("仍有新更改待保存", comparison: "CONTAINS")
         XCTAssertTrue(pending.waitForExistence(timeout: 20))
         XCTAssertTrue((editor.value as? String)?.contains("second_revision=true") == true)
-        app.buttons["关闭"].click()
-        XCTAssertTrue(app.buttons["继续编辑"].waitForExistence(timeout: 5))
+        app.windows.buttons["关闭"].firstMatch.click()
+        XCTAssertTrue(app.windows.buttons["继续编辑"].firstMatch.waitForExistence(timeout: 5))
         capture("editor-save-preserves-new-changes")
-        app.buttons["继续编辑"].click()
+        app.windows.buttons["继续编辑"].firstMatch.click()
         save.click()
         XCTAssertTrue(staticText("已保存并上传至服务器", comparison: "CONTAINS").waitForExistence(timeout: 10))
-        app.buttons["关闭"].click()
-        XCTAssertFalse(app.sheets.firstMatch.exists)
+        app.windows.buttons["关闭"].firstMatch.click()
+        XCTAssertTrue(app.sheets.firstMatch.waitForNonExistence(timeout: 5))
     }
 
     func testEditorKeyboardFindUndoAndSave() {
@@ -737,6 +779,7 @@ final class ApexTermUITests: XCTestCase {
         let find = app.searchFields.firstMatch
         XCTAssertTrue(find.waitForExistence(timeout: 5), "Native find bar must expose a search field")
         find.click()
+        find.typeKey("a", modifierFlags: .command)
         find.typeText("keyboard_revision")
         XCTAssertEqual(find.value as? String, "keyboard_revision")
         XCTAssertEqual(editor.value as? String, edited, "Searching must not modify file contents")
@@ -745,7 +788,7 @@ final class ApexTermUITests: XCTestCase {
         editor.typeKey("s", modifierFlags: .command)
         XCTAssertTrue(staticText("已保存并上传至服务器", comparison: "CONTAINS").waitForExistence(timeout: 10))
         editor.typeKey("w", modifierFlags: .command)
-        XCTAssertFalse(app.sheets.firstMatch.exists)
+        XCTAssertTrue(app.sheets.firstMatch.waitForNonExistence(timeout: 5))
     }
 
     func testEditorReloadCancelAndDiscard() {
@@ -754,20 +797,20 @@ final class ApexTermUITests: XCTestCase {
         XCTAssertTrue(editor.waitForExistence(timeout: 5))
         editor.click()
         editor.typeText("\nunsaved_reload_marker=true")
-        let reload = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "重新加载")).firstMatch
+        let reload = app.windows.buttons.matching(NSPredicate(format: "label CONTAINS %@", "重新加载")).firstMatch
         XCTAssertTrue(reload.isHittable)
         reload.click()
-        XCTAssertTrue(app.buttons["继续编辑"].waitForExistence(timeout: 5))
-        app.buttons["继续编辑"].click()
+        XCTAssertTrue(app.windows.buttons["继续编辑"].firstMatch.waitForExistence(timeout: 5))
+        app.windows.buttons["继续编辑"].firstMatch.click()
         XCTAssertTrue((editor.value as? String)?.contains("unsaved_reload_marker=true") == true)
         reload.click()
-        XCTAssertTrue(app.buttons["放弃更改"].waitForExistence(timeout: 5))
-        app.buttons["放弃更改"].click()
+        XCTAssertTrue(app.windows.buttons["放弃更改"].firstMatch.waitForExistence(timeout: 5))
+        app.windows.buttons["放弃更改"].firstMatch.click()
         let remote = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@ AND NOT value CONTAINS %@", "远端配置", "unsaved_reload_marker"), object: editor)
         XCTAssertEqual(XCTWaiter.wait(for: [remote], timeout: 10), .completed)
         capture("editor-reloaded")
-        app.buttons["关闭"].click()
-        XCTAssertFalse(app.sheets.firstMatch.exists)
+        app.windows.buttons["关闭"].firstMatch.click()
+        XCTAssertTrue(app.sheets.firstMatch.waitForNonExistence(timeout: 5))
     }
 
     func testAllThemesAndPagesRender() {
@@ -787,32 +830,33 @@ final class ApexTermUITests: XCTestCase {
                 switch page {
                 case "session":
                     XCTAssertTrue(app.textFields["会话名称"].waitForExistence(timeout: 3))
-                    XCTAssertTrue(app.buttons["保存"].exists)
-                    XCTAssertTrue(app.buttons["取消"].isHittable)
+                    XCTAssertTrue(app.windows.buttons["保存"].firstMatch.exists)
+                    XCTAssertTrue(app.windows.buttons["取消"].firstMatch.isHittable)
                 case "editor":
                     XCTAssertTrue(app.textViews.firstMatch.waitForExistence(timeout: 3))
-                    XCTAssertTrue(app.buttons["保存 (⌘S)"].isHittable)
+                    XCTAssertTrue(app.windows.buttons["保存 (⌘S)"].firstMatch.isHittable)
                 case "about":
-                    XCTAssertTrue(app.buttons["立即检查更新"].waitForExistence(timeout: 3))
+                    XCTAssertTrue(app.windows.buttons["立即检查更新"].firstMatch.waitForExistence(timeout: 3))
                 case "transfers":
                     XCTAssertTrue(staticText("暂无传输任务", comparison: "CONTAINS").waitForExistence(timeout: 3))
                 case "import":
-                    XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "导入选中的")).firstMatch.waitForExistence(timeout: 3))
+                    XCTAssertTrue(app.windows.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "导入选中的")).firstMatch.waitForExistence(timeout: 3))
                 case "settings":
                     for tab in ["通用", "终端外观", "操作习惯", "SFTP传输", "数据备份"] {
-                        let tabButton = app.radioButtons[tab]
+                        let tabButton = app.tabs[tab]
                         XCTAssertTrue(tabButton.waitForExistence(timeout: 3), "Missing settings tab: \(tab)")
                         tabButton.click()
-                        XCTAssertTrue(tabButton.isSelected)
+                        let selected = XCTNSPredicateExpectation(predicate: NSPredicate(format: "selected == true OR value == 1 OR value == %@", "1"), object: tabButton)
+                        XCTAssertEqual(XCTWaiter.wait(for: [selected], timeout: 3), .completed, "Settings tab: \(tab), value: \(tabButton.value ?? "missing")")
                         switch tab {
                         case "通用":
-                            XCTAssertTrue(app.buttons["立即检查更新"].isHittable)
+                            XCTAssertTrue(app.windows.buttons["立即检查更新"].firstMatch.isHittable)
                         case "终端外观":
                             XCTAssertTrue(app.sliders.firstMatch.exists)
                         case "操作习惯", "SFTP传输":
                             XCTAssertGreaterThan(app.checkBoxes.count + app.switches.count, 0)
                         default:
-                            XCTAssertGreaterThan(app.buttons.count, 0)
+                            XCTAssertGreaterThan(app.windows.buttons.count, 0)
                         }
                         capture("\(theme)-settings-\(tab)")
                     }

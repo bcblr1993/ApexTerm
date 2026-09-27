@@ -270,8 +270,11 @@ struct ThemeVerificationApp: App {
                 .keyboardShortcut("f", modifiers: .command)
             }
             CommandMenu("验收页面") {
-                ForEach(["main", "editor", "settings", "session", "about", "shortcuts", "transfers", "metrics", "import"], id: \.self) { page in
-                    Button(page) { scene = page }
+                ForEach(["main", "editor", "settings", "session", "about", "shortcuts", "transfers", "metrics", "import", "import-sheet"], id: \.self) { page in
+                    Button(page) {
+                        if page == "import-sheet" { importPresented = true }
+                        scene = page
+                    }
                 }
             }
             CommandMenu("验收主题") {

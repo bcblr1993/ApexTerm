@@ -232,6 +232,38 @@ final class ApexTermUITests: XCTestCase {
         capture("terminal-split-closed")
     }
 
+    func testSSHConfigImportSelectionAndDuplicateRecovery() {
+        launch("import")
+        let selected = app.buttons["导入选中的 1 台主机"]
+        XCTAssertTrue(selected.waitForExistence(timeout: 5))
+        XCTAssertTrue(selected.isEnabled)
+        app.buttons["取消全选"].click()
+        XCTAssertFalse(app.buttons["导入选中的 0 台主机"].isEnabled)
+        app.buttons["全选"].click()
+        XCTAssertTrue(selected.isEnabled)
+        selected.click()
+        let notice = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "已成功导入 1 台主机")).firstMatch
+        XCTAssertTrue(notice.waitForExistence(timeout: 5))
+        capture("ssh-config-import-success")
+        app.menuBars.menuBarItems["验收页面"].click()
+        app.menuItems["main"].click()
+        let twoHosts = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "2 台主机")).firstMatch
+        XCTAssertTrue(twoHosts.waitForExistence(timeout: 5))
+        app.menuBars.menuBarItems["验收页面"].click()
+        app.menuItems["import"].click()
+        XCTAssertTrue(selected.waitForExistence(timeout: 5))
+        selected.click()
+        XCTAssertTrue(notice.waitForExistence(timeout: 5))
+        app.menuBars.menuBarItems["验收页面"].click()
+        app.menuItems["main"].click()
+        XCTAssertTrue(twoHosts.waitForExistence(timeout: 5), "Reimport must update the existing session rather than duplicate it")
+        let search = app.textFields.matching(NSPredicate(format: "label CONTAINS %@", "搜索会话")).firstMatch
+        search.click()
+        search.typeText("qa-demo")
+        XCTAssertTrue(app.staticTexts["qa-demo"].waitForExistence(timeout: 5))
+        capture("ssh-config-import-deduplicated")
+    }
+
     func testRealSSHConfiguredHostIsMandatory() throws {
         let environment = ProcessInfo.processInfo.environment
         guard let host = environment["APEX_UI_TEST_HOST"], !host.isEmpty,

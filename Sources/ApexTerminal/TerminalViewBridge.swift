@@ -850,7 +850,7 @@ public final class NativeTerminalView: NSTextView {
         let rect = compositionRect()
         backgroundColor.setFill()
         rect.fill()
-        (currentMarkedText as NSString).draw(in: rect, withAttributes: attributes)
+        (currentMarkedText as NSString).draw(at: rect.origin, withAttributes: attributes)
     }
 
     private func compositionRect() -> NSRect {
@@ -858,7 +858,10 @@ public final class NativeTerminalView: NSTextView {
         let height = layoutManager?.defaultLineHeight(for: font) ?? 18
         var rect = getCursorRect() ?? NSRect(x: textContainerOrigin.x, y: textContainerOrigin.y, width: 12, height: height)
         if AppSettings.shared.cursorShape == .underline { rect.origin.y -= height - 2.5 }
-        rect.size = NSSize(width: max(12, (currentMarkedText as NSString).size(withAttributes: [.font: font]).width + 2), height: height)
+        // CJK fallback fonts can have a taller line than the terminal's monospaced font.
+        // A constrained text rectangle must not suppress the entire preedit line.
+        let measured = (currentMarkedText as NSString).size(withAttributes: [.font: font])
+        rect.size = NSSize(width: max(12, ceil(measured.width) + 2), height: max(height, ceil(measured.height) + 2))
         return rect
     }
 

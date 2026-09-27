@@ -70,3 +70,7 @@ SFTP路径同步修正：currentPath变化时，路径框未聚焦或输入仍�
 011f5ad Release实体机30分钟负载完成：114次输入回显、38次任务状态completed且字节相同的文件往返，76条传输记录，失败列表为空；输出申请910400行（不是独立接收总数）。SSH断开后等待30秒，应用正常退出exit0，PID45839已消失；真实负载及退出结果real-226-current-result.json，内存汇总real-226-current-memory-final.json。此结果不替代IME、拖拽、选区完整性、实际帧P95或Tart最终候选门禁。
 
 长测内存解释限制：QAProcessTelemetry每秒保留全部samples并序列化重写，RSS含增长的验证仪表开销。011f5ad峰值221.64MB不能直接推断产品单独内存曲线；需独立外部采样/有界仪表对照。工作负载114输入/38往返及正常exit0事实不受此说明改变，禁止将此项等同整个稳定性/性能阶段完成。
+
+当前Animation Hitches短时探测：记录器exit0，render705条、surface swap702条、displayed surface701条、frame lifetime703条；导出表无可靠测试应用归属，未执行规定交互，不能将全局合成层生命周期/刷新周期作为应用P95。frame-current-probe-analysis.json记录未通过归属核验。导出TOC环境段已移除；原始trace含启动环境，不分享、不打包。后续采样应使用最小启动环境并提供可证明的应用surface映射。
+
+当前Release QA在指定机器实际右键下载256KB测试文件：可见记录包含正确远端路径与Downloads目标，传输完成；本地/远端SHA256一致（sftp-click-download-226-proof.json、sftp-download-record-226.txt）。收起传输sheet后CmdQ exit0；sheet打开时CmdQ未退出，不能计直接退出通过。此项是点击下载，不计拖拽。双向拖拽fixture已准备，界面上传授权待回复。

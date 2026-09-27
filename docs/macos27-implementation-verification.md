@@ -219,3 +219,10 @@
 - 点击重新加载，实际弹出重新加载将覆盖当前内容说明；选择“继续编辑”后内容仍在。
 - 结果记录 qa/editor-discard-cancel-proof.json，两条内容保留断言均为 true；结束恢复原示例，未保存远程文件。
 - 此证据覆盖保护提示与取消，未覆盖真实远端加载失败/保存成功或实际 SSH 写入。
+
+### 编辑器保存期间控件状态
+
+- 验收回调延迟 8 秒，实际 UI 保存期间显示 busy indicator；重新加载、顶部关闭编辑器、底部关闭均为 disabled。完成后按钮恢复，并显示完成通知。
+- 修复关闭按钮显示可点击但 requestClose 忽略操作的状态不一致，移除保存按钮覆盖 apexProminentButton 可读颜色的额外 tint。
+- qa/editor-saving-fixed.txt 与 qa/editor-save-restored.txt 记录前后辅助功能状态；tests-editor-save-controls.log 全量测试退出 0，无 warning/error。
+- 此为隔离验收回调，UI 的上传成功文字不代表真实 SSH 已上传；真实远端保存验收仍待完成。

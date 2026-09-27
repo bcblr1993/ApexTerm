@@ -117,6 +117,7 @@ public struct QuickEditorView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .keyboardShortcut(.cancelAction)
+                .disabled(isSaving || isReloading)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
@@ -157,6 +158,7 @@ public struct QuickEditorView: View {
                 
                 Button("关闭", action: requestClose)
                     .controlSize(.small)
+                    .disabled(isSaving || isReloading)
                 
                 Button(action: saveChanges) {
                     HStack(spacing: 4) {
@@ -171,7 +173,6 @@ public struct QuickEditorView: View {
                 }
                 .keyboardShortcut("s", modifiers: .command)
                 .apexProminentButton()
-                .tint(ApexStyle.accent)
                 .controlSize(.small)
                 .disabled(isSaving || isReloading)
             }

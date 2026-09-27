@@ -482,6 +482,17 @@ final class ApexTermUITests: XCTestCase {
         let echo = XCTNSPredicateExpectation(predicate: output, object: terminal)
         XCTAssertEqual(XCTWaiter.wait(for: [echo], timeout: 15), .completed)
         capture("real-ssh-pty")
+        app.menuBars.menuBarItems["验收操作"].click()
+        app.menuItems["断开测试终端"].click()
+        XCTAssertTrue(app.staticTexts["会话已断开"].waitForExistence(timeout: 10))
+        app.buttons["重新连接 (⌘R)"].click()
+        XCTAssertTrue(app.staticTexts["已连接"].waitForExistence(timeout: 30))
+        XCTAssertFalse(app.staticTexts["会话已断开"].exists)
+        terminal.click()
+        terminal.typeText("printf '\\nAPEX_UI_REAL_RECONNECT_OK\\n'\n")
+        let restoredOutput = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "\nAPEX_UI_REAL_RECONNECT_OK\n"), object: terminal)
+        XCTAssertEqual(XCTWaiter.wait(for: [restoredOutput], timeout: 15), .completed)
+        capture("real-ssh-reconnect-pty")
     }
 
     func testTransferRecordFiltersAndClearCompleted() {

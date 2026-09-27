@@ -39,6 +39,7 @@ public struct TerminalRepresentable: NSViewRepresentable {
         scrollView.terminalView.onFileDrop = onFileDrop
         scrollView.terminalView.onFocus = onFocus
         context.coordinator.scrollView = scrollView
+        context.coordinator.wasFocused = isFocused
         
         // 120Hz Coalesced real-time listener: batch stream updates to prevent UI overload
         ringBuffer.onUpdate = { [weak scrollView] in
@@ -62,7 +63,8 @@ public struct TerminalRepresentable: NSViewRepresentable {
     
     public func updateNSView(_ nsView: NativeTerminalScrollView, context: Context) {
         let terminal = nsView.terminalView
-        if terminal.ringBuffer !== ringBuffer {
+        let bufferChanged = terminal.ringBuffer !== ringBuffer
+        if bufferChanged {
             terminal.ringBuffer = ringBuffer
         }
         terminal.onInput = onInput
@@ -80,7 +82,9 @@ public struct TerminalRepresentable: NSViewRepresentable {
             terminal.refresh()
         }
         
-        if isFocused {
+        let shouldFocus = isFocused && (!context.coordinator.wasFocused || bufferChanged)
+        context.coordinator.wasFocused = isFocused
+        if shouldFocus {
             if let window = nsView.window, window.firstResponder != terminal {
                 DispatchQueue.main.async {
                     window.makeFirstResponder(terminal)
@@ -95,6 +99,7 @@ public struct TerminalRepresentable: NSViewRepresentable {
     
     public class Coordinator {
         var scrollView: NativeTerminalScrollView?
+        var wasFocused = false
     }
 }
 
@@ -341,7 +346,7 @@ public final class NativeTerminalScrollView: NSScrollView {
     }
     
     @objc private func handleTriggerFindNotification(_ note: Notification) {
-        if let win = window, win.isKeyWindow {
+        if let win = window, win.isKeyWindow, win.firstResponder === terminalView {
             showFindBar()
         }
     }
@@ -421,6 +426,7 @@ public final class NativeTerminalView: NSTextView {
     // Terminal cursor and blinking state
     private var isCursorVisible: Bool = true
     private var cursorBlinkTimer: Timer?
+    private var settingsObserver: NSObjectProtocol?
     private var isFocused: Bool = false
     
     // High-performance styling cache for zero-allocation 120Hz rendering
@@ -595,15 +601,21 @@ public final class NativeTerminalView: NSTextView {
         
         self.registerForDraggedTypes([.fileURL])
         
-        NotificationCenter.default.addObserver(forName: AppSettings.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
+        settingsObserver = NotificationCenter.default.addObserver(forName: AppSettings.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.applyAppSettings()
             }
         }
         
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(accessibilityOptionsChanged), name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
         startCursorBlink()
     }
-    
+
+    @objc private func accessibilityOptionsChanged() {
+        startCursorBlink()
+        needsDisplay = true
+    }
+
     public func applyAppSettings() {
         let settings = AppSettings.shared
         
@@ -707,12 +719,15 @@ public final class NativeTerminalView: NSTextView {
     }
     
     @objc private func windowDidResignKey() {
+        stopCursorBlink()
         needsDisplay = true
     }
     
     isolated deinit {
         cursorBlinkTimer?.invalidate()
         NotificationCenter.default.removeObserver(self)
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
+        if let settingsObserver { NotificationCenter.default.removeObserver(settingsObserver) }
     }
     
     // MARK: - Terminal Cursor Implementation
@@ -798,6 +813,14 @@ public final class NativeTerminalView: NSTextView {
     }
     
     public func startCursorBlink() {
+        cursorBlinkTimer?.invalidate()
+        cursorBlinkTimer = nil
+        guard isFocused, window?.isKeyWindow == true, !isHiddenOrHasHiddenAncestor,
+              !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            isCursorVisible = true
+            needsDisplay = true
+            return
+        }
         guard AppSettings.shared.isCursorBlinkEnabled else {
             isCursorVisible = true
             needsDisplay = true

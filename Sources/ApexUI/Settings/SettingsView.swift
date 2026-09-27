@@ -136,6 +136,10 @@ private struct AppearanceSettingsTab: View {
             }
             
             Section {
+                Toggle("窗口外观跟随系统", isOn: $settings.followsSystemAppearance)
+                Text("跟随系统时，窗口使用系统明暗外观；终端保留所选配色。")
+                    .font(.caption)
+                    .foregroundStyle(ApexStyle.secondary)
                 Picker("全局主题", selection: $settings.themePreset) {
                     ForEach(TerminalThemePreset.selectablePresets + (TerminalThemePreset.selectablePresets.contains(settings.themePreset) ? [] : [settings.themePreset])) { preset in
                         HStack {

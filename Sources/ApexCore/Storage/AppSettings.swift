@@ -128,6 +128,13 @@ public final class AppSettings: ObservableObject {
         }
     }
     
+    @Published public var followsSystemAppearance: Bool {
+        didSet {
+            defaults.set(followsSystemAppearance, forKey: "settings.appearance.followSystem")
+            NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
+        }
+    }
+
     // Terminal Behavior
     @Published public var isCopyOnSelectEnabled: Bool {
         didSet {
@@ -187,6 +194,7 @@ public final class AppSettings: ObservableObject {
             ? defaults.bool(forKey: Keys.isCursorBlinkEnabled)
             : true
         
+        self.followsSystemAppearance = defaults.bool(forKey: "settings.appearance.followSystem")
         if let rawTheme = defaults.string(forKey: Keys.themePreset), let theme = TerminalThemePreset(rawValue: rawTheme) {
             self.themePreset = theme
         } else {
@@ -239,6 +247,7 @@ public final class AppSettings: ObservableObject {
         cursorShape = .bar
         isCursorBlinkEnabled = true
         themePreset = .nativeLight
+        followsSystemAppearance = false
         isCopyOnSelectEnabled = true
         isRightClickPasteEnabled = true
         scrollbackMaxLines = 10_000

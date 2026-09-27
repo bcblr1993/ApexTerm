@@ -2,6 +2,22 @@ import XCTest
 @testable import ApexTerminal
 
 final class RingBufferStressTests: XCTestCase {
+    func testPlainLogFastPathMatchesFragmentedControlAndUnicodeOutput() {
+        let chunks = ["first", " line\n\nsecond\npartial", " tail\n",
+                      "progress 10%\rprogress 90%\n", "\u{1B}[31", "mred\u{1B}[0m\n",
+                      "中文 👩‍💻\n", "tab\tend\n", "last"]
+        let batched = TerminalRingBuffer(maxLines: 5)
+        let fragmented = TerminalRingBuffer(maxLines: 5)
+        for chunk in chunks {
+            batched.appendStream(chunk)
+            for character in chunk { fragmented.appendStream(String(character)) }
+            XCTAssertEqual(batched.tailLines(count: 5), fragmented.tailLines(count: 5))
+            XCTAssertEqual(batched.currentActiveLine, fragmented.currentActiveLine)
+            XCTAssertEqual(batched.cursorColumn, fragmented.cursorColumn)
+            XCTAssertEqual(batched.totalCommittedCount, fragmented.totalCommittedCount)
+        }
+    }
+
     
     /// Test 1: Rapid 100,000-line streaming throughput and monotonic total counter
     func testHighThroughputStreaming100KLines() {

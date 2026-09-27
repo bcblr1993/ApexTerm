@@ -6,20 +6,39 @@ public struct MetricCapsuleView: View {
     @ObservedObject private var themeSettings = AppSettings.shared
     @ObservedObject public var historyStore: ObservableMetricsHistory
     @State private var showingDetail = false
+    private let compact: Bool
+    private let monitoringEnabled: Bool
 
-    public init(historyStore: ObservableMetricsHistory) {
+    public init(historyStore: ObservableMetricsHistory, compact: Bool = false, monitoringEnabled: Bool = true) {
         self.historyStore = historyStore
+        self.compact = compact
+        self.monitoringEnabled = monitoringEnabled
     }
 
     public var body: some View {
-        Button(action: { showingDetail.toggle() }) {
+        TimelineView(.periodic(from: .now, by: 10)) { context in
+            capsule(at: context.date)
+        }
+    }
+
+    private func capsule(at date: Date) -> some View {
+        let isStale = latest.map { date.timeIntervalSince($0.timestamp) > 30 } ?? false
+        return Button(action: { showingDetail.toggle() }) {
             HStack(spacing: 12) {
                 if latest == nil {
                     Image(systemName: "waveform.path.ecg")
                         .foregroundStyle(ApexStyle.accent)
-                    Text("监控待命")
+                    Text(monitoringEnabled ? "监控待命" : "监控已关闭")
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(ApexStyle.secondary)
+                } else if isStale {
+                    Image(systemName: "clock.badge.exclamationmark")
+                    Text("监控已过期")
+                        .foregroundStyle(ApexStyle.secondary)
+                } else if compact {
+                    Image(systemName: "waveform.path.ecg")
+                    Text(String(format: "CPU %.0f%%", latest?.cpuUsagePercent ?? 0))
+                        .monospacedDigit()
                 } else {
                     // CPU indicator
                     HStack(spacing: 5) {
@@ -83,11 +102,11 @@ public struct MetricCapsuleView: View {
             }
         }
         .buttonStyle(.bordered)
-        .controlSize(.small)
-        .help("查看服务器性能")
+        .controlSize(compact ? .regular : .small)
+        .help(isStale ? "超过 30 秒未收到新指标，详情为最后一次采样" : "查看服务器性能")
         .popover(isPresented: $showingDetail, arrowEdge: .bottom) {
-            MetricDetailView(historyStore: historyStore)
-                .frame(width: 350, height: 226)
+            MetricDetailView(historyStore: historyStore, monitoringEnabled: monitoringEnabled)
+                .frame(width: 390, height: 280)
         }
     }
 
@@ -143,12 +162,19 @@ public final class ObservableMetricsHistory: ObservableObject {
     }
 }
 
-/// Detailed Swift Charts popup with hardware accelerated metrics curves and no-bounce animation
+/// Native metric details are rendered only while the popover is visible.
 public struct MetricDetailView: View {
     @ObservedObject private var themeSettings = AppSettings.shared
     @ObservedObject var historyStore: ObservableMetricsHistory
+    let monitoringEnabled: Bool
 
     public var body: some View {
+        TimelineView(.periodic(from: .now, by: 10)) { context in
+            details(at: context.date)
+        }
+    }
+
+    private func details(at date: Date) -> some View {
         VStack(alignment: .leading, spacing: 7) {
             // Header
             HStack(alignment: .center, spacing: 6) {
@@ -160,7 +186,7 @@ public struct MetricDetailView: View {
 
                 if let cpuModel = latest?.cpuModel, !cpuModel.isEmpty {
                     Text(cpuModel)
-                        .font(.system(size: 9, weight: .medium, design: .monospaced))
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
                         .padding(.horizontal, 5)
                         .padding(.vertical, 1.5)
                         .background(ApexStyle.secondary.opacity(0.12))
@@ -174,17 +200,24 @@ public struct MetricDetailView: View {
 
                 if let uptime = latest?.uptimeSeconds {
                     Text(formatUptime(uptime))
-                        .font(.system(size: 9.5, design: .monospaced))
+                        .font(.system(size: 11, design: .monospaced))
                         .foregroundColor(ApexStyle.secondary)
                 }
+            }
+
+            if let snapshot = latest {
+                let stale = date.timeIntervalSince(snapshot.timestamp) > 30
+                Label(stale ? "数据已过期 · 最后采样 \(snapshot.timestamp.formatted(date: .omitted, time: .shortened))" : "最后采样 \(snapshot.timestamp.formatted(date: .omitted, time: .shortened))", systemImage: stale ? "clock.badge.exclamationmark" : "clock")
+                    .font(.caption)
+                    .foregroundStyle(ApexStyle.secondary)
             }
 
             Divider()
 
             if latest == nil {
                 VStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text("等待监控数据...")
+                    if monitoringEnabled { ProgressView().controlSize(.small) }
+                    Text(monitoringEnabled ? "等待监控数据…" : "监控已关闭，可在会话设置中开启")
                         .font(.caption)
                         .foregroundColor(ApexStyle.secondary)
                 }
@@ -195,11 +228,11 @@ public struct MetricDetailView: View {
                 HStack(spacing: 8) {
                     HStack(spacing: 4) {
                         Image(systemName: "bolt.fill")
-                            .font(.system(size: 9, weight: .bold))
+                            .font(.system(size: 11, weight: .bold))
                             .foregroundColor(cpuColor)
                             .frame(width: 10)
                         Text("CPU")
-                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
                     }
                     .frame(width: 44, alignment: .leading)
 
@@ -208,7 +241,7 @@ public struct MetricDetailView: View {
                         .tint(cpuColor)
 
                     Text(String(format: "%.1f%% (%d核)", latest?.cpuUsagePercent ?? 0, latest?.cpuCores ?? 1))
-                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
                         .foregroundColor(ApexStyle.primary)
                         .frame(width: 120, alignment: .trailing)
                 }
@@ -217,11 +250,11 @@ public struct MetricDetailView: View {
                     HStack(spacing: 8) {
                         HStack(spacing: 4) {
                             Image(systemName: "memorychip")
-                                .font(.system(size: 9, weight: .bold))
+                                .font(.system(size: 11, weight: .bold))
                                 .foregroundColor(memColor)
                                 .frame(width: 10)
                             Text("内存")
-                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
                         }
                         .frame(width: 44, alignment: .leading)
 
@@ -230,7 +263,7 @@ public struct MetricDetailView: View {
                             .tint(memColor)
 
                         Text(formattedMemoryShort)
-                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                            .font(.system(size: 11, weight: .medium, design: .monospaced))
                             .foregroundColor(ApexStyle.primary)
                             .frame(width: 120, alignment: .trailing)
                     }
@@ -239,11 +272,11 @@ public struct MetricDetailView: View {
                     HStack(spacing: 8) {
                         HStack(spacing: 4) {
                             Image(systemName: "internaldrive.fill")
-                                .font(.system(size: 9, weight: .bold))
+                                .font(.system(size: 11, weight: .bold))
                                 .foregroundColor(diskColor)
                                 .frame(width: 10)
                             Text("磁盘")
-                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
                         }
                         .frame(width: 44, alignment: .leading)
 
@@ -254,15 +287,15 @@ public struct MetricDetailView: View {
                         HStack(spacing: 3) {
                             if let badge = latest?.diskBadgeText {
                                 Text(badge)
-                                    .font(.system(size: 7.5, weight: .bold))
+                                    .font(.system(size: 11, weight: .bold))
                                     .padding(.horizontal, 3)
                                     .padding(.vertical, 0.5)
                                     .background((latest?.isSSD ?? true) ? ApexStyle.accent.opacity(0.18) : ApexStyle.warning.opacity(0.18))
-                                    .foregroundColor((latest?.isSSD ?? true) ? .teal : .orange)
+                                    .foregroundColor((latest?.isSSD ?? true) ? ApexStyle.accent : ApexStyle.warning)
                                     .cornerRadius(2.5)
                             }
                             Text(formattedDiskShort)
-                                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                .font(.system(size: 11, weight: .medium, design: .monospaced))
                                 .foregroundColor(ApexStyle.primary)
                         }
                         .frame(width: 120, alignment: .trailing)
@@ -272,11 +305,11 @@ public struct MetricDetailView: View {
                     HStack(spacing: 8) {
                         HStack(spacing: 4) {
                             Image(systemName: "arrow.up.arrow.down")
-                                .font(.system(size: 9, weight: .bold))
+                                .font(.system(size: 11, weight: .bold))
                                 .foregroundColor(ApexStyle.accent)
                                 .frame(width: 10)
                             Text("网络")
-                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
                         }
                         .frame(width: 44, alignment: .leading)
 
@@ -285,19 +318,19 @@ public struct MetricDetailView: View {
                         HStack(spacing: 12) {
                             HStack(spacing: 3) {
                                 Text("↓")
-                                    .font(.system(size: 9, weight: .bold))
+                                    .font(.system(size: 11, weight: .bold))
                                     .foregroundColor(ApexStyle.success)
                                 Text(formatRate(latest?.networkRxBytesPerSec ?? 0))
-                                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                    .font(.system(size: 11, weight: .medium, design: .monospaced))
                                     .foregroundColor(ApexStyle.success)
                             }
                             HStack(spacing: 3) {
                                 Text("↑")
-                                    .font(.system(size: 9, weight: .bold))
-                                    .foregroundColor(.blue)
+                                    .font(.system(size: 11, weight: .bold))
+                                    .foregroundColor(ApexStyle.accent)
                                 Text(formatRate(latest?.networkTxBytesPerSec ?? 0))
-                                    .font(.system(size: 10, weight: .medium, design: .monospaced))
-                                    .foregroundColor(.blue)
+                                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                    .foregroundColor(ApexStyle.accent)
                             }
                         }
                     }
@@ -310,12 +343,12 @@ public struct MetricDetailView: View {
                     VStack(alignment: .leading, spacing: 3) {
                         HStack {
                             Text("Top 进程占用")
-                                .font(.system(size: 9.5, weight: .semibold))
+                                .font(.system(size: 11, weight: .semibold))
                                 .foregroundColor(ApexStyle.secondary)
                             Spacer()
                             if let l1 = latest?.loadAvg1m, let l5 = latest?.loadAvg5m, let l15 = latest?.loadAvg15m {
                                 Text(String(format: "系统负载: %.2f  %.2f  %.2f", l1, l5, l15))
-                                    .font(.system(size: 8.5, design: .monospaced))
+                                    .font(.system(size: 11, design: .monospaced))
                                     .foregroundColor(ApexStyle.secondary)
                             }
                         }
@@ -324,20 +357,20 @@ public struct MetricDetailView: View {
                             ForEach(procs.prefix(3)) { p in
                                 HStack(spacing: 4) {
                                     Text("\(p.pid)")
-                                        .font(.system(size: 8.5, design: .monospaced))
+                                        .font(.system(size: 11, design: .monospaced))
                                         .foregroundColor(ApexStyle.secondary)
                                         .frame(width: 34, alignment: .leading)
                                     Text(p.command)
-                                        .font(.system(size: 8.5, weight: .medium, design: .monospaced))
+                                        .font(.system(size: 11, weight: .medium, design: .monospaced))
                                         .lineLimit(1)
                                         .truncationMode(.tail)
                                         .frame(maxWidth: .infinity, alignment: .leading)
                                     Text(String(format: "%.1f%%", p.cpuPercent))
-                                        .font(.system(size: 8.5, weight: .semibold, design: .monospaced))
+                                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
                                         .foregroundColor(p.cpuPercent > 50 ? ApexStyle.error : (p.cpuPercent > 20 ? ApexStyle.warning : ApexStyle.primary))
                                         .frame(width: 40, alignment: .trailing)
                                     Text(String(format: "%.1f%%", p.memPercent))
-                                        .font(.system(size: 8.5, design: .monospaced))
+                                        .font(.system(size: 11, design: .monospaced))
                                         .foregroundColor(ApexStyle.secondary)
                                         .frame(width: 36, alignment: .trailing)
                                 }

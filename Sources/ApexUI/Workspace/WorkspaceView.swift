@@ -16,12 +16,20 @@ public final class TerminalPaneItem: Identifiable, ObservableObject {
     public let sshClient: SSHSessionProtocol
     public let ringBuffer = TerminalRingBuffer(maxLines: 50_000)
     @Published public var title: String
-    @Published public var connectionState: SSHConnectionState = .disconnected
+    @Published public var connectionState: SSHConnectionState {
+        didSet {
+            if oldValue != connectionState {
+                onConnectionStateChanged?(connectionState)
+            }
+        }
+    }
+    public var onConnectionStateChanged: ((SSHConnectionState) -> Void)?
     
-    public init(session: Session, sshClient: SSHSessionProtocol, title: String) {
+    public init(session: Session, sshClient: SSHSessionProtocol, title: String, initialState: SSHConnectionState = .connecting(step: "正在连接")) {
         self.session = session
         self.sshClient = sshClient
         self.title = title
+        self.connectionState = initialState
         
         let ringBuffer = self.ringBuffer
         self.sshClient.setOutputHandler { data in
@@ -30,6 +38,13 @@ public final class TerminalPaneItem: Identifiable, ObservableObject {
             } else {
                 let lossy = String(decoding: data, as: UTF8.self)
                 ringBuffer.appendStream(lossy)
+            }
+        }
+
+        self.sshClient.setStateChangeHandler { [weak self] state in
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                self.connectionState = state
             }
         }
     }
@@ -41,9 +56,18 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
     public let session: Session
     public let sshClient: SSHSessionProtocol
     public let metricsHistory = ObservableMetricsHistory()
-    @Published public var currentRemotePath: String
+    @Published public var currentRemotePath: String {
+        didSet { UserDefaults.standard.set(currentRemotePath, forKey: "workspace.remotePath.\(session.id.uuidString)") }
+    }
     @Published public var isDirectoryLinkageEnabled: Bool
-    @Published public var connectionState: SSHConnectionState = .disconnected
+    @Published public var connectionState: SSHConnectionState = .connecting(step: "正在连接") {
+        didSet {
+            // Keep primary pane's connectionState in sync if single pane
+            if let first = panes.first, panes.count == 1, first.connectionState != connectionState {
+                first.connectionState = connectionState
+            }
+        }
+    }
     @Published public var customTitle: String? = nil
     @Published public var paneSplitRatio: CGFloat = 0.5
     
@@ -53,7 +77,13 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
     
     // Split Panes
     @Published public var panes: [TerminalPaneItem] = []
-    @Published public var activePaneId: UUID?
+    @Published public var activePaneId: UUID? {
+        didSet {
+            if let active = activePane {
+                self.connectionState = active.connectionState
+            }
+        }
+    }
     @Published public var splitMode: PaneSplitMode = .single
     
     private let fallbackRingBuffer = TerminalRingBuffer(maxLines: 50_000)
@@ -68,13 +98,22 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
     public init(session: Session, sshClient: SSHSessionProtocol) {
         self.session = session
         self.sshClient = sshClient
-        self.currentRemotePath = session.username == "root" ? "/root" : (session.username.isEmpty ? "~" : "/home/\(session.username)")
+        self.currentRemotePath = UserDefaults.standard.string(forKey: "workspace.remotePath.\(session.id.uuidString)")
+            ?? (session.username == "root" ? "/root" : (session.username.isEmpty ? "~" : "/home/\(session.username)"))
         self.isDirectoryLinkageEnabled = session.sftpAutoSyncEnabled
+        self.connectionState = .connecting(step: "正在连接")
         
-        let primaryPane = TerminalPaneItem(session: session, sshClient: sshClient, title: session.name)
+        let primaryPane = TerminalPaneItem(session: session, sshClient: sshClient, title: session.name, initialState: .connecting(step: "正在连接"))
         self.panes = [primaryPane]
         self.activePaneId = primaryPane.id
         
+        primaryPane.onConnectionStateChanged = { [weak self, weak primaryPane] newState in
+            guard let self = self, let primaryPane = primaryPane else { return }
+            if self.activePaneId == primaryPane.id && self.connectionState != newState {
+                self.connectionState = newState
+            }
+        }
+
         let metricsHistory = self.metricsHistory
         self.sshClient.setMetricsHandler { snapshot in
             Task { @MainActor in
@@ -92,21 +131,36 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
         }
     }
     
-    public func reconnect(pane: TerminalPaneItem) {
-        pane.connectionState = .connecting(step: "正在连接")
+    public func connect(pane: TerminalPaneItem? = nil) {
+        let targetPane = pane ?? activePane ?? panes.first
+        guard let p = targetPane else { return }
+        p.connectionState = .connecting(step: "正在连接")
+        if p.id == (activePane?.id ?? panes.first?.id) {
+            self.connectionState = .connecting(step: "正在连接")
+        }
         Task {
             do {
-                try await pane.sshClient.connect()
-                pane.connectionState = pane.sshClient.connectionState
+                try await p.sshClient.connect()
+                p.connectionState = p.sshClient.connectionState
+                if p.id == (self.activePane?.id ?? self.panes.first?.id) {
+                    self.connectionState = p.sshClient.connectionState
+                }
             } catch {
-                pane.connectionState = .failed(error.localizedDescription)
+                p.connectionState = .failed(error.localizedDescription)
+                if p.id == (self.activePane?.id ?? self.panes.first?.id) {
+                    self.connectionState = .failed(error.localizedDescription)
+                }
             }
         }
     }
     
+    public func reconnect(pane: TerminalPaneItem) {
+        connect(pane: pane)
+    }
+
     public func reconnectAll() {
         for pane in panes {
-            reconnect(pane: pane)
+            connect(pane: pane)
         }
     }
     
@@ -122,21 +176,19 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
             newClient = NativeSSHSession(session: session)
         }
         
-        let newPane = TerminalPaneItem(session: session, sshClient: newClient, title: "\(session.name) (分屏)")
+        let newPane = TerminalPaneItem(session: session, sshClient: newClient, title: "\(session.name) (分屏)", initialState: .connecting(step: "连接中"))
+        newPane.onConnectionStateChanged = { [weak self, weak newPane] newState in
+            guard let self = self, let newPane = newPane else { return }
+            if self.activePaneId == newPane.id && self.connectionState != newState {
+                self.connectionState = newState
+            }
+        }
         self.panes.append(newPane)
         self.activePaneId = newPane.id
         self.splitMode = mode
         self.paneSplitRatio = 0.5
         
-        Task {
-            newPane.connectionState = .connecting(step: "连接中")
-            do {
-                try await newClient.connect()
-                newPane.connectionState = newClient.connectionState
-            } catch {
-                newPane.connectionState = .failed(error.localizedDescription)
-            }
-        }
+        connect(pane: newPane)
     }
     
     public func closePane(id: UUID) {
@@ -161,9 +213,13 @@ public struct WorkspaceView: View {
     @Binding public var selectedTabId: UUID?
     
     @State private var isBroadcastActive = false
-    @State private var splitRatio: CGFloat = 0.70
+    @AppStorage("workspace.filesSplitRatio") private var storedSplitRatio: Double = 0.70
+    private var splitRatioBinding: Binding<CGFloat> {
+        Binding(get: { CGFloat(min(max(storedSplitRatio, 0.2), 0.85)) },
+                set: { storedSplitRatio = Double(min(max($0, 0.2), 0.85)) })
+    }
     @State private var splitDragStartRatio: CGFloat?
-    @State private var isSFTPVisible = true
+    @AppStorage("workspace.filesVisible") private var isSFTPVisible = true
     
     // Tab Rename
     @State private var tabToRename: TerminalTabItem?
@@ -186,7 +242,6 @@ public struct WorkspaceView: View {
     
     public var body: some View {
         VStack(spacing: 0) {
-            workspaceHeader
 
             if !activeTabs.isEmpty {
                 HStack(spacing: 8) {
@@ -224,11 +279,7 @@ public struct WorkspaceView: View {
                                     let newTab = TerminalTabItem(session: first, sshClient: client)
                                     activeTabs.append(newTab)
                                     selectedTabId = newTab.id
-                                    Task {
-                                        newTab.connectionState = .connecting(step: "正在连接")
-                                        try? await client.connect()
-                                        newTab.connectionState = client.connectionState
-                                    }
+                                    newTab.connect()
                                 }
                             }) {
                                 Image(systemName: "plus")
@@ -285,7 +336,7 @@ public struct WorkspaceView: View {
                     activeTabs: activeTabs,
                     isBroadcastActive: isBroadcastActive,
                     isSFTPVisible: $isSFTPVisible,
-                    splitRatio: $splitRatio,
+                    splitRatio: splitRatioBinding,
                     splitDragStartRatio: $splitDragStartRatio
                 )
             } else {
@@ -310,7 +361,7 @@ public struct WorkspaceView: View {
             
             // Bottom Status Bar
             if let tab = currentTab {
-                WorkspaceBottomStatusBar(tab: tab)
+                WorkspaceBottomStatusBar(tab: tab, showsDirectoryControls: !isSFTPVisible)
             } else {
                 HStack {
                     Text(L10n.readyStatus)
@@ -323,6 +374,9 @@ public struct WorkspaceView: View {
                 .background(ApexStyle.surface)
             }
         }
+        .navigationTitle(currentTab?.displayTitle ?? "ApexTerm")
+        .navigationSubtitle(currentTab.map { "\($0.session.username)@\($0.session.host)" } ?? "SSH 与文件工作台")
+        .toolbar { workspaceToolbar }
         .onChange(of: activeTabs.count) { _, count in
             if count < 2 { isBroadcastActive = false }
         }
@@ -343,30 +397,34 @@ public struct WorkspaceView: View {
         }
     }
     
-    @ViewBuilder
-    private var workspaceHeader: some View {
-            if let tab = currentTab {
-                WorkspaceHeaderBar(
-                    tab: tab,
-                    isSFTPVisible: $isSFTPVisible,
-                    onDuplicate: { duplicateTab(tab) }
-                )
-            } else {
-                HStack(spacing: 12) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("工作台")
-                            .font(.headline)
-                        Text("选择左侧会话开始连接")
-                            .font(.subheadline)
-                            .foregroundStyle(ApexStyle.secondary)
-                    }
-                    Spacer()
+    @ToolbarContentBuilder
+    private var workspaceToolbar: some ToolbarContent {
+        if let tab = currentTab {
+            ToolbarItemGroup(placement: .primaryAction) {
+                Button(action: { duplicateTab(tab) }) {
+                    Label("复制会话", systemImage: "plus.square.on.square")
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-                .background(ApexStyle.surface)
+                .help("复制此会话到新标签页 (⌘T)")
+                Menu {
+                    Button("垂直分屏", systemImage: "rectangle.split.2x1") { tab.split(mode: .vertical) }
+                    Button("水平分屏", systemImage: "rectangle.split.1x2") { tab.split(mode: .horizontal) }
+                } label: {
+                    Label("分屏", systemImage: "rectangle.split.2x1")
+                }
+                .disabled(tab.panes.count >= 2)
+                .help("分屏 (⌘D / ⌘⇧D)")
             }
-
+            ToolbarItem(placement: .primaryAction) {
+                MetricCapsuleView(historyStore: tab.metricsHistory, compact: true, monitoringEnabled: tab.session.agentlessMonitorEnabled)
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Toggle(isOn: $isSFTPVisible) {
+                    Label("文件面板", systemImage: "folder")
+                }
+                .toggleStyle(.button)
+                .help(isSFTPVisible ? "隐藏文件面板" : "显示文件面板")
+            }
+        }
     }
 
     public func duplicateTab(_ tab: TerminalTabItem) {
@@ -388,16 +446,7 @@ public struct WorkspaceView: View {
             activeTabs.append(newTab)
         }
         selectedTabId = newTab.id
-        
-        Task {
-            newTab.connectionState = .connecting(step: "正在连接")
-            do {
-                try await client.connect()
-                newTab.connectionState = client.connectionState
-            } catch {
-                newTab.connectionState = .failed(error.localizedDescription)
-            }
-        }
+        newTab.connect()
     }
     
     private func closeTab(_ tab: TerminalTabItem) {
@@ -436,70 +485,6 @@ public struct WorkspaceView: View {
     }
 }
 
-private struct WorkspaceHeaderBar: View {
-    @ObservedObject private var themeSettings = AppSettings.shared
-    @ObservedObject var tab: TerminalTabItem
-    @Binding var isSFTPVisible: Bool
-    let onDuplicate: () -> Void
-    
-    var body: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(tab.displayTitle)
-                    .font(.headline)
-                    .lineLimit(1)
-                Text("\(tab.session.username)@\(tab.session.host)")
-                    .font(.caption.monospaced())
-                    .foregroundStyle(ApexStyle.secondary)
-                    .lineLimit(1)
-            }
-            Spacer(minLength: 12)
-            
-            // Action Buttons: Duplicate Session + Split
-            HStack(spacing: 4) {
-                Button(action: onDuplicate) {
-                    Image(systemName: "plus.square.on.square")
-                        .font(.system(size: 11))
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .help("复制此会话到新标签页 (⌘T)")
-                
-                Button(action: { tab.split(mode: .vertical) }) {
-                    Image(systemName: "rectangle.split.2x1")
-                        .font(.system(size: 11))
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .help("垂直分屏 (⌘D)")
-                .disabled(tab.panes.count >= 2)
-                
-                Button(action: { tab.split(mode: .horizontal) }) {
-                    Image(systemName: "rectangle.split.1x2")
-                        .font(.system(size: 11))
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .help("水平分屏 (⌘⇧D)")
-                .disabled(tab.panes.count >= 2)
-            }
-            
-            MetricCapsuleView(historyStore: tab.metricsHistory)
-            
-            Button(action: {
-                withAnimation(.easeInOut(duration: 0.2)) { isSFTPVisible.toggle() }
-            }) {
-                Label(isSFTPVisible ? "隐藏文件" : "显示文件", systemImage: "folder")
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .background(ApexStyle.surface)
-    }
-}
-
 private struct WorkspaceActiveTabSplitView: View {
     @ObservedObject private var themeSettings = AppSettings.shared
     @ObservedObject var tab: TerminalTabItem
@@ -508,6 +493,7 @@ private struct WorkspaceActiveTabSplitView: View {
     @Binding var isSFTPVisible: Bool
     @Binding var splitRatio: CGFloat
     @Binding var splitDragStartRatio: CGFloat?
+    @State private var paneDragStartRatio: CGFloat?
     
     var body: some View {
         GeometryReader { geometry in
@@ -544,9 +530,12 @@ private struct WorkspaceActiveTabSplitView: View {
                                 .gesture(
                                     DragGesture()
                                         .onChanged { val in
-                                            let newRatio = val.location.x / max(totalW, 100)
+                                            let start = paneDragStartRatio ?? tab.paneSplitRatio
+                                            if paneDragStartRatio == nil { paneDragStartRatio = start }
+                                            let newRatio = start + val.translation.width / max(totalW - 8, 100)
                                             tab.paneSplitRatio = min(max(newRatio, 0.15), 0.85)
                                         }
+                                        .onEnded { _ in paneDragStartRatio = nil }
                                 )
                                 
                                 if tab.panes.count > 1 {
@@ -582,9 +571,12 @@ private struct WorkspaceActiveTabSplitView: View {
                                 .gesture(
                                     DragGesture()
                                         .onChanged { val in
-                                            let newRatio = val.location.y / max(totalH, 80)
+                                            let start = paneDragStartRatio ?? tab.paneSplitRatio
+                                            if paneDragStartRatio == nil { paneDragStartRatio = start }
+                                            let newRatio = start + val.translation.height / max(totalH - 8, 80)
                                             tab.paneSplitRatio = min(max(newRatio, 0.15), 0.85)
                                         }
+                                        .onEnded { _ in paneDragStartRatio = nil }
                                 )
                                 
                                 if tab.panes.count > 1 {
@@ -712,7 +704,6 @@ private struct PaneContainerView: View {
                 // Reconnect floating prompt on disconnect or failure
                 if case .disconnected = pane.connectionState {
                     VStack {
-                        Spacer()
                         HStack(spacing: 8) {
                             Circle().fill(ApexStyle.secondary).frame(width: 8, height: 8)
                             Text("会话已断开")
@@ -729,12 +720,12 @@ private struct PaneContainerView: View {
                         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
                         .overlay(RoundedRectangle(cornerRadius: 8).stroke(ApexStyle.secondary.opacity(0.3), lineWidth: 1))
                         .shadow(color: .black.opacity(0.2), radius: 6, y: 2)
-                        .padding(.bottom, 24)
+                        .padding(.top, 12)
+                        Spacer()
                     }
                     .transition(.opacity)
                 } else if case .failed(let err) = pane.connectionState {
                     VStack {
-                        Spacer()
                         HStack(spacing: 8) {
                             Circle().fill(ApexStyle.error).frame(width: 8, height: 8)
                             Text("连接失败：\(err)")
@@ -752,7 +743,8 @@ private struct PaneContainerView: View {
                         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
                         .overlay(RoundedRectangle(cornerRadius: 8).stroke(ApexStyle.error.opacity(0.4), lineWidth: 1))
                         .shadow(color: .black.opacity(0.2), radius: 6, y: 2)
-                        .padding(.bottom, 24)
+                        .padding(.top, 12)
+                        Spacer()
                     }
                     .transition(.opacity)
                 }
@@ -769,16 +761,20 @@ private struct PaneContainerView: View {
 private struct WorkspaceBottomStatusBar: View {
     @ObservedObject private var themeSettings = AppSettings.shared
     @ObservedObject var tab: TerminalTabItem
+    let showsDirectoryControls: Bool
     @ObservedObject var transferManager = TransferManager.shared
     
     var body: some View {
         HStack(spacing: 16) {
-            ConnectionStatusView(tab: tab)
+            if let pane = tab.activePane ?? tab.panes.first {
+                ConnectionStatusView(tab: tab, pane: pane)
+            }
             
             Text("UTF-8")
                 .font(.caption.monospaced())
                 .foregroundColor(ApexStyle.secondary)
             
+            if showsDirectoryControls {
             Toggle(isOn: $tab.isDirectoryLinkageEnabled) {
                 Label(tab.isDirectoryLinkageEnabled ? L10n.linkageOn : L10n.linkageOff,
                       systemImage: tab.isDirectoryLinkageEnabled ? "link" : "link.slash")
@@ -787,6 +783,8 @@ private struct WorkspaceBottomStatusBar: View {
             .controlSize(.small)
             .help(tab.isDirectoryLinkageEnabled ? L10n.linkageHelpOn : L10n.linkageHelpOff)
             
+            }
+
             if !transferManager.tasks.isEmpty {
                 Divider().frame(height: 12)
                 HStack(spacing: 6) {
@@ -805,43 +803,15 @@ private struct WorkspaceBottomStatusBar: View {
                 }
             }
             
-            if let metric = tab.metricsHistory.latest {
-                Divider().frame(height: 12)
-                HStack(spacing: 8) {
-                    HStack(spacing: 3) {
-                        Image(systemName: "cpu")
-                            .font(.system(size: 10))
-                        Text(String(format: "%.0f%%", metric.cpuUsagePercent))
-                    }
-                    HStack(spacing: 3) {
-                        Image(systemName: "memorychip")
-                            .font(.system(size: 10))
-                        Text(String(format: "%.0f%%", metric.memoryUsagePercent))
-                    }
-                    HStack(spacing: 3) {
-                        Image(systemName: "internaldrive")
-                            .font(.system(size: 10))
-                        Text(String(format: "%.0f%%", metric.diskUsagePercent))
-                        Text(metric.diskBadgeText)
-                            .font(.system(size: 8, weight: .bold))
-                            .padding(.horizontal, 3)
-                            .padding(.vertical, 0.5)
-                            .background(metric.isSSD ? ApexStyle.accent.opacity(0.2) : ApexStyle.warning.opacity(0.2))
-                            .foregroundColor(metric.isSSD ? ApexStyle.accent : ApexStyle.warning)
-                            .cornerRadius(3)
-                    }
-                }
-                .font(.caption2.monospaced())
-                .foregroundColor(ApexStyle.secondary)
-            }
-            
             Spacer()
             
+            if showsDirectoryControls {
             Text("\(L10n.currentDirectory): \(tab.currentRemotePath)")
                 .font(.caption.monospaced())
                 .foregroundColor(ApexStyle.secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 7)
@@ -852,6 +822,7 @@ private struct WorkspaceBottomStatusBar: View {
 private struct ConnectionStatusView: View {
     @ObservedObject private var themeSettings = AppSettings.shared
     @ObservedObject var tab: TerminalTabItem
+    @ObservedObject var pane: TerminalPaneItem
 
     var body: some View {
         HStack(spacing: 6) {
@@ -864,7 +835,7 @@ private struct ConnectionStatusView: View {
     }
 
     private var statusText: String {
-        let state = tab.connectionState
+        let state = pane.connectionState
         switch state {
         case .disconnected: return "已断开"
         case .connecting: return "连接中"
@@ -874,7 +845,7 @@ private struct ConnectionStatusView: View {
     }
 
     private var statusColor: Color {
-        let state = tab.connectionState
+        let state = pane.connectionState
         switch state {
         case .disconnected: return ApexStyle.secondary
         case .connecting: return ApexStyle.warning

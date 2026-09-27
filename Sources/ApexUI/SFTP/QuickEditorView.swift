@@ -2,7 +2,7 @@ import SwiftUI
 import ApexCore
 import ApexSSH
 
-/// In-place code and configuration editor with live ⌘S streaming save, line numbers, search and status indicators
+/// Native remote-file editor with undo, search, synchronized line numbers and safe asynchronous save.
 public struct QuickEditorView: View {
     @ObservedObject private var themeSettings = AppSettings.shared
     public let item: SFTPItem
@@ -16,9 +16,14 @@ public struct QuickEditorView: View {
     @State private var saveNotice: String?
     @State private var saveNoticeIsError = false
     @State private var isSearchVisible = false
-    @State private var searchText = ""
-    @State private var hasUnsavedChanges = false
+        @State private var hasUnsavedChanges = false
     @State private var initialContent = ""
+    @State private var pendingDiscard: DiscardAction?
+
+    private enum DiscardAction: String, Identifiable {
+        case close, reload
+        var id: String { rawValue }
+    }
     
     public init(
         item: SFTPItem,
@@ -32,10 +37,9 @@ public struct QuickEditorView: View {
         self.onReload = onReload
     }
     
-    private var lines: [String] {
-        content.components(separatedBy: "\n")
-    }
-    
+    @State private var lineCount = 1
+    @State private var contentByteCount = 0
+
     public var body: some View {
         VStack(spacing: 0) {
             // Header Bar
@@ -75,7 +79,7 @@ public struct QuickEditorView: View {
                         .padding(.vertical, 2)
                         .background(ApexStyle.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 4))
                     
-                    Text("\(lines.count) 行 · \(item.formattedSize)")
+                    Text("\(lineCount) 行 · \(ByteCountFormatter.string(fromByteCount: Int64(contentByteCount), countStyle: .file))")
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundColor(ApexStyle.secondary)
                 }
@@ -93,7 +97,7 @@ public struct QuickEditorView: View {
                 .keyboardShortcut("f", modifiers: .command)
                 
                 // Reload button
-                Button(action: reloadContent) {
+                Button(action: requestReload) {
                     if isReloading {
                         ProgressView().controlSize(.small).scaleEffect(0.6)
                     } else {
@@ -104,9 +108,9 @@ public struct QuickEditorView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .help("从服务器重新加载")
-                .disabled(isReloading)
+                .disabled(isReloading || isSaving)
                 
-                Button(action: { dismiss() }) {
+                Button(action: requestClose) {
                     Label("关闭编辑器", systemImage: "xmark")
                 }
                 .labelStyle(.iconOnly)
@@ -120,75 +124,20 @@ public struct QuickEditorView: View {
             
             Divider()
             
-            // Search Bar
-            if isSearchVisible {
-                HStack(spacing: 8) {
-                    TextField("在文件中查找…", text: $searchText)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 12, design: .monospaced))
-                    
-                    if !searchText.isEmpty {
-                        let matches = countMatches()
-                        Text("\(matches) 处匹配")
-                            .font(.system(size: 11))
-                            .foregroundColor(ApexStyle.secondary)
-                        
-                        Button(action: { searchText = "" }) {
-                            Label("清除查找", systemImage: "xmark.circle.fill")
-                        }
-                        .labelStyle(.iconOnly)
-                        .buttonStyle(.borderless)
-                        .controlSize(.small)
-                    }
+            NativeCodeEditor(text: $content, showsFindBar: $isSearchVisible, isReloading: isReloading)
+                .onChange(of: content) { _, newValue in
+                    hasUnsavedChanges = newValue != initialContent
+                    lineCount = 1 + newValue.utf8.reduce(0) { $0 + ($1 == 10 ? 1 : 0) }
+                    contentByteCount = newValue.utf8.count
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 6)
-                .background(ApexStyle.subtleSurface)
-                
-                Divider()
-            }
-            
-            // Editor Body with Line Numbers
-            HStack(spacing: 0) {
-                // Line Number Gutter
-                ScrollView([.vertical], showsIndicators: false) {
-                    VStack(alignment: .trailing, spacing: 0) {
-                        ForEach(1...max(lines.count, 1), id: \.self) { lineNum in
-                            Text("\(lineNum)")
-                                .font(.system(size: 12, design: .monospaced))
-                                .foregroundColor(ApexStyle.secondary.opacity(0.45))
-                                .frame(height: 19)
-                        }
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.top, 10)
-                }
-                .frame(width: 48)
-                .background(ApexStyle.subtleSurface.opacity(0.35))
-                .allowsHitTesting(false)
-                
-                Divider()
-                
-                // Native TextEditor
-                TextEditor(text: $content)
-                    .font(.system(size: 13, design: .monospaced))
-                    .lineSpacing(2)
-                    .padding(.horizontal, 10)
-                    .padding(.top, 8)
-                    .scrollContentBackground(.hidden)
-                    .background(ApexStyle.surface)
-                    .onChange(of: content) { _, newVal in
-                        hasUnsavedChanges = (newVal != initialContent)
-                    }
-            }
-            
+
             Divider()
-            
+
             // Bottom Status & Action Bar
             HStack(spacing: 12) {
                 HStack(spacing: 8) {
                     Circle().fill(ApexStyle.success).frame(width: 6, height: 6)
-                    Text("UTF-8 · 远程流式直连")
+                    Text("UTF-8 · 远程文件")
                         .font(.caption.monospaced())
                         .foregroundColor(ApexStyle.secondary)
                 }
@@ -206,7 +155,7 @@ public struct QuickEditorView: View {
                 
                 Spacer()
                 
-                Button("关闭") { dismiss() }
+                Button("关闭", action: requestClose)
                     .controlSize(.small)
                 
                 Button(action: saveChanges) {
@@ -224,32 +173,55 @@ public struct QuickEditorView: View {
                 .apexProminentButton()
                 .tint(ApexStyle.accent)
                 .controlSize(.small)
-                .disabled(isSaving)
+                .disabled(isSaving || isReloading)
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
             .background(ApexStyle.surface)
         }
         .frame(minWidth: 720, minHeight: 520)
+        .interactiveDismissDisabled(hasUnsavedChanges || isSaving || isReloading)
+        .alert(item: $pendingDiscard) { action in
+            Alert(title: Text("放弃未保存的更改？"),
+                  message: Text(action == .close ? "关闭后，尚未上传的更改将丢失。" : "重新加载会用服务器上的内容替换当前更改。"),
+                  primaryButton: .destructive(Text("放弃更改")) {
+                      if action == .close { dismiss() } else { reloadContent() }
+                  }, secondaryButton: .cancel(Text("继续编辑")))
+        }
         .onAppear {
             initialContent = content
+            lineCount = 1 + content.utf8.reduce(0) { $0 + ($1 == 10 ? 1 : 0) }
+            contentByteCount = content.utf8.count
         }
     }
     
+    private func requestClose() {
+        guard !isSaving && !isReloading else { return }
+        if hasUnsavedChanges { pendingDiscard = .close } else { dismiss() }
+    }
+
+    private func requestReload() {
+        guard !isSaving && !isReloading else { return }
+        if hasUnsavedChanges { pendingDiscard = .reload } else { reloadContent() }
+    }
+
     private func saveChanges() {
         guard !isSaving else { return }
         isSaving = true
+        let savedContent = content
         saveNotice = nil
         Task {
             do {
-                try await onSave(content)
+                try await onSave(savedContent)
                 await MainActor.run {
                     self.isSaving = false
-                    self.initialContent = self.content
-                    self.hasUnsavedChanges = false
+                    self.initialContent = savedContent
+                    self.hasUnsavedChanges = self.content != savedContent
                     self.saveNoticeIsError = false
                     let time = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
-                    self.saveNotice = "已保存并上传至服务器 (\(time))"
+                    self.saveNotice = self.hasUnsavedChanges
+                        ? "已上传保存时的内容；仍有新更改待保存 (\(time))"
+                        : "已保存并上传至服务器 (\(time))"
                 }
             } catch {
                 await MainActor.run {
@@ -283,11 +255,6 @@ public struct QuickEditorView: View {
                 }
             }
         }
-    }
-    
-    private func countMatches() -> Int {
-        guard !searchText.isEmpty else { return 0 }
-        return content.components(separatedBy: searchText).count - 1
     }
     
     private func fileTypeTag(for name: String) -> String {

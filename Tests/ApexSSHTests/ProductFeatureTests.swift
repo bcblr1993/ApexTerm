@@ -1,5 +1,6 @@
 import XCTest
 @testable import ApexCore
+import ApexSSH
 @testable import ApexTerminal
 @testable import ApexUI
 
@@ -53,6 +54,43 @@ final class ProductFeatureTests: XCTestCase {
         XCTAssertEqual(settings.cursorShape, .bar)
     }
     
+    func testFollowingSystemAppearancePreservesTerminalPalette() {
+        let settings = AppSettings.shared
+        settings.resetToDefaults()
+        defer { settings.resetToDefaults() }
+        settings.themePreset = .oledBlack
+        settings.followsSystemAppearance = true
+        XCTAssertEqual(settings.themePreset, .oledBlack)
+        XCTAssertTrue(UserDefaults.standard.bool(forKey: "settings.appearance.followSystem"))
+        settings.followsSystemAppearance = false
+        XCTAssertEqual(settings.themePreset, .oledBlack)
+        settings.resetToDefaults()
+        XCTAssertFalse(settings.followsSystemAppearance)
+    }
+
+    func testRestoringDirectoryDoesNotReconnectSession() {
+        let session = Session(name: "恢复测试", host: "192.0.2.10", username: "demo")
+        let key = "workspace.remotePath.\(session.id.uuidString)"
+        defer { UserDefaults.standard.removeObject(forKey: key) }
+        let original = TerminalTabItem(session: session, sshClient: MockSSHSession(session: session))
+        original.currentRemotePath = "/var/log"
+        let client = MockSSHSession(session: session)
+        let restored = TerminalTabItem(session: session, sshClient: client)
+        XCTAssertEqual(restored.currentRemotePath, "/var/log")
+        XCTAssertEqual(client.connectionState, .disconnected)
+    }
+
+    func testClosingTabReleasesPaneAndStateCallbacks() {
+        let session = Session(name: "生命周期测试", host: "192.0.2.10", username: "demo")
+        let client = MockSSHSession(session: session)
+        var tab: TerminalTabItem? = TerminalTabItem(session: session, sshClient: client)
+        let weakTab = { [weak tab] in tab }
+        let weakPane = { [weak pane = tab?.panes.first] in pane }
+        tab = nil
+        XCTAssertNil(weakTab())
+        XCTAssertNil(weakPane())
+    }
+
     // MARK: - UpdateManager Semantic Version Tests
     
     func testSemanticVersionComparison() {

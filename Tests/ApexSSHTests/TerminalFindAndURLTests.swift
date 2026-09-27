@@ -1,11 +1,51 @@
 import XCTest
 import AppKit
+import SwiftUI
 @testable import ApexCore
 @testable import ApexSSH
 @testable import ApexTerminal
 
 final class TerminalFindAndURLTests: XCTestCase {
     
+    @MainActor
+    func testViewUpdatesPreserveFileControlFocusAndPaneActivationRestoresTerminalFocus() throws {
+        _ = NSApplication.shared
+        let buffer = TerminalRingBuffer()
+        buffer.appendStream("demo output\n")
+        let host = NSHostingView(rootView: TerminalRepresentable(ringBuffer: buffer, isFocused: true, onInput: { _ in }))
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 640, height: 400))
+        host.frame = NSRect(x: 0, y: 50, width: 640, height: 350)
+        let pathField = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 30))
+        container.addSubview(host)
+        container.addSubview(pathField)
+        let window = NSWindow(contentRect: container.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = container
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        host.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+        func findTerminal(_ view: NSView) -> NativeTerminalView? {
+            if let terminal = view as? NativeTerminalView { return terminal }
+            for child in view.subviews { if let terminal = findTerminal(child) { return terminal } }
+            return nil
+        }
+        let terminal = try XCTUnwrap(findTerminal(host))
+        XCTAssertTrue(window.makeFirstResponder(pathField))
+        let pathResponder = try XCTUnwrap(window.firstResponder)
+        host.rootView = TerminalRepresentable(ringBuffer: buffer, isFocused: true, onInput: { _ in })
+        host.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+        XCTAssertTrue(window.firstResponder === pathResponder, "Rendering updates must not steal file/path focus")
+
+        host.rootView = TerminalRepresentable(ringBuffer: buffer, isFocused: false, onInput: { _ in })
+        host.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+        host.rootView = TerminalRepresentable(ringBuffer: buffer, isFocused: true, onInput: { _ in })
+        host.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+        XCTAssertTrue(window.firstResponder === terminal, "Selecting a terminal pane must focus that pane")
+    }
+
     // MARK: - 1. Terminal Find Tests
     
     @MainActor

@@ -13,8 +13,9 @@ public struct SSHConfigImportSheet: View {
     @State private var configPath: String = SSHConfigParser.standardConfigURL.path
     @State private var importResultNotice: String?
     
-    public init(store: SessionStore) {
+    public init(store: SessionStore, configURL: URL = SSHConfigParser.standardConfigURL) {
         self.store = store
+        self._configPath = State(initialValue: configURL.path)
     }
     
     public var body: some View {
@@ -161,7 +162,8 @@ public struct SSHConfigImportSheet: View {
     }
     
     private func scanHosts() {
-        let hosts = SSHConfigParser.parseDefaultConfig()
+        let content = (try? String(contentsOfFile: configPath, encoding: .utf8)) ?? ""
+        let hosts = SSHConfigParser.parse(content: content)
         self.discoveredHosts = hosts
         self.selectedHostIds = Set(hosts.map(\.id))
     }

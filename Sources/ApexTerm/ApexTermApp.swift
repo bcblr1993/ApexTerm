@@ -40,6 +40,7 @@ struct ApexTermApp: App {
                 )
             }
             .navigationSplitViewStyle(.balanced)
+            .background(WindowStateView().frame(width: 0, height: 0))
             .apexTheme()
             .frame(minWidth: 960, minHeight: 640)
             .sheet(isPresented: $isAboutPresented) {
@@ -99,7 +100,14 @@ struct ApexTermApp: App {
             
             CommandGroup(after: .pasteboard) {
                 Button("查找...") {
-                    NotificationCenter.default.post(name: NSNotification.Name("TriggerTerminalFind"), object: nil)
+                    if let editor = NSApp.keyWindow?.firstResponder as? NSTextView, editor.isEditable, !editor.isFieldEditor {
+                        let action = NSMenuItem()
+                        action.tag = NSTextFinder.Action.showFindInterface.rawValue
+                        editor.performTextFinderAction(action)
+                    } else {
+                        NotificationCenter.default.post(name: NSNotification.Name("TriggerSFTPFind"), object: nil)
+                        NotificationCenter.default.post(name: NSNotification.Name("TriggerTerminalFind"), object: nil)
+                    }
                 }
                 .keyboardShortcut("f", modifiers: .command)
             }
@@ -224,16 +232,7 @@ struct ApexTermApp: App {
             activeTabs.append(tab)
         }
         selectedTabId = tab.id
-        
-        Task {
-            tab.connectionState = .connecting(step: "正在连接")
-            do {
-                try await client.connect()
-                tab.connectionState = client.connectionState
-            } catch {
-                tab.connectionState = .failed(error.localizedDescription)
-            }
-        }
+        tab.connect()
     }
 
     private func connectToSession(_ session: Session) {
@@ -248,16 +247,7 @@ struct ApexTermApp: App {
         let tab = TerminalTabItem(session: session, sshClient: client)
         activeTabs.append(tab)
         selectedTabId = tab.id
-        
-        Task {
-            tab.connectionState = .connecting(step: "正在连接")
-            do {
-                try await client.connect()
-                tab.connectionState = client.connectionState
-            } catch {
-                tab.connectionState = .failed(error.localizedDescription)
-            }
-        }
+        tab.connect()
     }
     
     private func runSnippet(_ snippet: Snippet) {

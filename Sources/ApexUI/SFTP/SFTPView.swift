@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import UniformTypeIdentifiers
 import ApexCore
 import ApexSSH
@@ -6,6 +7,7 @@ import ApexSSH
 /// High-performance integrated SFTP file manager (electerm-style with OSC 7 sync and drag-and-drop upload/download)
 public struct SFTPView: View {
     @ObservedObject private var themeSettings = AppSettings.shared
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Binding public var currentPath: String
     @Binding public var isLinkageEnabled: Bool
     public let session: SSHSessionProtocol?
@@ -26,6 +28,13 @@ public struct SFTPView: View {
     @State private var selectedPath: String?
     @ObservedObject private var transferManager = TransferManager.shared
     @State private var searchFilter = ""
+    @State private var tableSortOrder = [KeyPathComparator(\SFTPItem.name)]
+    @State private var displayItems: [SFTPItem] = []
+    @State private var isFilterVisible = false
+    @State private var pathInput = ""
+    @State private var windowReference = WindowReference()
+    @FocusState private var isPathFocused: Bool
+    @FocusState private var isFilterFocused: Bool
     @State private var editingFile: SFTPItem?
     @State private var editorContent = ""
     @State private var isDropTargeted = false
@@ -36,8 +45,6 @@ public struct SFTPView: View {
     @State private var loadTask: Task<Void, Never>?
     
     // Sort and visibility
-    @State private var sortField: SFTPSortField = .name
-    @State private var sortOrder: SFTPSortOrder = .ascending
     @State private var showHiddenFiles = false
     
     // File operations state
@@ -45,6 +52,9 @@ public struct SFTPView: View {
     @State private var itemToRename: SFTPItem?
     @State private var renameText = ""
     @State private var isShowingRenameAlert = false
+    @State private var itemToChmod: SFTPItem?
+    @State private var chmodText = "755"
+    @State private var isShowingChmodAlert = false
     @State private var newFolderName = ""
     @State private var isShowingNewFolderAlert = false
     @State private var newFileName = ""
@@ -65,13 +75,26 @@ public struct SFTPView: View {
             // Path and action toolbar
             HStack(spacing: 10) {
                 // Folder icon & Path breadcrumbs
-                Image(systemName: "folder.fill")
-                    .foregroundColor(ApexStyle.accent)
-                    .font(.system(size: 13))
+                Button {
+                    pathInput = currentPath
+                    isPathFocused = true
+                } label: {
+                    Label("前往文件夹", systemImage: "folder.fill")
+                }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+                .keyboardShortcut("l", modifiers: .command)
+                .help("前往文件夹 (⌘L)")
 
-                TextField(L10n.remotePath, text: $currentPath, onCommit: {
-                    loadDirectory(path: currentPath)
-                })
+                TextField(L10n.remotePath, text: $pathInput)
+                .onSubmit {
+                    let target = pathInput.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !target.isEmpty else { pathInput = currentPath; return }
+                    pathInput = target
+                    if target != currentPath { currentPath = target }
+                }
+                .focused($isPathFocused)
+                .onExitCommand { pathInput = currentPath; isPathFocused = false }
                 .textFieldStyle(.roundedBorder)
                 .font(.system(size: 12, design: .monospaced))
 
@@ -158,36 +181,28 @@ public struct SFTPView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
 
-                Button(action: {
-                    newFolderName = ""
-                    isShowingNewFolderAlert = true
-                }) {
-                    Label("新建文件夹", systemImage: "folder.badge.plus")
+                Menu {
+                    Button("新建文件夹", systemImage: "folder.badge.plus") {
+                        newFolderName = ""
+                        isShowingNewFolderAlert = true
+                    }
+                    Button("新建文件", systemImage: "doc.badge.plus") {
+                        newFileName = ""
+                        isShowingNewFileAlert = true
+                    }
+                    Toggle("显示隐藏文件", isOn: $showHiddenFiles)
+                } label: {
+                    Label("更多文件操作", systemImage: "ellipsis")
                 }
                 .labelStyle(.iconOnly)
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .help("新建文件夹")
+                .help("新建文件、文件夹及隐藏文件")
 
-                Button(action: {
-                    newFileName = ""
-                    isShowingNewFileAlert = true
-                }) {
-                    Label("新建文件", systemImage: "doc.badge.plus")
+                Toggle(isOn: $isFilterVisible) {
+                    Label("筛选文件", systemImage: "line.3.horizontal.decrease")
                 }
+                .toggleStyle(.button)
                 .labelStyle(.iconOnly)
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .help("新建空白文件")
-
-                Button(action: {
-                    showHiddenFiles.toggle()
-                }) {
-                    Image(systemName: showHiddenFiles ? "eye.fill" : "eye.slash")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .help(showHiddenFiles ? "隐藏点文件 (⌘⇧.)" : "显示点文件 (⌘⇧.)")
+                .help("筛选当前文件夹")
 
                 Button("") { showHiddenFiles.toggle() }
                     .keyboardShortcut(".", modifiers: [.command, .shift])
@@ -203,7 +218,7 @@ public struct SFTPView: View {
                     HStack(spacing: 4) {
                         Image(systemName: transferManager.activeCount > 0 ? "arrow.triangle.2.circlepath" : "arrow.up.arrow.down.circle")
                             .rotationEffect(.degrees(transferManager.activeCount > 0 ? 360 : 0))
-                            .animation(transferManager.activeCount > 0 ? .linear(duration: 1.5).repeatForever(autoreverses: false) : .default, value: transferManager.activeCount)
+                            .animation(reduceMotion ? nil : transferManager.activeCount > 0 ? .linear(duration: 1.5).repeatForever(autoreverses: false) : .default, value: transferManager.activeCount)
                             .foregroundColor(transferManager.activeCount > 0 ? ApexStyle.accent : ApexStyle.primary)
                         
                         if transferManager.activeCount > 0 {
@@ -230,8 +245,14 @@ public struct SFTPView: View {
             Divider()
 
             // Search filter bar
+            if isFilterVisible || !searchFilter.isEmpty {
             HStack {
                 TextField(L10n.filterFiles, text: $searchFilter)
+                    .focused($isFilterFocused)
+                    .task {
+                        await Task.yield()
+                        if isFilterVisible { isFilterFocused = true }
+                    }
                     .textFieldStyle(.roundedBorder)
                 if !searchFilter.isEmpty {
                     Button(action: { searchFilter = "" }) {
@@ -248,64 +269,7 @@ public struct SFTPView: View {
 
             Divider()
 
-            // Table column header
-            HStack(spacing: 10) {
-                Button(action: { toggleSort(.name) }) {
-                    HStack(spacing: 4) {
-                        Text("名称")
-                            .font(.system(size: 11, weight: .semibold))
-                        if sortField == .name {
-                            Image(systemName: sortOrder == .ascending ? "chevron.up" : "chevron.down")
-                                .font(.system(size: 8, weight: .bold))
-                        }
-                    }
-                }
-                .buttonStyle(.plain)
-                .foregroundColor(sortField == .name ? ApexStyle.accent : ApexStyle.secondary)
-
-                Spacer()
-
-                Text("权限")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(ApexStyle.secondary)
-                    .frame(width: 80, alignment: .trailing)
-
-                Button(action: { toggleSort(.size) }) {
-                    HStack(spacing: 4) {
-                        Spacer()
-                        Text("大小")
-                            .font(.system(size: 11, weight: .semibold))
-                        if sortField == .size {
-                            Image(systemName: sortOrder == .ascending ? "chevron.up" : "chevron.down")
-                                .font(.system(size: 8, weight: .bold))
-                        }
-                    }
-                    .frame(width: 70, alignment: .trailing)
-                }
-                .buttonStyle(.plain)
-                .foregroundColor(sortField == .size ? ApexStyle.accent : ApexStyle.secondary)
-
-                Button(action: { toggleSort(.date) }) {
-                    HStack(spacing: 4) {
-                        Spacer()
-                        Text("修改时间")
-                            .font(.system(size: 11, weight: .semibold))
-                        if sortField == .date {
-                            Image(systemName: sortOrder == .ascending ? "chevron.up" : "chevron.down")
-                                .font(.system(size: 8, weight: .bold))
-                        }
-                    }
-                    .frame(width: 110, alignment: .trailing)
-                }
-                .buttonStyle(.plain)
-                .foregroundColor(sortField == .date ? ApexStyle.accent : ApexStyle.secondary)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 4)
-            .background(ApexStyle.surface)
-
-            Divider()
-
             // Files table with Drag & Drop upload & download
             ZStack {
                 if items.isEmpty && isLoading {
@@ -329,82 +293,37 @@ public struct SFTPView: View {
                         systemImage: searchFilter.isEmpty ? "folder" : "magnifyingglass"
                     )
                 } else {
-                    List(filteredItems, id: \.path, selection: $selectedPath) { item in
-                        HStack(spacing: 10) {
-                            Image(systemName: fileIcon(for: item))
-                                .foregroundColor(fileColor(for: item))
-                                .frame(width: 18)
-
-                            Text(item.name)
-                                .font(.system(size: 12, design: .monospaced))
-                                .lineLimit(1)
-
-                            Spacer()
-
-                            Text(item.permissionString)
-                                .font(.system(size: 11, design: .monospaced))
-                                .foregroundColor(ApexStyle.secondary)
-                                .frame(width: 80, alignment: .trailing)
-
-                            Text(item.formattedSize)
-                                .font(.system(size: 11, design: .monospaced))
-                                .foregroundColor(ApexStyle.secondary)
-                                .frame(width: 70, alignment: .trailing)
-
-                            Text(formatDate(item.modificationDate))
-                                .font(.system(size: 11))
-                                .foregroundColor(ApexStyle.secondary)
-                                .frame(width: 110, alignment: .trailing)
+                    Table(of: SFTPItem.self, selection: $selectedPath, sortOrder: $tableSortOrder) {
+                        TableColumn("名称", value: \.name) { item in
+                            HStack {
+                                Image(systemName: fileIcon(for: item)).foregroundStyle(fileColor(for: item))
+                                Text(item.name).lineLimit(1)
+                            }.help(item.path)
                         }
-                        .listRowBackground(selectedPath == item.path ? ApexStyle.selection : ApexStyle.surface)
-                        .padding(.vertical, 3)
-                        .padding(.horizontal, 6)
-                        .contentShape(Rectangle())
-                        .simultaneousGesture(
-                            TapGesture(count: 1).onEnded {
-                                selectedPath = item.path
-                            }
-                        )
-                        .onTapGesture(count: 2) {
-                            handleDoubleClick(item)
-                        }
-                        // Drag remote file to download to desktop/finder
-                        .onDrag {
-                            handleDragDownload(for: item)
-                        }
-                        .contextMenu {
-                            Button(L10n.downloadToDownloads) {
-                                selectedPath = item.path
-                                downloadAction(item)
-                            }
-                            if !item.isDirectory {
-                                Button(L10n.quickViewEdit) {
-                                    selectedPath = item.path
-                                    openEditor(item)
-                                }
-                            }
-                            Divider()
-                            Button("重命名...") {
-                                selectedPath = item.path
-                                itemToRename = item
-                                renameText = item.name
-                                isShowingRenameAlert = true
-                            }
-                            Button(role: .destructive) {
-                                selectedPath = item.path
-                                itemToDelete = item
-                            } label: {
-                                Label("删除", systemImage: "trash")
-                            }
-                            Divider()
-                            Button(L10n.copyRemotePath) {
-                                selectedPath = item.path
-                                NSPasteboard.general.clearContents()
-                                NSPasteboard.general.setString(item.path, forType: .string)
-                            }
+                        .width(min: 160, ideal: 280)
+                        TableColumn("权限") { item in
+                            Text(item.permissionString).font(.caption.monospaced())
+                        }.width(min: 75, ideal: 90, max: 120)
+                        TableColumn("大小", value: \.size) { item in
+                            Text(item.formattedSize).font(.caption.monospacedDigit())
+                        }.width(min: 65, ideal: 85, max: 120)
+                        TableColumn("修改时间", value: \.modificationDate) { item in
+                            Text(formatDate(item.modificationDate)).font(.caption.monospacedDigit())
+                        }.width(min: 125, ideal: 145, max: 180)
+                    } rows: {
+                        ForEach(filteredItems) { item in
+                            TableRow(item).itemProvider { handleDragDownload(for: item) }
                         }
                     }
-                    .listStyle(.inset(alternatesRowBackgrounds: true))
+                    .contextMenu(forSelectionType: String.self) { ids in
+                        if let path = ids.first, let item = items.first(where: { $0.path == path }) {
+                            fileContextActions(item)
+                        }
+                    } primaryAction: { ids in
+                        if let path = ids.first, let item = items.first(where: { $0.path == path }) {
+                            handleDoubleClick(item)
+                        }
+                    }
                     .contextMenu {
                         Button("新建文件夹") {
                             newFolderName = ""
@@ -413,6 +332,12 @@ public struct SFTPView: View {
                         Button("新建文件") {
                             newFileName = ""
                             isShowingNewFileAlert = true
+                        }
+                        Divider()
+                        Button("修改当前目录权限 (chmod)...") {
+                            itemToChmod = nil
+                            chmodText = "755"
+                            isShowingChmodAlert = true
                         }
                         Divider()
                         Button(action: { showHiddenFiles.toggle() }) {
@@ -460,10 +385,31 @@ public struct SFTPView: View {
                 }
             }
         }
+        .background(WindowReferenceView(reference: windowReference).frame(width: 0, height: 0))
+        .onChange(of: isFilterVisible) { _, visible in
+            if !visible { isFilterFocused = false; searchFilter = "" }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("TriggerSFTPFind"))) { _ in
+            guard let window = windowReference.window, window === NSApp.keyWindow else { return }
+            let tableHasFocus = (window.firstResponder as? NSTableView)?.tableColumns.count == 4
+            guard isPathFocused || isFilterFocused || tableHasFocus else { return }
+            let alreadyVisible = isFilterVisible
+            isPathFocused = false
+            isFilterVisible = true
+            if alreadyVisible { isFilterFocused = true }
+        }
+        .onChange(of: items) { _, _ in updateDisplayItems() }
+        .onChange(of: searchFilter) { _, _ in updateDisplayItems() }
+        .onChange(of: showHiddenFiles) { _, _ in updateDisplayItems() }
+        .onChange(of: tableSortOrder) { _, _ in updateDisplayItems() }
+        .onDisappear { loadTask?.cancel() }
         .onAppear {
+            pathInput = currentPath
+            updateDisplayItems()
             loadDirectory(path: currentPath)
         }
         .onChange(of: currentPath) { _, newPath in
+            if !isPathFocused { pathInput = newPath }
             loadDirectory(path: newPath)
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("SFTPDirectoryRefreshNeeded"))) { _ in
@@ -527,45 +473,77 @@ public struct SFTPView: View {
         } message: {
             Text("输入「\(itemToRename?.name ?? "")」的新名称")
         }
-    }
-
-    private var filteredItems: [SFTPItem] {
-        var result = items
-        if !showHiddenFiles {
-            result = result.filter { !$0.name.hasPrefix(".") || $0.name == ".." }
-        }
-        if !searchFilter.isEmpty {
-            result = result.filter { $0.name.localizedCaseInsensitiveContains(searchFilter) }
-        }
-        return result.sorted { a, b in
-            if a.isDirectory != b.isDirectory {
-                return a.isDirectory && !b.isDirectory
+        .alert("修改权限 (chmod)", isPresented: $isShowingChmodAlert) {
+            TextField("权限代码 (如 755, 644, 777)", text: $chmodText)
+            Button("确定") {
+                let target = itemToChmod?.path ?? currentPath
+                performChmod(targetPath: target, mode: chmodText)
             }
-            switch sortField {
-            case .name:
-                let cmp = a.name.localizedStandardCompare(b.name)
-                return sortOrder == .ascending ? (cmp == .orderedAscending) : (cmp == .orderedDescending)
-            case .size:
-                if a.size != b.size {
-                    return sortOrder == .ascending ? (a.size < b.size) : (a.size > b.size)
-                }
-                return a.name.localizedStandardCompare(b.name) == .orderedAscending
-            case .date:
-                if a.modificationDate != b.modificationDate {
-                    return sortOrder == .ascending ? (a.modificationDate < b.modificationDate) : (a.modificationDate > b.modificationDate)
-                }
-                return a.name.localizedStandardCompare(b.name) == .orderedAscending
+            Button("取消", role: .cancel) {}
+        } message: {
+            if let item = itemToChmod {
+                Text("修改「\(item.name)」的访问权限（例如：文件夹推荐 755，普通文件推荐 644）")
+            } else {
+                Text("修改当前目录 (\(currentPath)) 的访问权限（推荐 755 赋予读写与遍历权限）")
             }
         }
     }
 
-    private func toggleSort(_ field: SFTPSortField) {
-        if sortField == field {
-            sortOrder = (sortOrder == .ascending) ? .descending : .ascending
-        } else {
-            sortField = field
-            sortOrder = .ascending
+    private var filteredItems: [SFTPItem] { displayItems }
+
+    private func updateDisplayItems() {
+        displayItems = items.filter {
+            (showHiddenFiles || !$0.name.hasPrefix(".") || $0.name == "..") &&
+            (searchFilter.isEmpty || $0.name.localizedCaseInsensitiveContains(searchFilter))
+        }.sorted { a, b in
+            if a.name == ".." || b.name == ".." { return a.name == ".." && b.name != ".." }
+            if a.isDirectory != b.isDirectory { return a.isDirectory }
+            for comparator in tableSortOrder {
+                let result = comparator.compare(a, b)
+                if result != .orderedSame { return result == .orderedAscending }
+            }
+            return a.name.localizedStandardCompare(b.name) == .orderedAscending
         }
+    }
+
+    @ViewBuilder
+    private func fileContextActions(_ item: SFTPItem) -> some View {
+
+                            Button(L10n.downloadToDownloads) {
+                                selectedPath = item.path
+                                downloadAction(item)
+                            }
+                            if !item.isDirectory {
+                                Button(L10n.quickViewEdit) {
+                                    selectedPath = item.path
+                                    openEditor(item)
+                                }
+                            }
+                            Divider()
+                            Button("重命名...") {
+                                selectedPath = item.path
+                                itemToRename = item
+                                renameText = item.name
+                                isShowingRenameAlert = true
+                            }
+                            Button("修改权限 (chmod)...") {
+                                selectedPath = item.path
+                                itemToChmod = item
+                                chmodText = item.isDirectory ? "755" : "644"
+                                isShowingChmodAlert = true
+                            }
+                            Button(role: .destructive) {
+                                selectedPath = item.path
+                                itemToDelete = item
+                            } label: {
+                                Label("删除", systemImage: "trash")
+                            }
+                            Divider()
+                            Button(L10n.copyRemotePath) {
+                                selectedPath = item.path
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(item.path, forType: .string)
+                            }
     }
 
     private func performDelete(_ item: SFTPItem) {
@@ -662,6 +640,29 @@ public struct SFTPView: View {
             } catch {
                 await MainActor.run {
                     self.transferNotice = "重命名失败: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    private func performChmod(targetPath: String, mode: String) {
+        let trimmed = mode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let s = session else { return }
+        Task {
+            do {
+                try await s.changePermissions(remotePath: targetPath, permissions: trimmed)
+                await MainActor.run {
+                    self.transferNotice = "已修改权限为: \(trimmed)"
+                    self.loadDirectory(path: self.currentPath)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                        if self.transferNotice?.hasPrefix("已修改") == true {
+                            self.transferNotice = nil
+                        }
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    self.transferNotice = "修改权限失败: \(error.localizedDescription)"
                 }
             }
         }

@@ -121,6 +121,19 @@ public final class TerminalRingBuffer: @unchecked Sendable {
             updateHandler?()
         }
         
+        // Ordinary ASCII log chunks can be committed in whole lines. Control sequences,
+        // Unicode and cursor editing continue through the terminal state machine below.
+        if pendingSequence.isEmpty, !isEditingActiveLine,
+           currentFgHex == nil, currentANSIIndex == nil, !currentBold,
+           text.utf8.allSatisfy({ $0 == 10 || ($0 >= 32 && $0 < 127) }) {
+            let segments = text.utf8.split(separator: 10, omittingEmptySubsequences: false)
+            for (offset, segment) in segments.enumerated() {
+                activeLine.append(String(decoding: segment, as: UTF8.self))
+                if offset < segments.count - 1 { commitActiveLine() }
+            }
+            return
+        }
+
         var fullText = text
         if !pendingSequence.isEmpty {
             fullText = pendingSequence + fullText

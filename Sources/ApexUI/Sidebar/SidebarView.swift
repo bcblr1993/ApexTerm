@@ -32,14 +32,14 @@ public struct SidebarView: View {
         VStack(spacing: 0) {
             HStack(alignment: .firstTextBaseline) {
                 Text("会话")
-                    .font(.title2.weight(.semibold))
+                    .font(.headline)
                 Spacer()
                 Text("\(store.sessions.count) 台主机")
                     .font(.caption)
                     .foregroundStyle(ApexStyle.secondary)
             }
             .padding(.horizontal, 14)
-            .padding(.top, 18)
+            .padding(.top, 12)
             .padding(.bottom, 10)
 
             HStack(spacing: 6) {
@@ -113,7 +113,7 @@ public struct SidebarView: View {
                                             session: session,
                                             onConnect: { onConnect(session) }
                                         )
-                                        .listRowBackground(selectedSession?.id == session.id ? ApexStyle.selection : ApexStyle.subtleSurface)
+                                        .fontWeight(selectedSession?.id == session.id ? .semibold : .regular)
                                         .tag(session.id)
                                         .contextMenu {
                                             Button(L10n.connectAction) {
@@ -277,7 +277,7 @@ struct SessionRow: View {
             
             VStack(alignment: .leading, spacing: 2) {
                 Text(session.name)
-                    .font(.subheadline.weight(.medium))
+                    .font(.subheadline)
                     .foregroundColor(ApexStyle.primary)
                 
                 Text("\(session.username)@\(session.host)")

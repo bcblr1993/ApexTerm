@@ -20,7 +20,7 @@ jobs:
           xcodebuild -version
 
       - name: Build artifact cleanup safety
-        run: python3 -m unittest discover -s scripts/tests -p "test_prune_build_artifacts.py"
+        run: python3 -m unittest discover -s scripts/tests
 
       - name: Swift Build (Debug)
         run: swift build -v

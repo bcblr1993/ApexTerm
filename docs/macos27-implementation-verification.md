@@ -95,3 +95,11 @@
 - 实际窗口发现 Escape 不退出文件筛选，已补齐关闭、清空筛选与文件表格焦点恢复。等待 SwiftUI 移除输入框后恢复焦点，避免焦点落回窗口。
 - KeyboardFocus 真实窗口按 ⌘L → ⌘F → 输入 nginx → Escape：筛选隐藏、完整目录恢复，焦点为文件 outline；Down 选中首行后 ⌘F 再次进入筛选输入框。证据 `qa/keyboard-filter-exit.txt`。
 - `tests-filter-escape.log` 全量 130 项测试零失败，9 项未配置网络环境跳过；编译无 warning/error。此次仅文件筛选交互变更，不将旧签名候选包声称为包含该修复的最终包，收尾时须更新候选包。
+
+
+## 最终候选重建门禁
+
+- `vm-gate-keyboard-final.log` 捕获局部递归函数访问 AppKit 的 actor 隔离警告，门禁拒绝构建。显式标注 MainActor，改用顺序遍历子视图后，`vm-gate-actor-final.log` 真实 VM、全量测试及 8 项 Release 基准全部通过，零 warning/error。
+- 新增 `scripts/build_candidate.py`：要求已提交的干净工作区，保护运行中的旧候选，构建前清理准确命名的上一轮产物；执行真实 VM 门禁、Release 编译、安全扫描、签名、公证、DMG/tar.gz 和最终哈希生成，不替换已安装正式应用。
+- 构建号取当天序号并严格高于上一候选；候选版本沿用当前 CHANGELOG 正式版本，清单记录精确来源提交，候选不冒充新正式发布。
+- 候选清理新增保留无关文件与符号链接预检测试。共 6 项 Python 清理测试通过，CI 已包含全部清理测试。

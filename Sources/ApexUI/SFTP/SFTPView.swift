@@ -265,9 +265,12 @@ public struct SFTPView: View {
                         Task { @MainActor in
                             await Task.yield()
                             guard let window = windowReference.window else { return }
-                            func fileTable(in view: NSView) -> NSTableView? {
+                            @MainActor func fileTable(in view: NSView) -> NSTableView? {
                                 if let table = view as? NSTableView, table.tableColumns.count == 4 { return table }
-                                return view.subviews.lazy.compactMap { fileTable(in: $0) }.first
+                                for child in view.subviews {
+                                    if let table = fileTable(in: child) { return table }
+                                }
+                                return nil
                             }
                             if let content = window.contentView, let table = fileTable(in: content) {
                                 window.makeFirstResponder(table)

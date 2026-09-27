@@ -338,6 +338,36 @@ final class ApexTermUITests: XCTestCase {
         capture("sftp-renamed-file-listed")
     }
 
+    func testSFTPCreateFolderCancelAndSuccessfulListing() {
+        launch("main", extra: ["APEX_QA_CONNECT": "1"])
+        XCTAssertTrue(app.staticTexts["nginx.conf"].waitForExistence(timeout: 10))
+        let more = app.buttons["更多文件操作"]
+        more.click()
+        app.menuItems["新建文件夹"].click()
+        let name = app.textFields["文件夹名称"]
+        XCTAssertTrue(name.waitForExistence(timeout: 5))
+        name.click()
+        name.typeText("ui-canceled-folder")
+        app.buttons["取消"].click()
+        XCTAssertFalse(app.staticTexts["ui-canceled-folder"].exists)
+        more.click()
+        app.menuItems["新建文件夹"].click()
+        XCTAssertTrue(name.waitForExistence(timeout: 5))
+        name.click()
+        name.typeText("  ui-created-folder  ")
+        app.buttons["创建"].click()
+        let folder = app.staticTexts["ui-created-folder"]
+        XCTAssertTrue(folder.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.staticTexts["ui-canceled-folder"].exists)
+        XCTAssertTrue(app.staticTexts["nginx.conf"].exists)
+        capture("sftp-create-folder-listed")
+        folder.doubleClick()
+        let path = app.textFields["远程路径"]
+        let entered = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value ENDSWITH %@", "/ui-created-folder"), object: path)
+        XCTAssertEqual(XCTWaiter.wait(for: [entered], timeout: 10), .completed)
+        capture("sftp-created-folder-entered")
+    }
+
     func testRealSSHConfiguredHostIsMandatory() throws {
         let environment = ProcessInfo.processInfo.environment
         guard let host = environment["APEX_UI_TEST_HOST"], !host.isEmpty,

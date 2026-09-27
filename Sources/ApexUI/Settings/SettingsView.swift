@@ -200,8 +200,6 @@ private struct BehaviorSettingsTab: View {
                         .foregroundColor(ApexStyle.secondary)
                 }
                 
-                Divider()
-                
                 VStack(alignment: .leading, spacing: 4) {
                     Toggle(L10n.rightClickPasteLabel, isOn: $settings.isRightClickPasteEnabled)
                     Text(L10n.rightClickPasteDesc)

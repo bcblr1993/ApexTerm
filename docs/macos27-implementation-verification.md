@@ -169,3 +169,9 @@
 - FullScreenFix 实际设置页的终端外观标签切换全部 12 主题，逐张查看 qa/settings-theme-00.png 至 11.png，当前视口内原生表单文字/控件和所选主题无明显截断或可读性回退。qa/settings-theme-checks.json 记录选项与预览 AX 存在；AX 存在不代表预览在当前视口可见。
 - 恢复经典白色；普通滚动动作未改变视口，随后用暴露的原生滚动条设为底部，qa/settings-preview-white-bottom.png 确认真正显示完整命令预览。仅此默认主题的底部截图通过，其他主题底部和其余设置标签仍待补验。
 - 本轮开始核对 CI：测试修正 bc01dbc 的 36292740035 queued，前一文档提交 36292685423 in_progress；没有把排队或运行中记为通过。
+
+
+## 设置标签空白行修复
+
+- 实际查看通用、操作习惯、SFTP传输、数据备份四标签；qa/settings-tab-0..3.png。通用显示 QA bundle 缺版本元数据的回退值，不作为正式候选版本证明。操作习惯额外 Divider 被 grouped Form 渲染为空行；再次稳定截图 settings-habits-stable.png 确认。
+- 移除行为表单额外 Divider，保留系统行分隔；重新编译 SettingsSpacing QA，实际 settings-spacing-fixed.png 确认多余空行消失且两开关和缓冲区控件保留。swift build 通过。候选 2026092705 尚不包含此布局修复；最终候选须更新。

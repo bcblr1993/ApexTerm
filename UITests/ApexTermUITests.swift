@@ -58,6 +58,36 @@ final class ApexTermUITests: XCTestCase {
         capture("session-invalid-port")
         app.typeKey(XCUIKeyboardKey.escape, modifierFlags: [])
         XCTAssertFalse(app.sheets.firstMatch.exists)
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "1 台主机")).firstMatch.exists)
+    }
+
+    func testSessionValidPortRecoveryAndSave() {
+        launch()
+        app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "添加新的 SSH 会话")).firstMatch.click()
+        let name = app.textFields["会话名称"]
+        XCTAssertTrue(name.waitForExistence(timeout: 5))
+        name.click()
+        name.typeText("UI saved synthetic")
+        let host = app.textFields["主机地址 / IP"]
+        host.click()
+        host.typeText("example.com")
+        let port = app.textFields["SSH 端口"]
+        port.click()
+        port.typeKey("a", modifierFlags: .command)
+        port.typeText("65536")
+        let save = app.buttons["保存"]
+        XCTAssertFalse(save.isEnabled)
+        port.typeKey("a", modifierFlags: .command)
+        port.typeText("2222")
+        XCTAssertTrue(save.isEnabled)
+        save.click()
+        XCTAssertFalse(app.sheets.firstMatch.exists)
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "2 台主机")).firstMatch.waitForExistence(timeout: 5))
+        let search = app.textFields.matching(NSPredicate(format: "label CONTAINS %@", "搜索会话")).firstMatch
+        search.click()
+        search.typeText("UI saved synthetic")
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label == %@", "UI saved synthetic")).firstMatch.waitForExistence(timeout: 5))
+        capture("session-saved-and-searchable")
     }
 
     func testUpdateFailureCloseAndReopen() {

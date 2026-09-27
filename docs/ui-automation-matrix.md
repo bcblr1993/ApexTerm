@@ -13,7 +13,7 @@ APEX_UI_TEST_HOST=<测试主机> APEX_UI_TEST_USER=<测试用户> bash scripts/t
 | 验收类别 | 当前自动化入口 | 验证范围与剩余项 |
 | --- | --- | --- |
 | 会话搜索 | testSearchEmptyAndRecovery | 无匹配中文状态、清空恢复；当前实现仍需实际Runner运行验证 |
-| 会话表单 | testSessionEmptyInvalidPortAndCancel；ProductFeatureTests | 空表单禁用、无效端口、Escape取消；认证元数据保留有单元测试。实际保存、标签、颜色、复制表单和所有键盘路径待扩充 |
+| 会话表单 | testSessionEmptyInvalidPortAndCancel、testSessionValidPortRecoveryAndSave；ProductFeatureTests | 空表单禁用、无效端口、Escape取消；认证元数据保留有单元测试。已编写无效端口恢复有效、保存后计数增加及搜索可见断言；标签、颜色、复制表单和其余键盘路径待扩充 |
 | 更新 | testUpdateFailureCloseAndReopen、testUpdateLoadingAndSuccess；UpdateCheckTests | 实际sheet加载/失败/成功与关闭；HTTP错误、无效响应、去重有受控测试。真实故障注入待补 |
 | 文件列表状态 | testSFTPEmptyLoadingAndFailureStates；SFTPOperationsTests | 空、加载、失败界面；重试、过滤及路径输入草稿的实际窗口断言待补 |
 | 主题与页面 | testAllThemesAndPagesRender；ThemeSupportTests | 12主题×9页面及5个设置标签遍历，增加会话/编辑器/更新/传输/导入关键控件存在或可点击断言、设置标签选中及滑块/开关检查；尚未实际运行。截图采集不等同像素/裁切验证，需补截图基线与不同窗口尺寸 |

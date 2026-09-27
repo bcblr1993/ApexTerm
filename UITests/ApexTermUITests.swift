@@ -157,7 +157,7 @@ final class ApexTermUITests: XCTestCase {
     }
 
     func testEditorChangesDuringSaveRemainUnsaved() {
-        launch("editor-sheet")
+        launch("editor-sheet", extra: ["APEX_QA_EDITOR_SAVE_DELAY": "8"])
         let editor = app.textViews.firstMatch
         XCTAssertTrue(editor.waitForExistence(timeout: 5))
         editor.click()
@@ -168,7 +168,7 @@ final class ApexTermUITests: XCTestCase {
         editor.click()
         editor.typeText("\nsecond_revision=true")
         let pending = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "仍有新更改待保存")).firstMatch
-        XCTAssertTrue(pending.waitForExistence(timeout: 10))
+        XCTAssertTrue(pending.waitForExistence(timeout: 20))
         XCTAssertTrue((editor.value as? String)?.contains("second_revision=true") == true)
         app.buttons["关闭"].click()
         XCTAssertTrue(app.buttons["继续编辑"].waitForExistence(timeout: 5))
@@ -177,6 +177,34 @@ final class ApexTermUITests: XCTestCase {
         save.click()
         XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "已保存并上传至服务器")).firstMatch.waitForExistence(timeout: 10))
         app.buttons["关闭"].click()
+        XCTAssertFalse(app.sheets.firstMatch.exists)
+    }
+
+    func testEditorKeyboardFindUndoAndSave() {
+        launch("editor-sheet")
+        let editor = app.textViews["文件内容"]
+        XCTAssertTrue(editor.waitForExistence(timeout: 5))
+        let initial = editor.value as? String
+        editor.click()
+        editor.typeText("\nkeyboard_revision=true")
+        XCTAssertTrue((editor.value as? String)?.contains("keyboard_revision=true") == true)
+        editor.typeKey("z", modifierFlags: .command)
+        XCTAssertEqual(editor.value as? String, initial)
+        editor.typeKey("z", modifierFlags: [.command, .shift])
+        XCTAssertTrue((editor.value as? String)?.contains("keyboard_revision=true") == true)
+        let edited = editor.value as? String
+        editor.typeKey("f", modifierFlags: .command)
+        let find = app.searchFields.firstMatch
+        XCTAssertTrue(find.waitForExistence(timeout: 5), "Native find bar must expose a search field")
+        find.click()
+        find.typeText("keyboard_revision")
+        XCTAssertEqual(find.value as? String, "keyboard_revision")
+        XCTAssertEqual(editor.value as? String, edited, "Searching must not modify file contents")
+        capture("editor-native-find")
+        editor.click()
+        editor.typeKey("s", modifierFlags: .command)
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "已保存并上传至服务器")).firstMatch.waitForExistence(timeout: 10))
+        editor.typeKey("w", modifierFlags: .command)
         XCTAssertFalse(app.sheets.firstMatch.exists)
     }
 

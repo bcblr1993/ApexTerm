@@ -3,6 +3,39 @@ import AppKit
 @testable import ApexTerminal
 
 final class TerminalCopyAndContextMenuTests: XCTestCase {
+    @MainActor
+    func testCommandVPastesInsteadOfSendingShortcutToTerminal() throws {
+        let pasteboard = NSPasteboard.general
+        let savedItems = (pasteboard.pasteboardItems ?? []).map { original in
+            let copy = NSPasteboardItem()
+            for type in original.types {
+                if let data = original.data(forType: type) { copy.setData(data, forType: type) }
+            }
+            return copy
+        }
+        defer {
+            pasteboard.clearContents()
+            pasteboard.writeObjects(savedItems)
+        }
+        pasteboard.clearContents()
+        pasteboard.setString("qa-paste\n", forType: .string)
+        let terminal = NativeTerminalView()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 400),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = terminal
+        window.makeFirstResponder(terminal)
+        var inputs: [Data] = []
+        terminal.onInput = { inputs.append($0) }
+        let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero,
+            modifierFlags: .command, timestamp: 0, windowNumber: 0, context: nil,
+            characters: "v", charactersIgnoringModifiers: "v", isARepeat: false, keyCode: 9))
+        XCTAssertTrue(terminal.performKeyEquivalent(with: event))
+        XCTAssertEqual(inputs, [Data("qa-paste\r".utf8)])
+        inputs.removeAll()
+        terminal.keyDown(with: event)
+        XCTAssertEqual(inputs, [Data("qa-paste\r".utf8)])
+    }
+
     
     @MainActor
     func testCopySelectionToPasteboard() {

@@ -1154,6 +1154,16 @@ public final class NativeTerminalView: NSTextView {
         return customInputContext
     }
     
+    override public func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
+        if window?.firstResponder === self,
+           modifiers == [.command], event.charactersIgnoringModifiers?.lowercased() == "v" {
+            _ = pasteFromClipboard()
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
     override public func keyDown(with event: NSEvent) {
         self.isPinnedToBottom = true
         
@@ -1168,6 +1178,10 @@ public final class NativeTerminalView: NSTextView {
         // 0. Handle Cmd shortcuts: Cmd+K (Clear), Cmd+F (Find), Cmd+G (Next Match), Cmd+Shift+G (Prev Match)
         if event.modifierFlags.contains(.command) {
             if let chars = event.charactersIgnoringModifiers?.lowercased() {
+                if shortcutModifiers == [.command] && chars == "v" {
+                    _ = pasteFromClipboard()
+                    return
+                }
                 if !event.modifierFlags.contains(.shift) && chars == "k" {
                     clearScreen()
                     return

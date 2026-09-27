@@ -249,3 +249,11 @@
 - EraseDisplayFix 实际 SSH 输入 echo APEX_REAL_CHECK 并回车，界面保留执行回显与后续提示符；qa/real-terminal-erase-fix-proof.json 和截图记录。此为直接启动验收应用，不替代正常启动证据。
 - 粘贴工具仍报等待应用读取剪贴板超时，未判粘贴通过。临时 NativeSSHSession 字节数量诊断已全部撤回，不进入产品提交。
 - 先前 stdout=/dev/null 观察不构成根因；完整描述符仍有 PTY 副本，读取日志证实远端数据已到达。
+
+### 真实终端 Command-V 粘贴复验
+
+- 终端明确处理 Command-V，performKeyEquivalent 仅在当前第一响应者是该终端时处理；keyDown 同样保留直接分发入口，避免快捷键进入输入上下文。
+- testCommandVPastesInsteadOfSendingShortcutToTerminal 验证两个入口各产生一次完整粘贴输入及 LF→CR 转换，测试保存/恢复剪贴板全部类型。tests-paste-focus.log 全量测试退出 0。
+- 待全部测试结束、真实 SSH 提示符稳定后，sky.paste 指定 echo APEX_PASTE_FOCUS 并回车，实际窗口显示执行结果及下一提示符，工具未超时。qa/paste-focus-proof.json markerOccurrences=2，截图 paste-focus-success.png。
+- 最早粘贴复验与修改剪贴板的测试并发，原有内容进入窗口；该尝试无效。随后快捷键入口增加第一响应者限制并独立复验成功。
+- 本项仅证明直接启动 QA 的真实粘贴链路；正常启动、输入法候选与双向拖拽仍待完成。

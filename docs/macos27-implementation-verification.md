@@ -265,3 +265,10 @@
 - qa/real-editor-save-hash-proof.json 记录哈希及字节数；实际重新加载读回 source=private-qa/value=20260927，real-editor-reload-proof.json 两字段存在且无失败。
 - 关闭编辑器返回列表后，实际文件行显示 67 B，截图 real-editor-saved-list.png；覆盖真实创建、空文件编辑、保存成功、重新加载及列表刷新。
 - 本项使用隔离 QA 直接启动，未覆盖正常启动、失败/取消传输及双向拖拽。e3d4ad3 CI 已成功；ba8c28b CI 尚在运行。
+
+### 真实编辑器保存失败与重试
+
+- 仅将本轮创建的 editor-acceptance-20260927.conf 临时 chmod 400，编辑器追加 failed-save=must-stay-local 并实际保存。界面显示 scp Permission denied，本地更改保留。
+- 随即恢复权限 644；远端 SHA256 仍为 4c65adea9f3be8a71c14fb5371c031317309d6107f8bbfc8f52f872e159e02b8，失败未改变原文件。
+- qa/real-editor-save-failure-proof.json 与截图记录失败及内容保护；恢复编辑器原内容并重新保存，成功通知出现、错误清除，real-editor-save-retry-proof.json 两项为 true。
+- 此项覆盖真实权限错误和恢复重试，不替代传输取消、拖拽与其余失败矩阵。

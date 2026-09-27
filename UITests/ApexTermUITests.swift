@@ -380,6 +380,25 @@ final class ApexTermUITests: XCTestCase {
         capture("sftp-created-folder-entered")
     }
 
+    func testSFTPHiddenFilesToggleAndKeyboardRecovery() {
+        launch("main", extra: ["APEX_QA_CONNECT": "1"])
+        let ordinary = app.staticTexts["nginx.conf"]
+        XCTAssertTrue(ordinary.waitForExistence(timeout: 10))
+        let hidden = app.staticTexts[".bashrc"]
+        XCTAssertFalse(hidden.exists)
+        app.buttons["更多文件操作"].click()
+        app.menuItems["显示隐藏文件"].click()
+        XCTAssertTrue(hidden.waitForExistence(timeout: 5))
+        XCTAssertTrue(ordinary.exists)
+        capture("sftp-hidden-files-visible")
+        ordinary.click()
+        app.typeKey(".", modifierFlags: [.command, .shift])
+        let hiddenRemoved = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: hidden)
+        XCTAssertEqual(XCTWaiter.wait(for: [hiddenRemoved], timeout: 5), .completed)
+        XCTAssertTrue(ordinary.exists)
+        capture("sftp-hidden-files-keyboard-hidden")
+    }
+
     func testRealSSHConfiguredHostIsMandatory() throws {
         let environment = ProcessInfo.processInfo.environment
         guard let host = environment["APEX_UI_TEST_HOST"], !host.isEmpty,

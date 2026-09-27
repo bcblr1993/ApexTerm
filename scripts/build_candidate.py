@@ -24,7 +24,7 @@ def clean_generated(output):
     # Exact generated paths only; diagnostics and unrelated files are retained.
     names = ['ApexTerm Candidate.app', 'ApexTerm-Candidate-arm64.dmg',
                  'ApexTerm-Candidate-arm64.tar.gz', 'notarization.zip',
-                 'notarization.json', 'notarization-dmg.json', 'SHA256SUMS.txt']
+                 'notarization.json', 'notarization-dmg.json', 'SHA256SUMS.txt', 'candidate-manifest.txt']
     for name in names:
         path = output / name
         if path.is_symlink():

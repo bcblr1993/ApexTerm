@@ -14,6 +14,7 @@ class CandidateCleanupTests(unittest.TestCase):
             root = Path(tmp)
             (root / 'ApexTerm Candidate.app').mkdir()
             (root / 'ApexTerm-Candidate-arm64.dmg').write_text('generated')
+            (root / 'candidate-manifest.txt').write_text('old provenance')
             (root / 'runtime.log').write_text('diagnostic')
             (root / 'notes.txt').write_text('user notes')
             candidate.clean_generated(root)

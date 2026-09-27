@@ -68,6 +68,7 @@ public struct TerminalRepresentable: NSViewRepresentable {
     
     public func updateNSView(_ nsView: NativeTerminalScrollView, context: Context) {
         let terminal = nsView.terminalView
+        nsView.requestsInitialFocus = isFocused
         let bufferChanged = terminal.ringBuffer !== ringBuffer
         if bufferChanged {
             terminal.ringBuffer = ringBuffer
@@ -294,8 +295,17 @@ public final class NativeTerminalScrollView: NSScrollView {
     
     override public func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        if requestsInitialFocus, let window, !window.isVisible {
+        guard requestsInitialFocus, let window else { return }
+        if !window.isVisible {
             window.initialFirstResponder = terminalView
+        } else {
+            DispatchQueue.main.async { [weak self, weak window] in
+                guard let self, let window, self.window === window,
+                      self.requestsInitialFocus, window.isVisible else { return }
+                let isEditingControl = (window.firstResponder as? NSTextView)?.isFieldEditor == true
+                    || window.firstResponder is NSTextField
+                if !isEditingControl { window.makeFirstResponder(self.terminalView) }
+            }
         }
     }
 

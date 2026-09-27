@@ -121,3 +121,15 @@
 - AccessibleSplit 窗口实际动作通过：文件面板 70%→75%；左右分屏 50%→55%→50%；切换上下分屏后 50%→45%。证据 `qa/accessible-split-actions.txt`。这证明控件可被辅助技术发现与操作，不代替实际 VoiceOver 朗读流程。
 - `tests-accessible-divider.log` 全量 130 项零失败（9 项无网络环境跳过），无 warning/error。
 - 已交付 2026092702 候选包不包含本次分隔条增强；最终候选须重建后重新验收。
+
+
+## 窗口交互补验
+
+- `qa/monitor-disabled.png` 与 AX 文本验证监控关闭详情明确提示可在会话设置开启，无伪造实时指标。
+- 两个终端窗格分别查找 ERROR：第一窗格 1/1，第二窗格 0 结果；Escape 分别返回对应终端。证据 `qa/pane-find-routing.txt`，合成会话窗口，不作为真实 SSH 内容证明。
+- 包含分隔条增强的候选 2026092703 来源 fc8c0bd。应用公证 Accepted；DMG 首次提交 connectTimeout，仅重试该产物后 Accepted，并完成 staple/validate、最终哈希与来源清单生成。
+- `candidate/vm-accessible-install.log`：新包在 macOS 27 VM assessments enabled 时通过严格验签/票据/Gatekeeper，确认新路径 `/private/tmp/apexterm-candidate.d1e1UW/` 的进程启动。
+- 复制会话验收发现新标签焦点停在窗口，补齐可见窗口挂载后的终端焦点恢复，保留已有字段编辑保护。`tests-mounted-focus.log` 回归通过；`qa/copy-focus-proof.txt` 证明复制后自动落到新终端、无需再点击即可输入，模拟命令回调完成。
+- 2026092703 候选尚不包含复制后焦点修复；最终包仍需更新。完整 VM 门禁 `vm-gate-copy-focus.log` 已通过：真实 VM、全量测试与 8 项 Release 基准通过，零 warning/error。
+
+- 候选重建清理同时移除旧来源清单，避免公证中断时旧提交信息留在新包目录；对应清理测试通过。

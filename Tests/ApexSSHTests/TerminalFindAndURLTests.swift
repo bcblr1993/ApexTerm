@@ -46,6 +46,29 @@ final class TerminalFindAndURLTests: XCTestCase {
         XCTAssertTrue(window.firstResponder === terminal, "Selecting a terminal pane must focus that pane")
     }
 
+    @MainActor
+    func testTerminalMountedInVisibleWindowGetsFocusWithoutStealingFieldEditing() {
+        _ = NSApplication.shared
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 640, height: 400))
+        let window = NSWindow(contentRect: container.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = container
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        let terminal = NativeTerminalScrollView(frame: container.bounds)
+        terminal.requestsInitialFocus = true
+        container.addSubview(terminal)
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+        XCTAssertTrue(window.firstResponder === terminal.terminalView)
+
+        terminal.removeFromSuperview()
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 30))
+        container.addSubview(field)
+        window.makeFirstResponder(field)
+        container.addSubview(terminal)
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+        XCTAssertTrue(window.firstResponder === field || field.currentEditor() === window.firstResponder)
+    }
+
     // MARK: - 1. Terminal Find Tests
     
     @MainActor

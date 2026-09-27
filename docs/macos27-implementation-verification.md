@@ -75,3 +75,16 @@
 - 实际产品 Release 二进制生成独立 `com.apexterm.candidate` 候选应用，版本仍标 1.3.0、内部构建 2026092701，未作为新正式版本发布。`candidate/` 中保存来源说明和 Apple 公证响应；敏感扫描、Developer ID 深度严格验签、公证 Accepted、staple/validate 均通过。Gatekeeper 返回 Notarized Developer ID，同时显示本机 security disabled，因此不把本机评估当作启用安全策略机器上的安装证明。
 
 - 监控关闭的优化构建连续前台 67.00 秒有效采样（预热 15 秒后），单核 CPU 0.145%，RSS 169.47–179.69 MB；达到 ≤1% 目标。证据 `foreground-monitor-off-summary.json`，合成连接、无输出/传输。
+
+
+## macOS 27 候选安装验证
+
+- 将 `ApexTerm-Candidate-arm64.tar.gz` 复制到已有测试 VM，在新建临时目录解包，不替换 VM 现有 `/Applications/ApexTerm.app`。
+- VM 系统版本 27.0，`spctl --status` 返回 assessments enabled；深度严格验签、stapler validate、Gatekeeper execute assess 全部通过，来源 Notarized Developer ID，无本机 security disabled 覆盖。
+- `open` 启动成功，随后 `ps` 确认运行路径为本次临时安装的候选可执行文件。证据 `candidate/vm-install-verification.log`。这是安装、安全验证和进程启动证据；尚不替代 VM 实际窗口的完整操作验收。
+- 候选包生成 DMG、tar.gz 和 SHA256SUMS，DMG 的最终公证与票据校验待记录；不上传为正式 release。
+
+- DMG 公证 Accepted、staple/validate 通过；只读挂载卷名为 ApexTerm Candidate，包含候选应用及 Applications 符号链接，挂载包内严格验签通过。`candidate/dmg-inspection.json` 与最终 `SHA256SUMS.txt` 为证据。
+- 实现提交 cfe61a7 的 CI run 36291260780 已完成成功；后续仅验收文档提交 224530d 的 CI 仍独立跟踪。
+
+- 有界帧采样复试：xctrace Animation Hitches 请求 5 秒录制，超过 35 秒仍未完成，保护逻辑终止该录制进程；`frame-resumed-result.json` 记录退出码 1。未得到有效帧时间，仍不计为通过。下一步需更换可正常导出的采样路径并覆盖实际交互。

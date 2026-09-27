@@ -96,3 +96,7 @@ SFTP路径同步修正：currentPath变化时，路径框未聚焦或输入仍�
 IME静态审计线索：TerminalViewBridge.swift的setMarkedText只设置currentMarkedText/currentMarkedRange；全文件引用搜索未见组合文本绘制，draw仅super与光标，markedRange按已有textStorage尾部减组合长度返回。此为需要真实输入法验证的潜在组合阶段缺陷，不能用insertText提交UTF8正确代替组合可见性和候选位置验收。长测期间未修改产品绘制代码，避免改变当前对照条件。
 
 组合输入回调新增2项回归测试通过：预编辑不发送远端字节且不覆盖输出、候选提交中文/emoji仅发送一次UTF8、丢弃组合不发送输入（ime-composition-tests.log）。不覆盖实际系统输入法、候选定位或组合文本可见性，markedRange静态线索仍未解决。本轮短时swift测试与进程外长测并行发生，后续内存结果须记录此环境干扰，不宣称全程完全空闲。
+
+进程外30分钟对照已完成：117次输入、39轮任务completed且字节一致往返、78条记录、零失败；正常退出exit0，PID70907消失。内部telemetry文件未生成，外部1804样本峰值217.95MB；末三分钟中位214.16、217.02、217.06MB，仍有末段上升，不能宣称完全平稳或无泄漏。证据soak/external-long-result.json、external-long-memory-final.json、external-long-memory.jsonl。短时Swift测试并行及QA工作负载开销已记录；与上一轮仪表不同，不据此计算严格改善比例。输出935360为申请行数，不是独立接收计数。
+
+实体机真实终端复制补证：实际键盘执行printf ASCII标记，选择输出中QA_SELECTION_226__END，经CmdC复制、搜索框CmdV粘贴内容完全一致（qa/selection-real-226.txt、selection-copy-paste-226.txt）；清空搜索、CmdQ exit0。type_text中的中文未进入远端命令，不能计中文输入通过，也未归因于产品或输入法。此项不覆盖负载期间选区保留、输入法或全部复制场景。

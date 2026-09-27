@@ -30,3 +30,6 @@ jobs:
 
       - name: Swift Build (Release)
         run: swift build -c release -v
+
+      - name: Compile window UI acceptance suite
+        run: xcodebuild build-for-testing -project UITests/ApexTermUITests.xcodeproj -scheme ApexTermUITests -destination 'platform=macOS' -derivedDataPath outputs/ui-acceptance/DerivedData -jobs 2

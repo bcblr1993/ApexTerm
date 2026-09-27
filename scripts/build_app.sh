@@ -35,6 +35,8 @@ echo "✅ [Pre-Release Quality Gate] 100% of quality gate criteria satisfied!"
 
 echo "⚡ Building ApexTerm Release binary for Apple Silicon (arm64)..."
 swift build -c release
+echo "🧪 Running mandatory window UI acceptance..."
+bash scripts/test_ui_acceptance.sh
 
 echo "📦 Packaging ${APP_NAME} bundle (v${VERSION} Build ${BUILD_NUMBER})..."
 mkdir -p "${MACOS_DIR}" "${RESOURCES_DIR}"

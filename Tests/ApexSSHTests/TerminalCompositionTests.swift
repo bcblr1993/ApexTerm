@@ -36,7 +36,13 @@ final class TerminalCompositionTests: XCTestCase {
     func testPreeditRendersWithoutChangingRemoteOutputAndDisappearsOnCancel() throws {
         let terminal = NativeTerminalView()
         terminal.frame = NSRect(x: 0, y: 0, width: 420, height: 100)
-        terminal.textStorage?.setAttributedString(NSAttributedString(string: "host % "))
+        terminal.isVerticallyResizable = false
+        terminal.isHorizontallyResizable = false
+        terminal.textContainer?.containerSize = NSSize(width: 420, height: 100)
+        terminal.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
+        terminal.backgroundColor = .white
+        terminal.textColor = .black
+        terminal.textStorage?.setAttributedString(NSAttributedString(string: "host % ", attributes: [.font: terminal.font!, .foregroundColor: NSColor.black]))
         terminal.layoutManager?.ensureLayout(for: try XCTUnwrap(terminal.textContainer))
         func pixels() throws -> Data {
             // A CI worker can have no WindowServer backing; draw into a real offscreen bitmap.
@@ -46,8 +52,11 @@ final class TerminalCompositionTests: XCTestCase {
             let context = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: bitmap))
             NSGraphicsContext.saveGraphicsState()
             defer { NSGraphicsContext.restoreGraphicsState() }
-            NSGraphicsContext.current = context
+            context.cgContext.translateBy(x: 0, y: 100)
+            context.cgContext.scaleBy(x: 1, y: -1)
+            NSGraphicsContext.current = NSGraphicsContext(cgContext: context.cgContext, flipped: true)
             terminal.draw(terminal.bounds)
+            context.flushGraphics()
             return try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
         }
         let before = try pixels()

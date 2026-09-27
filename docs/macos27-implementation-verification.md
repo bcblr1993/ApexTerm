@@ -314,3 +314,7 @@
 - 2b42d41将默认Close及会话⌘W合并为唯一saveItem命令，Debug编译通过。实际2标签→1标签且窗口保留；左右/上下2窗格→1窗格，标签保留且焦点落在剩余终端。证据main-command-smoke/command-w-fixed-before.txt、command-w-fixed-after.txt、pane-close-proof.json。仅一个验收实例，结束后ps确认无残留。
 - SwiftUI模板短录制/导出已可用；5秒真实分屏/标签操作trace正常退出，约150MB。18518条SwiftUI更新关联ApexTerm PID93619，视图更新P95 0.036041ms、最大3.864041ms；这不是显示帧持续时间。hitches-updates为空，显示帧仍未关联应用，不计帧P95通过。证据interaction-app-update-analysis.json。
 - 系统本地网络列表只读检查可见ApexTerm.app授权on；独立候选条目未识别，不能推断其授权。未切换设置。证据local-network-permission-observation.json。
+
+### 远端 HOME 初始化回归（2026-09-27）
+
+正常启动候选 2026092709 的真实 SSH 输入、粘贴和 SFTP 临时目录列表已验证，证据为 `outputs/macos27/candidate/normal-real-ssh-sftp-proof.json`。首次连接曾错误使用 `/home/用户名`，现改为服务器 `$HOME` 探测，初始目录使用 `~`，列表返回绝对路径；关闭目录联动时仍允许首次 HOME 解析，之后不随终端目录变化。真实 VM 对比 `~`、`~/` 与绝对 HOME 的列表一致；全量测试证据为 `outputs/macos27/tests-home-full.log`。候选 2026092709 尚未包含本次修复，不能作为最终实现验收。

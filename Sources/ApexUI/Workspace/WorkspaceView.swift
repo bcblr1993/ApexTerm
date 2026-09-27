@@ -99,7 +99,7 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
         self.session = session
         self.sshClient = sshClient
         self.currentRemotePath = UserDefaults.standard.string(forKey: "workspace.remotePath.\(session.id.uuidString)")
-            ?? (session.username == "root" ? "/root" : (session.username.isEmpty ? "~" : "/home/\(session.username)"))
+            ?? "~"
         self.isDirectoryLinkageEnabled = session.sftpAutoSyncEnabled
         self.connectionState = .connecting(step: "正在连接")
         
@@ -123,7 +123,9 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
         
         self.sshClient.setDirectoryChangeHandler { [weak self] path in
             Task { @MainActor [weak self] in
-                guard let self = self, self.isDirectoryLinkageEnabled else { return }
+                guard let self = self else { return }
+                let needsHomeResolution = self.currentRemotePath == "~" || self.currentRemotePath.hasPrefix("~/")
+                guard self.isDirectoryLinkageEnabled || needsHomeResolution else { return }
                 if self.currentRemotePath != path {
                     self.currentRemotePath = path
                 }

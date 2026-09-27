@@ -74,6 +74,20 @@ final class VMIntegrationTests: XCTestCase {
         XCTAssertGreaterThan(snapshot.uptimeSeconds, 0)
     }
     
+    func testVMHomeListingResolvesTildeToActualAbsoluteDirectory() async throws {
+        try requireVMConfig()
+        let client = NativeSSHSession(session: vmSession)
+        let probedHome = await client.probeRemoteHome()
+        let home = try XCTUnwrap(probedHome)
+        XCTAssertTrue(home.hasPrefix("/"))
+        let absolute = try await client.listDirectory(path: home)
+        let shorthand = try await client.listDirectory(path: "~")
+        XCTAssertEqual(Set(absolute.map(\.path)), Set(shorthand.map(\.path)))
+        XCTAssertTrue(shorthand.allSatisfy { $0.path.hasPrefix(home + "/") })
+        let trailingSlash = try await client.listDirectory(path: "~/")
+        XCTAssertEqual(Set(absolute.map(\.path)), Set(trailingSlash.map(\.path)))
+    }
+
     // MARK: - Test 2: Real SFTP Directory Listing & File Transfer Integrity
     func testVMRealSFTPDirectoryListingAndTransfer() async throws {
         try requireVMConfig()

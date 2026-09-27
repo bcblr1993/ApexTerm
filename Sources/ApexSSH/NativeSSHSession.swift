@@ -291,7 +291,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     public func probeRemoteHome() async -> String? {
         await resolvePasswordIfNeeded()
         let process = Process()
-        let cmd = "pwd"
+        let cmd = "printf '%s\\n' \"$HOME\""
         let ctrlArgs = [
             "-o", "ControlMaster=auto",
             "-o", "ControlPath=\(controlSocketPath)",
@@ -344,7 +344,13 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         // This strictly prevents metrics like '36' from 'Swap usage: 36%' being parsed as directories.
         guard trimmed.hasPrefix("/") || trimmed.hasPrefix("~") else { return }
         
-        let home = self.remoteHomeDirectory ?? (session.username == "root" ? "/root" : (session.username.isEmpty ? "/" : "/home/\(session.username)"))
+        guard let home = remoteHomeDirectory else {
+            if trimmed.hasPrefix("/") && trimmed != lastReportedDirectory {
+                lastReportedDirectory = trimmed
+                directoryChangeHandler?(trimmed)
+            }
+            return
+        }
         var path = trimmed
         if path == "~" {
             path = home
@@ -507,6 +513,17 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     // SFTP implementation
     public func listDirectory(path: String) async throws -> [SFTPItem] {
         await resolvePasswordIfNeeded()
+        var path = path
+        if path == "~" || path.hasPrefix("~/") {
+            var home = remoteHomeDirectory
+            if home == nil { home = await probeRemoteHome() }
+            guard let home, home.hasPrefix("/") else {
+                throw NSError(domain: "ApexSSH", code: 1, userInfo: [NSLocalizedDescriptionKey: "无法读取远程主目录"])
+            }
+            remoteHomeDirectory = home
+            path = path == "~" ? home : home + "/" + String(path.dropFirst(2))
+            directoryChangeHandler?(path)
+        }
         let process = Process()
         let sshpass = self.sshpassExecutablePath
         // Ensure trailing slash so that symbolic links pointing to directories are properly traversed by ls

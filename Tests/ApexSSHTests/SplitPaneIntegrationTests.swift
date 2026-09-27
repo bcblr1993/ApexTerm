@@ -69,12 +69,26 @@ final class SplitPaneIntegrationTests: XCTestCase {
     }
     
     @MainActor
+    func testInitialHomeResolvesWhenDirectoryLinkageIsDisabled() async {
+        let session = Session(name: "home-test", host: "192.0.2.10", username: "root", sftpAutoSyncEnabled: false)
+        let client = MockSSHSession(session: session)
+        let tab = TerminalTabItem(session: session, sshClient: client)
+        XCTAssertEqual(tab.currentRemotePath, "~")
+        client.triggerDirectoryChange(to: "/var/root")
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(tab.currentRemotePath, "/var/root")
+        client.triggerDirectoryChange(to: "/tmp")
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(tab.currentRemotePath, "/var/root")
+    }
+
+    @MainActor
     func testDirectoryLinkageToggle() async {
         let session = Session(name: "linkage-test", host: "192.0.2.10", username: "root", sftpAutoSyncEnabled: true)
         let client = MockSSHSession(session: session)
         let tab = TerminalTabItem(session: session, sshClient: client)
         
-        XCTAssertEqual(tab.currentRemotePath, "/root")
+        XCTAssertEqual(tab.currentRemotePath, "~")
         XCTAssertTrue(tab.isDirectoryLinkageEnabled)
         
         // Trigger directory change when enabled

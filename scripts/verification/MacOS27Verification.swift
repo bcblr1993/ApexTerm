@@ -27,12 +27,19 @@ struct ThemeVerificationApp: App {
     private let tab: TerminalTabItem
     private let importConfigURL: URL
     init() {
-        let directory = qaRepositoryRoot.appendingPathComponent("outputs/macos27/qa/store-" + (Bundle.main.bundleIdentifier ?? "verification"))
+        let environment = ProcessInfo.processInfo.environment
+        let bundleID = Bundle.main.bundleIdentifier ?? "verification"
+        let testRun = environment["APEX_QA_UI_RUN_ID"].flatMap(UUID.init(uuidString:))
+        if testRun != nil {
+            precondition(bundleID.hasPrefix("com.apexterm.qa."), "Only isolated QA applications may reset test settings")
+            AppSettings.shared.resetToDefaults()
+        }
+        let directoryName = "store-" + bundleID + (testRun.map { "-" + $0.uuidString } ?? "")
+        let directory = qaRepositoryRoot.appendingPathComponent("outputs/macos27/qa/" + directoryName)
         store = SessionStore(baseDirectory: directory)
         importConfigURL = directory.appendingPathComponent("ssh-config")
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try? "Host qa-demo\n    HostName 192.0.2.10\n    User demo\n".write(to: importConfigURL, atomically: true, encoding: .utf8)
-        let environment = ProcessInfo.processInfo.environment
         let realHost = environment["APEX_QA_REAL_HOST"]
         var session = Session(name: "主题验收 · 演示", host: realHost ?? "192.0.2.10", username: environment["APEX_QA_REAL_USER"] ?? "demo", authMethod: .password(keychainRef: ""), agentlessMonitorEnabled: environment["APEX_QA_MONITOR"] != "0")
         if environment["APEX_QA_SESSION_AUTH"] == "private-key" {

@@ -13,7 +13,7 @@ final class ApexTermUITests: XCTestCase {
 
     private func launch(_ scene: String = "main", extra: [String: String] = [:]) {
         app = XCUIApplication(bundleIdentifier: "com.apexterm.qa.verification")
-        app.launchEnvironment = ["APEX_QA_SCENE": scene, "APEX_QA_DISABLE_TELEMETRY": "1"]
+        app.launchEnvironment = ["APEX_QA_SCENE": scene, "APEX_QA_DISABLE_TELEMETRY": "1", "APEX_QA_UI_RUN_ID": UUID().uuidString]
             .merging(extra) { _, new in new }
         app.launch()
         XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 10))

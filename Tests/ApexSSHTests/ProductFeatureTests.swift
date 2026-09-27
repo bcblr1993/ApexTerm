@@ -7,6 +7,17 @@ import ApexSSH
 @MainActor
 final class ProductFeatureTests: XCTestCase {
     
+    func testEditingPrivateKeyAuthenticationRetainsBothReferences() {
+        for passphrase in [nil, "synthetic-passphrase-reference"] as [String?] {
+            let original = SSHAuthMethod.privateKey(keychainRef: "synthetic-key-reference", passphraseRef: passphrase)
+            XCTAssertEqual(SessionEditModal.AuthType.privateKey.retainedPrivateKey(from: original), original)
+            XCTAssertNil(SessionEditModal.AuthType.agent.retainedPrivateKey(from: original))
+            XCTAssertNil(SessionEditModal.AuthType.password.retainedPrivateKey(from: original))
+        }
+        XCTAssertNil(SessionEditModal.AuthType.privateKey.retainedPrivateKey(from: nil))
+        XCTAssertNil(SessionEditModal.AuthType.privateKey.retainedPrivateKey(from: .agent))
+    }
+
     // MARK: - AppSettings Tests
     
     func testAppSettingsDefaultsAndMutations() {

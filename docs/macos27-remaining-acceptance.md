@@ -39,3 +39,9 @@ Nord进一步定位：保持Nord设置重新启动候选App、打开并激活外
 颜色选择无障碍修复：SessionEditModal颜色按钮新增selected trait及已选中/未选中值。swift build通过；复用现有调试验收App，真实AX默认蓝色selected，点击绿色后仅绿色selected，其他未选中（main-command-smoke/color-ax-default.txt、color-ax-green.txt），未保存表单并退出。签名候选2714尚未包含此源码修复。
 
 会话搜索复核：2714无匹配后清空恢复三个会话；空状态英文已改为中文原生ContentUnavailableView。Debug编译通过，复用调试App真实画面中文字换行完整、AX文案对应，清空后恢复会话（main-command-smoke/search-empty-localized.jpeg/.txt）。此修复尚未进入2714。
+
+最新源码f9baef5对应CI36300245642已完成success，包含颜色选择AX与中文搜索空状态修复；候选2714仍基于5773a16，不能用最新CI声称候选包含后两项修复。真实拖拽验收中已连接VM并显示/tmp/apexterm-drag-2714合成源文件，尚未发生可验证跨窗口拖拽，不计通过。用户反馈电脑负载后已停止该VM和候选App，进程核查无本任务QA/VM残留，空闲内存78%、swap 0；resource-cleanup-current.json保留本轮资源与CI证据。后续先处理低负载核查，重型验收按需单实例执行。
+
+会话编辑回归修复：指定私钥会话不再在打开/保存表单时被隐式转换为Agent；新增仅对原私钥会话显示的指定私钥选项，保存保留keychainRef与passphraseRef。未编辑的跳板机、保活间隔、创建和最近连接时间也保留。颜色AX名称改为中文颜色名。ProductFeatureTests八项通过，新增测试覆盖有/无口令引用及主动切换认证；全量147测试零失败、11环境相关跳过（VM关闭），日志tests-session-retention-full.log无warning/error。尚需实际表单保存、最新CI及新版候选验收，不将单元测试视为GUI通过。
+
+私钥会话实际GUI保存补证：复用单一Verification.app，合成私钥会话打开时指定私钥选中，修改名称并点击保存。session-private-key-saved.json逐项断言证明私钥与口令引用、jumpServerId、47秒保活、创建和最近连接时间均保留；session-private-key-before.txt记录实际AX。普通会话仍只有密码/Agent，颜色中文AX名称也已确认（session-current-color-ax.txt）。退出命令虽返回工具超时，随后ps确认QA/VM进程均无残留。该验证仅使用合成数据，不等于真实私钥连接验收。

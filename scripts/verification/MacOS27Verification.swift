@@ -31,7 +31,14 @@ struct ThemeVerificationApp: App {
         try? "Host qa-demo\n    HostName 192.0.2.10\n    User demo\n".write(to: importConfigURL, atomically: true, encoding: .utf8)
         let environment = ProcessInfo.processInfo.environment
         let realHost = environment["APEX_QA_REAL_HOST"]
-        let session = Session(name: "主题验收 · 演示", host: realHost ?? "192.0.2.10", username: environment["APEX_QA_REAL_USER"] ?? "demo", authMethod: .password(keychainRef: ""), agentlessMonitorEnabled: environment["APEX_QA_MONITOR"] != "0")
+        var session = Session(name: "主题验收 · 演示", host: realHost ?? "192.0.2.10", username: environment["APEX_QA_REAL_USER"] ?? "demo", authMethod: .password(keychainRef: ""), agentlessMonitorEnabled: environment["APEX_QA_MONITOR"] != "0")
+        if environment["APEX_QA_SESSION_AUTH"] == "private-key" {
+            session.authMethod = .privateKey(keychainRef: "synthetic-key-reference", passphraseRef: "synthetic-passphrase-reference")
+            session.jumpServerId = UUID(uuidString: "00000000-0000-0000-0000-000000000123")
+            session.keepAliveIntervalSeconds = 47
+            session.createdAt = Date(timeIntervalSince1970: 1_700_000_000)
+            session.lastConnectedAt = Date(timeIntervalSince1970: 1_700_000_100)
+        }
         store.sessions = [session]
         let client: SSHSessionProtocol = realHost != nil
             ? NativeSSHSession(session: session)
@@ -73,7 +80,15 @@ struct ThemeVerificationApp: App {
                 SSHConfigImportSheet(store: store, configURL: importConfigURL)
                 #endif
             } else if scene == "session" {
-                SessionEditModal(session: store.sessions.first, onSave: { _ in })
+                SessionEditModal(session: store.sessions.first, onSave: { saved in
+                    guard ProcessInfo.processInfo.environment["APEX_QA_SESSION_AUTH"] == "private-key" else { return }
+                    let resultURL = qaRepositoryRoot.appendingPathComponent("outputs/macos27/qa/session-private-key-saved.json")
+                    do {
+                        try JSONEncoder().encode(saved).write(to: resultURL, options: .atomic)
+                    } catch {
+                        NSLog("Unable to write synthetic session acceptance result: %@", error.localizedDescription)
+                    }
+                })
             } else {
             NavigationSplitView {
                 SidebarView(store: store, selectedSession: $selectedSession, onConnect: { _ in }, onRunSnippet: { _ in })

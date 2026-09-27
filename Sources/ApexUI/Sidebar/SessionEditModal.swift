@@ -26,7 +26,13 @@ public struct SessionEditModal: View {
     public enum AuthType: String, CaseIterable, Identifiable {
         case password = "密码认证"
         case agent = "SSH 密钥 / Agent"
+        case privateKey = "指定私钥"
         public var id: String { rawValue }
+
+        func retainedPrivateKey(from method: SSHAuthMethod?) -> SSHAuthMethod? {
+            guard self == .privateKey, let method, case .privateKey = method else { return nil }
+            return method
+        }
     }
     
     public init(session: Session?, onSave: @escaping (Session) -> Void) {
@@ -75,7 +81,7 @@ public struct SessionEditModal: View {
                 // 2. 身份认证 (密码 / 密钥)
                 Section(L10n.authMethodSection) {
                     Picker("认证类型", selection: $authType) {
-                        ForEach(AuthType.allCases) { type in
+                        ForEach(availableAuthTypes) { type in
                             Text(type.rawValue).tag(type)
                         }
                     }
@@ -105,7 +111,7 @@ public struct SessionEditModal: View {
                         HStack {
                             Image(systemName: "key.fill")
                                 .foregroundColor(ApexStyle.secondary)
-                            Text("使用 macOS 本机 SSH Agent 或 ~/.ssh 默认私钥自动鉴权")
+                            Text(authType == .privateKey ? "保留此会话原有的私钥与口令配置" : "使用 macOS 本机 SSH Agent 或 ~/.ssh 默认私钥自动鉴权")
                                 .font(.caption)
                                 .foregroundColor(ApexStyle.secondary)
                         }
@@ -129,7 +135,7 @@ public struct SessionEditModal: View {
                                     .overlay(Circle().stroke(colorHex == hex ? ApexStyle.primary : .clear, lineWidth: 1.5))
                             }
                             .buttonStyle(.plain)
-                            .accessibilityLabel("选择标识颜色 \(hex)")
+                            .accessibilityLabel("选择标识颜色：\(colorName(for: hex))")
                             .accessibilityValue(colorHex == hex ? "已选中" : "未选中")
                             .accessibilityAddTraits(colorHex == hex ? .isSelected : [])
                         }
@@ -170,6 +176,24 @@ public struct SessionEditModal: View {
         }
     }
 
+    private var availableAuthTypes: [AuthType] {
+        if case .privateKey = initialSession?.authMethod {
+            return AuthType.allCases
+        }
+        return [.password, .agent]
+    }
+
+    private func colorName(for hex: String) -> String {
+        switch hex {
+        case "#0A84FF": return "蓝色"
+        case "#30D158": return "绿色"
+        case "#FF9F0A": return "橙色"
+        case "#FF453A": return "红色"
+        case "#BF5AF2": return "紫色"
+        default: return hex
+        }
+    }
+
     private var isValidPort: Bool {
         guard let value = Int(port) else { return false }
         return (1...65535).contains(value)
@@ -198,7 +222,9 @@ public struct SessionEditModal: View {
                     await MainActor.run { self.password = ref }
                 }
             }
-        case .agent, .none, .privateKey:
+        case .privateKey:
+            authType = .privateKey
+        case .agent, .none:
             authType = .agent
         }
     }
@@ -207,7 +233,9 @@ public struct SessionEditModal: View {
         let sessionId = initialSession?.id ?? UUID()
         let authMethod: SSHAuthMethod
         
-        if authType == .password && !password.isEmpty {
+        if let existing = authType.retainedPrivateKey(from: initialSession?.authMethod) {
+            authMethod = existing
+        } else if authType == .password && !password.isEmpty {
             let key = "ssh_\(sessionId.uuidString)"
             do {
                 try KeychainStore.shared.save(key: key, secret: password)
@@ -236,8 +264,12 @@ public struct SessionEditModal: View {
             folder: folder.trimmingCharacters(in: .whitespaces).isEmpty ? "常用会话" : folder.trimmingCharacters(in: .whitespaces),
             tags: tags.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) },
             colorHex: colorHex,
+            jumpServerId: initialSession?.jumpServerId,
             agentlessMonitorEnabled: agentlessMonitor,
-            sftpAutoSyncEnabled: sftpAutoSync
+            sftpAutoSyncEnabled: sftpAutoSync,
+            keepAliveIntervalSeconds: initialSession?.keepAliveIntervalSeconds ?? 30,
+            createdAt: initialSession?.createdAt ?? Date(),
+            lastConnectedAt: initialSession?.lastConnectedAt
         )
         onSave(newSession)
         dismiss()

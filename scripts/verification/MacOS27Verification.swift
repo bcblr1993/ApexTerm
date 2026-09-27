@@ -22,6 +22,7 @@ struct ThemeVerificationApp: App {
     @State private var editorContent = "# 示例配置\nserver=demo\nport=22\n"
     @State private var updatePresented = true
     @State private var editorPresented = true
+    @State private var importPresented = true
     private let telemetry = QAProcessTelemetry()
     private let tab: TerminalTabItem
     private let importConfigURL: URL
@@ -99,6 +100,19 @@ struct ThemeVerificationApp: App {
                 TransferDrawer(isExpanded: .constant(true))
             } else if scene == "metrics" {
                 MetricCapsuleView(historyStore: tab.metricsHistory)
+            } else if scene == "import-sheet" {
+                #if APEX_BASELINE
+                Text("旧版导入界面请使用正式 App 验证")
+                #else
+                VStack {
+                    Text("导入弹窗验收")
+                    Button("显示导入弹窗") { importPresented = true }
+                }
+                .frame(width: 700, height: 550)
+                .sheet(isPresented: $importPresented) {
+                    SSHConfigImportSheet(store: store, configURL: importConfigURL)
+                }
+                #endif
             } else if scene == "import" {
                 #if APEX_BASELINE
                 Text("旧版导入界面请使用正式 App 验证")

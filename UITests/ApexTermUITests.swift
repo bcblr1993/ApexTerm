@@ -264,6 +264,26 @@ final class ApexTermUITests: XCTestCase {
         capture("ssh-config-import-deduplicated")
     }
 
+    func testSSHConfigImportSheetCancelDoesNotImport() {
+        launch("import-sheet")
+        XCTAssertTrue(app.sheets.firstMatch.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["导入选中的 1 台主机"].isEnabled)
+        app.typeKey(XCUIKeyboardKey.escape, modifierFlags: [])
+        XCTAssertFalse(app.sheets.firstMatch.exists)
+        app.buttons["显示导入弹窗"].click()
+        XCTAssertTrue(app.sheets.firstMatch.waitForExistence(timeout: 5))
+        app.buttons["取消"].click()
+        XCTAssertFalse(app.sheets.firstMatch.exists)
+        app.menuBars.menuBarItems["验收页面"].click()
+        app.menuItems["main"].click()
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "1 台主机")).firstMatch.waitForExistence(timeout: 5))
+        let search = app.textFields.matching(NSPredicate(format: "label CONTAINS %@", "搜索会话")).firstMatch
+        search.click()
+        search.typeText("qa-demo")
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "未找到匹配会话")).firstMatch.waitForExistence(timeout: 5))
+        capture("ssh-config-cancel-no-import")
+    }
+
     func testRealSSHConfiguredHostIsMandatory() throws {
         let environment = ProcessInfo.processInfo.environment
         guard let host = environment["APEX_UI_TEST_HOST"], !host.isEmpty,

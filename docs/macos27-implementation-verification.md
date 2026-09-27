@@ -272,3 +272,10 @@
 - 随即恢复权限 644；远端 SHA256 仍为 4c65adea9f3be8a71c14fb5371c031317309d6107f8bbfc8f52f872e159e02b8，失败未改变原文件。
 - qa/real-editor-save-failure-proof.json 与截图记录失败及内容保护；恢复编辑器原内容并重新保存，成功通知出现、错误清除，real-editor-save-retry-proof.json 两项为 true。
 - 此项覆盖真实权限错误和恢复重试，不替代传输取消、拖拽与其余失败矩阵。
+
+### 真实编辑器取消关闭与 SFTP 空/失败状态
+
+- 真实编辑器追加 cancel-close=qa 后尝试关闭，实际出现未保存提示；选择继续编辑后更改保留，real-editor-cancel-close-proof.json 为 true。恢复原内容，远端 SHA256 不变。
+- SSH mktemp 新建独立空目录 /tmp/apexterm-empty-qa.ECeH9jS8；实际 SFTP 导航显示“文件夹为空”，上传入口可用，截图 real-sftp-empty.png。
+- 导航该目录下不存在的 missing-directory-qa，界面显示 No such file or directory 和重试按钮；返回有效目录后恢复空状态、错误清除，real-sftp-missing-directory-proof.json 记录失败控件。
+- 本项覆盖真实空目录和不存在路径错误/恢复，不替代权限读取错误、取消传输或双向拖拽。

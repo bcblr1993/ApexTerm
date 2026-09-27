@@ -70,3 +70,8 @@
 - `foreground-current-summary.json`：连续前台 62.00 秒（预热 15 秒后），单核 CPU 0.341%，RSS 196.39–196.48 MB；合成会话、监控开启、无传输。不是监控关闭场景，也不能用于同条件新旧改善比例。
 - 旧提交 9005671 的 CI run 36289814547 已成功；本轮提交的 CI 必须另行确认。
 - IdleProofOff 的 UI 读取两次超时，未据此宣称监控关闭前台采样通过。帧时间、完整系统无障碍操作和最终签名候选包仍须继续验收。
+
+- 接续修复提交 `cfe61a7` 已推送，CI run 36291260780 正在运行。
+- 实际产品 Release 二进制生成独立 `com.apexterm.candidate` 候选应用，版本仍标 1.3.0、内部构建 2026092701，未作为新正式版本发布。`candidate/` 中保存来源说明和 Apple 公证响应；敏感扫描、Developer ID 深度严格验签、公证 Accepted、staple/validate 均通过。Gatekeeper 返回 Notarized Developer ID，同时显示本机 security disabled，因此不把本机评估当作启用安全策略机器上的安装证明。
+
+- 监控关闭的优化构建连续前台 67.00 秒有效采样（预热 15 秒后），单核 CPU 0.145%，RSS 169.47–179.69 MB；达到 ≤1% 目标。证据 `foreground-monitor-off-summary.json`，合成连接、无输出/传输。

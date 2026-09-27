@@ -9,7 +9,12 @@ final class ApexTermUITests: XCTestCase {
         continueAfterFailure = false
     }
 
-    override func tearDown() async throws { app?.terminate() }
+    override func tearDown() async throws {
+        if (testRun?.failureCount ?? 0) > 0, let app, app.state == .runningForeground {
+            capture("failure-" + name)
+        }
+        app?.terminate()
+    }
 
     private func launch(_ scene: String = "main", extra: [String: String] = [:]) {
         app = XCUIApplication(bundleIdentifier: "com.apexterm.qa.verification")
@@ -218,6 +223,13 @@ final class ApexTermUITests: XCTestCase {
         capture("terminal-split-vertical")
         split.click()
         app.menuItems["水平分屏"].click()
+        let horizontalLayout = XCTNSPredicateExpectation(predicate: NSPredicate { [app] _, _ in
+            guard let app, app.textViews.count == 2 else { return false }
+            let first = app.textViews.element(boundBy: 0).frame
+            let second = app.textViews.element(boundBy: 1).frame
+            return abs(first.midY - second.midY) > 50 && abs(first.midX - second.midX) < 30
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [horizontalLayout], timeout: 5), .completed)
         let top = app.textViews.element(boundBy: 0).frame
         let bottom = app.textViews.element(boundBy: 1).frame
         XCTAssertGreaterThan(abs(top.midY - bottom.midY), 50)

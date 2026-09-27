@@ -1,5 +1,6 @@
 import XCTest
 import Foundation
+import Darwin
 @testable import ApexCore
 @testable import ApexSSH
 @testable import ApexTerminal
@@ -220,6 +221,26 @@ final class VMIntegrationTests: XCTestCase {
         XCTAssertEqual(sshClient.connectionState, .disconnected)
     }
     
+    func testVMDisconnectReapsThePTYChildProcess() async throws {
+        try requireVMConfig()
+        func children() -> Set<pid_t> {
+            var pids = [pid_t](repeating: 0, count: 64)
+            let count = proc_listchildpids(getpid(), &pids, Int32(pids.count * MemoryLayout<pid_t>.stride))
+            return Set(pids.prefix(max(0, Int(count))).filter { $0 > 0 })
+        }
+        let before = children()
+        let client = NativeSSHSession(session: vmSession)
+        try await client.connect()
+        let ptyChildren = children().subtracting(before)
+        XCTAssertFalse(ptyChildren.isEmpty, "The real PTY must spawn a child before validating cleanup")
+        await client.disconnect()
+        await client.disconnect()
+        for pid in ptyChildren {
+            XCTAssertEqual(kill(pid, 0), -1, "Disconnected PTY child must not survive")
+            XCTAssertEqual(errno, ESRCH)
+        }
+    }
+
     // MARK: - Test 4: Verify Remote Disk Space Cleanliness
     func testVMDiskCleanlinessVerification() throws {
         try requireVMConfig()

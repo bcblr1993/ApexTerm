@@ -328,3 +328,11 @@
 发现两个目录的同名文件导出共用临时路径，新增真实 NSItemProvider 文件加载回归，修复前失败、独立 UUID 目录后通过。导出改为消费者请求文件时才启动下载，各表示共享一次下载；放弃未投放拖拽不创建传输任务，Progress 取消会取消下载并记录取消状态。相关 15 项测试通过，取消验证同时断言没有生成文件。全量真实 VM 测试日志为 `outputs/macos27/tests-lazy-drag-full.log`。真实 Finder 双向拖拽仍需实际窗口与哈希验收，不以 provider 测试替代。
 
 候选 2026092710 来源 530a13e，应用/DMG 公证 Accepted、票据与 SHA256 校验通过；本次拖拽修改尚未纳入此候选。
+
+### PTY 退出与测试 VM 连接上限（2026-09-27）
+
+发现正常退出应用后遗留的 SSH PTY 客户端：41 个进程的父 PID 为 1，完整参数与本项目连接启动逻辑及测试 VM 目标匹配。测试 VM 的 SSH launchd 服务 `copy count=42`、系统 plist `inetdCompatibility.Instances=42`，新连接在密钥交换前被关闭，已有复用连接仍可用。精确清理本任务的孤儿 PTY 后，独立新 SSH 连接恢复。另清理 VM 内 7 个旧临时候选/验收应用，保留正式安装应用。
+
+连接改为独立进程组，断开时回收进程组和密码辅助工具的后代并 waitpid；主应用 willTerminate 同步回收所有活动窗格的 PTY。延迟 HOME 探测在断开后不再启动/分发。新增真实 VM 回归验证 connect 产生子进程、重复 disconnect 后对应 PID 不再存在。7 项 VM 测试通过；实际正常 ⌘Q 验收记录应用 PID 4305、SSH PID 4334，复查均已退出，VM 新 SSH 成功。证据：`tests-pty-reaping-vm.log`、`main-command-smoke/lifecycle-normal-quit-proof.json`、`vm-ssh-service.log`、`vm-ssh-limit.log`（位于 outputs/macos27）。
+
+候选 2026092711 来源 910bcc1，CI、公证、DMG 内容/票据/哈希及 VM 安装 Gatekeeper 已通过；尚未包含本次 PTY 清理修复，不是最终实现候选。

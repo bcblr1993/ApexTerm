@@ -162,7 +162,12 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         var cEnv: [UnsafeMutablePointer<CChar>?] = envVars.map { strdup($0) }
         cEnv.append(nil)
         
-        let spawnResult = posix_spawnp(&pid, binaryPath, &fileActions, nil, cArgs, cEnv)
+        var spawnAttributes: posix_spawnattr_t?
+        posix_spawnattr_init(&spawnAttributes)
+        defer { posix_spawnattr_destroy(&spawnAttributes) }
+        posix_spawnattr_setflags(&spawnAttributes, Int16(POSIX_SPAWN_SETPGROUP))
+        posix_spawnattr_setpgroup(&spawnAttributes, 0)
+        let spawnResult = posix_spawnp(&pid, binaryPath, &fileActions, &spawnAttributes, cArgs, cEnv)
         for ptr in cArgs {
             if let p = ptr { free(p) }
         }
@@ -221,9 +226,10 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         // Probe user's real home directory after connection
         Task { [weak self] in
             try? await Task.sleep(nanoseconds: 1_200_000_000)
-            if let home = await self?.probeRemoteHome(), !home.isEmpty {
-                self?.remoteHomeDirectory = home
-                self?.directoryChangeHandler?(home)
+            guard let self, self.connectionState == .connected else { return }
+            if let home = await self.probeRemoteHome(), !home.isEmpty, self.connectionState == .connected {
+                self.remoteHomeDirectory = home
+                self.directoryChangeHandler?(home)
             }
         }
         
@@ -240,12 +246,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         readSource?.cancel()
         readSource = nil
         
-        if childPid > 0 {
-            kill(childPid, SIGHUP)
-            var status: Int32 = 0
-            waitpid(childPid, &status, WNOHANG)
-            childPid = -1
-        }
+        terminatePTYProcess()
         
         if ptyMasterFd >= 0 {
             close(ptyMasterFd)
@@ -264,6 +265,30 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         }
     }
     
+    /// Synchronous exit cleanup: SSH ignores ordinary termination signals while attached to a PTY.
+    /// Each spawned connection owns a process group, so this cannot target another session.
+    public func terminatePTYProcess() {
+        guard childPid > 0 else { return }
+        let pid = childPid
+        childPid = -1
+        // sshpass can place its SSH child in a separate session; include descendants
+        // before terminating the helper, otherwise its child can be reparented to launchd.
+        let descendants = Self.ptyDescendants(of: pid)
+        for child in descendants.reversed() { kill(child, SIGKILL) }
+        kill(-pid, SIGKILL)
+        kill(pid, SIGKILL)
+        var status: Int32 = 0
+        while waitpid(pid, &status, 0) == -1 && errno == EINTR {}
+    }
+
+    private static func ptyDescendants(of parent: pid_t) -> [pid_t] {
+        var children = [pid_t](repeating: 0, count: 64)
+        let count = proc_listchildpids(parent, &children, Int32(children.count * MemoryLayout<pid_t>.stride))
+        guard count > 0 else { return [] }
+        let direct = children.prefix(Int(count)).filter { $0 > 0 }
+        return direct.flatMap { [$0] + ptyDescendants(of: $0) }
+    }
+
     public func sendInputSync(_ data: Data) {
         guard ptyMasterFd >= 0 else { return }
         data.withUnsafeBytes { rawBuffer in

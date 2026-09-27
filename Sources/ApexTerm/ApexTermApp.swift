@@ -54,6 +54,13 @@ struct ApexTermApp: App {
                 )
             }
             .focusedSceneValue(\.isWorkspaceWindow, true)
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+                for tab in activeTabs {
+                    for pane in tab.panes {
+                        (pane.sshClient as? NativeSSHSession)?.terminatePTYProcess()
+                    }
+                }
+            }
             .navigationSplitViewStyle(.balanced)
             .background(WindowStateView().frame(width: 0, height: 0))
             .apexTheme()

@@ -5,12 +5,25 @@ import ApexSSH
 import ApexTerminal
 import ApexUI
 
+private struct WorkspaceCommandFocusKey: FocusedValueKey {
+    typealias Value = Bool
+}
+
+private extension FocusedValues {
+    var isWorkspaceWindow: Bool? {
+        get { self[WorkspaceCommandFocusKey.self] }
+        set { self[WorkspaceCommandFocusKey.self] = newValue }
+    }
+}
+
 @main
 struct ApexTermApp: App {
     @StateObject private var sessionStore = SessionStore.shared
     @ObservedObject private var updateManager = UpdateManager.shared
     @ObservedObject private var settings = AppSettings.shared
     
+    @FocusedValue(\.isWorkspaceWindow) private var isWorkspaceWindow
+
     @State private var activeTabs: [TerminalTabItem] = []
     @State private var selectedTabId: UUID?
     @State private var selectedSidebarSession: Session?
@@ -40,6 +53,7 @@ struct ApexTermApp: App {
                     selectedTabId: $selectedTabId
                 )
             }
+            .focusedSceneValue(\.isWorkspaceWindow, true)
             .navigationSplitViewStyle(.balanced)
             .background(WindowStateView().frame(width: 0, height: 0))
             .apexTheme()
@@ -123,7 +137,9 @@ struct ApexTermApp: App {
             
             CommandGroup(replacing: .saveItem) {
                 Button("关闭当前窗格 / 标签页") {
-                    if activeTabs.contains(where: { $0.id == selectedTabId }) {
+                    if isWorkspaceWindow == true, NSApp.keyWindow?.sheetParent == nil,
+                       NSApp.keyWindow?.attachedSheet == nil,
+                       activeTabs.contains(where: { $0.id == selectedTabId }) {
                         closeCurrentConnection()
                     } else {
                         NSApplication.shared.keyWindow?.performClose(nil)
@@ -201,6 +217,7 @@ struct ApexTermApp: App {
         
         Settings {
             SettingsView().apexTheme()
+                .focusedSceneValue(\.isWorkspaceWindow, false)
         }
     }
     

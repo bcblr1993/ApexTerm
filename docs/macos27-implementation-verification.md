@@ -318,3 +318,7 @@
 ### 远端 HOME 初始化回归（2026-09-27）
 
 正常启动候选 2026092709 的真实 SSH 输入、粘贴和 SFTP 临时目录列表已验证，证据为 `outputs/macos27/candidate/normal-real-ssh-sftp-proof.json`。首次连接曾错误使用 `/home/用户名`，现改为服务器 `$HOME` 探测，初始目录使用 `~`，列表返回绝对路径；关闭目录联动时仍允许首次 HOME 解析，之后不随终端目录变化。真实 VM 对比 `~`、`~/` 与绝对 HOME 的列表一致；全量测试证据为 `outputs/macos27/tests-home-full.log`。候选 2026092709 尚未包含本次修复，不能作为最终实现验收。
+
+### ⌘W 窗口范围与未保存内容（2026-09-27）
+
+主窗口通过 focused scene 标记参与连接关闭命令；设置窗口及 sheet 不关闭后台连接标签。编辑器底部关闭按钮绑定 ⌘W，复用原有未保存确认及保存/重载禁用保护，顶部 Escape 行为保留。真实产品窗口验证：活动连接存在时打开设置，⌘W 关闭设置且标签/终端内容保留；编辑器修改合成内容后 ⌘W 显示放弃确认，继续编辑保留内容；回主窗口复制为两个标签，⌘W 后剩一个且连接保留。证据：`main-command-smoke/settings-active-connection-proof.json`、`editor-command-w-unsaved-proof.txt`、`editor-command-w-cancel-proof.txt`、`scoped-tab-close-proof.json`（均位于 outputs/macos27）。验收后退出，进程检查无残留。

@@ -157,6 +157,7 @@ public struct QuickEditorView: View {
                 Spacer()
                 
                 Button("关闭", action: requestClose)
+                    .keyboardShortcut("w", modifiers: .command)
                     .controlSize(.small)
                     .disabled(isSaving || isReloading)
                 

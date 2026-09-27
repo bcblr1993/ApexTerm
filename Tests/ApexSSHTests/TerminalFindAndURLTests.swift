@@ -69,6 +69,23 @@ final class TerminalFindAndURLTests: XCTestCase {
         XCTAssertTrue(window.firstResponder === field || field.currentEditor() === window.firstResponder)
     }
 
+    @MainActor
+    func testControlCommandFUsesWindowFullScreenInsteadOfTerminalInput() throws {
+        final class FullScreenWindow: NSWindow {
+            var toggleCount = 0
+            override func toggleFullScreen(_ sender: Any?) { toggleCount += 1 }
+        }
+        let window = FullScreenWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 400), styleMask: [.titled], backing: .buffered, defer: false)
+        let terminal = NativeTerminalView()
+        window.contentView = terminal
+        var inputs: [Data] = []
+        terminal.onInput = { inputs.append($0) }
+        let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.command, .control], timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "f", charactersIgnoringModifiers: "f", isARepeat: false, keyCode: 3))
+        terminal.keyDown(with: event)
+        XCTAssertEqual(window.toggleCount, 1)
+        XCTAssertTrue(inputs.isEmpty)
+    }
+
     // MARK: - 1. Terminal Find Tests
     
     @MainActor

@@ -1157,6 +1157,14 @@ public final class NativeTerminalView: NSTextView {
     override public func keyDown(with event: NSEvent) {
         self.isPinnedToBottom = true
         
+        // Preserve the system full-screen shortcut while terminal input has focus.
+        let shortcutModifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
+        if shortcutModifiers == [.command, .control],
+           event.charactersIgnoringModifiers?.lowercased() == "f" {
+            window?.toggleFullScreen(nil)
+            return
+        }
+
         // 0. Handle Cmd shortcuts: Cmd+K (Clear), Cmd+F (Find), Cmd+G (Next Match), Cmd+Shift+G (Prev Match)
         if event.modifierFlags.contains(.command) {
             if let chars = event.charactersIgnoringModifiers?.lowercased() {

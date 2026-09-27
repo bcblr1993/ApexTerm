@@ -142,3 +142,9 @@
 - macOS 27 VM assessments enabled；新包通过严格验签、票据与 Gatekeeper，来源 Notarized Developer ID，构建号 2026092704。实际新进程 PID 6525 路径 /private/tmp/apexterm-candidate.iJe3tw/ApexTerm Candidate.app/Contents/MacOS/ApexTerm。证据 candidate/vm-copy-focus-install.log。
 - 最新 CopyFocus 验收窗口实际切换全部 12 主题，逐张查看 qa/current-theme-00.png 至 11.png：主要文字、工具栏和文件表格无明显截断或布局回退，终端内容保留；检查数据 qa/current-theme-checks.json。结束恢复经典白色。此项覆盖主窗口，合成会话不替代真实 SSH，也不代表所有弹窗/系统外观组合已验收。
 - 整体目标仍未完成：实际绘制帧 P95 缺有效结果，VoiceOver 与系统对比度/透明度测试待已提出的设置确认，输入法及完整状态/窗口矩阵仍需补验。本次为可安装内部候选，未正式发布。
+
+
+## 全屏快捷键补验
+
+- 最新 CopyFocus 实际点击全屏，保存 qa/current-fullscreen.png：终端、侧栏与文件表格无明显截断。随后在终端焦点按 Control+Command+F 意外打开终端查找栏；qa/current-fullscreen-restored.txt 保留实际 AX，不能计为退出全屏通过。
+- 终端键盘处理补齐 Control+Command+F 路由到窗口 toggleFullScreen，避免被 Command+F 查找或 Control+F 远程输入吞掉。回归测试断言窗口收到一次切换且无远程输入。tests-fullscreen-shortcut.log 8 项通过；tests-fullscreen-all.log 全量通过。实际修复后窗口验证与新签名候选尚待执行，2026092704 不包含本次修复。

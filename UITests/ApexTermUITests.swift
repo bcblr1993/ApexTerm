@@ -118,6 +118,65 @@ final class ApexTermUITests: XCTestCase {
         capture("real-ssh-pty")
     }
 
+    func testEditorUnsavedCancelSaveAndClose() {
+        launch("editor-sheet")
+        let editor = app.textViews.firstMatch
+        XCTAssertTrue(editor.waitForExistence(timeout: 5))
+        editor.click()
+        editor.typeText("\nui_acceptance=true")
+        app.buttons["关闭"].click()
+        XCTAssertTrue(app.buttons["继续编辑"].waitForExistence(timeout: 5))
+        capture("editor-unsaved-close")
+        app.buttons["继续编辑"].click()
+        XCTAssertTrue(app.sheets.firstMatch.exists)
+        let save = app.buttons["保存 (⌘S)"]
+        save.click()
+        XCTAssertFalse(save.isEnabled)
+        let finished = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: save)
+        XCTAssertEqual(XCTWaiter.wait(for: [finished], timeout: 10), .completed)
+        capture("editor-save-completed")
+        app.buttons["关闭"].click()
+        XCTAssertFalse(app.sheets.firstMatch.exists)
+    }
+
+    func testEditorSaveFailureKeepsChanges() {
+        launch("editor-sheet", extra: ["APEX_QA_EDITOR_SAVE": "failure"])
+        let editor = app.textViews.firstMatch
+        XCTAssertTrue(editor.waitForExistence(timeout: 5))
+        editor.click()
+        editor.typeText("\nkeep_after_failure=true")
+        app.buttons["保存 (⌘S)"].click()
+        let failed = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "权限不足")).firstMatch
+        XCTAssertTrue(failed.waitForExistence(timeout: 10))
+        XCTAssertTrue((editor.value as? String)?.contains("keep_after_failure=true") == true)
+        capture("editor-save-failure")
+        app.buttons["关闭"].click()
+        XCTAssertTrue(app.buttons["继续编辑"].waitForExistence(timeout: 5))
+        app.buttons["继续编辑"].click()
+    }
+
+    func testEditorReloadCancelAndDiscard() {
+        launch("editor-sheet")
+        let editor = app.textViews.firstMatch
+        XCTAssertTrue(editor.waitForExistence(timeout: 5))
+        editor.click()
+        editor.typeText("\nunsaved_reload_marker=true")
+        let reload = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "重新加载")).firstMatch
+        XCTAssertTrue(reload.isHittable)
+        reload.click()
+        XCTAssertTrue(app.buttons["继续编辑"].waitForExistence(timeout: 5))
+        app.buttons["继续编辑"].click()
+        XCTAssertTrue((editor.value as? String)?.contains("unsaved_reload_marker=true") == true)
+        reload.click()
+        XCTAssertTrue(app.buttons["放弃更改"].waitForExistence(timeout: 5))
+        app.buttons["放弃更改"].click()
+        let remote = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@ AND NOT value CONTAINS %@", "远端配置", "unsaved_reload_marker"), object: editor)
+        XCTAssertEqual(XCTWaiter.wait(for: [remote], timeout: 10), .completed)
+        capture("editor-reloaded")
+        app.buttons["关闭"].click()
+        XCTAssertFalse(app.sheets.firstMatch.exists)
+    }
+
     func testAllThemesAndPagesRender() {
         launch()
         let themes = ["经典白色（默认）", "VS Code Dark Modern", "Tokyo Night", "Catppuccin Mocha", "Catppuccin Latte", "Nord", "Dracula", "One Dark Pro", "Gruvbox Dark", "Everforest", "Rosé Pine", "Solarized Light"]
@@ -132,6 +191,40 @@ final class ApexTermUITests: XCTestCase {
                 app.menuItems[page].click()
                 XCTAssertTrue(app.windows.firstMatch.exists)
                 XCTAssertGreaterThan(app.windows.firstMatch.frame.width, 300)
+                switch page {
+                case "session":
+                    XCTAssertTrue(app.textFields["会话名称"].waitForExistence(timeout: 3))
+                    XCTAssertTrue(app.buttons["保存"].exists)
+                    XCTAssertTrue(app.buttons["取消"].isHittable)
+                case "editor":
+                    XCTAssertTrue(app.textViews.firstMatch.waitForExistence(timeout: 3))
+                    XCTAssertTrue(app.buttons["保存 (⌘S)"].isHittable)
+                case "about":
+                    XCTAssertTrue(app.buttons["立即检查更新"].waitForExistence(timeout: 3))
+                case "transfers":
+                    XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "暂无传输任务")).firstMatch.waitForExistence(timeout: 3))
+                case "import":
+                    XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "导入选中的")).firstMatch.waitForExistence(timeout: 3))
+                case "settings":
+                    for tab in ["通用", "终端外观", "操作习惯", "SFTP传输", "数据备份"] {
+                        let tabButton = app.radioButtons[tab]
+                        XCTAssertTrue(tabButton.waitForExistence(timeout: 3), "Missing settings tab: \(tab)")
+                        tabButton.click()
+                        XCTAssertTrue(tabButton.isSelected)
+                        switch tab {
+                        case "通用":
+                            XCTAssertTrue(app.buttons["立即检查更新"].isHittable)
+                        case "终端外观":
+                            XCTAssertTrue(app.sliders.firstMatch.exists)
+                        case "操作习惯", "SFTP传输":
+                            XCTAssertGreaterThan(app.checkBoxes.count + app.switches.count, 0)
+                        default:
+                            XCTAssertGreaterThan(app.buttons.count, 0)
+                        }
+                        capture("\(theme)-settings-\(tab)")
+                    }
+                default: break
+                }
                 capture("\(theme)-\(page)")
             }
         }

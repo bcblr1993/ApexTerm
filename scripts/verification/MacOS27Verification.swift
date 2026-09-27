@@ -21,6 +21,7 @@ struct ThemeVerificationApp: App {
     @State private var scene = ProcessInfo.processInfo.environment["APEX_QA_SCENE"] ?? "main"
     @State private var editorContent = "# 示例配置\nserver=demo\nport=22\n"
     @State private var updatePresented = true
+    @State private var editorPresented = true
     private let telemetry = QAProcessTelemetry()
     private let tab: TerminalTabItem
     private let importConfigURL: URL
@@ -64,6 +65,21 @@ struct ThemeVerificationApp: App {
             Group {
             if scene == "editor" {
                 QuickEditorView(item: SFTPItem(name: "demo.conf", path: "/demo.conf", isDirectory: false), content: $editorContent, onSave: { _ in try await Task.sleep(for: .seconds(8)) }, onReload: { "# 远端配置\nserver=demo\n" })
+            } else if scene == "editor-sheet" {
+                VStack {
+                    Text("编辑器弹窗验收")
+                    Button("显示编辑器") { editorPresented = true }
+                }
+                .frame(width: 900, height: 650)
+                .sheet(isPresented: $editorPresented) {
+                    QuickEditorView(item: SFTPItem(name: "demo.conf", path: "/demo.conf", isDirectory: false), content: $editorContent, onSave: { _ in
+                        try await Task.sleep(for: .seconds(2))
+                        if ProcessInfo.processInfo.environment["APEX_QA_EDITOR_SAVE"] == "failure" {
+                            throw NSError(domain: "ApexTerm.QA", code: 13, userInfo: [NSLocalizedDescriptionKey: "验收模拟：远端写入权限不足"])
+                        }
+                    }, onReload: { "# 远端配置\nserver=demo\n" })
+                    .apexTheme()
+                }
             } else if scene == "settings" {
                 SettingsView(initialTab: 1)
             } else if scene == "about" {

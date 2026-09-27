@@ -16,11 +16,11 @@ APEX_UI_TEST_HOST=<测试主机> APEX_UI_TEST_USER=<测试用户> bash scripts/t
 | 会话表单 | testSessionEmptyInvalidPortAndCancel；ProductFeatureTests | 空表单禁用、无效端口、Escape取消；认证元数据保留有单元测试。实际保存、标签、颜色、复制表单和所有键盘路径待扩充 |
 | 更新 | testUpdateFailureCloseAndReopen、testUpdateLoadingAndSuccess；UpdateCheckTests | 实际sheet加载/失败/成功与关闭；HTTP错误、无效响应、去重有受控测试。真实故障注入待补 |
 | 文件列表状态 | testSFTPEmptyLoadingAndFailureStates；SFTPOperationsTests | 空、加载、失败界面；重试、过滤及路径输入草稿的实际窗口断言待补 |
-| 主题与页面 | testAllThemesAndPagesRender；ThemeSupportTests | 12主题×9页面共108次窗口截图与窗口存在/尺寸检查；不能把截图采集等同像素/裁切验证，需补控件可见性、截图基线、其余设置标签与不同窗口尺寸 |
+| 主题与页面 | testAllThemesAndPagesRender；ThemeSupportTests | 12主题×9页面及5个设置标签遍历，增加会话/编辑器/更新/传输/导入关键控件存在或可点击断言、设置标签选中及滑块/开关检查；尚未实际运行。截图采集不等同像素/裁切验证，需补截图基线与不同窗口尺寸 |
 | 真实终端 | testRealSSHConfiguredHostIsMandatory；VMIntegrationTests、PublicServerIntegrationTests | 真实键盘→PTY→输出断言；输入法候选、UTF8粘贴、选区负载保留、重连与分屏关联待扩充 |
 | 复制与组合回调 | TerminalCopyAndContextMenuTests、TerminalCompositionTests | 快捷键字节路由、组合提交/取消；回调测试不代替系统输入法 |
 | SFTP完整流程 | VMIntegrationTests、SFTPOperationsTests | 真实协议与字节完整性；双向拖拽、记录可见路径、新建/重命名/删除/重复/失败/取消的GUI自动化待补 |
-| 编辑器 | QuickEditorAndSFTPItemTests；主题页面截图 | 查找/未保存/保存/失败重试/重载/关闭取消的实际窗口断言待补 |
+| 编辑器 | testEditorUnsavedCancelSaveAndClose、testEditorSaveFailureKeepsChanges、testEditorReloadCancelAndDiscard；QuickEditorAndSFTPItemTests；主题页面截图 | 已编写真实sheet修改、未保存关闭取消、保存禁用/完成/关闭、失败保留内容断言；编译通过但Automation Mode未授权，尚未运行。已编写重载取消保留草稿/放弃后远端内容替换断言；查找/失败恢复重试待补 |
 | 主窗口 | UIStateTests、SplitPaneIntegrationTests；主题页面截图 | 状态与分屏模型；全屏、最小尺寸、非激活、分隔比例与标签关闭实际窗口断言待补 |
 | 系统无障碍 | 既有AX操作证据与主题对比度测试 | VoiceOver、全键盘访问、增强对比度、减少透明度/动态效果、系统外观尚未转为自动化；需隔离桌面及授权，不修改日常系统设置 |
 | 性能稳定性 | test_vm_acceptance.sh、FullPerformanceBenchmarkTests；外部RSS采样工具 | 八项基准已有发布门禁；30分钟真实负载、应用归属帧P95与同条件基线尚需接入自动化报告与阈值 |

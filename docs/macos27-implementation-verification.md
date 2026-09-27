@@ -162,3 +162,10 @@
 
 - CI 36292548032 为 failure，失败在 testTerminalMountedInVisibleWindowGetsFocusWithoutStealingFieldEditing 的自动聚焦断言；不是全屏路由断言。证据 ci-fullscreen-failed.log。本地与 VM 通过不替代本次 CI 失败，最新候选整体 CI 门禁仍待恢复。
 - 将固定 50ms 等待改为最多 2 秒等待真实终端焦点条件，保留自动聚焦断言。tests-focus-ci-wait.log 8 项通过；这是排查异步调度的修复尝试，须由云端结果确认，未声称根因已证实。产品二进制未改变，候选不需因测试变更重新打包。
+
+
+## 设置页主题补验
+
+- FullScreenFix 实际设置页的终端外观标签切换全部 12 主题，逐张查看 qa/settings-theme-00.png 至 11.png，当前视口内原生表单文字/控件和所选主题无明显截断或可读性回退。qa/settings-theme-checks.json 记录选项与预览 AX 存在；AX 存在不代表预览在当前视口可见。
+- 恢复经典白色；普通滚动动作未改变视口，随后用暴露的原生滚动条设为底部，qa/settings-preview-white-bottom.png 确认真正显示完整命令预览。仅此默认主题的底部截图通过，其他主题底部和其余设置标签仍待补验。
+- 本轮开始核对 CI：测试修正 bc01dbc 的 36292740035 queued，前一文档提交 36292685423 in_progress；没有把排队或运行中记为通过。

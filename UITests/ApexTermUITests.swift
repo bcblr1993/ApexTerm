@@ -130,6 +130,33 @@ final class ApexTermUITests: XCTestCase {
         }
     }
 
+    func testSFTPFilterEmptyClearAndEscape() {
+        launch("main", extra: ["APEX_QA_FILES": "normal", "APEX_QA_CONNECT": "1"])
+        let file = app.staticTexts["nginx.conf"]
+        XCTAssertTrue(file.waitForExistence(timeout: 10))
+        let toggle = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "筛选")).firstMatch
+        XCTAssertTrue(toggle.isHittable)
+        toggle.click()
+        let filter = app.textFields["筛选当前目录文件..."]
+        XCTAssertTrue(filter.waitForExistence(timeout: 5))
+        filter.click()
+        filter.typeText("UI_NO_MATCH_FILE")
+        XCTAssertTrue(app.staticTexts["没有匹配的文件"].waitForExistence(timeout: 5))
+        XCTAssertFalse(file.exists)
+        capture("sftp-filter-no-match")
+        app.buttons["清除文件筛选"].click()
+        XCTAssertTrue(file.waitForExistence(timeout: 5))
+        XCTAssertEqual(filter.value as? String, "")
+        filter.click()
+        filter.typeText("nginx")
+        XCTAssertTrue(file.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["docker-compose.yml"].exists)
+        filter.typeKey(XCUIKeyboardKey.escape, modifierFlags: [])
+        XCTAssertFalse(filter.exists)
+        XCTAssertTrue(app.staticTexts["docker-compose.yml"].waitForExistence(timeout: 5))
+        capture("sftp-filter-escape-restored")
+    }
+
     func testRealSSHConfiguredHostIsMandatory() throws {
         let environment = ProcessInfo.processInfo.environment
         guard let host = environment["APEX_UI_TEST_HOST"], !host.isEmpty,

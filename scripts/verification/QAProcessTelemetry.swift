@@ -2,6 +2,9 @@ import AppKit
 import Darwin
 import MachO
 
+// QA bundles live under <repository>/outputs/macos27/qa; Finder launches need no working-directory assumption.
+let qaRepositoryRoot: URL = (0..<4).reduce(Bundle.main.bundleURL) { url, _ in url.deletingLastPathComponent() }
+
 @MainActor
 final class QAProcessTelemetry {
     private var timer: Timer?
@@ -32,7 +35,7 @@ final class QAProcessTelemetry {
                         "keyWindow": windows.contains { $0.isKeyWindow },
                         "windowCount": windows.count])
         let path = ProcessInfo.processInfo.environment["APEX_QA_TELEMETRY"]
-            ?? "outputs/macos27/qa/telemetry-\(Bundle.main.bundleIdentifier ?? "app").json"
+            ?? qaRepositoryRoot.appendingPathComponent("outputs/macos27/qa/telemetry-\(Bundle.main.bundleIdentifier ?? "app").json").path
         let file = URL(fileURLWithPath: path)
         try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
         if let data = try? JSONSerialization.data(withJSONObject: samples, options: [.sortedKeys]) {

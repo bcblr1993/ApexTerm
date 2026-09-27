@@ -17,7 +17,7 @@ struct ThemeVerificationApp: App {
     private let tab: TerminalTabItem
     private let importConfigURL: URL
     init() {
-        let directory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("outputs/macos27/qa/store-" + (Bundle.main.bundleIdentifier ?? "verification"))
+        let directory = qaRepositoryRoot.appendingPathComponent("outputs/macos27/qa/store-" + (Bundle.main.bundleIdentifier ?? "verification"))
         store = SessionStore(baseDirectory: directory)
         importConfigURL = directory.appendingPathComponent("ssh-config")
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -133,7 +133,7 @@ struct ThemeVerificationApp: App {
     }
     @MainActor
     private func runSoak() async {
-        let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("outputs/macos27/soak")
+        let root = qaRepositoryRoot.appendingPathComponent("outputs/macos27/soak")
         try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let upload = root.appendingPathComponent("payload.bin")
         let download = root.appendingPathComponent("roundtrip.bin")

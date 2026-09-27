@@ -58,7 +58,7 @@ private final class QAFileCallLog: @unchecked Sendable {
             paths.append(path)
             return try? JSONSerialization.data(withJSONObject: paths, options: [.sortedKeys])
         }
-        let url = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("outputs/macos27/qa/directory-calls-\(Bundle.main.bundleIdentifier ?? "app").json")
+        let url = qaRepositoryRoot.appendingPathComponent("outputs/macos27/qa/directory-calls-\(Bundle.main.bundleIdentifier ?? "app").json")
         if let data { try? data.write(to: url, options: .atomic) }
     }
 }

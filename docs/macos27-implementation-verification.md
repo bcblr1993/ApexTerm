@@ -336,3 +336,11 @@
 连接改为独立进程组，断开时回收进程组和密码辅助工具的后代并 waitpid；主应用 willTerminate 同步回收所有活动窗格的 PTY。延迟 HOME 探测在断开后不再启动/分发。新增真实 VM 回归验证 connect 产生子进程、重复 disconnect 后对应 PID 不再存在。7 项 VM 测试通过；实际正常 ⌘Q 验收记录应用 PID 4305、SSH PID 4334，复查均已退出，VM 新 SSH 成功。证据：`tests-pty-reaping-vm.log`、`main-command-smoke/lifecycle-normal-quit-proof.json`、`vm-ssh-service.log`、`vm-ssh-limit.log`（位于 outputs/macos27）。
 
 候选 2026092711 来源 910bcc1，CI、公证、DMG 内容/票据/哈希及 VM 安装 Gatekeeper 已通过；尚未包含本次 PTY 清理修复，不是最终实现候选。
+
+### 候选2026092712与资源控制后的验收
+
+- 来源335878bcabfd898059b983d50737da7a82aa10bd，CI36297859387成功。构建日志记录121项SSH/UI测试及20项Core测试零失败、4项可选公网测试跳过；7项真实VM测试及8项Release基准通过，包内敏感数据扫描通过。RSS98.62MB、模拟键入路径5.02μs，不作为GUI帧延迟证明。
+- 应用与DMG公证Accepted，stapler、深度严格验签及DMG/tar.gz哈希通过。只读DMG卷名ApexTerm Candidate，仅应用和Applications链接，版本1.3.0/build2026092712，正常卸载。证据candidate/VERIFICATION-2026092712.md及dmg-2712-inspection.json。
+- 同一tar.gz解包到VM独立目录，Gatekeeper assessments enabled、assess accepted/Notarized Developer ID，票据和严格签名通过，内置build2712；证据candidate/vm-2712-install.log。这不代替VM实际GUI启动验收。
+- 设置12主题四个非外观页48张截图及12主题底部预览全部人工审查，文字与预览无裁切；部分原生控件在立即捕获画面缺失。2712 Dracula/Latte SFTP及One Dark Pro外观未改变控件值静置5秒后完整显示；不能据此前截图直接判为持续产品缺陷，剩余受影响页面仍待复核。证据settings-theme-matrix/visual-review.json、settings-five-pages/preview-visual-review.json。
+- 每轮GUI仅一个候选App，结束恢复默认主题并⌘Q，ps确认零QA残留；测试VM安装验证后tart stop并确认stopped，避免累积内存占用。

@@ -65,8 +65,8 @@ if [ "${IS_VM_SSH_READY}" = "true" ]; then
     export APEX_TEST_VM_PASSWORD=""
     
     # Run test suite with live VM integration tests enabled
-    swift test 2>&1 | tee "${REPORT_DIR}/vm_test_report.log"
-    swift test -c release --filter FullPerformanceBenchmarkTests 2>&1 | tee "${REPORT_DIR}/release_benchmarks.log"
+    swift test --jobs 2 2>&1 | tee "${REPORT_DIR}/vm_test_report.log"
+    swift test -c release --jobs 2 --filter FullPerformanceBenchmarkTests 2>&1 | tee "${REPORT_DIR}/release_benchmarks.log"
     python3 "${ROOT_DIR}/scripts/verify_release_benchmarks.py" "${REPORT_DIR}/release_benchmarks.log"
     if grep -Eq 'warning:|error:' "${REPORT_DIR}/vm_test_report.log" "${REPORT_DIR}/release_benchmarks.log"; then
         echo "❌ Compiler or test diagnostics detected; refusing release."

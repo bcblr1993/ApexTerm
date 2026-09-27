@@ -56,7 +56,7 @@ def main():
     OUT.mkdir(parents=True, exist_ok=True)
     clean_generated(OUT)
     run('./scripts/test_vm_acceptance.sh')
-    run('swift', 'build', '-c', 'release')
+    run('swift', 'build', '-c', 'release', '--jobs', '2')
     (APP / 'Contents/MacOS').mkdir(parents=True)
     (APP / 'Contents/Resources').mkdir()
     shutil.copy2(ROOT / '.build/out/Products/Release/ApexTerm', APP / 'Contents/MacOS/ApexTerm')

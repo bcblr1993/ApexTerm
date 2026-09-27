@@ -47,3 +47,5 @@ Nord进一步定位：保持Nord设置重新启动候选App、打开并激活外
 私钥会话实际GUI保存补证：复用单一Verification.app，合成私钥会话打开时指定私钥选中，修改名称并点击保存。session-private-key-saved.json逐项断言证明私钥与口令引用、jumpServerId、47秒保活、创建和最近连接时间均保留；session-private-key-before.txt记录实际AX。普通会话仍只有密码/Agent，颜色中文AX名称也已确认（session-current-color-ax.txt）。退出命令虽返回工具超时，随后ps确认QA/VM进程均无残留。该验证仅使用合成数据，不等于真实私钥连接验收。
 
 私钥会话主动切换补证：真实点击Agent并保存，session-private-key-to-agent.json确认authMethod变为agent且跳板机/保活/时间保持不变，原私钥保留结果另存session-private-key-retained.json。视觉检查发现验收App初始session场景未触发onChange尺寸配置，窗口恢复900×450使固定表单裁切；现仅验收工具启动session时明确设560×560。重新链接成功，session-private-key-size-corrected.jpeg显示标题、认证选项及固定底部按钮完整可见，画面为非激活外观，仍不计激活状态通过。5a3742a当前CI36300632345正在Debug Build，测试及Release尚待执行。
+
+资源与门禁更新：专用VM内存从16384MB调为8192MB（CPU仍6），vm-resource-budget.json记录原值与恢复命令。8GB真实VM运行147测试零失败、4可选公网跳过，7项VM测试通过且结束自动停止；vm-8gb-session-regression.log无warning/error。当前优化构建八项基准九个阈值全部通过（RSS99.92MB、内部按键4.74μs），release-benchmarks-session-retention.log。5a3742a CI36300632345已success。候选构建及VM门禁Swift命令限制jobs2，候选精确旧产物清理逻辑保持；完整打包门禁仍需下一轮实际执行。

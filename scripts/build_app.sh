@@ -35,7 +35,7 @@ fi
 echo "✅ [Pre-Release Quality Gate] 100% of quality gate criteria satisfied!"
 
 echo "⚡ Building ApexTerm Release binary for Apple Silicon (arm64)..."
-swift build -c release
+swift build -c release --jobs 2
 echo "🧪 Running mandatory window UI acceptance..."
 bash scripts/test_ui_acceptance.sh
 
@@ -142,7 +142,7 @@ if command -v hdiutil >/dev/null 2>&1; then
     TMP_DMG_DIR=$(mktemp -d /tmp/apexterm_dmg.XXXXXX)
     cp -R "${APP_DIR}" "${TMP_DMG_DIR}/"
     ln -s /Applications "${TMP_DMG_DIR}/Applications"
-    hdiutil create -volname "ApexTerm" -srcfolder "${TMP_DMG_DIR}" -ov -format UDZO "${DIST_DMG}" -quiet
+    hdiutil create -volname "ApexTerm" -fs HFS+ -srcfolder "${TMP_DMG_DIR}" -ov -format UDZO "${DIST_DMG}" -quiet
     rm -rf "${TMP_DMG_DIR}"
 fi
 

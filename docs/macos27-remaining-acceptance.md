@@ -11,8 +11,8 @@
 | 编辑器与其余页面状态 | 编辑器未保存/查找/真实保存成功与重载、权限失败后恢复重试、关闭取消、页面截图、会话地址/认证验证 | 正常/空/加载/失败/禁用/成功/取消分别关联页面证据，更新检查状态；不能把单页截图覆盖所有状态 |
 | 12主题关键页面 | 主窗口全部、编辑器12主题记录、设置外观标签当前视口全部 | 编辑器最终实现复核、会话/监控/传输等关键页面与其他设置标签全主题检查；设置12主题四个非外观标签共48张截图已全部人工检查，文字布局未见裁切；部分首行开关在初次截图缺失。2712单实例复核Mocha两页与Dracula/Latte操作习惯显示正常，Dracula/Latte SFTP开关on/off/on交互及恢复画面通过，Dracula/Latte SFTP未点击开关静置5秒后均完整显示，其他受影响主题仍待同条件复核；底部预览12主题全部人工检查，示例文字完整可读；部分初次截图原生滑块/光标菜单/外观开关缺失，One Dark Pro静置5秒后全部控件完整，其他受影响主题仍需运行时复核 |
 | 系统外观/无障碍 | 控件AX动作、布局与主题恢复测试 | 实际VoiceOver、全键盘流程、增强对比度、减少透明度/动态效果、系统浅深外观；系统设置操作确认尚待回复 |
-| 性能与稳定性 | 当前011f5ad源码八项Release基准通过（RSS100.22MB、内部按键5.05μs，release-benchmarks-current.log）；2715旧长测工作负载完成但退出超时；指定实体机192.168.50.226当前30分钟负载进行中（real-226-current-run.json/telemetry.json、progress.json） | SwiftUI交互trace已导出，但仍需有效实际交互绘制帧P95；同条件比较及011f5ad真实30分钟混合负载完成结果与预热后内存趋势（进行中，不能计通过）、最终生命周期复查 |
-| 候选交付门禁 | 545b976 CI36300851650成功；候选2026092715应用/最终重制HFS+ DMG公证Accepted、票据/严格验签/哈希通过，DMG卷标与包内版本通过；2715 VM独立安装、Gatekeeper启用并接受Notarized Developer ID。本机正常启动、中文搜索/恢复、颜色AX、取消按钮及主窗口退出通过；旧2713真实SSH/更新记录仅作历史证据 | 2715是历史源码候选；当前源码须重建签名候选，并完成VM实际启动界面与完整流程验收；最终候选真实连接、更新成功/加载/失败及Escape取消待复核。本机spctl的security disabled override不能替代VM启用Gatekeeper验收。逐项收尾上述要求后才可标整体完成 |
+| 性能与稳定性 | 当前011f5ad源码八项Release基准通过（RSS100.22MB、内部按键5.05μs，release-benchmarks-current.log）；2715旧长测工作负载完成但退出超时；指定实体机192.168.50.226当前30分钟负载完成且正常退出（114次输入、38轮双向传输、零失败；real-226-current-result.json） | SwiftUI交互trace已导出，但仍需有效实际交互绘制帧P95；同条件比较、独立于QA仪表的产品内存趋势、选区完整性与最终候选生命周期复查 |
+| 候选交付门禁 | 545b976 CI36300851650成功；候选2026092715应用/最终重制HFS+ DMG公证Accepted、票据/严格验签/哈希通过，DMG卷标与包内版本通过；2715 VM独立安装、Gatekeeper启用并接受Notarized Developer ID。本机正常启动、中文搜索/恢复、颜色AX、取消按钮及主窗口退出通过；旧2713真实SSH/更新记录仅作历史证据 | 2715是历史源码候选；2716已完成重建与签名公证，仍需VM实际启动界面与完整流程验收；最终候选真实连接、更新成功/加载/失败及Escape取消待复核。本机spctl的security disabled override不能替代VM启用Gatekeeper验收。逐项收尾上述要求后才可标整体完成 |
 
 证据根目录 outputs/macos27/ 不打入分发包。正式发布独立于内部候选，须另有明确授权。
 
@@ -74,3 +74,17 @@ SFTP路径同步修正：currentPath变化时，路径框未聚焦或输入仍�
 当前Animation Hitches短时探测：记录器exit0，render705条、surface swap702条、displayed surface701条、frame lifetime703条；导出表无可靠测试应用归属，未执行规定交互，不能将全局合成层生命周期/刷新周期作为应用P95。frame-current-probe-analysis.json记录未通过归属核验。导出TOC环境段已移除；原始trace含启动环境，不分享、不打包。后续采样应使用最小启动环境并提供可证明的应用surface映射。
 
 当前Release QA在指定机器实际右键下载256KB测试文件：可见记录包含正确远端路径与Downloads目标，传输完成；本地/远端SHA256一致（sftp-click-download-226-proof.json、sftp-download-record-226.txt）。收起传输sheet后CmdQ exit0；sheet打开时CmdQ未退出，不能计直接退出通过。此项是点击下载，不计拖拽。双向拖拽fixture已准备，界面上传授权待回复。
+
+最新候选2026092716基于12bbf6901d56891f25ea7c102cc5783dbd81aa19，候选构建exit0，Tart真实链路与全量测试、八项Release性能门禁、安全扫描、严格验签通过。应用与DMG公证均Accepted、票据有效，两份分发包SHA256独立复核一致。DMG只读挂载确认卷标ApexTerm Candidate、应用及Applications链接，包内与tar版本均1.3.0/2026092716（candidate/package-2716-inspection.json）。此项不覆盖最终候选GUI与VM启用Gatekeeper安装验收，也不替代本表剩余交互项目。
+
+2716正常候选实际GUI补证：中文无匹配空状态、清空搜索恢复3会话、空表单保存禁用、Escape关闭新建sheet且会话仍3个均通过（candidate/gui-2716-basic-proof.json及对应AX记录）；CmdQ后进程核查无候选App。旧2715 Escape超时不再代表当前结果；此项不覆盖其他模态、全部键盘流程或真实连接。
+
+2716更新实际窗口：菜单检查更新返回“已是最新版本”且显示1.3.0，Return关闭结果sheet、恢复主窗口，CmdQ后进程消失（candidate/update-flow-2716.json及两份AX记录）。请求在首次捕获前完成，未观察加载态或失败态，不能将成功结果扩展为全部更新状态通过。
+
+更新状态受控渲染补证：QA工具新增update场景，只在工具中设置UpdateManager状态，不修改产品网络配置。Release链接通过；实际AX确认checking含进度指示及中文文案、failed含警告/关闭/重试。点击重试调用真实检查并转为updateAvailable（QA包缺版本元数据，默认当前1.2.0；不得视为候选2716版本错误）。两轮正常退出exit0。证据qa/update-checking-current.txt、update-failed-current.txt、update-retry-current.txt。模拟失败不是真实HTTP失败证明，直接顶层视图也不证明sheet关闭动作；这些范围仍待补证。
+
+更新失败sheet关闭补证：QA场景改为SwiftUI真实sheet承载未修改的UpdateSheetView。模拟failed状态下Escape关闭、重新打开后点击关闭按钮亦关闭，均恢复宿主窗口；CmdQ exit0。证据qa/update-failure-sheet.txt、update-failure-escape.txt、update-failure-close-button.txt。关闭路径已有直接证据，网络失败仍为模拟注入，不扩展为实际HTTP失败验收。Release验收工具重新链接通过。
+
+更新失败sheet视觉复核：update-failure-sheet.jpeg中标题、错误文案及关闭/重试按钮完整可见，无裁切；当前一次截图不覆盖12主题或激活/非激活全部组合。更新检查5项测试再次通过（update-tests-current.log），覆盖注入HTTP503、网络错误、无效响应及请求去重；这是受控fetch测试，非真实服务器故障。sheet打开时CmdQ未退出，Escape关闭后CmdQ exit0，故正常退出证据明确限定关闭模态之后。
+
+2716指定实体机分发验证：通过SSH/SCP将tar放入192.168.50.226独立/tmp/apexterm-candidate-2716.tV7qYPiM，远端SHA256与本地清单一致，解包版本2026092716，严格深度验签通过。该机器Gatekeeper为assessments enabled，实际spctl接受Notarized Developer ID（candidate/physical-226-2716-verification.log与proof.json）。未替换用户Applications，未启动远端GUI；此证据不覆盖实际安装后的界面与完整流程。

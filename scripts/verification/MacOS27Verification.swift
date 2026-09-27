@@ -20,6 +20,7 @@ struct ThemeVerificationApp: App {
     @State private var selectedSession: Session?
     @State private var scene = ProcessInfo.processInfo.environment["APEX_QA_SCENE"] ?? "main"
     @State private var editorContent = "# 示例配置\nserver=demo\nport=22\n"
+    @State private var updatePresented = true
     private let telemetry = QAProcessTelemetry()
     private let tab: TerminalTabItem
     private let importConfigURL: URL
@@ -67,6 +68,13 @@ struct ThemeVerificationApp: App {
                 SettingsView(initialTab: 1)
             } else if scene == "about" {
                 AboutView()
+            } else if scene == "update" {
+                VStack {
+                    Text("更新弹窗验收")
+                    Button("显示更新弹窗") { updatePresented = true }
+                }
+                .frame(width: 560, height: 360)
+                .sheet(isPresented: $updatePresented) { UpdateSheetView() }
             } else if scene == "shortcuts" {
                 ShortcutsSheetView()
             } else if scene == "transfers" {
@@ -112,6 +120,13 @@ struct ThemeVerificationApp: App {
                 }
             }
             .task {
+                if scene == "update" {
+                    switch ProcessInfo.processInfo.environment["APEX_QA_UPDATE_STATE"] {
+                    case "checking": UpdateManager.shared.status = .checking
+                    case "failed": UpdateManager.shared.status = .failed("验收模拟：更新服务器暂时不可用，请稍后重试。")
+                    default: UpdateManager.shared.status = .upToDate(currentVersion: "1.3.0")
+                    }
+                }
                 // The initial scene does not trigger onChange, and restored window geometry
                 // can be smaller than a fixed-size form. Apply its real content size once.
                 if scene == "session" {

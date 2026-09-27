@@ -43,6 +43,7 @@ def main():
 cd "$1"
 tar -xzf input.tar.gz
 mkdir -p reports
+xcrun swiftc -swift-version 6 -target arm64-apple-macos14.0 UITests/Fixtures/IMEInputSourceRestorer.swift -o reports/IMEInputSourceRestorer
 xcodebuild build-for-testing -project UITests/ApexTermUITests.xcodeproj -scheme ApexTermUITests -destination 'platform=macOS,arch=arm64' -derivedDataPath outputs/ui-acceptance/RemoteDerivedData -jobs 2 ONLY_ACTIVE_ARCH=YES 2>&1 | tee reports/remote-build.log
 python3 - <<'PY'
 import hashlib, json, os, pathlib, plistlib, uuid
@@ -63,6 +64,7 @@ config = plistlib.loads(destination.read_bytes())
 for target in targets(config):
     target.setdefault('EnvironmentVariables', {}).update({key: environment[key] for key in ['APEX_UI_TEST_HOST', 'APEX_UI_TEST_USER']})
     target['EnvironmentVariables']['APEX_UI_APP_PATH'] = str(app)
+    target['EnvironmentVariables']['APEX_UI_INPUT_SOURCE_RESTORER'] = str(pathlib.Path('reports/IMEInputSourceRestorer').resolve())
     if os.environ.get('SSH_AUTH_SOCK'):
         target['EnvironmentVariables']['SSH_AUTH_SOCK'] = os.environ['SSH_AUTH_SOCK']
 destination.write_bytes(plistlib.dumps(config))

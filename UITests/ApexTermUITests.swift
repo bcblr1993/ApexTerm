@@ -1,10 +1,12 @@
 import XCTest
+import Carbon
 
 /// Drives an isolated QA host linked to the same product modules as the release.
 @MainActor
 final class ApexTermUITests: XCTestCase {
     private var app: XCUIApplication!
     private var ownedRemoteDirectory: String?
+    private var inputSourceToRestore: IMEInputSourceSelection?
 
     nonisolated override func setUpWithError() throws {
         continueAfterFailure = false
@@ -19,6 +21,17 @@ final class ApexTermUITests: XCTestCase {
             add(hierarchy)
         }
         app?.terminate()
+        if let inputSourceToRestore {
+            do {
+                try inputSourceToRestore.restore()
+                let evidence = XCTAttachment(string: inputSourceToRestore.restorationEvidence)
+                evidence.name = "restored-system-input-source-configuration"
+                evidence.lifetime = .keepAlways
+                add(evidence)
+            }
+            catch { XCTFail("Failed to restore input sources: \(error)") }
+            self.inputSourceToRestore = nil
+        }
         if let directory = ownedRemoteDirectory {
             let environment = ProcessInfo.processInfo.environment
             let host = try XCTUnwrap(environment["APEX_UI_TEST_HOST"])
@@ -68,17 +81,28 @@ final class ApexTermUITests: XCTestCase {
         add(attachment)
     }
 
-    private func clickVisibleMenuItem(_ item: XCUIElement) {
+    private func clickVisibleCenter(_ item: XCUIElement) {
         let visible = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             let rect = item.frame
             return item.exists && rect.origin.x.isFinite && rect.origin.y.isFinite
                 && rect.width.isFinite && rect.height.isFinite && rect.width > 0 && rect.height > 0
         }, object: item)
         XCTAssertEqual(XCTWaiter.wait(for: [visible], timeout: 5), .completed,
-                       "Menu item must have a visible, finite screen rectangle")
+                       "Control must have a visible, finite screen rectangle")
         // XCTest's menu click hover path can resolve an infinite point on macOS 27.
         // Click the actual visible center without invoking that hover path.
         item.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
+    }
+
+    private func activateSettingsWindow() {
+        app.activate()
+        // A persistent menu-bar popover can leave the app's AX tree disabled.
+        // Settings has no modal sheet here; Escape only dismisses that transient blocker.
+        if !app.isEnabled {
+            app.typeKey(XCUIKeyboardKey.escape, modifierFlags: [])
+            app.activate()
+        }
+        XCTAssertTrue(app.isEnabled, "Settings input must not be blocked by another menu or popover")
     }
 
     func testSearchEmptyAndRecovery() {
@@ -536,6 +560,43 @@ final class ApexTermUITests: XCTestCase {
         capture("sftp-own-fixture-deleted")
     }
 
+    func testRealSSHBuiltinPinyinCompositionAndCommit() throws {
+        let environment = ProcessInfo.processInfo.environment
+        let host = try XCTUnwrap(environment["APEX_UI_TEST_HOST"])
+        let user = try XCTUnwrap(environment["APEX_UI_TEST_USER"])
+        launch("main", extra: ["APEX_QA_REAL_HOST": host, "APEX_QA_REAL_USER": user, "APEX_QA_CONNECT": "1"])
+        XCTAssertTrue(staticText("已连接", comparison: "BEGINSWITH").waitForExistence(timeout: 30))
+        let terminal = app.textViews.firstMatch
+        XCTAssertTrue(terminal.waitForExistence(timeout: 10))
+        terminal.click()
+        let inputSource = try IMEInputSourceSelection()
+        inputSourceToRestore = inputSource
+        try inputSource.selectEnabled("com.apple.keylayout.US")
+        app.activate()
+        app.textFields.firstMatch.click()
+        terminal.click()
+        app.typeText("read -r apex_ui_ime; printf '\\nAPEX_UI_IME:%s\\n' \"$apex_ui_ime\"\n")
+        try inputSource.selectEnabled("com.apple.inputmethod.SCIM.ITABC")
+        app.textFields.firstMatch.click()
+        terminal.click()
+        XCTAssertEqual(IMEInputSourceSelection.currentIdentifier(), "com.apple.inputmethod.SCIM.ITABC")
+        let outputBeforeComposition = terminal.value as? String
+        app.typeText("zhongwen")
+        let composition = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        composition.name = "real-system-pinyin-composition-and-candidates"
+        composition.lifetime = .keepAlways
+        add(composition)
+        XCTAssertEqual(terminal.value as? String, outputBeforeComposition,
+                       "No partial Pinyin preedit may enter the remote shell before candidate commit")
+        app.typeKey(" ", modifierFlags: [])
+        app.typeKey(.return, modifierFlags: [])
+        let committed = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value CONTAINS %@", "\nAPEX_UI_IME:中文\n"), object: terminal)
+        XCTAssertEqual(XCTWaiter.wait(for: [committed], timeout: 15), .completed,
+                       "The actual system input method must commit Chinese into the real SSH session")
+        capture("real-system-pinyin-ssh-echo")
+    }
+
     func testRealSSHConfiguredHostIsMandatory() throws {
         let environment = ProcessInfo.processInfo.environment
         guard let host = environment["APEX_UI_TEST_HOST"], !host.isEmpty,
@@ -826,6 +887,23 @@ final class ApexTermUITests: XCTestCase {
         XCTAssertTrue(app.sheets.firstMatch.waitForNonExistence(timeout: 5))
     }
 
+    func testMochaSettingsTabsRemainClickable() {
+        launch("settings")
+        app.menuBars.menuBarItems["验收主题"].click()
+        clickVisibleCenter(app.menuItems["Catppuccin Mocha"])
+        for tab in ["SFTP传输", "数据备份", "通用", "终端外观", "操作习惯", "数据备份"] {
+            activateSettingsWindow()
+            let control = app.tabs[tab]
+            XCTAssertTrue(control.waitForExistence(timeout: 5))
+            clickVisibleCenter(control)
+            let selected = XCTNSPredicateExpectation(
+                predicate: NSPredicate(format: "selected == true OR value == 1 OR value == %@", "1"), object: control)
+            XCTAssertEqual(XCTWaiter.wait(for: [selected], timeout: 5), .completed,
+                           "Settings tab must actually switch: " + tab)
+            capture("mocha-settings-click-" + tab)
+        }
+    }
+
     func testAllThemesAndPagesRender() {
         launch()
         let themes = ["经典白色（默认）", "VS Code Dark Modern", "Tokyo Night", "Catppuccin Mocha", "Catppuccin Latte", "Nord", "Dracula", "One Dark Pro", "Gruvbox Dark", "Everforest", "Rosé Pine", "Solarized Light"]
@@ -834,10 +912,10 @@ final class ApexTermUITests: XCTestCase {
             app.menuBars.menuBarItems["验收主题"].click()
             let item = app.menuItems[theme]
             XCTAssertTrue(item.waitForExistence(timeout: 3), "Missing theme: \(theme)")
-            clickVisibleMenuItem(item)
+            clickVisibleCenter(item)
             for page in pages {
                 app.menuBars.menuBarItems["验收页面"].click()
-                clickVisibleMenuItem(app.menuItems[page])
+                clickVisibleCenter(app.menuItems[page])
                 XCTAssertTrue(app.windows.firstMatch.exists)
                 XCTAssertGreaterThan(app.windows.firstMatch.frame.width, 300)
                 switch page {
@@ -858,7 +936,8 @@ final class ApexTermUITests: XCTestCase {
                     for tab in ["通用", "终端外观", "操作习惯", "SFTP传输", "数据备份"] {
                         let tabButton = app.tabs[tab]
                         XCTAssertTrue(tabButton.waitForExistence(timeout: 3), "Missing settings tab: \(tab)")
-                        tabButton.click()
+                        activateSettingsWindow()
+                        clickVisibleCenter(tabButton)
                         let selected = XCTNSPredicateExpectation(predicate: NSPredicate(format: "selected == true OR value == 1 OR value == %@", "1"), object: tabButton)
                         XCTAssertEqual(XCTWaiter.wait(for: [selected], timeout: 3), .completed, "Settings tab: \(tab), value: \(tabButton.value ?? "missing")")
                         switch tab {
@@ -878,5 +957,100 @@ final class ApexTermUITests: XCTestCase {
                 capture("\(theme)-\(page)")
             }
         }
+    }
+}
+
+
+@MainActor
+final class IMEInputSourceSelection {
+    private let original: TISInputSource
+    private let originalEnabledIdentifiers: Set<String>
+    private var temporarilyEnabled: [TISInputSource] = []
+    private(set) var restorationEvidence = ""
+
+    init() throws {
+        guard let source = TISCopyCurrentKeyboardInputSource() else {
+            throw NSError(domain: "ApexTerm.IMEAcceptance", code: 2,
+                          userInfo: [NSLocalizedDescriptionKey: "The UI runner has no current system input source"])
+        }
+        original = source.takeRetainedValue()
+        originalEnabledIdentifiers = Self.enabledIdentifiers()
+    }
+
+    static func identifier(_ source: TISInputSource) -> String? {
+        guard let key = kTISPropertyInputSourceID,
+              let property = TISGetInputSourceProperty(source, key) else { return nil }
+        return Unmanaged<CFString>.fromOpaque(property).takeUnretainedValue() as String
+    }
+
+    static func currentIdentifier() -> String? {
+        guard let source = TISCopyCurrentKeyboardInputSource() else { return nil }
+        return identifier(source.takeRetainedValue())
+    }
+
+    func selectEnabled(_ identifier: String) throws {
+        guard let key = kTISPropertyInputSourceID else {
+            throw NSError(domain: "ApexTerm.IMEAcceptance", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "Required enabled input source is unavailable: " + identifier])
+        }
+        func enabledSource(_ id: String) throws -> TISInputSource {
+            guard let list = TISCreateInputSourceList([key: id] as CFDictionary, true),
+                  let object = (list.takeRetainedValue() as NSArray).firstObject else {
+                throw NSError(domain: "ApexTerm.IMEAcceptance", code: 1,
+                              userInfo: [NSLocalizedDescriptionKey: "Unavailable input source: " + id])
+            }
+            let source = object as! TISInputSource
+            if !Self.enabledIdentifiers().contains(id) {
+                let status = TISEnableInputSource(source)
+                guard status == noErr else { throw NSError(domain: NSOSStatusErrorDomain, code: Int(status)) }
+                temporarilyEnabled.append(source)
+            }
+            return source
+        }
+        if identifier == "com.apple.inputmethod.SCIM.ITABC" {
+            _ = try enabledSource("com.apple.inputmethod.SCIM")
+        }
+        let source = try enabledSource(identifier)
+        let status = TISSelectInputSource(source)
+        guard status == noErr else { throw NSError(domain: NSOSStatusErrorDomain, code: Int(status)) }
+    }
+
+    func restore() throws {
+        let status = TISSelectInputSource(original)
+        guard status == noErr else { throw NSError(domain: NSOSStatusErrorDomain, code: Int(status)) }
+        for source in temporarilyEnabled.reversed() {
+            let result = TISDisableInputSource(source)
+            guard result == noErr else { throw NSError(domain: NSOSStatusErrorDomain, code: Int(result)) }
+        }
+        temporarilyEnabled.removeAll()
+        // Verify in a fresh process: HIToolbox retains a stale mode identifier in the
+        // runner after disabling its parent, while the system creates PinyinKeyboard.
+        let originalID = try XCTUnwrap(Self.identifier(original))
+        let configuration = try JSONSerialization.data(withJSONObject: [originalID, Array(originalEnabledIdentifiers)]).base64EncodedString()
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: try XCTUnwrap(ProcessInfo.processInfo.environment["APEX_UI_INPUT_SOURCE_RESTORER"]))
+        process.arguments = [configuration]
+        let output = Pipe(), errors = Pipe()
+        process.standardOutput = output
+        process.standardError = errors
+        try process.run()
+        process.waitUntilExit()
+        let errorText = String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        guard process.terminationStatus == 0 else {
+            throw NSError(domain: "ApexTerm.IMEAcceptance", code: 3,
+                          userInfo: [NSLocalizedDescriptionKey: "Fresh input-source restoration failed: " + errorText])
+        }
+        let report = try XCTUnwrap(try JSONSerialization.jsonObject(with: output.fileHandleForReading.readDataToEndOfFile()) as? [String: Any])
+        let enabled = Set(try XCTUnwrap(report["enabled"] as? [String]))
+        restorationEvidence = "Original selected: \(originalID)\nOriginal enabled: \(originalEnabledIdentifiers.sorted())\nRestored: \(report)"
+        guard enabled == originalEnabledIdentifiers, report["selected"] as? String == originalID else {
+            throw NSError(domain: "ApexTerm.IMEAcceptance", code: 3,
+                          userInfo: [NSLocalizedDescriptionKey: "Input sources not restored: \(report)"])
+        }
+    }
+
+    private static func enabledIdentifiers() -> Set<String> {
+        guard let list = TISCreateInputSourceList(nil, false) else { return [] }
+        return Set((list.takeRetainedValue() as NSArray).compactMap { identifier($0 as! TISInputSource) })
     }
 }

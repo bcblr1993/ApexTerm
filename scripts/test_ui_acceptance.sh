@@ -22,7 +22,8 @@ finish_report() {
 trap finish_report EXIT
 git rev-parse HEAD > "$REPORT_DIR/source-commit.txt"
 cp UITests/ApexTermUITests.swift "$REPORT_DIR/ApexTermUITests.swift"
-shasum -a 256 UITests/ApexTermUITests.swift > "$REPORT_DIR/test-source-sha256.txt"
+cp UITests/Fixtures/IMEInputSourceRestorer.swift "$REPORT_DIR/IMEInputSourceRestorer.swift"
+shasum -a 256 UITests/ApexTermUITests.swift UITests/Fixtures/IMEInputSourceRestorer.swift > "$REPORT_DIR/test-source-sha256.txt"
 # Requires an unlocked macOS desktop and Xcode UI-testing permissions.
 # Failure, missing tools or denied permissions stop the release; no silent fallback.
 command -v xcodebuild >/dev/null
@@ -52,6 +53,7 @@ python3 scripts/build_macos27_verification.py --configuration Release 2>&1 | tee
 "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister" \
     -f "$ROOT_DIR/outputs/macos27/qa/Verification.app"
 STAGE=ui-test-build
+xcrun swiftc -swift-version 6 -target arm64-apple-macos14.0 UITests/Fixtures/IMEInputSourceRestorer.swift -o "$REPORT_DIR/IMEInputSourceRestorer"
 xcodebuild build-for-testing -project UITests/ApexTermUITests.xcodeproj -scheme ApexTermUITests \
     -destination 'platform=macOS,arch=arm64' -derivedDataPath outputs/ui-acceptance/DerivedData \
     -jobs 2 2>&1 | tee "$REPORT_DIR/build.log"
@@ -73,6 +75,7 @@ for target in targets:
         'APEX_UI_TEST_HOST': os.environ['APEX_UI_TEST_HOST'],
         'APEX_UI_TEST_USER': os.environ['APEX_UI_TEST_USER'],
         'APEX_UI_APP_PATH': str(pathlib.Path('outputs/macos27/qa/Verification.app').resolve()),
+        'APEX_UI_INPUT_SOURCE_RESTORER': str((reports / 'IMEInputSourceRestorer').resolve()),
     })
 # Keep alongside build products so __TESTROOT__ paths still resolve correctly.
 source.write_bytes(plistlib.dumps(config))
@@ -93,7 +96,8 @@ xcrun xcresulttool get test-results summary --path "$REPORT_DIR/UI.xcresult" --c
     > "$REPORT_DIR/summary.json"
 xcrun xcresulttool get test-results tests --path "$REPORT_DIR/UI.xcresult" --compact \
     > "$REPORT_DIR/test-cases.json"
-if ! cmp -s UITests/ApexTermUITests.swift "$REPORT_DIR/ApexTermUITests.swift"; then
+if ! cmp -s UITests/ApexTermUITests.swift "$REPORT_DIR/ApexTermUITests.swift" ||
+   ! cmp -s UITests/Fixtures/IMEInputSourceRestorer.swift "$REPORT_DIR/IMEInputSourceRestorer.swift"; then
     echo 'UI test source changed during acceptance; rerun before packaging.' >&2
     exit 1
 fi

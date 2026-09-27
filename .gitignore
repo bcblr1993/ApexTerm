@@ -47,3 +47,6 @@ outputs/
 .apexterm_sessions_backup/
 *sessions*.json
 
+
+# Python build and verification tools
+__pycache__/

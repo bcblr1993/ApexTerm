@@ -119,6 +119,36 @@ final class VMIntegrationTests: XCTestCase {
         XCTAssertEqual(cleanupProcess.terminationStatus, 0)
     }
     
+    func testVMFileOperationsPreserveLiteralNamesAndReportMissingDirectory() async throws {
+        try requireVMConfig()
+        let client = NativeSSHSession(session: vmSession)
+        let root = "/tmp/apexterm-literal-" + UUID().uuidString
+        let name = "引号' $() ; 文件.txt"
+        let original = root + "/" + name
+        let renamed = root + "/重命名' $() .txt"
+        try await client.createDirectory(remotePath: root)
+        do {
+            try await client.createFile(remotePath: original)
+            let created = try await client.listDirectory(path: root)
+            XCTAssertTrue(created.contains { $0.name == name })
+            try await client.rename(oldPath: original, newPath: renamed)
+            try await client.changePermissions(remotePath: renamed, permissions: "600")
+            let changed = try await client.listDirectory(path: root)
+            XCTAssertTrue(changed.contains { $0.path == renamed && $0.permissionString == "-rw-------" })
+            try await client.removeFile(remotePath: renamed)
+            let empty = try await client.listDirectory(path: root)
+            XCTAssertTrue(empty.isEmpty)
+            do {
+                _ = try await client.listDirectory(path: root + "/missing")
+                XCTFail("Missing directories must surface a failure instead of an empty folder")
+            } catch { XCTAssertNotEqual((error as NSError).code, 0) }
+            try await client.removeDirectory(remotePath: root, recursive: false)
+        } catch {
+            try? await client.removeDirectory(remotePath: root, recursive: true)
+            throw error
+        }
+    }
+
     // MARK: - Test 3: Real SSH Darwin PTY Interactive Session
     func testVMRealSSHPTYInteractiveSession() async throws {
         try requireVMConfig()

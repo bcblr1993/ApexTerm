@@ -21,6 +21,44 @@ final class SFTPOperationsTests: XCTestCase {
         mockClient = MockSSHSession(session: session)
     }
     
+    func testCancellingNativeTransferStopsItsProcess() async throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        process.arguments = ["5"]
+        let task = Task { try await NativeSSHSession.runTransferProcess(process) }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while !process.isRunning && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertTrue(process.isRunning, "The transfer process must start before testing cancellation")
+        task.cancel()
+        do { try await task.value; XCTFail("Cancelled copy must not report success") }
+        catch { XCTAssertTrue(error is CancellationError) }
+        XCTAssertFalse(process.isRunning)
+        XCTAssertEqual(process.terminationReason, .uncaughtSignal)
+    }
+
+    func testRemotePermissionsAreParsedAndDisplayedIncludingSpecialBits() {
+        for (symbolic, mode): (String, UInt32) in [("-rw-------", 0o600), ("drwxr-xr-x", 0o755), ("-rwsr-Sr-t", 0o7745), ("drwxrwxrwt+", 0o1777)] {
+            XCTAssertEqual(NativeSSHSession.permissionMode(from: symbolic), mode)
+            let item = SFTPItem(name: "file", path: "/tmp/file", isDirectory: symbolic.hasPrefix("d"), permissions: mode)
+            XCTAssertEqual(item.permissionString, String(symbolic.prefix(10)))
+        }
+    }
+
+    func testRemotePathQuotingPreservesShellCharactersLiterally() throws {
+        for path in ["/tmp/a b", "/tmp/引号'与\"", "/tmp/$(printf expanded);`printf expanded`", "/tmp/line\nend", ""] {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/sh")
+            process.arguments = ["-c", "printf '%s' " + NativeSSHSession.quoteRemotePath(path)]
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            try process.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            XCTAssertEqual(process.terminationStatus, 0)
+            XCTAssertEqual(String(decoding: data, as: UTF8.self), path)
+        }
+    }
+
     /// Test 1: createDirectory and removeDirectory operations
     func testCreateAndRemoveDirectory() async throws {
         let initial = try await mockClient.listDirectory(path: "/root")

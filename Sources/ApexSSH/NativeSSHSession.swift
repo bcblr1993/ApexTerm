@@ -511,8 +511,8 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         let sshpass = self.sshpassExecutablePath
         // Ensure trailing slash so that symbolic links pointing to directories are properly traversed by ls
         let targetPath = path.hasSuffix("/") ? path : "\(path)/"
-        let escapedPath = targetPath.replacingOccurrences(of: "\"", with: "\\\"")
-        let cmd = "ls -la --time-style=+%s \"\(escapedPath)\" 2>/dev/null || ls -la \"\(escapedPath)\""
+        let quotedPath = Self.quoteRemotePath(targetPath)
+        let cmd = "ls -la --time-style=+%s \(quotedPath) 2>/dev/null || ls -la \(quotedPath)"
         let ctrlArgs = [
             "-o", "ControlMaster=auto",
             "-o", "ControlPath=\(controlSocketPath)",
@@ -549,8 +549,14 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         
+        guard process.terminationStatus == 0 else {
+            let errorData = errPipe.fileHandleForReading.readDataToEndOfFile()
+            let message = String(decoding: errorData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            throw NSError(domain: "ApexSSH", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey:
+                message.isEmpty ? "无法读取远程目录（退出码 \(process.terminationStatus)）" : String(message.prefix(512))])
+        }
         guard let output = String(data: data, encoding: .utf8) else { return [] }
-        
+
         var items: [SFTPItem] = []
         let lines = output.components(separatedBy: "\n")
         for line in lines {
@@ -592,6 +598,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
                 isDirectory: isDir,
                 isSymlink: isLink,
                 size: size,
+                permissions: Self.permissionMode(from: perms),
                 modificationDate: modDate
             ))
         }
@@ -627,8 +634,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         let errPipe = Pipe()
         process.standardOutput = outPipe
         process.standardError = errPipe
-        try process.run()
-        process.waitUntilExit()
+        try await Self.runTransferProcess(process)
         guard process.terminationStatus == 0 else {
             let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
             let errMsg = String(data: errData, encoding: .utf8) ?? "scp download failed"
@@ -666,8 +672,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         let errPipe = Pipe()
         process.standardOutput = outPipe
         process.standardError = errPipe
-        try process.run()
-        process.waitUntilExit()
+        try await Self.runTransferProcess(process)
         guard process.terminationStatus == 0 else {
             let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
             let errMsg = String(data: errData, encoding: .utf8) ?? "scp upload failed"
@@ -676,6 +681,20 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         progress(1.0)
     }
     
+    /// Cancel the underlying copy process as well as its Swift task.
+    static func runTransferProcess(_ process: Process) async throws {
+        try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            try process.run()
+            // A cancellation can arrive between the first check and process launch.
+            if Task.isCancelled && process.isRunning { process.terminate() }
+            process.waitUntilExit()
+            try Task.checkCancellation()
+        } onCancel: {
+            if process.isRunning { process.terminate() }
+        }
+    }
+
     private func executeRemoteCommand(_ cmd: String) async throws {
         await resolvePasswordIfNeeded()
         let process = Process()
@@ -720,36 +739,48 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         }
     }
     
+    static func permissionMode(from symbolic: String) -> UInt32 {
+        let chars = Array(symbolic.dropFirst().prefix(9))
+        guard chars.count == 9 else { return 0 }
+        var mode: UInt32 = 0
+        for (index, char) in chars.enumerated() {
+            if char == "r" || char == "w" || char == "x" || char == "s" || char == "t" {
+                mode |= 1 << (8 - index)
+            }
+        }
+        if chars[2] == "s" || chars[2] == "S" { mode |= 0o4000 }
+        if chars[5] == "s" || chars[5] == "S" { mode |= 0o2000 }
+        if chars[8] == "t" || chars[8] == "T" { mode |= 0o1000 }
+        return mode
+    }
+
+    /// Quote a remote shell argument without expanding filenames as shell syntax.
+    static func quoteRemotePath(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
+    }
+
     public func removeFile(remotePath: String) async throws {
-        let escaped = remotePath.replacingOccurrences(of: "\"", with: "\\\"")
-        try await executeRemoteCommand("rm -f \"\(escaped)\"")
+        try await executeRemoteCommand("rm -f \(Self.quoteRemotePath(remotePath))")
     }
-    
+
     public func removeDirectory(remotePath: String, recursive: Bool) async throws {
-        let escaped = remotePath.replacingOccurrences(of: "\"", with: "\\\"")
-        let cmd = recursive ? "rm -rf \"\(escaped)\"" : "rmdir \"\(escaped)\""
-        try await executeRemoteCommand(cmd)
+        let command = recursive ? "rm -rf" : "rmdir"
+        try await executeRemoteCommand("\(command) \(Self.quoteRemotePath(remotePath))")
     }
-    
+
     public func createDirectory(remotePath: String) async throws {
-        let escaped = remotePath.replacingOccurrences(of: "\"", with: "\\\"")
-        try await executeRemoteCommand("mkdir -p \"\(escaped)\"")
+        try await executeRemoteCommand("mkdir -p \(Self.quoteRemotePath(remotePath))")
     }
-    
+
     public func createFile(remotePath: String) async throws {
-        let escaped = remotePath.replacingOccurrences(of: "\"", with: "\\\"")
-        try await executeRemoteCommand("touch \"\(escaped)\"")
+        try await executeRemoteCommand("touch \(Self.quoteRemotePath(remotePath))")
     }
-    
+
     public func rename(oldPath: String, newPath: String) async throws {
-        let escOld = oldPath.replacingOccurrences(of: "\"", with: "\\\"")
-        let escNew = newPath.replacingOccurrences(of: "\"", with: "\\\"")
-        try await executeRemoteCommand("mv \"\(escOld)\" \"\(escNew)\"")
+        try await executeRemoteCommand("mv \(Self.quoteRemotePath(oldPath)) \(Self.quoteRemotePath(newPath))")
     }
 
     public func changePermissions(remotePath: String, permissions: String) async throws {
-        let escaped = remotePath.replacingOccurrences(of: "\"", with: "\\\"")
-        let permEscaped = permissions.replacingOccurrences(of: "\"", with: "\\\"")
-        try await executeRemoteCommand("chmod \(permEscaped) \"\(escaped)\"")
+        try await executeRemoteCommand("chmod \(Self.quoteRemotePath(permissions)) \(Self.quoteRemotePath(remotePath))")
     }
 }

@@ -65,6 +65,22 @@ public final class TransferManager: ObservableObject {
         return taskId
     }
     
+    /// Keep existing downloads and queued destinations intact when names collide.
+    public func availableDownloadURL(in directory: URL, fileName: String) -> URL {
+        let original = directory.appendingPathComponent(fileName)
+        let stem = original.deletingPathExtension().lastPathComponent
+        let ext = original.pathExtension
+        let reserved = Set(tasks.filter { $0.status == .queued || $0.status == .transferring }.map { $0.localURL.standardizedFileURL.path })
+        var candidate = original
+        var index = 2
+        while FileManager.default.fileExists(atPath: candidate.path) || reserved.contains(candidate.standardizedFileURL.path) {
+            let name = "\(stem) (\(index))" + (ext.isEmpty ? "" : ".\(ext)")
+            candidate = directory.appendingPathComponent(name)
+            index += 1
+        }
+        return candidate
+    }
+
     /// Enqueue a download task
     @discardableResult
     public func enqueueDownload(
@@ -220,6 +236,7 @@ public final class TransferManager: ObservableObject {
                 }
             }
             
+            try Task.checkCancellation()
             if let finalIdx = tasks.firstIndex(where: { $0.id == taskId }) {
                 tasks[finalIdx].transferredBytes = tasks[finalIdx].totalBytes
                 tasks[finalIdx].status = .completed
@@ -268,6 +285,7 @@ public final class TransferManager: ObservableObject {
                 }
             }
             
+            try Task.checkCancellation()
             if let finalIdx = tasks.firstIndex(where: { $0.id == taskId }) {
                 tasks[finalIdx].transferredBytes = tasks[finalIdx].totalBytes
                 tasks[finalIdx].status = .completed
@@ -293,7 +311,7 @@ public final class TransferManager: ObservableObject {
     }
     
     private func updateProgress(taskId: UUID, fraction: Double) {
-        guard let idx = tasks.firstIndex(where: { $0.id == taskId }) else { return }
+        guard let idx = tasks.firstIndex(where: { $0.id == taskId }), tasks[idx].status == .transferring else { return }
         let total = tasks[idx].totalBytes
         let transferred = total > 0 ? Int64(Double(total) * fraction) : Int64(fraction * 100)
         tasks[idx].transferredBytes = transferred

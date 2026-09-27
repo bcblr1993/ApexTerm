@@ -5,6 +5,24 @@ import XCTest
 final class TransferManagerTests: XCTestCase {
     
     @MainActor
+    func testDuplicateDownloadNamesPreserveExistingAndQueuedFiles() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let original = directory.appendingPathComponent("payload.bin")
+        let content = Data("existing data".utf8)
+        try content.write(to: original)
+        let manager = TransferManager()
+        let second = manager.availableDownloadURL(in: directory, fileName: "payload.bin")
+        XCTAssertEqual(second.lastPathComponent, "payload (2).bin")
+        let session = MockSSHSession(session: Session(name: "test", host: "192.0.2.1", username: "demo"))
+        let id = manager.enqueueDownload(session: session, remotePath: "/payload.bin", localURL: second, totalBytes: 1)
+        XCTAssertEqual(manager.availableDownloadURL(in: directory, fileName: "payload.bin").lastPathComponent, "payload (3).bin")
+        manager.cancelTask(id: id)
+        XCTAssertEqual(try Data(contentsOf: original), content)
+    }
+
+    @MainActor
     func testTransferTaskFormatting() {
         let task = TransferTask(
             fileName: "archive.tar.gz",

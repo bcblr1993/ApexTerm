@@ -112,19 +112,12 @@ public struct TransferDrawer: View {
                     }
                 }
                 .background(ApexStyle.surface)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12)
-                        .stroke(ApexStyle.secondary.opacity(0.2), lineWidth: 1)
-                )
-                .shadow(color: Color.black.opacity(0.18), radius: 12, x: 0, y: 4)
-                .padding(.horizontal, 16)
-                .padding(.bottom, 6)
+
                 .transition(.asymmetric(insertion: .move(edge: .bottom).combined(with: .opacity), removal: .opacity))
             }
             
             // Collapsed Floating Pill Trigger
-            if manager.activeCount > 0 || !manager.tasks.isEmpty {
+            if !isExpanded && (manager.activeCount > 0 || !manager.tasks.isEmpty) {
                 Button {
                     withAnimation(.spring(duration: 0.25)) { isExpanded.toggle() }
                 } label: {

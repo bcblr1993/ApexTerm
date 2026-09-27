@@ -31,11 +31,11 @@ final class TerminalFindAndURLTests: XCTestCase {
         }
         let terminal = try XCTUnwrap(findTerminal(host))
         XCTAssertTrue(window.makeFirstResponder(pathField))
-        let pathResponder = try XCTUnwrap(window.firstResponder)
+        XCTAssertTrue(window.firstResponder === pathField || pathField.currentEditor() === window.firstResponder)
         host.rootView = TerminalRepresentable(ringBuffer: buffer, isFocused: true, onInput: { _ in })
         host.layoutSubtreeIfNeeded()
         RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
-        XCTAssertTrue(window.firstResponder === pathResponder, "Rendering updates must not steal file/path focus")
+        XCTAssertTrue(window.firstResponder === pathField || pathField.currentEditor() === window.firstResponder, "Rendering updates must leave the path control editing; field-editor instance identity may change")
 
         host.rootView = TerminalRepresentable(ringBuffer: buffer, isFocused: false, onInput: { _ in })
         host.layoutSubtreeIfNeeded()

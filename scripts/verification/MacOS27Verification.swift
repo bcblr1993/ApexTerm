@@ -3,6 +3,7 @@ import AppKit
 import ApexCore
 import ApexSSH
 import ApexUI
+import ApexTerminal
 
 @main
 struct ThemeVerificationApp: App {
@@ -22,10 +23,15 @@ struct ThemeVerificationApp: App {
         importConfigURL = directory.appendingPathComponent("ssh-config")
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try? "Host qa-demo\n    HostName 192.0.2.10\n    User demo\n".write(to: importConfigURL, atomically: true, encoding: .utf8)
-        let session = Session(name: "主题验收 · 演示", host: "192.0.2.10", username: "demo", agentlessMonitorEnabled: ProcessInfo.processInfo.environment["APEX_QA_MONITOR"] != "0")
+        let environment = ProcessInfo.processInfo.environment
+        let realHost = environment["APEX_QA_REAL_HOST"]
+        let session = Session(name: "主题验收 · 演示", host: realHost ?? "192.0.2.10", username: environment["APEX_QA_REAL_USER"] ?? "demo", authMethod: .password(keychainRef: ""), agentlessMonitorEnabled: environment["APEX_QA_MONITOR"] != "0")
         store.sessions = [session]
-        let client: SSHSessionProtocol = ProcessInfo.processInfo.environment["APEX_QA_FILES"].map { QAFileSession(session: session, mode: $0) } ?? MockSSHSession(session: session)
+        let client: SSHSessionProtocol = realHost != nil
+            ? NativeSSHSession(session: session)
+            : environment["APEX_QA_FILES"].map { QAFileSession(session: session, mode: $0) } ?? MockSSHSession(session: session)
         tab = TerminalTabItem(session: session, sshClient: client)
+        if let remotePath = environment["APEX_QA_REMOTE_PATH"] { tab.currentRemotePath = remotePath }
         _tabs = State(initialValue: [tab])
         _selectedID = State(initialValue: tab.id)
         _selectedSession = State(initialValue: session)
@@ -89,7 +95,15 @@ struct ThemeVerificationApp: App {
                 if let delay = ProcessInfo.processInfo.environment["APEX_QA_ACTIVATE_DELAY"].flatMap(Double.init) {
                     Task { @MainActor in
                         try? await Task.sleep(for: .seconds(delay))
-                        NSApplication.shared.windows.first(where: { $0.isVisible && $0.contentView != nil })?.makeKeyAndOrderFront(nil)
+                        if let window = NSApplication.shared.windows.first(where: { $0.isVisible && $0.contentView != nil }) {
+                            window.makeKeyAndOrderFront(nil)
+                            func terminal(in view: NSView) -> NativeTerminalView? {
+                                if let terminal = view as? NativeTerminalView { return terminal }
+                                for child in view.subviews { if let result = terminal(in: child) { return result } }
+                                return nil
+                            }
+                            if let content = window.contentView, let terminal = terminal(in: content) { window.makeFirstResponder(terminal) }
+                        }
                         NSApplication.shared.activate(ignoringOtherApps: true)
                     }
                 }

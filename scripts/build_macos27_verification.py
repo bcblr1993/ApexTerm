@@ -4,6 +4,7 @@ import argparse
 import glob
 import plistlib
 import subprocess
+import shutil
 from pathlib import Path
 
 parser = argparse.ArgumentParser()
@@ -15,6 +16,23 @@ root = Path(__file__).resolve().parent.parent
 if not args.name.replace('-', '').isalnum():
     parser.error('Use an alphanumeric app name')
 app = root / 'outputs/macos27/qa' / (args.name + '.app')
+# Old generated QA bundles are disposable; running apps and their unsaved UI state stay intact.
+running = [line.strip() for line in subprocess.check_output(['ps', '-axo', 'comm='], text=True).splitlines()]
+for previous in app.parent.glob('*.app'):
+    prefix = str(previous) + '/'
+    active = any(executable.startswith(prefix) for executable in running)
+    if previous == app and active:
+        parser.error('This QA app is running; close it before rebuilding the same bundle')
+    if previous == app or active or previous.is_symlink():
+        continue
+    metadata = previous / 'Contents/Info.plist'
+    try:
+        with metadata.open('rb') as file:
+            info = plistlib.load(file)
+        if str(info.get('CFBundleIdentifier', '')).startswith('com.apexterm.qa.') and info.get('CFBundleExecutable') == 'Verification':
+            shutil.rmtree(previous)
+    except (OSError, plistlib.InvalidFileException):
+        continue
 (app / 'Contents/MacOS').mkdir(parents=True, exist_ok=True)
 modules_root = root / 'outputs/macos27/baseline/source' if args.baseline else root
 objects = []

@@ -32,6 +32,7 @@ public struct TerminalRepresentable: NSViewRepresentable {
     
     public func makeNSView(context: Context) -> NativeTerminalScrollView {
         let scrollView = NativeTerminalScrollView()
+        scrollView.requestsInitialFocus = isFocused
         scrollView.terminalView.onInput = onInput
         scrollView.terminalView.ringBuffer = ringBuffer
         scrollView.terminalView.isCopyOnSelectEnabled = isCopyOnSelectEnabled
@@ -51,8 +52,12 @@ public struct TerminalRepresentable: NSViewRepresentable {
         
         // Auto-focus if this pane is focused and sync initial PTY window size
         DispatchQueue.main.async {
-            if isFocused {
-                scrollView.window?.makeFirstResponder(scrollView.terminalView)
+            if isFocused, let window = scrollView.window {
+                // Initial mounting can finish after the user starts editing a path or search field.
+                // Do not let this deferred first focus overwrite an existing editing responder.
+                let isEditingControl = (window.firstResponder as? NSTextView)?.isFieldEditor == true
+                    || window.firstResponder is NSTextField
+                if !isEditingControl { window.makeFirstResponder(scrollView.terminalView) }
             }
             scrollView.terminalView.notifyDimensionsChangedIfNeeded()
             scrollView.terminalView.scrollToBottom(forceLayout: true)
@@ -276,6 +281,7 @@ public final class TerminalFindBarView: NSView, NSTextFieldDelegate {
 public final class NativeTerminalScrollView: NSScrollView {
     public let terminalView = NativeTerminalView()
     public let searchBarOverlay = TerminalFindBarView()
+    var requestsInitialFocus = false
     
     override public init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -286,6 +292,13 @@ public final class NativeTerminalScrollView: NSScrollView {
         self.init(frame: .zero)
     }
     
+    override public func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if requestsInitialFocus, let window, !window.isVisible {
+            window.initialFirstResponder = terminalView
+        }
+    }
+
     private func setupScrollView() {
         self.hasVerticalScroller = true
         self.hasHorizontalScroller = false

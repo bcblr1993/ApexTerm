@@ -33,6 +33,8 @@ final class QAProcessTelemetry {
         samples.append(["elapsed": ProcessInfo.processInfo.systemUptime - started,
                         "cpuSeconds": cpu, "rssMB": result == KERN_SUCCESS ? Double(info.resident_size) / 1_048_576 : 0,
                         "keyWindow": windows.contains { $0.isKeyWindow },
+                        "appActive": NSApplication.shared.isActive,
+                        "firstResponderClass": NSApplication.shared.keyWindow?.firstResponder.map { String(describing: type(of: $0)) } ?? "none",
                         "windowCount": windows.count])
         let path = ProcessInfo.processInfo.environment["APEX_QA_TELEMETRY"]
             ?? qaRepositoryRoot.appendingPathComponent("outputs/macos27/qa/telemetry-\(Bundle.main.bundleIdentifier ?? "app").json").path

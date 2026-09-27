@@ -23,10 +23,8 @@ if [ "$(git branch --show-current)" != "master" ] && [ "$(git branch --show-curr
     echo "❌ Release must be built from master or main."
     exit 1
 fi
-# Preserve previous packages for rollback instead of deleting them.
-if [ -d "${APP_DIR}" ]; then
-    mv "${APP_DIR}" "${BUILD_DIR}/ApexTerm-previous-$(date +%Y%m%d%H%M%S).app"
-fi
+# Keep only the current build outputs; old packages must not accumulate on disk.
+python3 scripts/prune_build_artifacts.py
 
 echo "🧪 [Pre-Release Quality Gate] Executing Tart VM acceptance and automated test gate..."
 if ! ./scripts/test_vm_acceptance.sh; then
@@ -160,6 +158,8 @@ if [ -d "/Applications" ]; then
         BACKUP_DIR="${BUILD_DIR}/installed-backup-$(date +%Y%m%d%H%M%S)"
         mkdir -p "${BACKUP_DIR}"
         mv "/Applications/ApexTerm.app" "${BACKUP_DIR}/ApexTerm.app"
+        # The previous installed app is retained once for rollback, without keeping older generations.
+        python3 scripts/prune_build_artifacts.py --installed-backups-only
     fi
     cp -R "${APP_DIR}" "/Applications/ApexTerm.app"
 fi

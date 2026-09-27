@@ -40,15 +40,16 @@ public struct SFTPItem: Identifiable, Sendable, Codable, Equatable, Hashable {
     
     public var permissionString: String {
         let typeChar = isDirectory ? "d" : (isSymlink ? "l" : "-")
-        func rwx(_ octal: UInt32) -> String {
+        func rwx(_ octal: UInt32, special: Bool, sticky: Bool = false) -> String {
             let r = (octal & 4) != 0 ? "r" : "-"
             let w = (octal & 2) != 0 ? "w" : "-"
-            let x = (octal & 1) != 0 ? "x" : "-"
+            let executable = (octal & 1) != 0
+            let x = special ? (sticky ? (executable ? "t" : "T") : (executable ? "s" : "S")) : (executable ? "x" : "-")
             return "\(r)\(w)\(x)"
         }
-        let user = rwx((permissions >> 6) & 7)
-        let group = rwx((permissions >> 3) & 7)
-        let others = rwx(permissions & 7)
+        let user = rwx((permissions >> 6) & 7, special: permissions & 0o4000 != 0)
+        let group = rwx((permissions >> 3) & 7, special: permissions & 0o2000 != 0)
+        let others = rwx(permissions & 7, special: permissions & 0o1000 != 0, sticky: true)
         return "\(typeChar)\(user)\(group)\(others)"
     }
 }

@@ -8,6 +8,7 @@ final class QAFileSession: SSHSessionProtocol {
     private let base: MockSSHSession
     private let mode: String
     private let calls = QAFileCallLog()
+    private let retryFailure = QAOnceFailure()
     var connectionState: SSHConnectionState { base.connectionState }
     init(session: Session, mode: String) {
         self.session = session
@@ -24,6 +25,11 @@ final class QAFileSession: SSHSessionProtocol {
         switch mode {
         case "empty": return []
         case "failure": throw NSError(domain: "ApexTerm.QA", code: 13, userInfo: [NSLocalizedDescriptionKey: "无法读取目录：演示权限不足。请检查目录权限或重新连接。"])
+        case "failure-once":
+            if await retryFailure.consume() {
+                throw NSError(domain: "ApexTerm.QA", code: 54, userInfo: [NSLocalizedDescriptionKey: "无法读取目录：受控连接中断，请重试。"])
+            }
+            return try await base.listDirectory(path: path)
         case "loading":
             try await Task.sleep(for: .seconds(8))
             return try await base.listDirectory(path: path)
@@ -47,6 +53,14 @@ final class QAFileSession: SSHSessionProtocol {
         #if !APEX_BASELINE
         base.setStateChangeHandler(handler)
         #endif
+    }
+}
+
+private actor QAOnceFailure {
+    private var pending = true
+    func consume() -> Bool {
+        defer { pending = false }
+        return pending
     }
 }
 

@@ -157,6 +157,21 @@ final class ApexTermUITests: XCTestCase {
         capture("sftp-filter-escape-restored")
     }
 
+    func testSFTPDirectoryFailureRetryRecovers() {
+        launch("main", extra: ["APEX_QA_FILES": "failure-once", "APEX_QA_CONNECT": "1"])
+        let failure = app.staticTexts["无法读取远程文件"]
+        XCTAssertTrue(failure.waitForExistence(timeout: 10))
+        let retry = app.buttons["重试"]
+        XCTAssertTrue(retry.isHittable)
+        XCTAssertFalse(app.staticTexts["nginx.conf"].exists)
+        capture("sftp-before-retry")
+        retry.click()
+        XCTAssertTrue(app.staticTexts["nginx.conf"].waitForExistence(timeout: 10))
+        XCTAssertFalse(failure.exists)
+        XCTAssertFalse(retry.exists)
+        capture("sftp-retry-restored")
+    }
+
     func testRealSSHConfiguredHostIsMandatory() throws {
         let environment = ProcessInfo.processInfo.environment
         guard let host = environment["APEX_UI_TEST_HOST"], !host.isEmpty,

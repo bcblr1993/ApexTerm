@@ -57,7 +57,10 @@ final class TerminalFindAndURLTests: XCTestCase {
         let terminal = NativeTerminalScrollView(frame: container.bounds)
         terminal.requestsInitialFocus = true
         container.addSubview(terminal)
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+        let focusDeadline = Date(timeIntervalSinceNow: 2)
+        while window.firstResponder !== terminal.terminalView && Date() < focusDeadline {
+            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.01))
+        }
         XCTAssertTrue(window.firstResponder === terminal.terminalView)
 
         terminal.removeFromSuperview()

@@ -156,3 +156,9 @@
 - 导入弹窗取消关闭，会话仍为 1 台；未执行导入，不保存真实配置内容。
 - 来源 6bd4ba1，候选 2026092705 完整 VM/测试/8 Release 基准门禁及零 Swift 警告通过，应用与 DMG 公证票据通过，最终哈希通过。VM assessments enabled，严格验签/票据/Gatekeeper accepted，Notarized Developer ID；实际新路径 /private/tmp/apexterm-candidate.Hh2M3O/，PID 6794 启动。证据 build-fullscreen-candidate.log 与 candidate/vm-fullscreen-install.log。
 - 整体剩余项目保持未完成，不把本次全屏验证扩展为全部窗口矩阵通过。
+
+
+## 云端焦点测试复查
+
+- CI 36292548032 为 failure，失败在 testTerminalMountedInVisibleWindowGetsFocusWithoutStealingFieldEditing 的自动聚焦断言；不是全屏路由断言。证据 ci-fullscreen-failed.log。本地与 VM 通过不替代本次 CI 失败，最新候选整体 CI 门禁仍待恢复。
+- 将固定 50ms 等待改为最多 2 秒等待真实终端焦点条件，保留自动聚焦断言。tests-focus-ci-wait.log 8 项通过；这是排查异步调度的修复尝试，须由云端结果确认，未声称根因已证实。产品二进制未改变，候选不需因测试变更重新打包。

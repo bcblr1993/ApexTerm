@@ -452,6 +452,7 @@ final class ApexTermUITests: XCTestCase {
             return
         }
         launch("main", extra: ["APEX_QA_REAL_HOST": host, "APEX_QA_REAL_USER": user, "APEX_QA_CONNECT": "1"])
+        XCTAssertTrue(app.staticTexts["已连接"].waitForExistence(timeout: 30), "Real SSH must reach connected state before typing")
         let terminal = app.textViews.firstMatch
         XCTAssertTrue(terminal.waitForExistence(timeout: 10))
         terminal.click()

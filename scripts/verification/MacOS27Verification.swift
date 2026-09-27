@@ -272,6 +272,16 @@ struct ThemeVerificationApp: App {
                     Button(theme.rawValue) { settings.themePreset = theme }
                 }
             }
+            if ProcessInfo.processInfo.environment["APEX_QA_UI_RUN_ID"] != nil {
+                CommandMenu("验收操作") {
+                    Button("断开测试终端") {
+                        Task { @MainActor in
+                            await tab.sshClient.disconnect()
+                            tab.connectionState = tab.sshClient.connectionState
+                        }
+                    }
+                }
+            }
         }
     }
     @MainActor

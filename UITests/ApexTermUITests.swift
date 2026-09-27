@@ -244,6 +244,27 @@ final class ApexTermUITests: XCTestCase {
         capture("terminal-split-closed")
     }
 
+    func testTerminalDisconnectedReconnectRestoresInput() {
+        launch("main", extra: ["APEX_QA_CONNECT": "1"])
+        XCTAssertTrue(app.staticTexts["已连接"].waitForExistence(timeout: 10))
+        app.menuBars.menuBarItems["验收操作"].click()
+        app.menuItems["断开测试终端"].click()
+        XCTAssertTrue(app.staticTexts["会话已断开"].waitForExistence(timeout: 5))
+        let reconnect = app.buttons["重新连接 (⌘R)"]
+        XCTAssertTrue(reconnect.isHittable)
+        capture("terminal-disconnected")
+        reconnect.click()
+        XCTAssertTrue(app.staticTexts["已连接"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.staticTexts["会话已断开"].exists)
+        XCTAssertFalse(reconnect.exists)
+        let terminal = app.textViews.firstMatch
+        terminal.click()
+        terminal.typeText("UI_RECONNECTED_INPUT")
+        let input = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "UI_RECONNECTED_INPUT"), object: terminal)
+        XCTAssertEqual(XCTWaiter.wait(for: [input], timeout: 5), .completed)
+        capture("terminal-reconnected-input")
+    }
+
     func testSSHConfigImportSelectionAndDuplicateRecovery() {
         launch("import")
         let selected = app.buttons["导入选中的 1 台主机"]

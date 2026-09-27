@@ -13,6 +13,7 @@ final class QAProcessTelemetry {
     private let sampleLimit = 3600
     private let started = ProcessInfo.processInfo.systemUptime
     func start() {
+        guard ProcessInfo.processInfo.environment["APEX_QA_DISABLE_TELEMETRY"] != "1" else { return }
         guard timer == nil else { return }
         sample()
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in

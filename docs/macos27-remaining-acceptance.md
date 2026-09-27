@@ -88,3 +88,11 @@ SFTP路径同步修正：currentPath变化时，路径框未聚焦或输入仍�
 更新失败sheet视觉复核：update-failure-sheet.jpeg中标题、错误文案及关闭/重试按钮完整可见，无裁切；当前一次截图不覆盖12主题或激活/非激活全部组合。更新检查5项测试再次通过（update-tests-current.log），覆盖注入HTTP503、网络错误、无效响应及请求去重；这是受控fetch测试，非真实服务器故障。sheet打开时CmdQ未退出，Escape关闭后CmdQ exit0，故正常退出证据明确限定关闭模态之后。
 
 2716指定实体机分发验证：通过SSH/SCP将tar放入192.168.50.226独立/tmp/apexterm-candidate-2716.tV7qYPiM，远端SHA256与本地清单一致，解包版本2026092716，严格深度验签通过。该机器Gatekeeper为assessments enabled，实际spctl接受Notarized Developer ID（candidate/physical-226-2716-verification.log与proof.json）。未替换用户Applications，未启动远端GUI；此证据不覆盖实际安装后的界面与完整流程。
+
+2716实体机启动smoke：确认bundle ID com.apexterm.candidate对应独立会话目录；通过SSH启动实际签名可执行文件，PID51046存活5秒，随后仅终止本轮测试进程，返回-15并核对进程消失（candidate/physical-226-2716-launch.json）。证明能启动及短时存活，不证明远端窗口内容、正常CmdQ退出或完整GUI验收。
+
+进程外RSS对照启动：新增sample_process_memory.py以ps在外部逐行写JSONL、不保留样本，并检查进程启动身份；真实10秒负载加30秒退出等待exit0，内部telemetry文件未生成（soak/external-short-result.json）。当前1800秒对照PID70907、exec85191运行中，禁用QA内部采样，已观察真实输入/传输与新progress，external-long-memory.jsonl持续写入。尚未完成，不将当前RSS或初始样本判为长期趋势通过。
+
+IME静态审计线索：TerminalViewBridge.swift的setMarkedText只设置currentMarkedText/currentMarkedRange；全文件引用搜索未见组合文本绘制，draw仅super与光标，markedRange按已有textStorage尾部减组合长度返回。此为需要真实输入法验证的潜在组合阶段缺陷，不能用insertText提交UTF8正确代替组合可见性和候选位置验收。长测期间未修改产品绘制代码，避免改变当前对照条件。
+
+组合输入回调新增2项回归测试通过：预编辑不发送远端字节且不覆盖输出、候选提交中文/emoji仅发送一次UTF8、丢弃组合不发送输入（ime-composition-tests.log）。不覆盖实际系统输入法、候选定位或组合文本可见性，markedRange静态线索仍未解决。本轮短时swift测试与进程外长测并行发生，后续内存结果须记录此环境干扰，不宣称全程完全空闲。

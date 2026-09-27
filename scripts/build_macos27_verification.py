@@ -18,6 +18,12 @@ if not args.name.replace('-', '').isalnum():
 app = root / 'outputs/macos27/qa' / (args.name + '.app')
 # Old generated QA bundles are disposable; running apps and their unsaved UI state stay intact.
 running = [line.strip() for line in subprocess.check_output(['ps', '-axo', 'comm='], text=True).splitlines()]
+qa_prefixes = (str(app.parent) + '/', str(app.parent.relative_to(root)) + '/')
+active_qa = [executable for executable in running
+             if executable.startswith(qa_prefixes)
+             and executable.endswith('/Contents/MacOS/Verification')]
+if active_qa:
+    parser.error('A QA app is already running; quit it before building another verification bundle')
 for previous in app.parent.glob('*.app'):
     prefix = str(previous) + '/'
     active = any(executable.startswith(prefix) for executable in running)

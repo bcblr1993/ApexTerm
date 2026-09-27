@@ -9,6 +9,8 @@ let qaRepositoryRoot: URL = (0..<4).reduce(Bundle.main.bundleURL) { url, _ in ur
 final class QAProcessTelemetry {
     private var timer: Timer?
     private var samples: [[String: Any]] = []
+    private var totalSampleCount = 0
+    private let sampleLimit = 3600
     private let started = ProcessInfo.processInfo.systemUptime
     func start() {
         guard timer == nil else { return }
@@ -30,12 +32,16 @@ final class QAProcessTelemetry {
             }
         }
         let windows = NSApplication.shared.windows.filter { $0.isVisible && $0.contentView != nil }
+        totalSampleCount += 1
         samples.append(["elapsed": ProcessInfo.processInfo.systemUptime - started,
+                        "sampleOrdinal": totalSampleCount,
                         "cpuSeconds": cpu, "rssMB": result == KERN_SUCCESS ? Double(info.resident_size) / 1_048_576 : 0,
                         "keyWindow": windows.contains { $0.isKeyWindow },
                         "appActive": NSApplication.shared.isActive,
                         "firstResponderClass": NSApplication.shared.keyWindow?.firstResponder.map { String(describing: type(of: $0)) } ?? "none",
                         "windowCount": windows.count])
+        // Retain a full 30-minute acceptance run while bounding longer diagnostics.
+        if samples.count > sampleLimit { samples.removeFirst(samples.count - sampleLimit) }
         let path = ProcessInfo.processInfo.environment["APEX_QA_TELEMETRY"]
             ?? qaRepositoryRoot.appendingPathComponent("outputs/macos27/qa/telemetry-\(Bundle.main.bundleIdentifier ?? "app").json").path
         let file = URL(fileURLWithPath: path)

@@ -23,6 +23,7 @@ class UIReleaseGateTests(unittest.TestCase):
                 path.chmod(0o755)
             environment = os.environ.copy()
             environment['PATH'] = str(tools) + os.pathsep + environment.get('PATH', '')
+            environment['APEX_UI_REPORT_ROOT'] = str(tools / 'reports')
             environment.pop('APEX_UI_TEST_HOST', None)
             environment.pop('APEX_UI_TEST_USER', None)
             if configured:
@@ -31,6 +32,11 @@ class UIReleaseGateTests(unittest.TestCase):
                                     env=environment, capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertFalse(marker.exists(), 'Failed UI prerequisites must stop before building')
+            reports = list((tools / 'reports').glob('*'))
+            self.assertEqual(len(reports), 1)
+            self.assertEqual((reports[0] / 'run-status.txt').read_text(),
+                             f'stage=prerequisites\nexit_code={result.returncode}\n')
+            self.assertTrue((reports[0] / 'source-commit.txt').read_text().strip())
             return result.stdout + result.stderr
 
     def test_missing_real_host_stops_gate(self):

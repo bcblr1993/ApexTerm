@@ -506,6 +506,45 @@ final class ApexTermUITests: XCTestCase {
         let restoredOutput = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "\nAPEX_UI_REAL_RECONNECT_OK\n"), object: terminal)
         XCTAssertEqual(XCTWaiter.wait(for: [restoredOutput], timeout: 15), .completed)
         capture("real-ssh-reconnect-pty")
+        terminal.typeText("printf '\\nAPEX_UI_TMP=%s\\n' \"$(mktemp -d /tmp/apex-ui-XXXXXX)\"\n")
+        let directoryOutput = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value MATCHES %@", "(?s).*\\nAPEX_UI_TMP=/tmp/apex-ui-[A-Za-z0-9]+\\r?\\n.*"), object: terminal)
+        XCTAssertEqual(XCTWaiter.wait(for: [directoryOutput], timeout: 15), .completed)
+        let pattern = try NSRegularExpression(pattern: "\\nAPEX_UI_TMP=(/tmp/apex-ui-[A-Za-z0-9]+)\\r?\\n")
+        let outputText = terminal.value as? String ?? ""
+        let match = try XCTUnwrap(pattern.firstMatch(in: outputText, range: NSRange(outputText.startIndex..., in: outputText)))
+        let directoryRange = try XCTUnwrap(Range(match.range(at: 1), in: outputText))
+        let directory = String(outputText[directoryRange])
+        let path = app.textFields["远程路径"]
+        path.click()
+        path.typeKey("a", modifierFlags: .command)
+        path.typeText(directory)
+        path.typeKey(XCUIKeyboardKey.return, modifierFlags: [])
+        XCTAssertTrue(app.staticTexts["文件夹为空"].waitForExistence(timeout: 15))
+        app.buttons["更多文件操作"].click()
+        app.menuItems["新建文件"].click()
+        let fileName = app.textFields["文件名 (例如 test.sh)"]
+        XCTAssertTrue(fileName.waitForExistence(timeout: 5))
+        fileName.click()
+        fileName.typeText("ui-real-file.txt")
+        app.buttons["创建"].click()
+        let realFile = app.staticTexts["ui-real-file.txt"]
+        XCTAssertTrue(realFile.waitForExistence(timeout: 15))
+        terminal.click()
+        terminal.typeText("test -f '\(directory)/ui-real-file.txt' && printf '\\nAPEX_UI_REAL_FILE_OK\\n'\n")
+        let existsRemotely = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "\nAPEX_UI_REAL_FILE_OK\n"), object: terminal)
+        XCTAssertEqual(XCTWaiter.wait(for: [existsRemotely], timeout: 15), .completed)
+        capture("real-sftp-created-file-verified")
+        realFile.click()
+        realFile.rightClick()
+        app.menuItems["删除"].click()
+        let delete = app.buttons["永久删除「ui-real-file.txt」"]
+        XCTAssertTrue(delete.waitForExistence(timeout: 5))
+        delete.click()
+        XCTAssertTrue(app.staticTexts["文件夹为空"].waitForExistence(timeout: 15))
+        terminal.click()
+        terminal.typeText("rmdir '\(directory)' && printf '\\nAPEX_UI_FIXTURE_CLEAN_OK\\n'\n")
+        let cleaned = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "\nAPEX_UI_FIXTURE_CLEAN_OK\n"), object: terminal)
+        XCTAssertEqual(XCTWaiter.wait(for: [cleaned], timeout: 15), .completed)
     }
 
     func testTransferRecordFiltersAndClearCompleted() {

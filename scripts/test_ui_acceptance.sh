@@ -50,5 +50,7 @@ xcodebuild test-without-building -xctestrun "$TEST_RUN_FILE" \
     2>&1 | tee "$REPORT_DIR/ui-tests.log"
 xcrun xcresulttool get test-results summary --path "$REPORT_DIR/UI.xcresult" --compact \
     > "$REPORT_DIR/summary.json"
-python3 scripts/verify_ui_results.py "$REPORT_DIR/summary.json"
+xcrun xcresulttool get test-results tests --path "$REPORT_DIR/UI.xcresult" --compact \
+    > "$REPORT_DIR/test-cases.json"
+python3 scripts/verify_ui_results.py "$REPORT_DIR/summary.json" --details "$REPORT_DIR/test-cases.json"
 echo "UI acceptance passed: $REPORT_DIR/UI.xcresult"

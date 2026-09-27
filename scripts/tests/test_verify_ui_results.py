@@ -8,10 +8,21 @@ spec.loader.exec_module(module)
 
 
 class UIResultTests(unittest.TestCase):
+    def test_repeated_case_cannot_replace_missing_case(self):
+        summary = dict(result='Passed', passedTests=2, totalTestCount=2,
+                       failedTests=0, skippedTests=0, expectedFailures=0)
+        case = dict(name='testFirst()', nodeType='Test Case', result='Passed')
+        with self.assertRaises(ValueError):
+            module.validate(summary, 'func testFirst() {}\nfunc testSecond() {}',
+                            {'testNodes': [case, case]})
+
     def test_complete_run_passes(self):
         self.assertEqual(module.validate(dict(result='Passed', passedTests=2, totalTestCount=2,
                                              failedTests=0, skippedTests=0, expectedFailures=0),
-                                         'func testFirst() {}\nfunc testSecond() {}'), 2)
+                                         'func testFirst() {}\nfunc testSecond() {}',
+                                         {'testNodes': [{'nodeType': 'Test Suite', 'children': [
+                                             {'name': 'testFirst()', 'nodeType': 'Test Case', 'result': 'Passed'},
+                                             {'name': 'ApexTermUITests/testSecond()', 'nodeType': 'Test Case', 'result': 'Passed'}]}]}), 2)
 
     def test_empty_partial_failed_or_skipped_run_is_rejected(self):
         baseline = dict(result='Passed', passedTests=2, totalTestCount=2,

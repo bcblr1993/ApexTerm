@@ -134,6 +134,7 @@ final class ApexTermUITests: XCTestCase {
         XCTAssertFalse(save.isEnabled)
         let finished = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: save)
         XCTAssertEqual(XCTWaiter.wait(for: [finished], timeout: 10), .completed)
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "已保存并上传至服务器")).firstMatch.waitForExistence(timeout: 5))
         capture("editor-save-completed")
         app.buttons["关闭"].click()
         XCTAssertFalse(app.sheets.firstMatch.exists)
@@ -153,6 +154,30 @@ final class ApexTermUITests: XCTestCase {
         app.buttons["关闭"].click()
         XCTAssertTrue(app.buttons["继续编辑"].waitForExistence(timeout: 5))
         app.buttons["继续编辑"].click()
+    }
+
+    func testEditorChangesDuringSaveRemainUnsaved() {
+        launch("editor-sheet")
+        let editor = app.textViews.firstMatch
+        XCTAssertTrue(editor.waitForExistence(timeout: 5))
+        editor.click()
+        editor.typeText("\nfirst_revision=true")
+        let save = app.buttons["保存 (⌘S)"]
+        save.click()
+        XCTAssertFalse(save.isEnabled)
+        editor.click()
+        editor.typeText("\nsecond_revision=true")
+        let pending = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "仍有新更改待保存")).firstMatch
+        XCTAssertTrue(pending.waitForExistence(timeout: 10))
+        XCTAssertTrue((editor.value as? String)?.contains("second_revision=true") == true)
+        app.buttons["关闭"].click()
+        XCTAssertTrue(app.buttons["继续编辑"].waitForExistence(timeout: 5))
+        capture("editor-save-preserves-new-changes")
+        app.buttons["继续编辑"].click()
+        save.click()
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "已保存并上传至服务器")).firstMatch.waitForExistence(timeout: 10))
+        app.buttons["关闭"].click()
+        XCTAssertFalse(app.sheets.firstMatch.exists)
     }
 
     func testEditorReloadCancelAndDiscard() {

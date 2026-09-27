@@ -17,6 +17,7 @@ struct ApexTermApp: App {
     
     @State private var isAboutPresented = false
     @State private var isShortcutsPresented = false
+    @State private var isNewSessionPresented = false
     
     var body: some Scene {
         WindowGroup {
@@ -49,6 +50,11 @@ struct ApexTermApp: App {
             .sheet(isPresented: $isShortcutsPresented) {
                 ShortcutsSheetView().apexTheme()
             }
+            .sheet(isPresented: $isNewSessionPresented) {
+                SessionEditModal(session: nil) { session in
+                    sessionStore.addSession(session)
+                }.apexTheme()
+            }
             .sheet(isPresented: $updateManager.isUpdateSheetPresented) {
                 UpdateSheetView().apexTheme()
             }
@@ -78,6 +84,8 @@ struct ApexTermApp: App {
                         duplicateCurrentSession()
                     } else if let selected = selectedSidebarSession ?? sessionStore.sessions.first {
                         connectToSession(selected)
+                    } else {
+                        isNewSessionPresented = true
                     }
                 }
                 .keyboardShortcut("t", modifiers: .command)
@@ -86,6 +94,7 @@ struct ApexTermApp: App {
                     duplicateCurrentSession()
                 }
                 .keyboardShortcut("t", modifiers: [.command, .shift])
+                .disabled(!activeTabs.contains(where: { $0.id == selectedTabId }))
                 
                 Divider()
                 

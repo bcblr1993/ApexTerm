@@ -26,7 +26,7 @@ command -v xcodebuild >/dev/null
 : "${APEX_UI_TEST_HOST:?Set APEX_UI_TEST_HOST to the dedicated SSH test machine}"
 : "${APEX_UI_TEST_USER:?Set APEX_UI_TEST_USER to the dedicated SSH test user}"
 automationmodetool help > "$REPORT_DIR/automation-mode.txt" 2>&1
-if ! grep -q 'Automation Mode is enabled' "$REPORT_DIR/automation-mode.txt"; then
+if ! grep -qi 'Automation Mode is enabled' "$REPORT_DIR/automation-mode.txt"; then
     echo "UI acceptance requires Automation Mode. Enable it with user authentication before testing."
     exit 1
 fi

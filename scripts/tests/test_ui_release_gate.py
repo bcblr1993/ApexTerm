@@ -15,7 +15,7 @@ class UIReleaseGateTests(unittest.TestCase):
             marker = tools / 'build-started'
             for name, content in {
                 'xcodebuild': '#!/bin/sh\nexit 0\n',
-                'automationmodetool': '#!/bin/sh\necho "Automation Mode is ' + ('enabled' if enabled else 'disabled') + '."\n',
+                'automationmodetool': '#!/bin/sh\necho "Automation Mode is ' + ('ENABLED' if enabled else 'disabled') + '."\n',
                 'swift': f'#!/bin/sh\ntouch "{marker}"\nexit 0\n',
             }.items():
                 path = tools / name

@@ -226,3 +226,10 @@
 - 修复关闭按钮显示可点击但 requestClose 忽略操作的状态不一致，移除保存按钮覆盖 apexProminentButton 可读颜色的额外 tint。
 - qa/editor-saving-fixed.txt 与 qa/editor-save-restored.txt 记录前后辅助功能状态；tests-editor-save-controls.log 全量测试退出 0，无 warning/error。
 - 此为隔离验收回调，UI 的上传成功文字不代表真实 SSH 已上传；真实远端保存验收仍待完成。
+
+### 最新真实链路入口复查
+
+- RealWorkflow 通过 open 启动时真实 SSH 报 No route to host；同一时刻命令行 SSH 可达。未修改系统网络权限。
+- 同代码 RealDirect 直接启动可读远端临时目录 /tmp/apexterm-ui-rxr9pSmP 的 transfer-payload.bin，记录 real-direct-ready-proof.json。该成功不替代 Finder/open 启动验收。
+- 终端输入尝试未产生完整命令执行回显；粘贴工具报剪贴板读取超时。单字符曾显示，但回车/组合提交的完整远端输出未证明；保留 real-terminal-input-investigation.png，继续排查，未记为通过。
+- fd63620 CI 36293891115 与 3279e01 CI 36294010074 已成功。

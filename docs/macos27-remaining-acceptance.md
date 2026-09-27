@@ -51,3 +51,18 @@ Nord进一步定位：保持Nord设置重新启动候选App、打开并激活外
 资源与门禁更新：专用VM内存从16384MB调为8192MB（CPU仍6），vm-resource-budget.json记录原值与恢复命令。8GB真实VM运行147测试零失败、4可选公网跳过，7项VM测试通过且结束自动停止；vm-8gb-session-regression.log无warning/error。当前优化构建八项基准九个阈值全部通过（RSS99.92MB、内部按键4.74μs），release-benchmarks-session-retention.log。5a3742a CI36300632345已success。候选构建及VM门禁Swift命令限制jobs2，候选精确旧产物清理逻辑保持；完整打包门禁仍需下一轮实际执行。
 
 当前签名候选2026092715基于545b976，应用/重制HFS+ DMG公证Accepted、票据/严格验签/哈希及DMG挂载内容版本均通过，证据VERIFICATION-2026092715.md。初次默认文件系统DMG挂载导致提交阻塞并最终格式失败，非公证成功；脚本明确HFS+、未挂载断言及镜像校验，防止重现。签名候选本机搜索/颜色AX/取消按钮/主窗口退出通过；Escape连续读取超时，线程采样主线程系统事件等待，未判死锁或通过。VM安装及原计划其余验收仍待完成。
+
+
+当前真实负载 2715 收尾：1800.171 秒工作负载完成，125 次输入回显与 42 次文件往返内容检查，失败列表为空；申请输出 999920 行，不能作为独立接收行数。监督进程 exit 1：正常退出超过截止时间（real-soak-2715-runtime.log）。实际 QA 应用及虚拟机进程已消失，Tart 状态 stopped。混合负载 RSS 峰值 277.58 MB，末三分钟中位约 267.55–267.73 MB，超过 SOP 250 MB；不能计完整稳定性通过。详见 soak/real-2715-result.json 与 real-2715-memory-final.json。后续需定位退出链路与内存/布局开销；尚未覆盖 IME、拖拽及实际帧 P95。
+
+预算解释复核：计划将 RSS≤250 MB 用于受控基准，真实工作负载单独报告。2715 的受控 Release 基准 RSS101.47 MB 已通过；真实负载峰值277.58 MB不能单独判定预算失败或泄漏。完整稳定性仍未通过，原因是长测正常退出超过监督截止时间且仍欠选区等实际交互证据。新版诊断在模拟5秒、VM真实5秒、用户指定192.168.50.226真实10秒负载中均正常退出（exit0），上传/下载状态completed且字节一致；短测不替代30分钟验收。
+
+SFTP路径同步修正：currentPath变化时，路径框未聚焦或输入仍等于旧路径就同步到新路径；真正编辑中的草稿保留。SFTPOperationsTests 8项通过，实际焦点/目录切换窗口验证仍待执行。本次产品源码变化使545b976/2715候选成为历史包，不能作为最终源码候选交付；收敛后须清理上一轮生成产物并重建签名候选。
+
+路径修正实际窗口证据（Debug QA、192.168.50.226）：启动时路径字段聚焦但未编辑，远端主目录探测后字段正确同步/Users/chenxu，文件列表相符（path-sync-226-focused.txt）；输入测试目录并Return后仅显示qa-payload.bin 256KB（path-sync-226-submitted.txt）。CmdQ正常退出，exec69260 exit0。草稿在异步目录变化时保留的实际场景仍未覆盖。全量swift test --jobs 2退出0，无失败与编译警告，环境相关集成测试跳过，日志full-tests-path-sync.log。
+
+指定机器真实键盘与OSC7联动：Debug QA终端点击后通过实际键盘输入printf标记、cd测试目录及显式OSC7；独立QA_LINK_226回显可见，路径与仅含256KB qa-payload.bin的文件表同步（terminal-linkage-226.txt/jpeg）。这是显式OSC7与真实PTY键盘路由证明，不等同于所有shell自然cd探测、IME或拖拽验收。CmdQ正常退出，exec46483 exit0。
+
+窗口标题解析修正：拒绝包含命令分隔符/空格的身份前缀及URI双斜线，保留host:/path与user@host: ~/中文目录。回归测试与全量swift test通过（full-tests-title-directory.log），命令sleep+printf在执行期间不再产生错误路径（title-fixed-226-before.txt）。真实cd+OSC7+pwd后终端输出/提示符、路径和256KB文件表一致（title-fixed-cd-226.txt/jpeg），CmdQ退出0。草稿在异步通知后保留已有path-draft-226.txt；该行为尚未替代IME/拖拽或所有shell自然提示符验证。
+
+当前源码在用户指定192.168.50.226执行PublicServerIntegrationTests：4项0失败，真实PTY、无代理指标、SFTP列表/随机临时文件上传下载、自然cd目录同步通过（integration-226-current.log，6.36秒）。这是指定实体主机证据，非Tart门禁、非GUI拖拽、非30分钟稳定性替代。

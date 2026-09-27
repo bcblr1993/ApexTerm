@@ -195,4 +195,44 @@ final class SplitPaneIntegrationTests: XCTestCase {
         }
         XCTAssertEqual(secondaryPane.connectionState, .connected)
     }
+
+    @MainActor
+    func testInitialTabCreationDoesNotStartDisconnected() {
+        let session = Session(name: "lifecycle-test", host: "192.0.2.10", username: "developer")
+        let client = MockSSHSession(session: session)
+        let tab = TerminalTabItem(session: session, sshClient: client)
+
+        // Initial state must be connecting, NEVER disconnected (which triggers false "会话已断开" banner)
+        XCTAssertEqual(tab.connectionState, .connecting(step: "正在连接"))
+        XCTAssertEqual(tab.panes.count, 1)
+        XCTAssertEqual(tab.panes[0].connectionState, .connecting(step: "正在连接"))
+    }
+
+    @MainActor
+    func testTabConnectTransitionsBothTabAndPaneToConnected() async throws {
+        let session = Session(name: "lifecycle-test-2", host: "192.0.2.10", username: "developer")
+        let client = MockSSHSession(session: session)
+        let tab = TerminalTabItem(session: session, sshClient: client)
+
+        tab.connect()
+
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while (tab.connectionState != .connected || tab.panes[0].connectionState != .connected) && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+
+        XCTAssertEqual(tab.connectionState, .connected)
+        XCTAssertEqual(tab.panes[0].connectionState, .connected)
+
+        // When client disconnects, both tab and pane must receive disconnected state
+        await client.disconnect()
+
+        let disconnectDeadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while (tab.connectionState != .disconnected || tab.panes[0].connectionState != .disconnected) && ContinuousClock.now < disconnectDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+
+        XCTAssertEqual(tab.connectionState, .disconnected)
+        XCTAssertEqual(tab.panes[0].connectionState, .disconnected)
+    }
 }

@@ -159,4 +159,10 @@ final class TerminalResizeAndUploadFeedbackTests: XCTestCase {
             XCTAssertTrue(error.localizedDescription.contains("Permission denied"), "Error should report permission denied: \(error)")
         }
     }
+
+    func testChangePermissionsMethod() async throws {
+        let session = Session(name: "MockPerm", host: "127.0.0.1", port: 22, username: "ubuntu")
+        let client = MockSSHSession(session: session)
+        try await client.changePermissions(remotePath: "/home/ubuntu/services", permissions: "755")
+    }
 }

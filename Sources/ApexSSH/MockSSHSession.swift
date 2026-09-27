@@ -8,12 +8,24 @@ public final class MockSSHSession: SSHSessionProtocol, @unchecked Sendable {
     private var storedConnectionState: SSHConnectionState = .disconnected
     public private(set) var connectionState: SSHConnectionState {
         get { stateLock.withLock { storedConnectionState } }
-        set { stateLock.withLock { storedConnectionState = newValue } }
+        set {
+            let changed = stateLock.withLock { () -> Bool in
+                if storedConnectionState != newValue {
+                    storedConnectionState = newValue
+                    return true
+                }
+                return false
+            }
+            if changed {
+                stateChangeHandler?(newValue)
+            }
+        }
     }
     
     private var outputHandler: (@Sendable (Data) -> Void)?
     private var metricsHandler: (@Sendable (ServerMetricsSnapshot) -> Void)?
     private var directoryChangeHandler: (@Sendable (String) -> Void)?
+    private var stateChangeHandler: (@Sendable (SSHConnectionState) -> Void)?
     
     private var metricsTimer: Timer?
     private var currentDirectory = "/root"
@@ -41,6 +53,10 @@ public final class MockSSHSession: SSHSessionProtocol, @unchecked Sendable {
         self.directoryChangeHandler = handler
     }
     
+    public func setStateChangeHandler(_ handler: @Sendable @escaping (SSHConnectionState) -> Void) {
+        self.stateChangeHandler = handler
+    }
+
     public func triggerDirectoryChange(to path: String) {
         self.currentDirectory = path
         let osc7 = "\u{001B}]7;file://\(session.host)\(currentDirectory)\u{0007}"
@@ -117,6 +133,12 @@ public final class MockSSHSession: SSHSessionProtocol, @unchecked Sendable {
     private func processCommand(_ cmd: String) {
         if cmd.isEmpty { return }
         
+        if cmd == "exit" {
+            emit("logout\r\nConnection to \(session.host) closed.\r\n")
+            Task { await disconnect() }
+            return
+        }
+
         if cmd == "clear" {
             emit("\u{001B}[2J\u{001B}[H")
         } else if cmd.hasPrefix("cd ") {

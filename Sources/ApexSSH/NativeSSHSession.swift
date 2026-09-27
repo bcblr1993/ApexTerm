@@ -8,11 +8,28 @@ import Darwin
 /// Real native SSH session implementation using Darwin POSIX PTY, bundled standalone sshpass, and real-time probe
 public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     public let session: Session
-    public private(set) var connectionState: SSHConnectionState = .disconnected
+    private let stateLock = NSLock()
+    private var storedConnectionState: SSHConnectionState = .disconnected
+    public private(set) var connectionState: SSHConnectionState {
+        get { stateLock.withLock { storedConnectionState } }
+        set {
+            let changed: Bool = stateLock.withLock {
+                if storedConnectionState != newValue {
+                    storedConnectionState = newValue
+                    return true
+                }
+                return false
+            }
+            if changed {
+                stateChangeHandler?(newValue)
+            }
+        }
+    }
     
     private var outputHandler: (@Sendable (Data) -> Void)?
     private var metricsHandler: (@Sendable (ServerMetricsSnapshot) -> Void)?
     private var directoryChangeHandler: (@Sendable (String) -> Void)?
+    private var stateChangeHandler: (@Sendable (SSHConnectionState) -> Void)?
     
     private var ptyMasterFd: Int32 = -1
     private var childPid: pid_t = -1
@@ -58,6 +75,10 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         self.directoryChangeHandler = handler
     }
     
+    public func setStateChangeHandler(_ handler: @Sendable @escaping (SSHConnectionState) -> Void) {
+        self.stateChangeHandler = handler
+    }
+
     private func resolvePasswordIfNeeded() async {
         if resolvedPassword != nil { return }
         switch session.authMethod {
@@ -187,6 +208,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
                     }
                 }
             } else if bytesRead <= 0 {
+                self.connectionState = .disconnected
                 source.cancel()
             }
         }
@@ -723,5 +745,11 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         let escOld = oldPath.replacingOccurrences(of: "\"", with: "\\\"")
         let escNew = newPath.replacingOccurrences(of: "\"", with: "\\\"")
         try await executeRemoteCommand("mv \"\(escOld)\" \"\(escNew)\"")
+    }
+
+    public func changePermissions(remotePath: String, permissions: String) async throws {
+        let escaped = remotePath.replacingOccurrences(of: "\"", with: "\\\"")
+        let permEscaped = permissions.replacingOccurrences(of: "\"", with: "\\\"")
+        try await executeRemoteCommand("chmod \(permEscaped) \"\(escaped)\"")
     }
 }

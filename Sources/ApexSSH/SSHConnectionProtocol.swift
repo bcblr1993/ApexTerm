@@ -38,14 +38,17 @@ public protocol SSHSessionProtocol: AnyObject, Sendable {
     func createDirectory(remotePath: String) async throws
     func createFile(remotePath: String) async throws
     func rename(oldPath: String, newPath: String) async throws
+    func changePermissions(remotePath: String, permissions: String) async throws
     
     // Callbacks
     func setOutputHandler(_ handler: @Sendable @escaping (Data) -> Void)
     func setMetricsHandler(_ handler: @Sendable @escaping (ServerMetricsSnapshot) -> Void)
     func setDirectoryChangeHandler(_ handler: @Sendable @escaping (String) -> Void)
+    func setStateChangeHandler(_ handler: @Sendable @escaping (SSHConnectionState) -> Void)
 }
 
 public extension SSHSessionProtocol {
+    func setStateChangeHandler(_ handler: @Sendable @escaping (SSHConnectionState) -> Void) {}
     func sendInputSync(_ data: Data) {
         Task { try? await sendInput(data) }
     }
@@ -55,4 +58,5 @@ public extension SSHSessionProtocol {
     func createDirectory(remotePath: String) async throws {}
     func createFile(remotePath: String) async throws {}
     func rename(oldPath: String, newPath: String) async throws {}
+    func changePermissions(remotePath: String, permissions: String) async throws {}
 }

@@ -2,6 +2,17 @@ import XCTest
 @testable import ApexTerminal
 
 final class RingBufferStressTests: XCTestCase {
+    func testEraseBelowCursorPreservesShellHistory() {
+        for sequence in ["\u{1B}[J", "\u{1B}[0J"] {
+            let buffer = TerminalRingBuffer(maxLines: 100)
+            buffer.appendStream("command output\nprompt> stale")
+            buffer.appendStream("\r\u{1B}[8C" + sequence)
+            XCTAssertEqual(buffer.committedLineCount, 1)
+            XCTAssertEqual(buffer.tailLines(count: 10).first, "command output")
+            XCTAssertEqual(buffer.currentActiveLine, "prompt> ")
+        }
+    }
+
     func testPlainLogFastPathMatchesFragmentedControlAndUnicodeOutput() {
         let chunks = ["first", " line\n\nsecond\npartial", " tail\n",
                       "progress 10%\rprogress 90%\n", "\u{1B}[31", "mred\u{1B}[0m\n",

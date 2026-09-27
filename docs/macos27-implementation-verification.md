@@ -233,3 +233,19 @@
 - 同代码 RealDirect 直接启动可读远端临时目录 /tmp/apexterm-ui-rxr9pSmP 的 transfer-payload.bin，记录 real-direct-ready-proof.json。该成功不替代 Finder/open 启动验收。
 - 终端输入尝试未产生完整命令执行回显；粘贴工具报剪贴板读取超时。单字符曾显示，但回车/组合提交的完整远端输出未证明；保留 real-terminal-input-investigation.png，继续排查，未记为通过。
 - fd63620 CI 36293891115 与 3279e01 CI 36294010074 已成功。
+
+### 终端输入链路逐段诊断
+
+- 隔离 QA 可选 APEX_QA_KEY_DIAGNOSTICS 只记录键码、修饰键、终端焦点/marked/input 布尔值及回调字节数、CR 数量，不记录用户输入正文。
+- input-state-runtime.log：键码 14/36 均到 NativeTerminalView，marked=false、input=true。
+- input-callback-runtime.log：字母回调 1 字节，回车回调 1 字节且 CR=1。回调之前的事件路径已确认，完整远端回显仍缺失。
+- InputCallback 的实际 SSH 子进程 71305 有 /dev/ttys023 输入和错误输出，stdout 为 /dev/null；有效 SSH 配置 stdinnull=no、sessiontype=default、forkafterauthentication=no。该差异尚未确定根因，不作为修复通过证据。
+- 验收程序原有递归视图查询补充 @MainActor，compile-InputState.log/compile-InputCallback.log 均为空，无编译警告。
+
+### 默认擦除显示序列导致真实回显丢失
+
+- 默认 CSI J 与显式 CSI 0J 被误当作清空全部历史，shell 提示符重绘抹掉此前输出。修复模式 0 仅擦除光标后的当前行内容，保留已提交历史；模式 2/3 保留原清屏行为。
+- testEraseBelowCursorPreservesShellHistory 覆盖默认/显式模式 0，验证已提交输出和光标前提示符保留。tests-erase-display.log 全量退出 0。
+- EraseDisplayFix 实际 SSH 输入 echo APEX_REAL_CHECK 并回车，界面保留执行回显与后续提示符；qa/real-terminal-erase-fix-proof.json 和截图记录。此为直接启动验收应用，不替代正常启动证据。
+- 粘贴工具仍报等待应用读取剪贴板超时，未判粘贴通过。临时 NativeSSHSession 字节数量诊断已全部撤回，不进入产品提交。
+- 先前 stdout=/dev/null 观察不构成根因；完整描述符仍有 PTY 副本，读取日志证实远端数据已到达。

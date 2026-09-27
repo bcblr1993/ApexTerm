@@ -92,12 +92,39 @@ struct ThemeVerificationApp: App {
             }
             .task {
                 telemetry.start()
+                if ProcessInfo.processInfo.environment["APEX_QA_KEY_DIAGNOSTICS"] == "1" {
+                    var observedTerminals = Set<ObjectIdentifier>()
+                    NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                        let terminal = NSApp.keyWindow?.firstResponder as? NativeTerminalView
+                        if let terminal, observedTerminals.insert(ObjectIdentifier(terminal)).inserted,
+                           let originalInput = terminal.onInput {
+                            terminal.onInput = { data in
+                                let record = "QA_INPUT bytes=\(data.count) carriageReturns=\(data.filter { $0 == 13 }.count)\n"
+                                FileHandle.standardError.write(Data(record.utf8))
+                                originalInput(data)
+                            }
+                        }
+                        let record = "QA_KEY code=\(event.keyCode) modifiers=\(event.modifierFlags.rawValue) terminal=\(terminal != nil) marked=\(terminal?.hasMarkedText() ?? false) input=\(terminal?.onInput != nil) bufferMatches=\(terminal?.ringBuffer === tab.ringBuffer)\n"
+                        FileHandle.standardError.write(Data(record.utf8))
+                        if let terminal {
+                            Task { @MainActor in
+                                try? await Task.sleep(for: .seconds(1))
+                                let lines = tab.ringBuffer.tailLines(count: 20)
+                                let bufferError = lines.contains { $0.contains("command not found") }
+                                let viewError = terminal.string.contains("command not found")
+                                let record = "QA_DISPLAY committed=\(tab.ringBuffer.committedLineCount) viewChars=\(terminal.string.utf16.count) commandErrorInBuffer=\(bufferError) commandErrorInView=\(viewError)\n"
+                                FileHandle.standardError.write(Data(record.utf8))
+                            }
+                        }
+                        return event
+                    }
+                }
                 if let delay = ProcessInfo.processInfo.environment["APEX_QA_ACTIVATE_DELAY"].flatMap(Double.init) {
                     Task { @MainActor in
                         try? await Task.sleep(for: .seconds(delay))
                         if let window = NSApplication.shared.windows.first(where: { $0.isVisible && $0.contentView != nil }) {
                             window.makeKeyAndOrderFront(nil)
-                            func terminal(in view: NSView) -> NativeTerminalView? {
+                            @MainActor func terminal(in view: NSView) -> NativeTerminalView? {
                                 if let terminal = view as? NativeTerminalView { return terminal }
                                 for child in view.subviews { if let result = terminal(in: child) { return result } }
                                 return nil

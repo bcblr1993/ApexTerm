@@ -286,7 +286,13 @@ public final class TerminalRingBuffer: @unchecked Sendable {
             currentANSIIndex = style.index
             currentBold = style.bold
         case "J": // Erase in Display
-            if param.contains("2") || param.contains("3") || param.isEmpty {
+            let mode = Int(param) ?? 0
+            if mode == 0 {
+                ensureEditingMode()
+                if cursorCol < activeCells.count {
+                    activeCells.removeSubrange(cursorCol..<activeCells.count)
+                }
+            } else if mode == 2 || mode == 3 {
                 head = 0
                 count = 0
                 _totalCommittedCount = 0

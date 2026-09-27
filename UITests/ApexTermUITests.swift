@@ -309,6 +309,35 @@ final class ApexTermUITests: XCTestCase {
         capture("sftp-create-file-listed")
     }
 
+    func testSFTPRenameCancelAndSuccessfulListing() {
+        launch("main", extra: ["APEX_QA_CONNECT": "1"])
+        let original = app.staticTexts["nginx.conf"]
+        XCTAssertTrue(original.waitForExistence(timeout: 10))
+        original.click()
+        original.rightClick()
+        app.menuItems["重命名..."].click()
+        let name = app.textFields["新名称"]
+        XCTAssertTrue(name.waitForExistence(timeout: 5))
+        name.click()
+        name.typeKey("a", modifierFlags: .command)
+        name.typeText("ui-canceled-name.conf")
+        app.buttons["取消"].click()
+        XCTAssertTrue(original.exists)
+        XCTAssertFalse(app.staticTexts["ui-canceled-name.conf"].exists)
+        original.click()
+        original.rightClick()
+        app.menuItems["重命名..."].click()
+        XCTAssertTrue(name.waitForExistence(timeout: 5))
+        name.click()
+        name.typeKey("a", modifierFlags: .command)
+        name.typeText("ui-renamed.conf")
+        app.buttons["确定"].click()
+        XCTAssertTrue(app.staticTexts["ui-renamed.conf"].waitForExistence(timeout: 10))
+        XCTAssertFalse(original.exists)
+        XCTAssertTrue(app.staticTexts["docker-compose.yml"].exists)
+        capture("sftp-renamed-file-listed")
+    }
+
     func testRealSSHConfiguredHostIsMandatory() throws {
         let environment = ProcessInfo.processInfo.environment
         guard let host = environment["APEX_UI_TEST_HOST"], !host.isEmpty,

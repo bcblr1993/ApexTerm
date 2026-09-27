@@ -449,6 +449,29 @@ final class ApexTermUITests: XCTestCase {
         capture("real-ssh-pty")
     }
 
+    func testTransferRecordFiltersAndClearCompleted() {
+        launch("transfers", extra: ["APEX_QA_TRANSFER_RECORDS": "1"])
+        let upload = app.staticTexts["ui-upload.txt"]
+        let download = app.staticTexts["ui-download.txt"]
+        XCTAssertTrue(upload.waitForExistence(timeout: 5))
+        XCTAssertTrue(download.exists)
+        app.radioButtons["上传 (1)"].click()
+        XCTAssertTrue(upload.exists)
+        XCTAssertFalse(download.exists)
+        app.radioButtons["下载 (1)"].click()
+        XCTAssertTrue(download.exists)
+        XCTAssertFalse(upload.exists)
+        app.radioButtons["全部 (2)"].click()
+        XCTAssertTrue(upload.exists)
+        XCTAssertTrue(download.exists)
+        capture("transfer-record-filters")
+        app.buttons["清空记录"].click()
+        XCTAssertFalse(upload.exists)
+        XCTAssertTrue(download.exists, "Clearing completed records must preserve failures")
+        XCTAssertFalse(app.buttons["清空记录"].exists)
+        capture("transfer-clear-preserves-failure")
+    }
+
     func testEditorUnsavedCancelSaveAndClose() {
         launch("editor-sheet")
         let editor = app.textViews.firstMatch

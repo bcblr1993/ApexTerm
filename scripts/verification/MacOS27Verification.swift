@@ -52,6 +52,15 @@ struct ThemeVerificationApp: App {
             session.lastConnectedAt = Date(timeIntervalSince1970: 1_700_000_100)
         }
         store.sessions = [session]
+        #if !APEX_BASELINE
+        if environment["APEX_QA_TRANSFER_RECORDS"] == "1" {
+            let manager = TransferManager.shared
+            let upload = manager.beginExternalTransfer(fileName: "ui-upload.txt", remotePath: "/ui-fixture/ui-upload.txt", localURL: directory.appendingPathComponent("ui-upload.txt"), direction: .upload, totalBytes: 128)
+            manager.completeExternalTransfer(taskId: upload)
+            let download = manager.beginExternalTransfer(fileName: "ui-download.txt", remotePath: "/ui-fixture/ui-download.txt", localURL: directory.appendingPathComponent("ui-download.txt"), direction: .download, totalBytes: 256)
+            manager.failExternalTransfer(taskId: download, error: NSError(domain: "ApexTerm.QA", code: 54, userInfo: [NSLocalizedDescriptionKey: "受控传输中断"]))
+        }
+        #endif
         let client: SSHSessionProtocol = realHost != nil
             ? NativeSSHSession(session: session)
             : environment["APEX_QA_FILES"].map { QAFileSession(session: session, mode: $0) } ?? MockSSHSession(session: session)

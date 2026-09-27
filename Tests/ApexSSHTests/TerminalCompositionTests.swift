@@ -36,15 +36,19 @@ final class TerminalCompositionTests: XCTestCase {
     func testPreeditRendersWithoutChangingRemoteOutputAndDisappearsOnCancel() throws {
         _ = NSApplication.shared
         let terminal = NativeTerminalView()
-        terminal.frame = NSRect(x: 0, y: 0, width: 420, height: 100)
         terminal.isVerticallyResizable = false
         terminal.isHorizontallyResizable = false
+        terminal.minSize = NSSize(width: 420, height: 100)
+        terminal.maxSize = terminal.minSize
+        terminal.frame = NSRect(x: 0, y: 0, width: 420, height: 100)
         terminal.textContainer?.containerSize = NSSize(width: 420, height: 100)
         terminal.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
         terminal.backgroundColor = .white
         terminal.textColor = .black
         terminal.textStorage?.setAttributedString(NSAttributedString(string: "host % ", attributes: [.font: terminal.font!, .foregroundColor: NSColor.black]))
         terminal.layoutManager?.ensureLayout(for: try XCTUnwrap(terminal.textContainer))
+        XCTAssertEqual(terminal.bounds.size, NSSize(width: 420, height: 100),
+                       "The render fixture must not collapse to a zero-height NSTextView")
         func pixels() throws -> Data {
             // A CI worker can have no WindowServer backing; draw into a real offscreen bitmap.
             let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 420, pixelsHigh: 100,
@@ -56,8 +60,9 @@ final class TerminalCompositionTests: XCTestCase {
             context.cgContext.translateBy(x: 0, y: 100)
             context.cgContext.scaleBy(x: 1, y: -1)
             NSGraphicsContext.current = NSGraphicsContext(cgContext: context.cgContext, flipped: true)
-            print("Composition bitmap: bounds=\(terminal.bounds), origin=\(terminal.textContainerOrigin), font=\(String(describing: terminal.font)), glyphBounds=\(terminal.layoutManager!.boundingRect(forGlyphRange: NSRange(location: 0, length: terminal.layoutManager!.numberOfGlyphs), in: terminal.textContainer!)), marked=\(terminal.hasMarkedText())")
+            context.cgContext.saveGState()
             terminal.draw(terminal.bounds)
+            context.cgContext.restoreGState()
             XCTAssertNotNil(NSGraphicsContext.current, "AppKit must retain the offscreen drawing context")
             context.cgContext.setFillColor(CGColor(red: 1, green: 0, blue: 1, alpha: 1))
             context.cgContext.fill(CGRect(x: 410, y: 90, width: 5, height: 5))

@@ -103,3 +103,13 @@
 - 新增 `scripts/build_candidate.py`：要求已提交的干净工作区，保护运行中的旧候选，构建前清理准确命名的上一轮产物；执行真实 VM 门禁、Release 编译、安全扫描、签名、公证、DMG/tar.gz 和最终哈希生成，不替换已安装正式应用。
 - 构建号取当天序号并严格高于上一候选；候选版本沿用当前 CHANGELOG 正式版本，清单记录精确来源提交，候选不冒充新正式发布。
 - 候选清理新增保留无关文件与符号链接预检测试。共 6 项 Python 清理测试通过，CI 已包含全部清理测试。
+
+
+## 最新候选产物（构建 2026092702）
+
+- `build-signed-candidate-final.log` 完整候选流水线退出码 0，来源提交 `3d8857ccc8ee6a65613f3652c0d950855e20db29`，清单 `candidate/candidate-manifest.txt`。应用与 DMG 均公证 Accepted、staple/validate 通过，包含文件筛选 Escape 与焦点修复。
+- 最新 DMG 只读挂载：卷名 ApexTerm Candidate，根目录仅候选应用及 Applications 链接，包内严格验签通过；最终 DMG/tar.gz 哈希与 SHA256SUMS 一致。
+- `candidate/vm-install-verification-final.log`：macOS 27 VM assessments enabled，最新包严格验签、票据与 Gatekeeper 通过；进程检查确认新安装路径 `/private/tmp/apexterm-candidate.93wLEY/` 启动成功，未把仍运行的旧候选进程误认为新包。
+- 有界帧 trace 导出仍报 Document Missing Template Error；失效数据占 7,314,867,520 字节，已清理本任务生成的这一目录，保留录制/导出错误及 `frame-resumed-cleanup.json`。没有有效交互帧 P95。
+- 传输记录 sheet 复测时 Computer Use 截图两次报 zero-size capture；Escape 后返回原筛选输入框。只证明弹窗可关闭与焦点返回，不证明该次空态布局。
+- VoiceOver/增强对比度/减少透明度实测的系统设置确认尚待用户回复，未擅自改变设置。整体计划仍未全项完成，候选包交付不等于全部 UI/性能/无障碍验收通过。

@@ -130,6 +130,8 @@ public struct SessionEditModal: View {
                             }
                             .buttonStyle(.plain)
                             .accessibilityLabel("选择标识颜色 \(hex)")
+                            .accessibilityValue(colorHex == hex ? "已选中" : "未选中")
+                            .accessibilityAddTraits(colorHex == hex ? .isSelected : [])
                         }
                     }
                 }

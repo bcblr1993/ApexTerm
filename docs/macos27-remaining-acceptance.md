@@ -29,3 +29,11 @@ Nord进一步定位：保持Nord设置重新启动候选App、打开并激活外
 截图新鲜度对照：通用→终端外观→操作习惯三次捕获的路径、mtime及SHA256均变化，窗口标题与页面对应（screenshot-freshness-2713.json），证明标签切换场景会更新截图；不能据此排除失焦场景缓存。截图原始格式为JPEG，后续证据使用正确扩展名。Nord活跃操作习惯页两个开关及行数控件均可见（Nord-2713-behavior-active.jpeg）。
 
 候选后续源码修复：UpdateManager空版本比较原先会索引空数组；现改为安全取首段，并对更新响应的三个数值版本段验证，无效响应进入failed。UpdateCheckTests五项通过；全量swift test日志tests-invalid-version-full.log通过、无编译警告。候选2713仍为61dcea2旧源码，不包含此修复，最终交付前需更新候选及对应签名门禁。
+
+当前候选更新为2026092714，源码5773a16，已包含无效更新版本修复。146测试（4可选公网跳过）、真实VM、八项Release性能门禁与CI36299347690通过；应用/DMG公证、严格验签、票据、哈希、DMG/tar版本通过，VM启用Gatekeeper安装检查通过。本机正常启动与更新成功/Return关闭已复核。证据VERIFICATION-2026092714.md；旧2713记录仅作历史证据。当前仍缺VM GUI与本表其余完整交互要求，不能判整体完成。
+
+2714新增会话实际表单：空表单保存禁用、Tab名称→主机地址、Escape取消会话仍2个；70000端口显示1–65535错误且保存禁用，恢复22并切Agent可保存（未提交）。Nord错误表单实际图片确认错误文字与固定底部取消/保存按钮未裁切；session-new-flow-2714.json与session-invalid-port-2714.jpeg。此验证未覆盖全部主题、全键盘或实际输入法。
+
+2714表单Tab遍历12步已记录session-tab-flow-2714.json：可确认名称、地址、密码、标签之间循环，部分步骤工具未提供focused元素，未覆盖认证按钮、开关与底部按钮；不能宣称全键盘通过。当前系统键盘导航设置另行只读核查，不修改用户设置。
+
+颜色选择无障碍修复：SessionEditModal颜色按钮新增selected trait及已选中/未选中值。swift build通过；复用现有调试验收App，真实AX默认蓝色selected，点击绿色后仅绿色selected，其他未选中（main-command-smoke/color-ax-default.txt、color-ax-green.txt），未保存表单并退出。签名候选2714尚未包含此源码修复。

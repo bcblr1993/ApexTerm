@@ -436,8 +436,9 @@ public struct SFTPView: View {
             updateDisplayItems()
             loadDirectory(path: currentPath)
         }
-        .onChange(of: currentPath) { _, newPath in
-            if !isPathFocused { pathInput = newPath }
+        .onChange(of: currentPath) { oldPath, newPath in
+            // Focus alone is not an edit: follow directory changes until a draft differs.
+            if !isPathFocused || pathInput == oldPath { pathInput = newPath }
             loadDirectory(path: newPath)
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("SFTPDirectoryRefreshNeeded"))) { notification in

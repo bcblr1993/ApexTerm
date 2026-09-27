@@ -279,3 +279,10 @@
 - SSH mktemp 新建独立空目录 /tmp/apexterm-empty-qa.ECeH9jS8；实际 SFTP 导航显示“文件夹为空”，上传入口可用，截图 real-sftp-empty.png。
 - 导航该目录下不存在的 missing-directory-qa，界面显示 No such file or directory 和重试按钮；返回有效目录后恢复空状态、错误清除，real-sftp-missing-directory-proof.json 记录失败控件。
 - 本项覆盖真实空目录和不存在路径错误/恢复，不替代权限读取错误、取消传输或双向拖拽。
+
+### 最新实现真实点击双向传输与记录
+
+- 独立 131,072 字节 transfer-source-20260927.bin 通过上传按钮及原生文件选择器上传到 /tmp/apexterm-empty-qa.ECeH9jS8；实际列表出现文件并显示 128.0 KB，任务中心自动展开并保留上传完成记录。
+- 实际文件右键下载至 Downloads；任务中心同时显示上传(1)/下载(1)，两条记录均完成。下载文件存在，源/远端/下载 SHA256 均为 59f410ae5e17962412e2aed4f815918f634932f2abf084f00bb638c4db017850。
+- real-click-roundtrip-proof.json 与 real-click-roundtrip-records.txt 记录哈希及任务状态；点击下载记录“在访达中显示”实际选中下载文件。
+- 未覆盖双向拖拽、取消或重复文件处理；直接启动 QA 仍不替代正常应用启动验收。

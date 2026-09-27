@@ -55,3 +55,7 @@
 - 已推送实现分支并创建 Draft PR #3，CI run 36289605932 运行中；当前不合并、不声明发布完成。
 - 合成导入预览已复测，`page-import-synthetic.png` 只显示 RFC 示例地址主机。QA 工具同时修正 Finder 启动时工作目录变化导致合成配置与遥测路径错误的问题。
 - 连续后台空闲有效样本（监控关闭）：`idle-background-summary.json` 中新版 IdleCandidate 64.10 秒，单核 CPU 0.254%，RSS 178.20–178.34 MB。原版区间更长且混有窗口操作，不能据此计算严格改善百分比；前台仍未得到连续 60 秒有效样本。
+
+- 30 分钟组合负载已完成：`soak/progress.json` completed=true、failures=[]；822,720 行输出、103 次输入检查、35 次 256 KB 双向传输完整性检查、70 条可见任务记录；历史上限 50,000 行、监控历史 40 条。`soak/process-load.json` 采样 1,800.714 秒，峰值 RSS 228.41 MB，负载 CPU 单核 33.397%。此负载使用早期 Release 验收 App；之后的路径/焦点/文案/分屏改动已另行跑完整门禁，未宣称最终签名二进制完成同一 soak。
+- CI run 36289605932 成功，后续 QA 路径修正 commit 10e4dfb 的 CI run 36289713399 尚在运行。
+- Animation Hitches 请求录制 30 秒后未正常完成，trace 异常膨胀至约 23 GB，导出报 Document Missing Template Error；已停止本任务的录制进程，保留失败诊断，帧 P95 不作通过结论。

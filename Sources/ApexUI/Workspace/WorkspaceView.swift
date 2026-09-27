@@ -527,6 +527,16 @@ private struct WorkspaceActiveTabSplitView: View {
                                 .frame(width: 8)
                                 .background(ApexStyle.surface)
                                 .contentShape(Rectangle())
+                                .accessibilityElement(children: .ignore)
+                                .accessibilityLabel("左右终端分屏比例")
+                                .accessibilityValue("\(Int(tab.paneSplitRatio * 100))%")
+                                .accessibilityAdjustableAction { direction in
+                                    switch direction {
+                                    case .increment: tab.paneSplitRatio = min(0.85, tab.paneSplitRatio + 0.05)
+                                    case .decrement: tab.paneSplitRatio = max(0.15, tab.paneSplitRatio - 0.05)
+                                    @unknown default: break
+                                    }
+                                }
                                 .gesture(
                                     DragGesture()
                                         .onChanged { val in
@@ -568,6 +578,16 @@ private struct WorkspaceActiveTabSplitView: View {
                                 .frame(height: 8)
                                 .background(ApexStyle.surface)
                                 .contentShape(Rectangle())
+                                .accessibilityElement(children: .ignore)
+                                .accessibilityLabel("上下终端分屏比例")
+                                .accessibilityValue("\(Int(tab.paneSplitRatio * 100))%")
+                                .accessibilityAdjustableAction { direction in
+                                    switch direction {
+                                    case .increment: tab.paneSplitRatio = min(0.85, tab.paneSplitRatio + 0.05)
+                                    case .decrement: tab.paneSplitRatio = max(0.15, tab.paneSplitRatio - 0.05)
+                                    @unknown default: break
+                                    }
+                                }
                                 .gesture(
                                     DragGesture()
                                         .onChanged { val in
@@ -601,6 +621,18 @@ private struct WorkspaceActiveTabSplitView: View {
                     .frame(height: 8)
                     .background(ApexStyle.surface)
                     .contentShape(Rectangle())
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("终端与文件面板比例")
+                    .accessibilityValue("\(Int(splitRatio * 100))%")
+                    .accessibilityAdjustableAction { direction in
+                        let minimum = 120.0 / max(geometry.size.height, 240)
+                        let maximum = 1.0 - 100.0 / max(geometry.size.height, 240)
+                        switch direction {
+                        case .increment: splitRatio = min(maximum, splitRatio + 0.05)
+                        case .decrement: splitRatio = max(minimum, splitRatio - 0.05)
+                        @unknown default: break
+                        }
+                    }
                     .gesture(
                         DragGesture()
                             .onChanged { value in

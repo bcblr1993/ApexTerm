@@ -113,3 +113,11 @@
 - 有界帧 trace 导出仍报 Document Missing Template Error；失效数据占 7,314,867,520 字节，已清理本任务生成的这一目录，保留录制/导出错误及 `frame-resumed-cleanup.json`。没有有效交互帧 P95。
 - 传输记录 sheet 复测时 Computer Use 截图两次报 zero-size capture；Escape 后返回原筛选输入框。只证明弹窗可关闭与焦点返回，不证明该次空态布局。
 - VoiceOver/增强对比度/减少透明度实测的系统设置确认尚待用户回复，未擅自改变设置。整体计划仍未全项完成，候选包交付不等于全部 UI/性能/无障碍验收通过。
+
+
+## 分隔条辅助操作
+
+- 实际窗口创建左右分屏后，无障碍树缺少自绘分隔条。为左右/上下终端分隔条及终端/文件分隔条加入名称、百分比与 Increment/Decrement 动作，调整步长 5%，保持原拖动边界。
+- AccessibleSplit 窗口实际动作通过：文件面板 70%→75%；左右分屏 50%→55%→50%；切换上下分屏后 50%→45%。证据 `qa/accessible-split-actions.txt`。这证明控件可被辅助技术发现与操作，不代替实际 VoiceOver 朗读流程。
+- `tests-accessible-divider.log` 全量 130 项零失败（9 项无网络环境跳过），无 warning/error。
+- 已交付 2026092702 候选包不包含本次分隔条增强；最终候选须重建后重新验收。

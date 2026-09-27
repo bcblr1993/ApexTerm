@@ -148,3 +148,11 @@
 
 - 最新 CopyFocus 实际点击全屏，保存 qa/current-fullscreen.png：终端、侧栏与文件表格无明显截断。随后在终端焦点按 Control+Command+F 意外打开终端查找栏；qa/current-fullscreen-restored.txt 保留实际 AX，不能计为退出全屏通过。
 - 终端键盘处理补齐 Control+Command+F 路由到窗口 toggleFullScreen，避免被 Command+F 查找或 Control+F 远程输入吞掉。回归测试断言窗口收到一次切换且无远程输入。tests-fullscreen-shortcut.log 8 项通过；tests-fullscreen-all.log 全量通过。实际修复后窗口验证与新签名候选尚待执行，2026092704 不包含本次修复。
+
+
+## 全屏修复实际窗口与候选 2026092705
+
+- FullScreenFix 最新代码窗口终端聚焦后连续 Control+Command+F 进入/退出全屏，正常窗按钮恢复，内容与终端焦点保留；Command+F 查找和 Escape 返回仍正常。qa/fullscreen-fix-enter.png、exit.png、对应 AX 与 fullscreen-fix-proof.json 五项断言通过。
+- 导入弹窗取消关闭，会话仍为 1 台；未执行导入，不保存真实配置内容。
+- 来源 6bd4ba1，候选 2026092705 完整 VM/测试/8 Release 基准门禁及零 Swift 警告通过，应用与 DMG 公证票据通过，最终哈希通过。VM assessments enabled，严格验签/票据/Gatekeeper accepted，Notarized Developer ID；实际新路径 /private/tmp/apexterm-candidate.Hh2M3O/，PID 6794 启动。证据 build-fullscreen-candidate.log 与 candidate/vm-fullscreen-install.log。
+- 整体剩余项目保持未完成，不把本次全屏验证扩展为全部窗口矩阵通过。

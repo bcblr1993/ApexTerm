@@ -112,6 +112,12 @@ struct ThemeVerificationApp: App {
                 }
             }
             .task {
+                // The initial scene does not trigger onChange, and restored window geometry
+                // can be smaller than a fixed-size form. Apply its real content size once.
+                if scene == "session" {
+                    try? await Task.sleep(for: .milliseconds(100))
+                    NSApplication.shared.windows.first(where: { $0.isVisible && $0.contentView != nil })?.setContentSize(NSSize(width: 560, height: 560))
+                }
                 telemetry.start()
                 if ProcessInfo.processInfo.environment["APEX_QA_KEY_DIAGNOSTICS"] == "1" {
                     var observedTerminals = Set<ObjectIdentifier>()

@@ -514,6 +514,10 @@ final class ApexTermUITests: XCTestCase {
         let match = try XCTUnwrap(pattern.firstMatch(in: outputText, range: NSRange(outputText.startIndex..., in: outputText)))
         let directoryRange = try XCTUnwrap(Range(match.range(at: 1), in: outputText))
         let directory = String(outputText[directoryRange])
+        let fixtureRecord = XCTAttachment(string: "Owned temporary directory: \(directory)\nOwned file: ui-real-file.txt\nNormal success removes the file through SFTP and removes the empty directory through SSH.\nIf this test fails, inspect this exact directory; do not recursively clean unrelated paths.")
+        fixtureRecord.name = "real-host-owned-fixture"
+        fixtureRecord.lifetime = .keepAlways
+        add(fixtureRecord)
         let path = app.textFields["远程路径"]
         path.click()
         path.typeKey("a", modifierFlags: .command)

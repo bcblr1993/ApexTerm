@@ -133,3 +133,12 @@
 - 2026092703 候选尚不包含复制后焦点修复；最终包仍需更新。完整 VM 门禁 `vm-gate-copy-focus.log` 已通过：真实 VM、全量测试与 8 项 Release 基准通过，零 warning/error。
 
 - 候选重建清理同时移除旧来源清单，避免公证中断时旧提交信息留在新包目录；对应清理测试通过。
+
+
+## 最新候选 2026092704 与主题检查
+
+- 来源提交 4dc9e76197d75ac81e94ca0d3752a73e09c5b81b，包含复制会话焦点恢复。构建前清理上一轮准确命名产物；完整 VM 门禁 131 项零失败、8 项 Release 基准与零 Swift 警告通过。GitHub CI 36292276431 completed/success。
+- 应用与 DMG 均完成官方 Developer ID 签名、Apple 公证及 staple/validate；最终两个产物 SHA256SUMS 校验通过。只读挂载卷名 ApexTerm Candidate，根目录仅候选应用和 Applications 链接，包内严格验签通过。证据 candidate/dmg-copy-focus-inspection.json。
+- macOS 27 VM assessments enabled；新包通过严格验签、票据与 Gatekeeper，来源 Notarized Developer ID，构建号 2026092704。实际新进程 PID 6525 路径 /private/tmp/apexterm-candidate.iJe3tw/ApexTerm Candidate.app/Contents/MacOS/ApexTerm。证据 candidate/vm-copy-focus-install.log。
+- 最新 CopyFocus 验收窗口实际切换全部 12 主题，逐张查看 qa/current-theme-00.png 至 11.png：主要文字、工具栏和文件表格无明显截断或布局回退，终端内容保留；检查数据 qa/current-theme-checks.json。结束恢复经典白色。此项覆盖主窗口，合成会话不替代真实 SSH，也不代表所有弹窗/系统外观组合已验收。
+- 整体目标仍未完成：实际绘制帧 P95 缺有效结果，VoiceOver 与系统对比度/透明度测试待已提出的设置确认，输入法及完整状态/窗口矩阵仍需补验。本次为可安装内部候选，未正式发布。

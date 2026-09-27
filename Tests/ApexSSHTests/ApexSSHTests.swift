@@ -5,6 +5,14 @@ import XCTest
 
 final class ApexSSHTests: XCTestCase {
 
+    func testWindowTitleDirectoryRejectsRunningCommands() {
+        XCTAssertEqual(NativeSSHSession.directoryFromWindowTitle("user@host: ~/目录"), "~/目录")
+        XCTAssertEqual(NativeSSHSession.directoryFromWindowTitle("host:/var/log"), "/var/log")
+        XCTAssertNil(NativeSSHSession.directoryFromWindowTitle("sleep 15; printf 'file://localhost/tmp/test'"))
+        XCTAssertNil(NativeSSHSession.directoryFromWindowTitle("https://example.com"))
+        XCTAssertNil(NativeSSHSession.directoryFromWindowTitle("user@host: uptime"))
+    }
+
     func testMockFileEditorRoundTrip() async throws {
         let session = Session(name: "UI Preview", host: "192.0.2.10", username: "root")
         let client = MockSSHSession(session: session)

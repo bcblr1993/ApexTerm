@@ -432,12 +432,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             let rest = text[start.upperBound...]
             if let end = rest.firstIndex(of: "\u{0007}") ?? rest.range(of: "\u{001B}\\")?.lowerBound {
                 let title = String(rest[..<end])
-                if let colon = title.range(of: ": ") {
-                    let rawPath = String(title[colon.upperBound...]).trimmingCharacters(in: .whitespaces)
-                    resolveAndDispatchDirectory(rawPath)
-                    return
-                } else if let colon = title.firstIndex(of: ":") {
-                    let rawPath = String(title[title.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
+                if let rawPath = Self.directoryFromWindowTitle(title) {
                     resolveAndDispatchDirectory(rawPath)
                     return
                 }
@@ -467,6 +462,18 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
                 resolveAndDispatchDirectory(raw)
             }
         }
+    }
+
+    /// Shells also put the running command in OSC titles. Only a host-prefixed title is a CWD hint.
+    static func directoryFromWindowTitle(_ title: String) -> String? {
+        guard let colon = title.firstIndex(of: ":") else { return nil }
+        let identity = title[..<colon]
+        guard !identity.isEmpty,
+              identity.allSatisfy({ $0.isLetter || $0.isNumber || "@._-".contains($0) }) else { return nil }
+        let path = title[title.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+        guard !path.hasPrefix("//") else { return nil }
+        guard path.hasPrefix("/") || path == "~" || path.hasPrefix("~/") else { return nil }
+        return path
     }
     
     private func startAgentlessProbeLoop() {

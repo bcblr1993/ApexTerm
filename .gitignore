@@ -1,4 +1,5 @@
 # macOS
+.ui-acceptance.env
 .DS_Store
 .AppleDouble
 .LSOverride

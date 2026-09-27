@@ -2,6 +2,9 @@
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+if [[ -f "${APEX_UI_CONFIG_FILE:-$ROOT_DIR/.ui-acceptance.env}" ]]; then
+    source "${APEX_UI_CONFIG_FILE:-$ROOT_DIR/.ui-acceptance.env}"
+fi
 if [[ $# -gt 1 || ( $# -eq 1 && "$1" != "--preflight-only" ) ]]; then
     echo 'Usage: test_ui_acceptance.sh [--preflight-only]' >&2
     exit 2
@@ -27,12 +30,11 @@ command -v xcodebuild >/dev/null
 : "${APEX_UI_TEST_USER:?Set APEX_UI_TEST_USER to the dedicated SSH test user}"
 automationmodetool help > "$REPORT_DIR/automation-mode.txt" 2>&1
 if ! grep -qi 'Automation Mode is enabled' "$REPORT_DIR/automation-mode.txt"; then
-    echo "UI acceptance requires Automation Mode. Enable it with user authentication before testing."
-    exit 1
+    echo "Automation Mode is currently disabled; Xcode must obtain authenticated activation when UI tests start."
 fi
 if [[ "${1:-}" == "--preflight-only" ]]; then
     STAGE=prerequisites-passed
-    echo "UI prerequisites passed; full UI execution is still required before packaging."
+    echo "UI tools and host configuration checked; authenticated full UI execution is still required before packaging."
     exit 0
 fi
 STAGE=product-build
@@ -69,10 +71,14 @@ source.write_bytes(plistlib.dumps(config))
 PY
 TEST_RUN_FILE="$(cat "$REPORT_DIR/xctestrun-path.txt")"
 STAGE=ui-test-execution
+if [[ -n "${APEX_UI_TEST_VM:-}${APEX_UI_RUNNER_HOST:-}" ]]; then
+    python3 scripts/run_ui_tests_remotely.py "$REPORT_DIR" 2>&1 | tee "$REPORT_DIR/remote-execution.log"
+else
 xcodebuild test-without-building -xctestrun "$TEST_RUN_FILE" \
     -destination 'platform=macOS,arch=arm64' -jobs 2 -parallel-testing-enabled NO \
     -resultBundlePath "$REPORT_DIR/UI.xcresult" \
     2>&1 | tee "$REPORT_DIR/ui-tests.log"
+fi
 STAGE=ui-result-verification
 xcrun xcresulttool get test-results summary --path "$REPORT_DIR/UI.xcresult" --compact \
     > "$REPORT_DIR/summary.json"

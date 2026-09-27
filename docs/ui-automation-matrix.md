@@ -1,10 +1,10 @@
 # UI 自动化与发布门禁
 
-每次正式发布与签名候选构建必须执行 `bash scripts/test_ui_acceptance.sh`。入口已接入 `scripts/build_app.sh` 和 `scripts/build_candidate.py`，任何编译、权限、连接或断言失败都停止后续打包，不允许跳过。两个构建入口在清理旧产物或启动虚拟机之前先执行--preflight-only；预检查通过只证明前置条件，不替代后面的全量UI执行。CI编译测试工程；本地发布机执行实际窗口测试，两者不可互相替代。
+每次正式发布与签名候选构建必须执行 `bash scripts/test_ui_acceptance.sh`。入口已接入 `scripts/build_app.sh` 和 `scripts/build_candidate.py`，任何编译、权限、连接或断言失败都停止后续打包，不允许跳过。两个构建入口在清理旧产物或启动虚拟机之前先执行--preflight-only；预检查通过只证明前置条件，不替代后面的全量UI执行。CI编译测试工程；发布门禁必须实际执行窗口测试。设置APEX_UI_RUNNER_HOST与APEX_UI_RUNNER_USER可在专用Mac执行；设置APEX_UI_TEST_VM则使用已启动并解锁的Tart虚拟机。两种远程模式均在目标机重编译Runner以匹配其Xcode版本，单进程运行并收集成功或失败的xcresult，再由同一个严格结果门禁验收。
 
 测试工程为 `UITests/ApexTermUITests.xcodeproj`，使用XCUITest实际点击、输入和键盘操作。隔离QA宿主链接当前Release产品模块，每次自动化启动使用UUID独立会话目录，恢复QA默认偏好，不读取正式应用会话库。偏好重置要求QA应用标识前缀，避免应用标识配置错误时改写正式偏好。系统主题、输入法、安全权限不由脚本静默修改。报告按每次运行独立保存到 `outputs/ui-acceptance/<时间>-<PID>/UI.xcresult`，包含截图、断言和失败日志；前置条件检查即创建报告，run-status.txt记录失败阶段与退出码，测试源码快照和SHA256随报告保存，运行期间测试源码变化会拒绝打包，构建和执行分别留日志；不进入分发包或Git。
 
-运行前需要解锁的macOS桌面、完整Xcode、已通过用户认证开启的Automation Mode、可无交互SSH登录的专用测试机器。测试主机通过 `APEX_UI_TEST_HOST`、`APEX_UI_TEST_USER` 配置，不在代码内保留地址或凭据。缺少配置直接失败，真实连接测试没有skip回退。
+运行前需要解锁的macOS桌面、完整Xcode、允许Xcode通过用户认证临时开启Automation Mode的权限、可无交互SSH登录的专用测试机器。测试主机通过 `APEX_UI_TEST_HOST`、`APEX_UI_TEST_USER` 配置，不在代码内保留地址或凭据。缺少配置直接失败，真实连接测试没有skip回退。
 
 ```bash
 APEX_UI_TEST_HOST=<测试主机> APEX_UI_TEST_USER=<测试用户> bash scripts/test_ui_acceptance.sh
@@ -27,8 +27,10 @@ APEX_UI_TEST_HOST=<测试主机> APEX_UI_TEST_USER=<测试用户> bash scripts/t
 | 系统无障碍 | 既有AX操作证据与主题对比度测试 | VoiceOver、全键盘访问、增强对比度、减少透明度/动态效果、系统外观尚未转为自动化；需隔离桌面及授权，不修改日常系统设置 |
 | 性能稳定性 | test_vm_acceptance.sh、FullPerformanceBenchmarkTests；外部RSS采样工具 | 八项基准已有发布门禁；30分钟真实负载、应用归属帧P95与同条件基线尚需接入自动化报告与阈值 |
 
-当前状态：测试工程已在Xcode27/Swift6编译通过；实际执行被“Timed out while enabling automation mode”阻塞，系统确认Automation Mode disabled且需要用户认证。没有将零条执行或编译成功计为UI通过。上述待补项表示全量UI自动化仍未完成，本门禁是可执行基础，不能据此声称历史UI验收全部覆盖。
+当前状态：测试工程已在Xcode27/Swift6编译通过。本机通过Xcode界面启动后，已实际执行部分用例并发现断言失败。专用Mac通过系统认证成功启用自动化；修正静态文本AXValue查询后，搜索空状态与恢复用例实际通过（1 test, 0 failures），完整31条套件正在排查，尚无全量通过结果。Tart首次运行报“Timed out while enabling automation mode”，正在验证虚拟机桌面与授权流程。Automation Mode在空闲时disabled不代表没有执行权限：Xcode可能在执行期间临时启用，执行后关闭，因此预检查只记录此状态，实际执行与结果校验仍为强制门禁。没有将零条执行或编译成功计为UI通过。上述待补项表示全量UI自动化仍未完成，本门禁是可执行基础，不能据此声称历史UI验收全部覆盖。
 
 后续新增UI修复必须在表中找到对应场景或新增场景，并将真实窗口行为纳入断言。无需真实网络的受控UI状态和真实SSH/SFTP场景分别记录，所有release-required场景应由同一入口执行。截屏、人眼历史记录、窄单元测试均不代替实际窗口行为断言。
 
 结果门禁：xcresulttool导出summary后，verify_ui_results.py要求Passed、当前全部测试数量一致、零失败/跳过/预期失败。结果校验的3项Python测试通过，实际Automation Mode失败xcresult也已实测被拒绝。另逐条核对测试名称及结果，重复测试不能替代漏跑测试。此校验是执行完整性检查，不等于全量历史UI需求覆盖证明。
+
+本机目标配置：入口自动读取被Git忽略的`.ui-acceptance.env`，仅配置测试端点与用户，不存储密码或私钥。环境变量可覆盖默认配置，APEX_UI_CONFIG_FILE可指定其他配置文件。远程SSH使用临时agent转发，测试启动时传递有效SSH_AUTH_SOCK；不复制私钥。运行结束后SSH转发随连接关闭，诊断目录保留供审阅。该配置不进入应用资源。

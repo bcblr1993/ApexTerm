@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class UIReleaseGateTests(unittest.TestCase):
-    def run_gate(self, configured, enabled=False, preflight=False):
+    def run_gate(self, configured, enabled=False, preflight=True):
         with tempfile.TemporaryDirectory() as directory:
             tools = Path(directory)
             marker = tools / 'build-started'
@@ -24,6 +24,7 @@ class UIReleaseGateTests(unittest.TestCase):
             environment = os.environ.copy()
             environment['PATH'] = str(tools) + os.pathsep + environment.get('PATH', '')
             environment['APEX_UI_REPORT_ROOT'] = str(tools / 'reports')
+            environment['APEX_UI_CONFIG_FILE'] = '/dev/null'
             environment.pop('APEX_UI_TEST_HOST', None)
             environment.pop('APEX_UI_TEST_USER', None)
             if configured:
@@ -33,7 +34,7 @@ class UIReleaseGateTests(unittest.TestCase):
                 command.append('--preflight-only')
             result = subprocess.run(command,
                                     env=environment, capture_output=True, text=True)
-            successful = configured and enabled and preflight
+            successful = configured and preflight
             if successful:
                 self.assertEqual(result.returncode, 0)
             else:
@@ -52,14 +53,14 @@ class UIReleaseGateTests(unittest.TestCase):
     def test_missing_real_host_stops_gate(self):
         self.assertIn('APEX_UI_TEST_HOST', self.run_gate(False))
 
-    def test_disabled_automation_stops_gate(self):
-        self.assertIn('requires Automation Mode', self.run_gate(True))
+    def test_idle_disabled_mode_requires_activation_at_execution(self):
+        self.assertIn('authenticated activation', self.run_gate(True))
 
     def test_preflight_success_does_not_claim_ui_execution(self):
         self.assertIn('full UI execution is still required', self.run_gate(True, enabled=True, preflight=True))
 
-    def test_disabled_automation_also_stops_preflight(self):
-        self.assertIn('requires Automation Mode', self.run_gate(True, preflight=True))
+    def test_preflight_never_counts_as_authenticated_ui_acceptance(self):
+        self.assertIn('authenticated full UI execution', self.run_gate(True, preflight=True))
 
 
 if __name__ == '__main__':

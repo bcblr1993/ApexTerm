@@ -296,6 +296,19 @@ final class ApexTermUITests: XCTestCase {
         capture("ssh-config-cancel-no-import")
     }
 
+    func testSSHConfigEmptyImportDisabledAndCancel() {
+        launch("import-sheet", extra: ["APEX_QA_IMPORT_CONFIG": "empty"])
+        XCTAssertTrue(app.staticTexts["没有找到主机配置"].waitForExistence(timeout: 5))
+        let importButton = app.buttons["导入选中的 0 台主机"]
+        XCTAssertTrue(importButton.exists)
+        XCTAssertFalse(importButton.isEnabled)
+        XCTAssertFalse(app.buttons["全选"].exists)
+        capture("ssh-config-empty-disabled")
+        app.buttons["取消"].click()
+        XCTAssertFalse(app.sheets.firstMatch.exists)
+        XCTAssertTrue(app.buttons["显示导入弹窗"].isHittable)
+    }
+
     func testSFTPCreateFileCancelAndSuccessfulListing() {
         launch("main", extra: ["APEX_QA_CONNECT": "1"])
         XCTAssertTrue(app.staticTexts["nginx.conf"].waitForExistence(timeout: 10))

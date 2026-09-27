@@ -23,7 +23,7 @@ APEX_UI_TEST_HOST=<测试主机> APEX_UI_TEST_USER=<测试用户> bash scripts/t
 | 编辑器 | testEditorUnsavedCancelSaveAndClose、testEditorSaveFailureKeepsChanges、testEditorSaveFailureRetryRecovers、testEditorReloadCancelAndDiscard、testEditorReloadFailureRetryPreservesContent、testEditorChangesDuringSaveRemainUnsaved、testEditorKeyboardFindUndoAndSave；QuickEditorAndSFTPItemTests；主题页面截图 | 已编写真实sheet修改、未保存关闭取消、保存禁用/完成/关闭、失败保留内容断言；编译通过但Automation Mode未授权，尚未运行。已编写重载取消保留草稿/放弃后远端内容替换断言；另覆盖保存途中继续编辑后仍提示未保存、再次保存后关闭；新增原生查找不改变内容、撤销/重做及⌘S/⌘W流程断言；新增保存首次失败后再次保存成功、错误消失、内容保留、正常关闭且无未保存提示断言；另覆盖重载失败保留内容、再次重载成功替换远端内容并关闭；全部新增用例仍需实际Runner验收 |
 | 传输任务中心 | testTransferRecordFiltersAndClearCompleted | 受控成功上传与失败下载记录、全部/上传/下载筛选、清空成功记录而保留失败；仅状态注入，不代表真实文件传输通过，实际Runner尚未执行 |
 | 主窗口 | testTerminalSplitOrientationAndClose；UIStateTests、SplitPaneIntegrationTests；主题页面截图 | 新增受控终端左右/上下分屏的窗口位置、两窗格计数及关闭后单窗格断言；状态与分屏模型已有单元测试；全屏、最小尺寸、非激活、分隔比例与标签关闭实际窗口断言待补 |
-| OpenSSH导入 | testSSHConfigImportSelectionAndDuplicateRecovery、testSSHConfigImportSheetCancelDoesNotImport | 隔离配置的全选/取消全选、空选择禁用、导入成功提示、会话可搜索及重复导入不增加计数；新增真实sheet Escape/取消关闭、重新打开及取消后会话计数不变且导入主机不可搜索断言；畸形配置错误页待补，当前用例尚未实际运行 |
+| OpenSSH导入 | testSSHConfigImportSelectionAndDuplicateRecovery、testSSHConfigImportSheetCancelDoesNotImport、testSSHConfigEmptyImportDisabledAndCancel | 隔离配置的全选/取消全选、空选择禁用、导入成功提示、会话可搜索及重复导入不增加计数；新增真实sheet Escape/取消关闭、重新打开及取消后会话计数不变且导入主机不可搜索断言；新增空配置中文空状态、禁用导入、无全选及取消返回；畸形配置错误页待补，当前用例尚未实际运行 |
 | 系统无障碍 | 既有AX操作证据与主题对比度测试 | VoiceOver、全键盘访问、增强对比度、减少透明度/动态效果、系统外观尚未转为自动化；需隔离桌面及授权，不修改日常系统设置 |
 | 性能稳定性 | test_vm_acceptance.sh、FullPerformanceBenchmarkTests；外部RSS采样工具 | 八项基准已有发布门禁；30分钟真实负载、应用归属帧P95与同条件基线尚需接入自动化报告与阈值 |
 

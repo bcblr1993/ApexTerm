@@ -41,7 +41,8 @@ struct ThemeVerificationApp: App {
         store = SessionStore(baseDirectory: directory)
         importConfigURL = directory.appendingPathComponent("ssh-config")
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try? "Host qa-demo\n    HostName 192.0.2.10\n    User demo\n".write(to: importConfigURL, atomically: true, encoding: .utf8)
+        let importConfig = environment["APEX_QA_IMPORT_CONFIG"] == "empty" ? "# Empty acceptance configuration\n" : "Host qa-demo\n    HostName 192.0.2.10\n    User demo\n"
+        try? importConfig.write(to: importConfigURL, atomically: true, encoding: .utf8)
         let realHost = environment["APEX_QA_REAL_HOST"]
         var session = Session(name: "主题验收 · 演示", host: realHost ?? "192.0.2.10", username: environment["APEX_QA_REAL_USER"] ?? "demo", authMethod: .password(keychainRef: ""), agentlessMonitorEnabled: environment["APEX_QA_MONITOR"] != "0")
         if environment["APEX_QA_SESSION_AUTH"] == "private-key" {

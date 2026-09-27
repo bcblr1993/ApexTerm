@@ -257,3 +257,11 @@
 - 待全部测试结束、真实 SSH 提示符稳定后，sky.paste 指定 echo APEX_PASTE_FOCUS 并回车，实际窗口显示执行结果及下一提示符，工具未超时。qa/paste-focus-proof.json markerOccurrences=2，截图 paste-focus-success.png。
 - 最早粘贴复验与修改剪贴板的测试并发，原有内容进入窗口；该尝试无效。随后快捷键入口增加第一响应者限制并独立复验成功。
 - 本项仅证明直接启动 QA 的真实粘贴链路；正常启动、输入法候选与双向拖拽仍待完成。
+
+### 真实 SFTP 创建、编辑保存和重新加载
+
+- 在 /tmp/apexterm-ui-rxr9pSmP 的真实 SFTP 菜单新建 editor-acceptance-20260927.conf，界面出现行，远端 stat 确认为 0 字节。
+- 双击打开实际编辑器，填写独立测试内容并保存，UI 显示保存完成；远端 stat 为 67 字节，SHA256 与预期 payload 完全一致：4c65adea9f3be8a71c14fb5371c031317309d6107f8bbfc8f52f872e159e02b8。
+- qa/real-editor-save-hash-proof.json 记录哈希及字节数；实际重新加载读回 source=private-qa/value=20260927，real-editor-reload-proof.json 两字段存在且无失败。
+- 关闭编辑器返回列表后，实际文件行显示 67 B，截图 real-editor-saved-list.png；覆盖真实创建、空文件编辑、保存成功、重新加载及列表刷新。
+- 本项使用隔离 QA 直接启动，未覆盖正常启动、失败/取消传输及双向拖拽。e3d4ad3 CI 已成功；ba8c28b CI 尚在运行。

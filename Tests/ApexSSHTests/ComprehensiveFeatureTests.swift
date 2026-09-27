@@ -331,6 +331,63 @@ final class ComprehensiveFeatureTests: XCTestCase {
         XCTAssertTrue(provider.hasItemConformingToTypeIdentifier(UTType.data.identifier))
     }
 
+    func testCancellingDragExportStopsDownloadAndRecordsCancellation() async throws {
+        let client = MockSSHSession(session: Session(name: "cancel-export", host: "192.0.2.10", username: "demo"))
+        let path = "/cancel/" + UUID().uuidString + ".txt"
+        let provider = SFTPDragExportHelper.makeItemProvider(
+            for: SFTPItem(name: "cancel.txt", path: path, isDirectory: false), session: client)
+        let completion = expectation(description: "Cancelled export completion")
+        let progress = provider.loadFileRepresentation(forTypeIdentifier: UTType.fileURL.identifier) { url, error in
+            XCTAssertNil(url)
+            XCTAssertNotNil(error)
+            completion.fulfill()
+        }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(1))
+        while !TransferManager.shared.tasks.contains(where: { $0.remotePath == path }) && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        XCTAssertTrue(TransferManager.shared.tasks.contains { $0.remotePath == path })
+        try XCTUnwrap(progress).cancel()
+        await fulfillment(of: [completion], timeout: 2)
+        let task = try XCTUnwrap(TransferManager.shared.tasks.first { $0.remotePath == path })
+        XCTAssertEqual(task.status, .cancelled)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: task.localURL.path))
+    }
+
+    func testAbandonedDragDoesNotStartATransfer() async throws {
+        let client = MockSSHSession(session: Session(name: "abandoned-export", host: "192.0.2.10", username: "demo"))
+        let path = "/abandoned/" + UUID().uuidString + ".txt"
+        let provider = SFTPDragExportHelper.makeItemProvider(
+            for: SFTPItem(name: "abandoned.txt", path: path, isDirectory: false), session: client)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertTrue(provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier))
+        XCTAssertFalse(TransferManager.shared.tasks.contains { $0.remotePath == path })
+    }
+
+    func testDragExportsWithSameNamePreserveDistinctContents() async throws {
+        let client = MockSSHSession(session: Session(name: "export-isolation", host: "192.0.2.10", username: "demo"))
+        let first = SFTPDragExportHelper.makeItemProvider(
+            for: SFTPItem(name: "same.txt", path: "/first/same.txt", isDirectory: false), session: client)
+        let second = SFTPDragExportHelper.makeItemProvider(
+            for: SFTPItem(name: "same.txt", path: "/second/same.txt", isDirectory: false), session: client)
+        func load(_ provider: NSItemProvider) async throws -> (String, Data) {
+            try await withCheckedThrowingContinuation { continuation in
+                provider.loadFileRepresentation(forTypeIdentifier: UTType.fileURL.identifier) { url, error in
+                    do {
+                        if let error { throw error }
+                        guard let url else { throw NSError(domain: "ExportTest", code: 1) }
+                        continuation.resume(returning: (url.path, try Data(contentsOf: url)))
+                    } catch { continuation.resume(throwing: error) }
+                }
+            }
+        }
+        let firstResult = try await load(first)
+        let secondResult = try await load(second)
+        XCTAssertNotEqual(firstResult.0, secondResult.0)
+        XCTAssertTrue(String(decoding: firstResult.1, as: UTF8.self).contains("/first/same.txt"))
+        XCTAssertTrue(String(decoding: secondResult.1, as: UTF8.self).contains("/second/same.txt"))
+    }
+
     // MARK: - 11. All 4 Transfer Scenarios Record in TransferManager Tests
     
     func testAllFourTransferScenariosRecordInTransferManager() async {

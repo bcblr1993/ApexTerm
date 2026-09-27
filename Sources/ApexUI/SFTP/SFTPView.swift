@@ -961,8 +961,9 @@ public enum SFTPDragExportHelper {
         session: (any SSHSessionProtocol)?,
         onStatusChange: (@Sendable @MainActor (String) -> Void)? = nil
     ) -> NSItemProvider {
-        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("ApexTermTransfers", isDirectory: true)
-        try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ApexTermTransfers", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
         let localURL = tempDir.appendingPathComponent(item.name)
 
         let provider = NSItemProvider()
@@ -972,82 +973,56 @@ public enum SFTPDragExportHelper {
         let ext = (item.name as NSString).pathExtension
         let specificType: UTType = item.isDirectory ? .folder : (UTType(filenameExtension: ext) ?? .data)
 
-        // Show immediate visual feedback
-        if let onStatusChange {
-            Task { @MainActor in
-                onStatusChange("正在下载并导出: \(item.name)...")
-            }
-        }
-
-        // Register drag download task with TransferManager immediately
         let taskId = UUID()
-        Task { @MainActor in
-            TransferManager.shared.beginExternalTransfer(
-                id: taskId,
-                fileName: item.name,
-                remotePath: item.path,
-                localURL: localURL,
-                direction: .download,
-                totalBytes: Int64(item.size)
-            )
-        }
-
-        // Asynchronously start pre-fetching download as soon as user begins dragging
-        let downloadTask = Task.detached(priority: .userInitiated) { [session] () -> Bool in
-            guard let session = session else { return false }
+        let export = SFTPExportDownload {
+            guard let session else {
+                throw NSError(domain: "SFTPDragExport", code: 404,
+                              userInfo: [NSLocalizedDescriptionKey: "No active SSH session"])
+            }
+            await MainActor.run {
+                TransferManager.shared.beginExternalTransfer(
+                    id: taskId, fileName: item.name, remotePath: item.path,
+                    localURL: localURL, direction: .download, totalBytes: Int64(item.size))
+                onStatusChange?("正在下载并导出: \(item.name)...")
+            }
             do {
-                try await session.downloadFile(remotePath: item.path, localURL: localURL, progress: { p in
+                try Task.checkCancellation()
+                try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+                try await session.downloadFile(remotePath: item.path, localURL: localURL) { fraction in
                     Task { @MainActor in
-                        TransferManager.shared.updateExternalProgress(taskId: taskId, fraction: p)
+                        TransferManager.shared.updateExternalProgress(taskId: taskId, fraction: fraction)
                     }
-                })
-                return true
+                }
+                try Task.checkCancellation()
+                await MainActor.run {
+                    TransferManager.shared.completeExternalTransfer(taskId: taskId)
+                    onStatusChange?("拖拽导出完成: \(item.name)")
+                }
+                return localURL
             } catch {
-                return false
+                await MainActor.run {
+                    if error is CancellationError {
+                        TransferManager.shared.cancelExternalTransfer(taskId: taskId)
+                        onStatusChange?("拖拽下载已取消: \(item.name)")
+                    } else {
+                        TransferManager.shared.failExternalTransfer(taskId: taskId, error: error)
+                        onStatusChange?("拖拽下载失败: \(error.localizedDescription)")
+                    }
+                }
+                throw error
             }
         }
-
         let loadHandler: @Sendable (@escaping @Sendable (URL?, Bool, (any Error)?) -> Void) -> Progress? = { completion in
             let progress = Progress(totalUnitCount: Int64(max(item.size, 1)))
+            progress.cancellationHandler = { Task { await export.cancel() } }
             Task {
-                let success = await downloadTask.value
-                if !success || !FileManager.default.fileExists(atPath: localURL.path) {
-                    do {
-                        if let session = session {
-                            try await session.downloadFile(remotePath: item.path, localURL: localURL, progress: { p in
-                                progress.completedUnitCount = Int64(Double(item.size) * p)
-                                Task { @MainActor in
-                                    TransferManager.shared.updateExternalProgress(taskId: taskId, fraction: p)
-                                }
-                            })
-                        } else {
-                            throw NSError(domain: "SFTPDragExport", code: 404, userInfo: [NSLocalizedDescriptionKey: "No active SSH session"])
-                        }
-                    } catch {
-                        if let onStatusChange {
-                            Task { @MainActor in
-                                onStatusChange("拖拽下载失败: \(error.localizedDescription)")
-                            }
-                        }
-                        Task { @MainActor in
-                            TransferManager.shared.failExternalTransfer(taskId: taskId, error: error)
-                        }
-                        completion(nil, false, error)
-                        return
-                    }
-                }
-                
-                progress.completedUnitCount = Int64(max(item.size, 1))
-                if let onStatusChange {
-                    Task { @MainActor in
-                        onStatusChange("拖拽导出完成: \(item.name)")
-                    }
-                }
-                Task { @MainActor in
-                    TransferManager.shared.completeExternalTransfer(taskId: taskId)
-                }
-                // Coordinated: false allows standard filesystem destination copying by Finder/Desktop
-                completion(localURL, false, nil)
+                do {
+                    guard !progress.isCancelled else { throw CancellationError() }
+                    let url = try await export.value()
+                    guard !progress.isCancelled else { throw CancellationError() }
+                    progress.completedUnitCount = progress.totalUnitCount
+                    completion(url, false, nil)
+                } catch { completion(nil, false, error) }
             }
             return progress
         }
@@ -1069,3 +1044,23 @@ public enum SFTPDragExportHelper {
     }
 }
 
+
+/// Shares a single lazy download across the representations requested by Finder.
+private actor SFTPExportDownload {
+    private let operation: @Sendable () async throws -> URL
+    private var task: Task<URL, Error>?
+    private var isCancelled = false
+
+    init(operation: @escaping @Sendable () async throws -> URL) { self.operation = operation }
+
+    func value() async throws -> URL {
+        guard !isCancelled else { throw CancellationError() }
+        if task == nil { task = Task { try await operation() } }
+        return try await task!.value
+    }
+
+    func cancel() {
+        isCancelled = true
+        task?.cancel()
+    }
+}

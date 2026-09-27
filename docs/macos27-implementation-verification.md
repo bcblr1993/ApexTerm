@@ -322,3 +322,9 @@
 ### ⌘W 窗口范围与未保存内容（2026-09-27）
 
 主窗口通过 focused scene 标记参与连接关闭命令；设置窗口及 sheet 不关闭后台连接标签。编辑器底部关闭按钮绑定 ⌘W，复用原有未保存确认及保存/重载禁用保护，顶部 Escape 行为保留。真实产品窗口验证：活动连接存在时打开设置，⌘W 关闭设置且标签/终端内容保留；编辑器修改合成内容后 ⌘W 显示放弃确认，继续编辑保留内容；回主窗口复制为两个标签，⌘W 后剩一个且连接保留。证据：`main-command-smoke/settings-active-connection-proof.json`、`editor-command-w-unsaved-proof.txt`、`editor-command-w-cancel-proof.txt`、`scoped-tab-close-proof.json`（均位于 outputs/macos27）。验收后退出，进程检查无残留。
+
+### 拖拽导出隔离与取消（2026-09-27）
+
+发现两个目录的同名文件导出共用临时路径，新增真实 NSItemProvider 文件加载回归，修复前失败、独立 UUID 目录后通过。导出改为消费者请求文件时才启动下载，各表示共享一次下载；放弃未投放拖拽不创建传输任务，Progress 取消会取消下载并记录取消状态。相关 15 项测试通过，取消验证同时断言没有生成文件。全量真实 VM 测试日志为 `outputs/macos27/tests-lazy-drag-full.log`。真实 Finder 双向拖拽仍需实际窗口与哈希验收，不以 provider 测试替代。
+
+候选 2026092710 来源 530a13e，应用/DMG 公证 Accepted、票据与 SHA256 校验通过；本次拖拽修改尚未纳入此候选。

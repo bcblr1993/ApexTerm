@@ -175,3 +175,11 @@
 
 - 实际查看通用、操作习惯、SFTP传输、数据备份四标签；qa/settings-tab-0..3.png。通用显示 QA bundle 缺版本元数据的回退值，不作为正式候选版本证明。操作习惯额外 Divider 被 grouped Form 渲染为空行；再次稳定截图 settings-habits-stable.png 确认。
 - 移除行为表单额外 Divider，保留系统行分隔；重新编译 SettingsSpacing QA，实际 settings-spacing-fixed.png 确认多余空行消失且两开关和缓冲区控件保留。swift build 通过。候选 2026092705 尚不包含此布局修复；最终候选须更新。
+
+
+## 设置操作与最新 CI
+
+- settings-habit-actions.json：自动复制与右键粘贴各 off→on，缓冲区 10000→11000→10000。settings-sftp-actions.json：隐藏文件与目录联动各 off→on，并发数 3→4→3。均为真实控件操作，结束恢复原值，不替代真实传输吞吐验证。
+- download-directory-cancel.json：系统目录选择器 Escape 关闭后返回设置，原下载目录保持。settings-dark-tab-0..3.png 记录代表性深色外观；SFTP 第一开关在首帧截图未绘出，AX 与前述交互正常，不据此宣称该截图全部控件已通过。结束恢复经典白色。
+- CI 36292740035（bc01dbc 焦点等待修正）success；36292865307（最新产品 19766a6）全部步骤 success，包括 Debug、全量测试与 Release 编译。
+- 候选 2026092706 应用已公证并安装到 macOS 27 VM；assessments enabled、严格验签/票据/Gatekeeper accepted，来源 Notarized Developer ID，PID 7130 实际新路径 /private/tmp/apexterm-candidate.IaFb9l/。证据 candidate/vm-settings-install.log。DMG 公证仍在运行，最终哈希/挂载未计通过。

@@ -215,13 +215,16 @@ struct ThemeVerificationApp: App {
         let payload = Data(repeating: 0x5A, count: 256 * 1024)
         try? payload.write(to: upload)
         let start = ContinuousClock.now
+        // Short diagnostics exercise the same shutdown path; final acceptance still uses 1800 seconds.
+        let requestedSeconds = Int(ProcessInfo.processInfo.environment["APEX_QA_SOAK_SECONDS"] ?? "1800") ?? 1800
+        let durationSeconds = min(max(requestedSeconds, 1), 1800)
         var cycle = 0
         var transfers = 0
         var echoes = 0
         var failures: [String] = []
         let manager = TransferManager.shared
-        func report(completed: Bool) {
-            let data: [String: Any] = ["completed": completed, "outputSource": realSSH ? "real SSH PTY output" : "synthetic RingBuffer load", "elapsed": start.duration(to: .now).description,
+        func report(completed: Bool, phase: String = "workload") {
+            let data: [String: Any] = ["completed": completed, "phase": phase, "requestedDurationSeconds": durationSeconds, "outputSource": realSSH ? "real SSH PTY output" : "synthetic RingBuffer load", "elapsed": start.duration(to: .now).description,
                 "outputLines": cycle * 80, "committedLines": tab.ringBuffer.committedLineCount,
                 "historyLimit": tab.ringBuffer.maxLines, "transferChecks": transfers,
                 "transferRecords": manager.tasks.count, "inputChecks": echoes, "metricHistory": tab.metricsHistory.snapshots.count,
@@ -230,7 +233,7 @@ struct ThemeVerificationApp: App {
                 try? json.write(to: root.appendingPathComponent("progress.json"), options: .atomic)
             }
         }
-        while start.duration(to: .now) < .seconds(1800) && !Task.isCancelled {
+        while start.duration(to: .now) < .seconds(durationSeconds) && !Task.isCancelled {
             let logs = (0..<80).map { "[QA] cycle=\(cycle) row=\($0) status=OK simulated output for bounded scrollback\n" }.joined()
             if realSSH {
                 let command = "for i in {0..79}; do printf '[QA] cycle=\(cycle) row=%s status=OK\\n' \"$i\"; done\r"
@@ -261,20 +264,25 @@ struct ThemeVerificationApp: App {
             if cycle % 300 == 0 {
                 // A fresh destination prevents stale bytes from passing a failed download.
                 let download = root.appendingPathComponent("roundtrip-\(UUID().uuidString).bin")
-                manager.enqueueUpload(session: tab.sshClient, localURL: upload, remotePath: remotePayload)
+                let uploadID = manager.enqueueUpload(session: tab.sshClient, localURL: upload, remotePath: remotePayload)
                 while manager.activeCount > 0 && !Task.isCancelled { try? await Task.sleep(for: .milliseconds(20)) }
-                manager.enqueueDownload(session: tab.sshClient, remotePath: remotePayload, localURL: download, totalBytes: Int64(payload.count))
+                let uploadSucceeded = manager.tasks.first(where: { $0.id == uploadID })?.status == .completed
+                let downloadID = manager.enqueueDownload(session: tab.sshClient, remotePath: remotePayload, localURL: download, totalBytes: Int64(payload.count))
                 while manager.activeCount > 0 && !Task.isCancelled { try? await Task.sleep(for: .milliseconds(20)) }
-                if (try? Data(contentsOf: download)) == payload { transfers += 1 }
-                else { failures.append("Transfer contents mismatch at cycle \(cycle)") }
+                let downloadSucceeded = manager.tasks.first(where: { $0.id == downloadID })?.status == .completed
+                if uploadSucceeded && downloadSucceeded && (try? Data(contentsOf: download)) == payload { transfers += 1 }
+                else { failures.append("Transfer task failed or contents mismatched at cycle \(cycle)") }
             }
             cycle += 1
             if cycle % 100 == 0 { report(completed: false) }
             try? await Task.sleep(for: .milliseconds(100))
         }
-        report(completed: !Task.isCancelled && start.duration(to: .now) >= .seconds(1800))
+        let workloadCompleted = !Task.isCancelled && start.duration(to: .now) >= .seconds(durationSeconds)
+        report(completed: workloadCompleted, phase: "disconnecting")
         await tab.sshClient.disconnect()
+        report(completed: workloadCompleted, phase: "disconnected")
         try? await Task.sleep(for: .seconds(30))
+        report(completed: workloadCompleted, phase: "terminationRequested")
         NSApplication.shared.terminate(nil)
     }
 

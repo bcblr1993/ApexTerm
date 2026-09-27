@@ -56,9 +56,14 @@ final class TerminalCompositionTests: XCTestCase {
             context.cgContext.translateBy(x: 0, y: 100)
             context.cgContext.scaleBy(x: 1, y: -1)
             NSGraphicsContext.current = NSGraphicsContext(cgContext: context.cgContext, flipped: true)
+            print("Composition bitmap: bounds=\(terminal.bounds), origin=\(terminal.textContainerOrigin), font=\(String(describing: terminal.font)), glyphBounds=\(terminal.layoutManager!.boundingRect(forGlyphRange: NSRange(location: 0, length: terminal.layoutManager!.numberOfGlyphs), in: terminal.textContainer!)), marked=\(terminal.hasMarkedText())")
             terminal.draw(terminal.bounds)
             XCTAssertNotNil(NSGraphicsContext.current, "AppKit must retain the offscreen drawing context")
+            context.cgContext.setFillColor(CGColor(red: 1, green: 0, blue: 1, alpha: 1))
+            context.cgContext.fill(CGRect(x: 410, y: 90, width: 5, height: 5))
             context.flushGraphics()
+            XCTAssertGreaterThan(try XCTUnwrap(bitmap.colorAt(x: 412, y: 7)).alphaComponent, 0,
+                                 "The offscreen bitmap must receive actual drawing operations")
             return try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
         }
         let before = try pixels()

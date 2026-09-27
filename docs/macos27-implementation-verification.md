@@ -190,3 +190,10 @@
 - qa/session-validation-proof.json 记录空主机禁用保存、恢复有效地址可保存、密钥模式隐藏密码并显示Agent说明、恢复密码模式；未保存未连接。
 - 最新实际会话窗口切换12主题，qa/session-theme-00..11.png 与 session-theme-checks.json；逐张查看发现部分浅强调色的认证选项和保存按钮白字对比偏低，未将所有主题可读性记为通过。
 - 保存按钮额外 tint 覆盖 apexProminentButton 的可读强调色，删除覆盖；分段认证 Picker 使用同一 buttonAccent。build-session-contrast.log 编译通过；实际 session-contrast-mocha.png 确认两处变为深紫、白字更清晰。其余主题修复后的复验待完成。候选2706来源19766a6，不含本次修复，未把运行中的公证包与新代码混同。
+
+
+## 会话按钮12主题复验完成
+
+- 修复后实际 SessionContrast 窗口逐张检查 session-contrast-mocha.png、session-contrast-0..3.png 与 session-contrast-rest-0..6.png，合计12主题；认证选中项与保存按钮底色均使用可读强调色，当前可见表单无明显布局回退。仅覆盖该视口，不涵盖下方控件及所有无障碍组合。
+- tests-session-contrast-all.log 全量测试零失败。最新候选仍未包含99cc122修复。
+- Apple history诊断最新为2706应用 notarization.zip Accepted（03:58:12Z）；新DMG提交尚未出现在history，最新可见DMG Accepted为上一轮03:52:07Z。当前notarytool submit进程仍活跃，不以旧DMG状态冒充本轮成功，也不因等待超时重启。诊断 notary-history-diagnostic.json。

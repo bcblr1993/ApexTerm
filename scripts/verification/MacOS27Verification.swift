@@ -46,7 +46,7 @@ struct ThemeVerificationApp: App {
         tab.ringBuffer.appendStream("demo@host $ ls\n\u{1B}[31mERROR demo\u{1B}[0m\n\u{1B}[32mOK demo\u{1B}[0m\n\u{1B}[33mWARN demo\u{1B}[0m\n")
     }
     var body: some Scene {
-        WindowGroup("ApexTerm 主题验收") {
+        WindowGroup("ApexTerm 主题验收 · " + (Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "Verification")) {
             Group {
             if scene == "editor" {
                 QuickEditorView(item: SFTPItem(name: "demo.conf", path: "/demo.conf", isDirectory: false), content: $editorContent, onSave: { _ in try await Task.sleep(for: .seconds(8)) }, onReload: { "# 远端配置\nserver=demo\n" })

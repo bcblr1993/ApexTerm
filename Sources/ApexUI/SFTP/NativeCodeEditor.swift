@@ -103,6 +103,7 @@ struct NativeCodeEditor: NSViewRepresentable {
 
 /// Only visible lines are drawn; the gutter uses the editor's own layout and scroll offset.
 final class CodeLineRuler: NSRulerView {
+    override var wantsDefaultClipping: Bool { true }
     private weak var editor: NSTextView?
     private var lineStarts: [Int] = [0]
 
@@ -125,6 +126,13 @@ final class CodeLineRuler: NSRulerView {
 
     override func drawHashMarksAndLabels(in rect: NSRect) {
         guard let editor, let layout = editor.layoutManager, let container = editor.textContainer else { return }
+        NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        let viewport = convert(editor.visibleRect, from: editor)
+        NSBezierPath(rect: bounds.intersection(NSRect(
+            x: bounds.minX, y: viewport.minY,
+            width: bounds.width, height: viewport.height
+        ))).addClip()
         NSColor.controlBackgroundColor.setFill()
         bounds.fill()
         let visible = editor.visibleRect.offsetBy(dx: -editor.textContainerOrigin.x, dy: -editor.textContainerOrigin.y)

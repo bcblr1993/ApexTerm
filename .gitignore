@@ -22,6 +22,11 @@ Packages/
 Package.pins
 Package.resolved
 *.xcodeproj
+!UITests/ApexTermUITests.xcodeproj/
+!UITests/ApexTermUITests.xcodeproj/project.pbxproj
+!UITests/ApexTermUITests.xcodeproj/xcshareddata/
+!UITests/ApexTermUITests.xcodeproj/xcshareddata/xcschemes/
+!UITests/ApexTermUITests.xcodeproj/xcshareddata/xcschemes/ApexTermUITests.xcscheme
 *.xcworkspace
 xcuserdata/
 DerivedData/

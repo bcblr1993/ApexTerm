@@ -299,3 +299,10 @@
 - notarytool 62653 采样停在 xar_open_digest_verify/open，未见网络 socket；hdiutil info 将候选 DMG 关联至无挂载点的 disk8，diskimages-helper 持有该文件。仅正常 detach 此映像后，原提交以格式校验失败 64 退出。
 - 只重试同一 DMG，Apple 返回 Accepted，submission ec5e53e3-0ab0-40cf-bc4d-114189c54133；staple/validate、只读挂载根目录、包内 deep/strict 签名及 DMG/tar.gz SHA256 校验通过。卸载命令退出 0，后续无挂载与文件占用。证据 candidate/notarization-dmg-retry.json、candidate/dmg-settings-inspection.json、candidate/SHA256SUMS.txt。
 - 来源仍为 19766a6，未包含后续产品修复；此包不是最终交付。候选脚本新增清理前已连接映像检查，避免删除仍在使用的旧 DMG；Python 语法及原两项清理测试通过。
+
+### 候选 2026092707 与单实例验收收尾
+
+- 来源9686251，CI 36295541927 success。Debug全量134项0失败，其中4项公网目标未配置而跳过；5项真实VM测试通过。8项Release基准实际执行并通过全部阈值，编译日志无 warning/error。应用及DMG公证Accepted，票据与两个安装产物SHA256校验通过。
+- DMG挂载卷名ApexTerm Candidate，根目录仅候选应用及Applications链接；包内严格签名/票据通过，detach退出0。证据candidate/dmg-current-inspection.json。
+- VM启用Gatekeeper，安装2707于 /tmp/apexterm-current.msHjeA，严格签名/票据/assess接受；LaunchServices正常启动实际进程90173来自该新路径，随后仅退出此实例，无残留。未将进程启动当作界面验收。证据candidate/vm-current-install.log、candidate/vm-current-launch-proof.json。
+- QA最后窗口关闭已通过实际AX点击与ps核验，qa/lifecycle-close-proof.json。正常启动ad-hoc QA仍No route to host，同期CLI SSH成功；Developer ID签名后窗口读取两次超时，工具禁止访问UserNotificationCenter，结果未验证，已退出唯一QA实例。没有修改系统授权。证据qa/normal-launch-network-failure.txt、qa/developer-id-normal-launch-diagnostic.json。

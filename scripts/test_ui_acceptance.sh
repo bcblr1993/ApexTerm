@@ -48,4 +48,7 @@ xcodebuild test-without-building -xctestrun "$TEST_RUN_FILE" \
     -destination 'platform=macOS,arch=arm64' -jobs 2 -parallel-testing-enabled NO \
     -resultBundlePath "$REPORT_DIR/UI.xcresult" \
     2>&1 | tee "$REPORT_DIR/ui-tests.log"
+xcrun xcresulttool get test-results summary --path "$REPORT_DIR/UI.xcresult" --compact \
+    > "$REPORT_DIR/summary.json"
+python3 scripts/verify_ui_results.py "$REPORT_DIR/summary.json"
 echo "UI acceptance passed: $REPORT_DIR/UI.xcresult"

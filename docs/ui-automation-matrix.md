@@ -28,3 +28,5 @@ APEX_UI_TEST_HOST=<测试主机> APEX_UI_TEST_USER=<测试用户> bash scripts/t
 当前状态：测试工程已在Xcode27/Swift6编译通过；实际执行被“Timed out while enabling automation mode”阻塞，系统确认Automation Mode disabled且需要用户认证。没有将零条执行或编译成功计为UI通过。上述待补项表示全量UI自动化仍未完成，本门禁是可执行基础，不能据此声称历史UI验收全部覆盖。
 
 后续新增UI修复必须在表中找到对应场景或新增场景，并将真实窗口行为纳入断言。无需真实网络的受控UI状态和真实SSH/SFTP场景分别记录，所有release-required场景应由同一入口执行。截屏、人眼历史记录、窄单元测试均不代替实际窗口行为断言。
+
+结果门禁：xcresulttool导出summary后，verify_ui_results.py要求Passed、当前全部测试数量一致、零失败/跳过/预期失败。12项Python测试通过，实际Automation Mode失败xcresult也已实测被拒绝。此数量校验是执行完整性检查，不等于全量历史UI需求覆盖证明。

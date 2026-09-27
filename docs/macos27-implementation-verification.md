@@ -197,3 +197,9 @@
 - 修复后实际 SessionContrast 窗口逐张检查 session-contrast-mocha.png、session-contrast-0..3.png 与 session-contrast-rest-0..6.png，合计12主题；认证选中项与保存按钮底色均使用可读强调色，当前可见表单无明显布局回退。仅覆盖该视口，不涵盖下方控件及所有无障碍组合。
 - tests-session-contrast-all.log 全量测试零失败。最新候选仍未包含99cc122修复。
 - Apple history诊断最新为2706应用 notarization.zip Accepted（03:58:12Z）；新DMG提交尚未出现在history，最新可见DMG Accepted为上一轮03:52:07Z。当前notarytool submit进程仍活跃，不以旧DMG状态冒充本轮成功，也不因等待超时重启。诊断 notary-history-diagnostic.json。
+
+
+## 编辑器12主题实际窗口
+
+- SessionContrast 实际 editor 页面切换12主题；qa/editor-theme-00..11.png 逐张查看：示例配置/行号与查找、重新加载、关闭、保存控件保留，无明显截断。editor-theme-checks.json 确认内容与保存AX存在。编辑区浅深系统表面、工具区所选主题配色；这不是语法色板逐token一致性的声明。
+- 本项覆盖正常短文件桌面窗口，不替代长文件/错误/未保存状态或真实远程保存验收。

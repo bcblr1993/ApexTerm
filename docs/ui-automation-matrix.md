@@ -19,7 +19,7 @@ APEX_UI_TEST_HOST=<测试主机> APEX_UI_TEST_USER=<测试用户> bash scripts/t
 | 主题与页面 | testAllThemesAndPagesRender；ThemeSupportTests | 12主题×9页面及5个设置标签遍历，增加会话/编辑器/更新/传输/导入关键控件存在或可点击断言、设置标签选中及滑块/开关检查；尚未实际运行。截图采集不等同像素/裁切验证，需补截图基线与不同窗口尺寸 |
 | 真实终端 | testRealSSHConfiguredHostIsMandatory；VMIntegrationTests、PublicServerIntegrationTests | 真实键盘→PTY→输出断言；输入法候选、UTF8粘贴、选区负载保留、重连与分屏关联待扩充 |
 | 复制与组合回调 | TerminalCopyAndContextMenuTests、TerminalCompositionTests | 快捷键字节路由、组合提交/取消；回调测试不代替系统输入法 |
-| SFTP完整流程 | VMIntegrationTests、SFTPOperationsTests | 真实协议与字节完整性；双向拖拽、记录可见路径、新建/重命名/删除/重复/失败/取消的GUI自动化待补 |
+| SFTP完整流程 | testSFTPCreateFileCancelAndSuccessfulListing；VMIntegrationTests、SFTPOperationsTests | 已编写隔离模拟目录的新建取消不产生条目、提交后条目可见且原条目保留断言；真实协议与字节完整性已有集成测试；双向拖拽、记录可见路径、新建/重命名/删除/重复/失败/取消的GUI自动化待补 |
 | 编辑器 | testEditorUnsavedCancelSaveAndClose、testEditorSaveFailureKeepsChanges、testEditorReloadCancelAndDiscard、testEditorChangesDuringSaveRemainUnsaved、testEditorKeyboardFindUndoAndSave；QuickEditorAndSFTPItemTests；主题页面截图 | 已编写真实sheet修改、未保存关闭取消、保存禁用/完成/关闭、失败保留内容断言；编译通过但Automation Mode未授权，尚未运行。已编写重载取消保留草稿/放弃后远端内容替换断言；另覆盖保存途中继续编辑后仍提示未保存、再次保存后关闭；新增原生查找不改变内容、撤销/重做及⌘S/⌘W流程断言；失败恢复重试待补 |
 | 主窗口 | testTerminalSplitOrientationAndClose；UIStateTests、SplitPaneIntegrationTests；主题页面截图 | 新增受控终端左右/上下分屏的窗口位置、两窗格计数及关闭后单窗格断言；状态与分屏模型已有单元测试；全屏、最小尺寸、非激活、分隔比例与标签关闭实际窗口断言待补 |
 | OpenSSH导入 | testSSHConfigImportSelectionAndDuplicateRecovery、testSSHConfigImportSheetCancelDoesNotImport | 隔离配置的全选/取消全选、空选择禁用、导入成功提示、会话可搜索及重复导入不增加计数；新增真实sheet Escape/取消关闭、重新打开及取消后会话计数不变且导入主机不可搜索断言；畸形配置错误页待补，当前用例尚未实际运行 |

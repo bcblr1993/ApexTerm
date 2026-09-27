@@ -284,6 +284,31 @@ final class ApexTermUITests: XCTestCase {
         capture("ssh-config-cancel-no-import")
     }
 
+    func testSFTPCreateFileCancelAndSuccessfulListing() {
+        launch("main", extra: ["APEX_QA_CONNECT": "1"])
+        XCTAssertTrue(app.staticTexts["nginx.conf"].waitForExistence(timeout: 10))
+        let more = app.buttons["更多文件操作"]
+        XCTAssertTrue(more.isHittable)
+        more.click()
+        app.menuItems["新建文件"].click()
+        let name = app.textFields["文件名 (例如 test.sh)"]
+        XCTAssertTrue(name.waitForExistence(timeout: 5))
+        name.click()
+        name.typeText("ui-canceled-file.txt")
+        app.buttons["取消"].click()
+        XCTAssertFalse(app.staticTexts["ui-canceled-file.txt"].exists)
+        more.click()
+        app.menuItems["新建文件"].click()
+        XCTAssertTrue(name.waitForExistence(timeout: 5))
+        name.click()
+        name.typeText("ui-created-file.txt")
+        app.buttons["创建"].click()
+        XCTAssertTrue(app.staticTexts["ui-created-file.txt"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.staticTexts["ui-canceled-file.txt"].exists)
+        XCTAssertTrue(app.staticTexts["nginx.conf"].exists)
+        capture("sftp-create-file-listed")
+    }
+
     func testRealSSHConfiguredHostIsMandatory() throws {
         let environment = ProcessInfo.processInfo.environment
         guard let host = environment["APEX_UI_TEST_HOST"], !host.isEmpty,

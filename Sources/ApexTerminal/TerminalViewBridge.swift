@@ -823,6 +823,10 @@ public final class NativeTerminalView: NSTextView {
     override public func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         
+        if !currentMarkedText.isEmpty {
+            drawComposition()
+            return
+        }
         guard isCursorVisible, let rect = getCursorRect() else { return }
         let focused = (window?.isKeyWindow == true && window?.firstResponder == self)
         let themeCursor = NSColor(hex: AppSettings.shared.themePreset.cursorColorHex)
@@ -835,6 +839,29 @@ public final class NativeTerminalView: NSTextView {
         path.fill()
     }
     
+    /// Preedit is an overlay: it must never enter the remote-output storage or SSH stream.
+    private func drawComposition() {
+        let font = self.font ?? cachedBaseFont
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font, .foregroundColor: textColor ?? .textColor,
+            .backgroundColor: backgroundColor,
+            .underlineStyle: NSUnderlineStyle.single.rawValue
+        ]
+        let rect = compositionRect()
+        backgroundColor.setFill()
+        rect.fill()
+        (currentMarkedText as NSString).draw(in: rect, withAttributes: attributes)
+    }
+
+    private func compositionRect() -> NSRect {
+        let font = self.font ?? cachedBaseFont
+        let height = layoutManager?.defaultLineHeight(for: font) ?? 18
+        var rect = getCursorRect() ?? NSRect(x: textContainerOrigin.x, y: textContainerOrigin.y, width: 12, height: height)
+        if AppSettings.shared.cursorShape == .underline { rect.origin.y -= height - 2.5 }
+        rect.size = NSSize(width: max(12, (currentMarkedText as NSString).size(withAttributes: [.font: font]).width + 2), height: height)
+        return rect
+    }
+
     public func startCursorBlink() {
         cursorBlinkTimer?.invalidate()
         cursorBlinkTimer = nil
@@ -1441,6 +1468,7 @@ public final class NativeTerminalView: NSTextView {
         
         currentMarkedText = ""
         currentMarkedRange = NSRange(location: NSNotFound, length: 0)
+        needsDisplay = true
         
         if !text.isEmpty {
             text = text.replacingOccurrences(of: "\r\n", with: "\r").replacingOccurrences(of: "\n", with: "\r")
@@ -1461,7 +1489,9 @@ public final class NativeTerminalView: NSTextView {
             text = ""
         }
         self.currentMarkedText = text
-        self.currentMarkedRange = selectedRange
+        let length = text.utf16.count
+        let location = min(length, selectedRange.location == NSNotFound ? length : selectedRange.location)
+        self.currentMarkedRange = NSRange(location: location, length: min(selectedRange.length, length - location))
         self.needsDisplay = true
         resetCursorBlink()
     }
@@ -1482,16 +1512,35 @@ public final class NativeTerminalView: NSTextView {
             return NSRange(location: NSNotFound, length: 0)
         }
         let total = textStorage?.length ?? 0
-        return NSRange(location: max(0, total - currentMarkedText.utf16.count), length: currentMarkedText.utf16.count)
+        return NSRange(location: total, length: currentMarkedText.utf16.count)
     }
     
+    override public func selectedRange() -> NSRange {
+        guard hasMarkedText() else { return super.selectedRange() }
+        return NSRange(location: markedRange().location + currentMarkedRange.location,
+                       length: currentMarkedRange.length)
+    }
+
+    override public func attributedSubstring(forProposedRange range: NSRange, actualRange: NSRangePointer?) -> NSAttributedString? {
+        guard hasMarkedText() else {
+            return super.attributedSubstring(forProposedRange: range, actualRange: actualRange)
+        }
+        guard range.location != NSNotFound else { return nil }
+        let virtualText = NSMutableAttributedString(attributedString: textStorage ?? NSAttributedString(string: ""))
+        virtualText.append(NSAttributedString(string: currentMarkedText))
+        guard range.location <= virtualText.length else { return nil }
+        let available = NSRange(location: range.location, length: min(range.length, virtualText.length - range.location))
+        actualRange?.pointee = available
+        return virtualText.attributedSubstring(from: available)
+    }
+
     override public func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect {
-        let rect = getCursorRect() ?? NSRect(x: textContainerOrigin.x, y: textContainerOrigin.y, width: 12, height: 18)
-        var screenRect = self.convert(rect, to: nil)
-        screenRect.origin.y -= screenRect.size.height
-        return self.window?.convertToScreen(screenRect) ?? .zero
+        actualRange?.pointee = hasMarkedText() ? markedRange() : NSRange(location: textStorage?.length ?? 0, length: 0)
+        let rect = compositionRect()
+        let windowRect = convert(rect, to: nil)
+        return window?.convertToScreen(windowRect) ?? .zero
     }
-    
+
     // Command selectors from interpretKeyEvents & NSTextInputClient
     override public func doCommand(by selector: Selector) {
         resetCursorBlink()

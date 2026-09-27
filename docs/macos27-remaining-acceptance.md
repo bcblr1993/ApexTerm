@@ -100,3 +100,5 @@ IME静态审计线索：TerminalViewBridge.swift的setMarkedText只设置current
 进程外30分钟对照已完成：117次输入、39轮任务completed且字节一致往返、78条记录、零失败；正常退出exit0，PID70907消失。内部telemetry文件未生成，外部1804样本峰值217.95MB；末三分钟中位214.16、217.02、217.06MB，仍有末段上升，不能宣称完全平稳或无泄漏。证据soak/external-long-result.json、external-long-memory-final.json、external-long-memory.jsonl。短时Swift测试并行及QA工作负载开销已记录；与上一轮仪表不同，不据此计算严格改善比例。输出935360为申请行数，不是独立接收计数。
 
 实体机真实终端复制补证：实际键盘执行printf ASCII标记，选择输出中QA_SELECTION_226__END，经CmdC复制、搜索框CmdV粘贴内容完全一致（qa/selection-real-226.txt、selection-copy-paste-226.txt）；清空搜索、CmdQ exit0。type_text中的中文未进入远端命令，不能计中文输入通过，也未归因于产品或输入法。此项不覆盖负载期间选区保留、输入法或全部复制场景。
+
+2026-09-27 继续完整目标：02b1d7f专用Mac全量UI门禁31/31通过，零失败和跳过；报告ui-acceptance/20260927-205543-63739。当前终端IME审计确认组合文字此前只保存状态、未绘制；现新增独立组合覆盖层，不修改终端历史或提前发送SSH输入，组合范围位于远端输出之后，候选矩形正确转换到屏幕坐标，并向输入法提供组合选区和虚拟组合子串。4项TerminalCompositionTests全部通过：组合阶段不发送、提交UTF8、取消不发送、真实绘制前后差异/取消恢复与候选范围。全量Swift测试无失败但11项环境集成跳过，Release构建无警告，QA宿主重新生成。此为修复与受控绘制证据，不能替代真实系统输入法候选、组合、提交验收。新产品代码使2716签名候选及02b1d7f的UI报告成为历史证据；最终候选须重新执行UI与全部打包门禁后构建。

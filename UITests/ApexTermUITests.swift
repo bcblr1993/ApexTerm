@@ -531,6 +531,24 @@ final class ApexTermUITests: XCTestCase {
         capture("transfer-clear-preserves-failure")
     }
 
+    func testTransferCancelAndClearPreservesActiveTask() {
+        launch("transfers", extra: ["APEX_QA_TRANSFER_RECORDS": "active"])
+        let cancel = app.buttons["取消传输 ui-cancel.txt"]
+        XCTAssertTrue(cancel.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["取消传输 ui-keep-active.txt"].exists)
+        cancel.click()
+        XCTAssertTrue(app.staticTexts["已取消"].waitForExistence(timeout: 5))
+        XCTAssertFalse(cancel.exists)
+        XCTAssertTrue(app.staticTexts["ui-cancel.txt"].exists)
+        capture("transfer-cancelled-record")
+        app.buttons["清空记录"].click()
+        XCTAssertFalse(app.staticTexts["ui-cancel.txt"].exists)
+        XCTAssertTrue(app.staticTexts["ui-keep-active.txt"].exists)
+        XCTAssertTrue(app.buttons["取消传输 ui-keep-active.txt"].isHittable)
+        XCTAssertFalse(app.buttons["清空记录"].exists)
+        capture("transfer-clear-preserves-active")
+    }
+
     func testEditorUnsavedCancelSaveAndClose() {
         launch("editor-sheet")
         let editor = app.textViews.firstMatch

@@ -61,6 +61,12 @@ struct ThemeVerificationApp: App {
             let download = manager.beginExternalTransfer(fileName: "ui-download.txt", remotePath: "/ui-fixture/ui-download.txt", localURL: directory.appendingPathComponent("ui-download.txt"), direction: .download, totalBytes: 256)
             manager.failExternalTransfer(taskId: download, error: NSError(domain: "ApexTerm.QA", code: 54, userInfo: [NSLocalizedDescriptionKey: "受控传输中断"]))
         }
+        if environment["APEX_QA_TRANSFER_RECORDS"] == "active" {
+            for name in ["ui-cancel.txt", "ui-keep-active.txt"] {
+                let id = TransferManager.shared.beginExternalTransfer(fileName: name, remotePath: "/ui-fixture/" + name, localURL: directory.appendingPathComponent(name), direction: .upload, totalBytes: 1024)
+                TransferManager.shared.updateExternalProgress(taskId: id, fraction: 0.5, transferredBytes: 512)
+            }
+        }
         #endif
         let client: SSHSessionProtocol = realHost != nil
             ? NativeSSHSession(session: session)

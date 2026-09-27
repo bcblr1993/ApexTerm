@@ -1,5 +1,6 @@
 import XCTest
 import Carbon
+import CryptoKit
 
 /// Drives an isolated QA host linked to the same product modules as the release.
 @MainActor
@@ -13,12 +14,32 @@ final class ApexTermUITests: XCTestCase {
     }
 
     override func tearDown() async throws {
+        // Cleanup must finish even when an earlier cleanup assertion fails.
+        continueAfterFailure = true
         if (testRun?.failureCount ?? 0) > 0, let app, app.state == .runningForeground {
             capture("failure-" + name)
             let hierarchy = XCTAttachment(string: app.debugDescription)
             hierarchy.name = "failure-accessibility-tree"
             hierarchy.lifetime = .keepAlways
             add(hierarchy)
+        }
+        do { try cleanupFinderDrag() }
+        catch { XCTFail("Owned drag fixture cleanup failed: \(error)") }
+        if let app, app.state != .notRunning,
+           app.launchEnvironment["APEX_QA_REAL_HOST"] != nil {
+            app.activate()
+            if app.sheets.firstMatch.exists {
+                let close = app.windows.buttons["收起传输任务"].firstMatch
+                if close.exists { clickVisibleCenter(close) }
+            }
+            if !app.sheets.firstMatch.exists {
+                clickVisibleCenter(app.menuBars.menuBarItems["验收操作"])
+                clickVisibleCenter(app.menuItems["断开测试终端"])
+                XCTAssertTrue(staticText("会话已断开").waitForExistence(timeout: 10),
+                              "Disconnect the real PTY before XCTest terminates its host")
+            } else {
+                XCTFail("Cannot disconnect the real PTY behind an unexpected modal sheet")
+            }
         }
         app?.terminate()
         if let inputSourceToRestore {
@@ -698,6 +719,197 @@ final class ApexTermUITests: XCTestCase {
         let cleaned = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "\nAPEX_UI_FIXTURE_CLEAN_OK\n"), object: terminal)
         XCTAssertEqual(XCTWaiter.wait(for: [cleaned], timeout: 15), .completed)
         ownedRemoteDirectory = nil
+    }
+
+    private var dragLocalDirectory: URL?
+    private var dragRemoteFixture: (destination: String, directory: String)?
+    private var dragFinderWindow: XCUIElement?
+    func testRealFinderDragUploadAndRecord() throws {
+        try exerciseFinderDrag(download: false)
+    }
+
+    func testRealFinderDragDownloadAndRecord() throws {
+        try exerciseFinderDrag(download: true)
+    }
+
+    private func exerciseFinderDrag(download: Bool) throws {
+        let environment = ProcessInfo.processInfo.environment
+        let host = try XCTUnwrap(environment["APEX_UI_TEST_HOST"])
+        let user = try XCTUnwrap(environment["APEX_UI_TEST_USER"])
+        let destination = "\(user)@\(host)"
+        let local = FileManager.default.temporaryDirectory.appendingPathComponent("apex-ui-drag-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: local, withIntermediateDirectories: false)
+        dragLocalDirectory = local
+        launch("main", extra: ["APEX_QA_REAL_HOST": host, "APEX_QA_REAL_USER": user, "APEX_QA_CONNECT": "1", "APEX_QA_MONITOR": "0"])
+        XCTAssertTrue(staticText("已连接", comparison: "BEGINSWITH").waitForExistence(timeout: 30))
+        let terminal = app.textViews.firstMatch
+        terminal.click()
+        terminal.typeText("printf '\\nAPEX_UI_DRAG_DIR=%s\\n' \"$(mktemp -d /tmp/apex-ui-drag-XXXXXX)\"\n")
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value MATCHES %@", "(?s).*\\nAPEX_UI_DRAG_DIR=/tmp/apex-ui-drag-[A-Za-z0-9]+\\r?\\n.*"), object: terminal)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 15), .completed)
+        let regex = try NSRegularExpression(pattern: "\\nAPEX_UI_DRAG_DIR=(/tmp/apex-ui-drag-[A-Za-z0-9]+)\\r?\\n")
+        let text = terminal.value as? String ?? ""
+        let match = try XCTUnwrap(regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)))
+        let range = try XCTUnwrap(Range(match.range(at: 1), in: text))
+        let directory = String(text[range])
+        guard directory.range(of: "^/tmp/apex-ui-drag-[A-Za-z0-9]+$", options: .regularExpression) != nil else {
+            throw NSError(domain: "ApexTerm.DragAcceptance", code: 1)
+        }
+        dragRemoteFixture = (destination, directory)
+        let name = "ui-drag-payload.txt"
+        let file = local.appendingPathComponent(name)
+        let payload = Data((0..<262144).map { 65 + UInt8($0 % 26) })
+        let digest = SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
+        if download {
+            terminal.typeText("awk 'BEGIN { for (i=0; i<262144; i++) printf \"%c\", 65+(i%26) }' > '\(directory)/\(name)' && printf '\\nAPEX_UI_DRAG_SEEDED\\n'\n")
+            let seeded = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "\nAPEX_UI_DRAG_SEEDED\n"), object: terminal)
+            XCTAssertEqual(XCTWaiter.wait(for: [seeded], timeout: 15), .completed)
+        } else { try payload.write(to: file) }
+        let path = app.textFields["远程路径"]
+        path.click()
+        path.typeKey("a", modifierFlags: .command)
+        path.typeText(directory)
+        path.typeKey(.return, modifierFlags: [])
+        if download { XCTAssertTrue(staticText(name).waitForExistence(timeout: 15)) }
+        else { XCTAssertTrue(staticText("文件夹为空").waitForExistence(timeout: 15)) }
+
+        let finder = XCUIApplication(bundleIdentifier: "com.apple.finder")
+        finder.activate()
+        finder.typeKey("n", modifierFlags: .command)
+        finder.typeKey("g", modifierFlags: [.command, .shift])
+        let folderField = finder.textFields.firstMatch
+        XCTAssertTrue(folderField.waitForExistence(timeout: 5))
+        folderField.typeKey("a", modifierFlags: .command)
+        folderField.typeText(local.path)
+        folderField.typeKey(.return, modifierFlags: [])
+        let window = finder.windows[local.lastPathComponent]
+        XCTAssertTrue(window.waitForExistence(timeout: 10))
+        dragFinderWindow = window
+        let chrome = window.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: 120, dy: 8))
+        let frame = window.frame
+        chrome.click(forDuration: 0.5, thenDragTo: chrome.withOffset(CGVector(dx: 20 - frame.minX, dy: 150 - frame.minY)))
+        let fullScreen = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        fullScreen.name = download ? "finder-download-before-drag" : "finder-upload-before-drag"
+        fullScreen.lifetime = .keepAlways
+        add(fullScreen)
+        if download {
+            app.activate()
+            let remoteFile = staticText(name)
+            remoteFile.click()
+            capture("finder-download-selected-remote-row")
+            let geometry = XCTAttachment(string: "source=\(remoteFile.frame) finder=\(window.frame) app=\(app.windows.firstMatch.frame)\n\(finder.debugDescription)")
+            geometry.name = "finder-download-drag-geometry"
+            geometry.lifetime = .keepAlways
+            add(geometry)
+            remoteFile.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click(forDuration: 0.6,
+                thenDragTo: window.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: 350, dy: 200)),
+                withVelocity: .slow, thenHoldForDuration: 1.0)
+            let landed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                FileManager.default.fileExists(atPath: file.path)
+            }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [landed], timeout: 30), .completed)
+            XCTAssertEqual(try Data(contentsOf: file), payload)
+        } else {
+            let source = window.descendants(matching: .any).matching(NSPredicate(format: "label == %@ OR value == %@", name, name)).firstMatch
+            XCTAssertTrue(source.waitForExistence(timeout: 10))
+            source.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click(forDuration: 0.6,
+                thenDragTo: staticText("文件夹为空").coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)))
+            // A real upload opens its progress sheet. Inspect it before returning
+            // to the underlying directory; querying behind a sheet hides AX rows.
+            XCTAssertTrue(app.sheets.firstMatch.waitForExistence(timeout: 15))
+            XCTAssertTrue(staticText(name).waitForExistence(timeout: 5))
+            XCTAssertTrue(staticText("传输完成").waitForExistence(timeout: 30))
+            capture("real-finder-upload-automatic-completed-record")
+            clickVisibleCenter(app.windows.buttons["收起传输任务"].firstMatch)
+            XCTAssertTrue(app.sheets.firstMatch.waitForNonExistence(timeout: 5))
+            // SwiftUI's macOS Table is exposed as AXOutline, not AXTable.
+            let listedFile = app.outlines.staticTexts.matching(NSPredicate(format: "label == %@ OR value == %@", name, name)).firstMatch
+            XCTAssertTrue(listedFile.waitForExistence(timeout: 30), "The remote file table must contain the upload; a failure record cannot substitute for listing")
+        }
+        app.activate()
+        terminal.click()
+        terminal.typeText("printf '\\nAPEX_UI_HASH:%s\\n' \"$(shasum -a 256 '\(directory)/\(name)' | awk '{print $1}')\"\n")
+        let hashMatches = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "\nAPEX_UI_HASH:\(digest)\n"), object: terminal)
+        XCTAssertEqual(XCTWaiter.wait(for: [hashMatches], timeout: 15), .completed)
+        app.activate()
+        app.windows.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "传输记录")).firstMatch.click()
+        XCTAssertTrue(staticText(name).waitForExistence(timeout: 5))
+        XCTAssertTrue(staticText(download ? "下载" : "上传").exists)
+        XCTAssertTrue(staticText("传输完成").waitForExistence(timeout: 10))
+        XCTAssertTrue(staticText(directory + "/" + name, comparison: "CONTAINS").exists)
+        capture(download ? "real-finder-download-completed-record" : "real-finder-upload-completed-record")
+        let proof = XCTAttachment(string: "Direction: \(download ? "download" : "upload")\nBytes: \(payload.count)\nSHA256: \(digest)\nRemote: \(directory)/\(name)\nLocal: \(file.path)")
+        proof.name = "real-finder-drag-content-proof"
+        proof.lifetime = .keepAlways
+        add(proof)
+    }
+
+    private func cleanupFinderDrag() throws {
+        defer {
+            if let local = dragLocalDirectory {
+                do {
+                    try FileManager.default.removeItem(at: local)
+                    dragLocalDirectory = nil
+                } catch {
+                    XCTFail("Cannot remove the owned local drag fixture: \(error)")
+                }
+            }
+        }
+        if let window = dragFinderWindow, window.exists {
+            let close = window.buttons[XCUIIdentifierCloseWindow].firstMatch
+            XCTAssertTrue(close.exists, "Close only the owned UUID-directory Finder window")
+            if close.exists { close.click() }
+        }
+        dragFinderWindow = nil
+        if let fixture = dragRemoteFixture {
+            app.activate()
+            if app.sheets.firstMatch.exists {
+                let close = app.windows.buttons["收起传输任务"].firstMatch
+                if close.exists { clickVisibleCenter(close) }
+                guard app.sheets.firstMatch.waitForNonExistence(timeout: 5) else {
+                    throw NSError(domain: "ApexTerm.DragAcceptance", code: 2,
+                                  userInfo: [NSLocalizedDescriptionKey: "Cannot clean owned fixture behind an open transfer sheet"])
+                }
+            }
+            let terminal = app.textViews.firstMatch
+            XCTAssertTrue(terminal.waitForExistence(timeout: 5))
+            terminal.click()
+            let marker = "APEX_UI_DRAG_CLEAN_" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
+            terminal.typeText("/bin/rm -f '\(fixture.directory)/ui-drag-payload.txt' && /bin/rmdir '\(fixture.directory)' && printf '\\n\(marker)\\n'\n")
+            let cleaned = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "\n\(marker)\n"), object: terminal)
+            XCTAssertEqual(XCTWaiter.wait(for: [cleaned], timeout: 15), .completed)
+            dragRemoteFixture = nil
+        }
+    }
+
+    func testRealSSHTerminalScrollSystemMetrics() throws {
+        guard #available(macOS 26.0, *) else {
+            XCTFail("Application hitch acceptance requires macOS 26 or later")
+            return
+        }
+        let environment = ProcessInfo.processInfo.environment
+        let host = try XCTUnwrap(environment["APEX_UI_TEST_HOST"])
+        let user = try XCTUnwrap(environment["APEX_UI_TEST_USER"])
+        launch("main", extra: ["APEX_QA_REAL_HOST": host, "APEX_QA_REAL_USER": user, "APEX_QA_CONNECT": "1"])
+        XCTAssertTrue(staticText("已连接", comparison: "BEGINSWITH").waitForExistence(timeout: 30))
+        let terminal = app.textViews.firstMatch
+        XCTAssertTrue(terminal.waitForExistence(timeout: 10))
+        terminal.click()
+        terminal.typeText("awk 'BEGIN { for (i=0; i<5000; i++) printf \"APEX_SCROLL_LINE_%05d abcdefghijklmnopqrstuvwxyz\\n\", i; print \"APEX_UI_SCROLL_READY\" }'\n")
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "\nAPEX_UI_SCROLL_READY\n"), object: terminal)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 20), .completed)
+        capture("real-terminal-scroll-metrics-before")
+        let options = XCTMeasureOptions.default
+        options.iterationCount = 3
+        measure(metrics: [XCTHitchMetric(application: app), XCTCPUMetric(application: app), XCTMemoryMetric(application: app)], options: options) {
+            terminal.scroll(byDeltaX: 0, deltaY: 5000)
+            terminal.scroll(byDeltaX: 0, deltaY: -5000)
+        }
+        let hierarchy = XCTAttachment(string: app.debugDescription)
+        hierarchy.name = "real-terminal-scroll-metrics-target"
+        hierarchy.lifetime = .keepAlways
+        add(hierarchy)
+        capture("real-terminal-scroll-metrics-after")
     }
 
     func testTransferRecordFiltersAndClearCompleted() {

@@ -5,7 +5,6 @@ import ApexSSH
 /// Floating transfer status capsule & collapsible task drawer for SFTP operations
 public struct TransferDrawer: View {
     @ObservedObject private var themeSettings = AppSettings.shared
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     public enum TransferFilter: String, CaseIterable, Identifiable {
         case all = "全部"
         case uploads = "上传"
@@ -123,11 +122,10 @@ public struct TransferDrawer: View {
                 } label: {
                     HStack(spacing: 8) {
                         HStack(spacing: 6) {
-                            Image(systemName: manager.activeCount > 0 ? "arrow.triangle.2.circlepath" : "checkmark.circle.fill")
+                            TransferActivitySymbol(isActive: manager.activeCount > 0,
+                                                   inactiveSystemName: "checkmark.circle.fill")
                                 .font(.system(size: 11, weight: .semibold))
                                 .foregroundColor(manager.activeCount > 0 ? ApexStyle.accent : ApexStyle.success)
-                                .rotationEffect(.degrees(manager.activeCount > 0 ? 360 : 0))
-                                .animation(reduceMotion ? nil : manager.activeCount > 0 ? .linear(duration: 1.5).repeatForever(autoreverses: false) : .default, value: manager.activeCount)
 
                             Text(manager.activeCount > 0 ? "传输中 (\(manager.activeCount))" : "传输记录 (\(manager.tasks.count))")
                                 .font(.system(size: 11, weight: .medium))

@@ -175,6 +175,13 @@ struct ThemeVerificationApp: App {
             }
             .apexTheme()
             .frame(minWidth: scene == "main" ? 960 : 0, minHeight: scene == "main" ? 640 : 0)
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+                for activeTab in tabs {
+                    for pane in activeTab.panes {
+                        (pane.sshClient as? NativeSSHSession)?.terminatePTYProcess()
+                    }
+                }
+            }
             .onChange(of: scene) { _, page in
                 if page == "metrics" && tab.metricsHistory.latest == nil {
                     tab.metricsHistory.append(ServerMetricsSnapshot(cpuUsagePercent: 24, cpuCores: 8, cpuModel: "示例服务器", memoryTotalBytes: 8_589_934_592, memoryUsedBytes: 3_221_225_472))
@@ -286,8 +293,15 @@ struct ThemeVerificationApp: App {
                 CommandMenu("验收操作") {
                     Button("断开测试终端") {
                         Task { @MainActor in
-                            await tab.sshClient.disconnect()
-                            tab.connectionState = tab.sshClient.connectionState
+                            // Act on the displayed State-backed tabs, including split panes.
+                            // The seed tab is not the authoritative live workspace collection.
+                            for activeTab in tabs {
+                                for pane in activeTab.panes {
+                                    await pane.sshClient.disconnect()
+                                    pane.connectionState = pane.sshClient.connectionState
+                                }
+                                activeTab.connectionState = activeTab.activePane?.connectionState ?? .disconnected
+                            }
                         }
                     }
                 }

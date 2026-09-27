@@ -7,7 +7,6 @@ import ApexSSH
 /// High-performance integrated SFTP file manager (electerm-style with OSC 7 sync and drag-and-drop upload/download)
 public struct SFTPView: View {
     @ObservedObject private var themeSettings = AppSettings.shared
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Binding public var currentPath: String
     @Binding public var isLinkageEnabled: Bool
     public let session: SSHSessionProtocol?
@@ -179,9 +178,8 @@ public struct SFTPView: View {
                     }
                 }) {
                     HStack(spacing: 4) {
-                        Image(systemName: transferManager.activeCount > 0 ? "arrow.triangle.2.circlepath" : "arrow.up.arrow.down.circle")
-                            .rotationEffect(.degrees(transferManager.activeCount > 0 ? 360 : 0))
-                            .animation(reduceMotion ? nil : transferManager.activeCount > 0 ? .linear(duration: 1.5).repeatForever(autoreverses: false) : .default, value: transferManager.activeCount)
+                        TransferActivitySymbol(isActive: transferManager.activeCount > 0,
+                                               inactiveSystemName: "arrow.up.arrow.down.circle")
                             .foregroundColor(transferManager.activeCount > 0 ? ApexStyle.accent : ApexStyle.primary)
                         
                         if transferManager.activeCount > 0 {

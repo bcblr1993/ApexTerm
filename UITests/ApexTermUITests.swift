@@ -458,6 +458,26 @@ final class ApexTermUITests: XCTestCase {
         XCTAssertFalse(app.buttons["继续编辑"].exists)
     }
 
+    func testEditorReloadFailureRetryPreservesContent() {
+        launch("editor-sheet", extra: ["APEX_QA_EDITOR_RELOAD": "failure-once"])
+        let editor = app.textViews["文件内容"]
+        XCTAssertTrue(editor.waitForExistence(timeout: 5))
+        let original = editor.value as? String
+        let reload = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "重新加载")).firstMatch
+        reload.click()
+        let error = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "拉取失败:")).firstMatch
+        XCTAssertTrue(error.waitForExistence(timeout: 5))
+        XCTAssertEqual(editor.value as? String, original)
+        XCTAssertTrue(reload.isEnabled)
+        capture("editor-reload-failed-content-preserved")
+        reload.click()
+        XCTAssertTrue(app.staticTexts["已重新拉取远端最新内容"].waitForExistence(timeout: 5))
+        XCTAssertFalse(error.exists)
+        XCTAssertTrue((editor.value as? String)?.contains("远端配置") == true)
+        app.buttons["关闭"].click()
+        XCTAssertFalse(app.sheets.firstMatch.exists)
+    }
+
     func testEditorChangesDuringSaveRemainUnsaved() {
         launch("editor-sheet", extra: ["APEX_QA_EDITOR_SAVE_DELAY": "8"])
         let editor = app.textViews.firstMatch

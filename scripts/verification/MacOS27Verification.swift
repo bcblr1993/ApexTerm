@@ -24,6 +24,7 @@ struct ThemeVerificationApp: App {
     @State private var editorPresented = true
     @State private var importPresented = true
     @State private var editorSaveAttempts = 0
+    @State private var editorReloadAttempts = 0
     private let telemetry = QAProcessTelemetry()
     private let tab: TerminalTabItem
     private let importConfigURL: URL
@@ -91,7 +92,13 @@ struct ThemeVerificationApp: App {
                         if mode == "failure" || (mode == "failure-once" && attempt == 1) {
                             throw NSError(domain: "ApexTerm.QA", code: 13, userInfo: [NSLocalizedDescriptionKey: "验收模拟：远端写入权限不足"])
                         }
-                    }, onReload: { "# 远端配置\nserver=demo\n" })
+                    }, onReload: {
+                        editorReloadAttempts += 1
+                        if ProcessInfo.processInfo.environment["APEX_QA_EDITOR_RELOAD"] == "failure-once" && editorReloadAttempts == 1 {
+                            throw NSError(domain: "ApexTerm.QA", code: 54, userInfo: [NSLocalizedDescriptionKey: "验收模拟：远端读取中断"])
+                        }
+                        return "# 远端配置\nserver=demo\n"
+                    })
                     .apexTheme()
                 }
             } else if scene == "settings" {

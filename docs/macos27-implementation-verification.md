@@ -183,3 +183,10 @@
 - download-directory-cancel.json：系统目录选择器 Escape 关闭后返回设置，原下载目录保持。settings-dark-tab-0..3.png 记录代表性深色外观；SFTP 第一开关在首帧截图未绘出，AX 与前述交互正常，不据此宣称该截图全部控件已通过。结束恢复经典白色。
 - CI 36292740035（bc01dbc 焦点等待修正）success；36292865307（最新产品 19766a6）全部步骤 success，包括 Debug、全量测试与 Release 编译。
 - 候选 2026092706 应用已公证并安装到 macOS 27 VM；assessments enabled、严格验签/票据/Gatekeeper accepted，来源 Notarized Developer ID，PID 7130 实际新路径 /private/tmp/apexterm-candidate.IaFb9l/。证据 candidate/vm-settings-install.log。DMG 公证仍在运行，最终哈希/挂载未计通过。
+
+
+## 会话主题对比度修复
+
+- qa/session-validation-proof.json 记录空主机禁用保存、恢复有效地址可保存、密钥模式隐藏密码并显示Agent说明、恢复密码模式；未保存未连接。
+- 最新实际会话窗口切换12主题，qa/session-theme-00..11.png 与 session-theme-checks.json；逐张查看发现部分浅强调色的认证选项和保存按钮白字对比偏低，未将所有主题可读性记为通过。
+- 保存按钮额外 tint 覆盖 apexProminentButton 的可读强调色，删除覆盖；分段认证 Picker 使用同一 buttonAccent。build-session-contrast.log 编译通过；实际 session-contrast-mocha.png 确认两处变为深紫、白字更清晰。其余主题修复后的复验待完成。候选2706来源19766a6，不含本次修复，未把运行中的公证包与新代码混同。

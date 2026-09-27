@@ -80,6 +80,7 @@ public struct SessionEditModal: View {
                         }
                     }
                     .pickerStyle(.segmented)
+                    .tint(ApexStyle.buttonAccent)
                     
                     if authType == .password {
                         HStack {
@@ -154,7 +155,6 @@ public struct SessionEditModal: View {
                     .keyboardShortcut(.cancelAction)
                 Button(L10n.save) { saveSession() }
                     .apexProminentButton()
-                    .tint(ApexStyle.accent)
                     .disabled(host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !isValidPort)
                     .keyboardShortcut(.defaultAction)
             }

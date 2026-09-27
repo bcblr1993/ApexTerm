@@ -49,3 +49,5 @@ Nord进一步定位：保持Nord设置重新启动候选App、打开并激活外
 私钥会话主动切换补证：真实点击Agent并保存，session-private-key-to-agent.json确认authMethod变为agent且跳板机/保活/时间保持不变，原私钥保留结果另存session-private-key-retained.json。视觉检查发现验收App初始session场景未触发onChange尺寸配置，窗口恢复900×450使固定表单裁切；现仅验收工具启动session时明确设560×560。重新链接成功，session-private-key-size-corrected.jpeg显示标题、认证选项及固定底部按钮完整可见，画面为非激活外观，仍不计激活状态通过。5a3742a当前CI36300632345正在Debug Build，测试及Release尚待执行。
 
 资源与门禁更新：专用VM内存从16384MB调为8192MB（CPU仍6），vm-resource-budget.json记录原值与恢复命令。8GB真实VM运行147测试零失败、4可选公网跳过，7项VM测试通过且结束自动停止；vm-8gb-session-regression.log无warning/error。当前优化构建八项基准九个阈值全部通过（RSS99.92MB、内部按键4.74μs），release-benchmarks-session-retention.log。5a3742a CI36300632345已success。候选构建及VM门禁Swift命令限制jobs2，候选精确旧产物清理逻辑保持；完整打包门禁仍需下一轮实际执行。
+
+当前签名候选2026092715基于545b976，应用/重制HFS+ DMG公证Accepted、票据/严格验签/哈希及DMG挂载内容版本均通过，证据VERIFICATION-2026092715.md。初次默认文件系统DMG挂载导致提交阻塞并最终格式失败，非公证成功；脚本明确HFS+、未挂载断言及镜像校验，防止重现。签名候选本机搜索/颜色AX/取消按钮/主窗口退出通过；Escape连续读取超时，线程采样主线程系统事件等待，未判死锁或通过。VM安装及原计划其余验收仍待完成。

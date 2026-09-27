@@ -86,7 +86,14 @@ def main():
     with tempfile.TemporaryDirectory(prefix='apex-candidate-') as tmp:
         shutil.copytree(APP, pathlib.Path(tmp) / APP.name)
         (pathlib.Path(tmp) / 'Applications').symlink_to('/Applications')
-        run('hdiutil', 'create', '-volname', 'ApexTerm Candidate', '-srcfolder', tmp, '-format', 'UDZO', str(dmg))
+        run('hdiutil', 'create', '-fs', 'HFS+', '-volname', 'ApexTerm Candidate', '-srcfolder', tmp, '-format', 'UDZO', str(dmg))
+    # Explicit filesystem avoids a lingering APFS creation mount on newer macOS.
+    # Reject incomplete or still-mounted images before signing/submitting to Apple.
+    images = plistlib.loads(subprocess.check_output(['hdiutil', 'info', '-plist']))
+    if any(pathlib.Path(image.get('image-path', '')).resolve() == dmg.resolve()
+           for image in images.get('images', [])):
+        raise SystemExit('Candidate DMG remains mounted after creation; detach it before notarization.')
+    run('hdiutil', 'verify', str(dmg))
     run('codesign', '--force', '--sign', IDENTITY, '--timestamp', str(dmg))
     notarize(dmg, OUT / 'notarization-dmg.json')
     run('xcrun', 'stapler', 'staple', str(dmg))

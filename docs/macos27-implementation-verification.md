@@ -344,3 +344,7 @@
 - 同一tar.gz解包到VM独立目录，Gatekeeper assessments enabled、assess accepted/Notarized Developer ID，票据和严格签名通过，内置build2712；证据candidate/vm-2712-install.log。这不代替VM实际GUI启动验收。
 - 设置12主题四个非外观页48张截图及12主题底部预览全部人工审查，文字与预览无裁切；部分原生控件在立即捕获画面缺失。2712 Dracula/Latte SFTP及One Dark Pro外观未改变控件值静置5秒后完整显示；不能据此前截图直接判为持续产品缺陷，剩余受影响页面仍待复核。证据settings-theme-matrix/visual-review.json、settings-five-pages/preview-visual-review.json。
 - 每轮GUI仅一个候选App，结束恢复默认主题并⌘Q，ps确认零QA残留；测试VM安装验证后tart stop并确认stopped，避免累积内存占用。
+
+### 更新检查错误状态修复
+
+手动请求先展示checking且重复请求被拒绝；HTTP非2xx、无效JSON和网络异常统一failed，避免错误地显示最新版本。4项可控请求回归测试通过，包含加载期间重复请求仅执行一次。全量145项0失败（VM关闭，11项VM/公网目标跳过），UI改动后Debug构建通过；失败页Escape关闭、Return重试。单个隔离Debug本体真实请求显示最新版本，Return关闭结果页并返回工作区；加载/失败实际GUI仍需可控环境复验。证据tests-update-status.log、tests-update-full.log、main-command-smoke/update-fixed-success.txt及update-fixed-return-close.txt。候选2712未包含此修复，须在最终构建纳入。

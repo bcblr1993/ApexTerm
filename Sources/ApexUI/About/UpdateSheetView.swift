@@ -128,6 +128,7 @@ public struct UpdateSheetView: View {
                         Button(L10n.closeWindow) {
                             dismiss()
                         }
+                        .keyboardShortcut(.cancelAction)
                         
                         Button("重试") {
                             Task {
@@ -135,6 +136,7 @@ public struct UpdateSheetView: View {
                             }
                         }
                         .apexProminentButton()
+                        .keyboardShortcut(.defaultAction)
                     }
                     .padding(.top, 6)
                 }

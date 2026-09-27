@@ -59,7 +59,15 @@ public final class UpdateManager: ObservableObject {
     /// Default releases URL (GitHub Releases API or static JSON manifest)
     public var updateManifestURL: URL? = URL(string: "https://api.github.com/repos/bcblr1993/ApexTerm/releases/latest")
     
-    public init() {}
+    private let fetch: @Sendable (URLRequest) async throws -> (Data, URLResponse)
+
+    public init() {
+        fetch = { try await URLSession.shared.data(for: $0) }
+    }
+
+    init(fetch: @escaping @Sendable (URLRequest) async throws -> (Data, URLResponse)) {
+        self.fetch = fetch
+    }
     
     /// Compares two semver strings like "1.2.1" and "1.2.0" or "v2.0.0" and "1.9.9"
     /// Returns true if `v1` is strictly newer/higher than `v2`.
@@ -82,8 +90,10 @@ public final class UpdateManager: ObservableObject {
     
     /// Trigger an update check. If `manual` is true, prompts sheet even when up-to-date.
     public func checkForUpdates(manual: Bool = false) async {
+        guard !isChecking else { return }
         isChecking = true
         status = .checking
+        if manual { isUpdateSheetPresented = true }
         lastCheckedDate = Date()
         
         guard let url = updateManifestURL else {
@@ -99,12 +109,11 @@ public final class UpdateManager: ObservableObject {
             request.setValue("application/vnd.github.v3+json", forHTTPHeaderField: "Accept")
             request.setValue("ApexTerm-Updater", forHTTPHeaderField: "User-Agent")
             
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await fetch(request)
             
             guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
-                let current = self.currentVersion
                 self.isChecking = false
-                self.status = .upToDate(currentVersion: current)
+                self.status = .failed("更新服务器返回错误，请稍后重试")
                 if manual { self.isUpdateSheetPresented = true }
                 return
             }
@@ -119,12 +128,12 @@ public final class UpdateManager: ObservableObject {
                     if manual { self.isUpdateSheetPresented = true }
                 }
             } else {
-                self.status = .upToDate(currentVersion: self.currentVersion)
+                self.status = .failed("无法读取更新信息，请稍后重试")
                 if manual { self.isUpdateSheetPresented = true }
             }
         } catch {
             // On network failure or offline, if manual, inform user gracefully
-            self.status = manual ? .upToDate(currentVersion: self.currentVersion) : .failed(error.localizedDescription)
+            self.status = .failed(error.localizedDescription)
             if manual { self.isUpdateSheetPresented = true }
         }
         

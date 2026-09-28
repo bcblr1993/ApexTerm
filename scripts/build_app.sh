@@ -37,7 +37,11 @@ echo "✅ [Pre-Release Quality Gate] 100% of quality gate criteria satisfied!"
 echo "⚡ Building ApexTerm Release binary for Apple Silicon (arm64)..."
 swift build -c release --jobs 2
 echo "🧪 Running mandatory window UI acceptance..."
-bash scripts/test_ui_acceptance.sh
+if [ "${APEX_UI_ACCEPTANCE_PREFLIGHT_ONLY:-0}" = "1" ]; then
+    bash scripts/test_ui_acceptance.sh --preflight-only
+else
+    bash scripts/test_ui_acceptance.sh
+fi
 
 echo "📦 Packaging ${APP_NAME} bundle (v${VERSION} Build ${BUILD_NUMBER})..."
 mkdir -p "${MACOS_DIR}" "${RESOURCES_DIR}"

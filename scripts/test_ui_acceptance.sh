@@ -48,6 +48,21 @@ if [[ "${1:-}" == "--preflight-only" ]]; then
 fi
 STAGE=product-build
 swift build -c release --jobs 2 2>&1 | tee "$REPORT_DIR/product-build.log"
+STAGE=product-reopen-fixture
+PRODUCT_APP="$REPORT_DIR/ApexTerm-Reopen.app"
+mkdir -p "$PRODUCT_APP/Contents/MacOS"
+cp .build/out/Products/Release/ApexTerm "$PRODUCT_APP/Contents/MacOS/ApexTerm"
+cat > "$PRODUCT_APP/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleExecutable</key><string>ApexTerm</string>
+<key>CFBundleIdentifier</key><string>com.apexterm.qa.reopen</string>
+<key>CFBundleName</key><string>ApexTerm Reopen QA</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+</dict></plist>
+PLIST
+"/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister" -f "$PRODUCT_APP"
 STAGE=qa-host-build
 python3 scripts/build_macos27_verification.py --configuration Release 2>&1 | tee "$REPORT_DIR/qa-host-build.log"
 "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister" \
@@ -75,6 +90,7 @@ for target in targets:
         'APEX_UI_TEST_HOST': os.environ['APEX_UI_TEST_HOST'],
         'APEX_UI_TEST_USER': os.environ['APEX_UI_TEST_USER'],
         'APEX_UI_APP_PATH': str(pathlib.Path('outputs/macos27/qa/Verification.app').resolve()),
+        'APEX_UI_PRODUCT_APP_PATH': str(next(reports.glob('ApexTerm-Reopen.app')).resolve()),
         'APEX_UI_INPUT_SOURCE_RESTORER': str((reports / 'IMEInputSourceRestorer').resolve()),
     })
 # Keep alongside build products so __TESTROOT__ paths still resolve correctly.

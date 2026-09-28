@@ -91,6 +91,24 @@ final class ApexTermUITests: XCTestCase {
         focusOwnedWindow()
     }
 
+    func testProductReopensMainWindowAfterLastWindowCloses() throws {
+        let path = try XCTUnwrap(ProcessInfo.processInfo.environment["APEX_UI_PRODUCT_APP_PATH"])
+        app = XCUIApplication(url: URL(fileURLWithPath: path))
+        app.launchEnvironment = ["APEX_UI_TEST_REOPEN": "1"]
+        app.launch()
+        XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 10))
+        app.typeKey("w", modifierFlags: .command)
+        let closed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in self.app.windows.count == 0 }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 5), .completed)
+        let reopen = Process()
+        reopen.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        reopen.arguments = ["-a", path]
+        try reopen.run()
+        reopen.waitUntilExit()
+        XCTAssertEqual(reopen.terminationStatus, 0)
+        XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 10), "Clicking the running app must restore its main window")
+    }
+
     // AppKit exposes ordinary macOS text through AXValue, while custom labels use AXLabel.
     private func staticText(_ text: String, comparison: String = "==") -> XCUIElement {
         app.staticTexts.matching(NSPredicate(format: "label \(comparison) %@ OR value \(comparison) %@", text, text)).firstMatch
@@ -1190,7 +1208,9 @@ final class ApexTermUITests: XCTestCase {
     func testMonitoringStatesAreExplicit() {
         for state in ["live", "stale", "waiting", "disabled", "disabled-history", "disconnected-history", "connecting", "connecting-history"] {
             launch("metrics", extra: ["APEX_QA_METRICS_STATE": state])
-            let summary = app.buttons["metrics.summary"]
+            // AppKit exposes the connecting-state ProgressView as an activity
+            // indicator, even though the SwiftUI control remains clickable.
+            let summary = app.descendants(matching: .any)["metrics.summary"].firstMatch
             XCTAssertTrue(summary.waitForExistence(timeout: 5))
             if state == "connecting" || state == "connecting-history" {
                 XCTAssertTrue(summary.label.contains("监控连接中"))

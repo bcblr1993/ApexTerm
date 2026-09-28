@@ -39,8 +39,11 @@ def main():
         raise ValueError('Invalid guest workspace')
     (report / 'guest-workspace.txt').write_text(workspace + '\n')
     archive = report / 'vm-input.tar.gz'
+    fixture = report / 'ApexTerm-Reopen.app'
+    fixture_for_archive = str(fixture.relative_to(root)) if fixture.is_relative_to(root) else str(fixture)
     run(['tar', '-czf', str(archive), 'UITests',
          'outputs/ui-acceptance/DerivedData/Build/Products',
+         fixture_for_archive,
          'outputs/macos27/qa/Verification.app'], cwd=root)
     run(['scp', '-q', '-o', 'BatchMode=yes', str(archive),
          f'{target}:{workspace}/input.tar.gz'])
@@ -69,12 +72,14 @@ config = plistlib.loads(destination.read_bytes())
 for target in targets(config):
     target.setdefault('EnvironmentVariables', {}).update({key: environment[key] for key in ['APEX_UI_TEST_HOST', 'APEX_UI_TEST_USER']})
     target['EnvironmentVariables']['APEX_UI_APP_PATH'] = str(app)
+    target['EnvironmentVariables']['APEX_UI_PRODUCT_APP_PATH'] = str(next(pathlib.Path('outputs/ui-acceptance').glob('*/ApexTerm-Reopen.app')).resolve())
     target['EnvironmentVariables']['APEX_UI_INPUT_SOURCE_RESTORER'] = str(pathlib.Path('reports/IMEInputSourceRestorer').resolve())
     if os.environ.get('SSH_AUTH_SOCK'):
         target['EnvironmentVariables']['SSH_AUTH_SOCK'] = os.environ['SSH_AUTH_SOCK']
 destination.write_bytes(plistlib.dumps(config))
 PY
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f outputs/macos27/qa/Verification.app
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$(find outputs/ui-acceptance -maxdepth 2 -name ApexTerm-Reopen.app -type d | head -1)"
 files=(outputs/ui-acceptance/RemoteDerivedData/Build/Products/*.xctestrun)
 [[ ${#files[@]} == 1 ]]
 xcodebuild test-without-building -xctestrun "${files[0]}" -destination 'platform=macOS,arch=arm64' -jobs 2 -parallel-testing-enabled NO -resultBundlePath reports/UI.xcresult "${@:2}" 2>&1 | tee reports/ui-tests.log

@@ -513,6 +513,7 @@ public final class NativeTerminalView: NSTextView {
     /// Notify remote PTY of new dimensions with debounce (prevents SIGWINCH storm during drag)
     public func notifyDimensionsChangedIfNeeded() {
         let (cols, rows) = calculateTerminalDimensions()
+        ringBuffer?.setDimensions(columns: cols, rows: rows)
         if lastReportedDimensions?.cols != cols || lastReportedDimensions?.rows != rows {
             lastReportedDimensions = (cols, rows)
             resizeDebounceTask?.cancel()
@@ -1661,6 +1662,16 @@ public final class NativeTerminalView: NSTextView {
     /// Incremental refresh: updates active line in-place and appends newly committed lines
     public func refresh() {
         guard let buffer = ringBuffer else { return }
+
+        if let screenLines = buffer.screenLines {
+            let rendered = screenLines.joined(separator: "\n")
+            self.textStorage?.setAttributedString(formatANSI(rendered))
+            activeLineStartLocation = self.textStorage?.length ?? 0
+            lastCommittedIndex = buffer.totalCommittedCount
+            if isPinnedToBottom { scrollToBottom(forceLayout: false) }
+            resetCursorBlink()
+            return
+        }
         
         CATransaction.begin()
         CATransaction.setDisableActions(true)

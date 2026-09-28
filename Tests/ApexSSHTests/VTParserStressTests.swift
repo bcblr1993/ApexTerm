@@ -2,6 +2,21 @@ import XCTest
 @testable import ApexTerminal
 
 final class VTParserStressTests: XCTestCase {
+    func testVimAlternateScreenRendersRowsAndRestoresShell() {
+        let terminal = TerminalRingBuffer()
+        terminal.setDimensions(columns: 60, rows: 8)
+        terminal.appendStream("shell prompt\n")
+        terminal.appendStream("\u{001B}[?1049h\u{001B}[2J\u{001B}[Hname: traefik\r\nservices:\r\n  traefik:\r\n    image: traefik:v2.11")
+        XCTAssertEqual(terminal.screenLines?[0], "name: traefik")
+        XCTAssertEqual(terminal.screenLines?[1], "services:")
+        XCTAssertEqual(terminal.screenLines?[3], "    image: traefik:v2.11")
+        terminal.appendStream("\u{001B}[2;1Hupdated\u{001B}[K\u{001B}[8;1H1,1 Top")
+        XCTAssertEqual(terminal.screenLines?[1], "updated")
+        XCTAssertEqual(terminal.screenLines?[7], "1,1 Top")
+        terminal.appendStream("\u{001B}[?1049l")
+        XCTAssertNil(terminal.screenLines)
+        XCTAssertEqual(terminal.tailLines(count: 1), ["shell prompt"])
+    }
     
     /// Test 1: 24-bit TrueColor RGB parsing (\e[38;2;R;G;Bm)
     func testTrueColorRGBParsing() {

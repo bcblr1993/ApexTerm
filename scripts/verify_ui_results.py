@@ -9,6 +9,9 @@ def validate(summary, test_source, details=None):
     names = re.findall(r'\bfunc\s+(test\w+)\s*\(', test_source)
     if not names or len(names) != len(set(names)):
         raise ValueError('UI test inventory is empty or ambiguous')
+    required = {'testProductReopensMainWindowAfterLastWindowCloses'}
+    if not required.issubset(names):
+        raise ValueError('Required product window reopening regression is missing')
     if summary.get('result') != 'Passed':
         raise ValueError('UI result is not Passed')
     for field in ('failedTests', 'skippedTests', 'expectedFailures'):

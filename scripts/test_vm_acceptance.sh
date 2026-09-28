@@ -103,6 +103,14 @@ else
     fi
 fi
 
+echo "🧪 [Release Regression] Verifying Vim alternate-screen rendering..."
+swift test --jobs 2 --filter VTParserStressTests/testVimAlternateScreenRendersRowsAndRestoresShell \
+    2>&1 | tee "${REPORT_DIR}/vim_screen_regression.log"
+if ! grep -Fq "testVimAlternateScreenRendersRowsAndRestoresShell]' passed" "${REPORT_DIR}/vim_screen_regression.log"; then
+    echo "❌ Required Vim screen regression did not run successfully."
+    exit 1
+fi
+
 echo "======================================================="
 echo "🎉 [Tart VM Gate] Quality Gate Cleared! Ready for Release Build."
 echo "======================================================="

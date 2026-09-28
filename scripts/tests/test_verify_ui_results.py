@@ -8,20 +8,22 @@ spec.loader.exec_module(module)
 
 
 class UIResultTests(unittest.TestCase):
+    source = 'func testProductReopensMainWindowAfterLastWindowCloses() {}\nfunc testSecond() {}'
+
     def test_repeated_case_cannot_replace_missing_case(self):
         summary = dict(result='Passed', passedTests=2, totalTestCount=2,
                        failedTests=0, skippedTests=0, expectedFailures=0)
-        case = dict(name='testFirst()', nodeType='Test Case', result='Passed')
+        case = dict(name='testProductReopensMainWindowAfterLastWindowCloses()', nodeType='Test Case', result='Passed')
         with self.assertRaises(ValueError):
-            module.validate(summary, 'func testFirst() {}\nfunc testSecond() {}',
+            module.validate(summary, self.source,
                             {'testNodes': [case, case]})
 
     def test_complete_run_passes(self):
         self.assertEqual(module.validate(dict(result='Passed', passedTests=2, totalTestCount=2,
                                              failedTests=0, skippedTests=0, expectedFailures=0),
-                                         'func testFirst() {}\nfunc testSecond() {}',
+                                         self.source,
                                          {'testNodes': [{'nodeType': 'Test Suite', 'children': [
-                                             {'name': 'testFirst()', 'nodeType': 'Test Case', 'result': 'Passed'},
+                                             {'name': 'testProductReopensMainWindowAfterLastWindowCloses()', 'nodeType': 'Test Case', 'result': 'Passed'},
                                              {'name': 'ApexTermUITests/testSecond()', 'nodeType': 'Test Case', 'result': 'Passed'}]}]}), 2)
 
     def test_empty_partial_failed_or_skipped_run_is_rejected(self):
@@ -31,4 +33,10 @@ class UIResultTests(unittest.TestCase):
                       dict(result='Failed'), dict(skippedTests=1), dict(failedTests=1),
                       dict(expectedFailures=1), dict(totalTestCount=3)]:
             with self.subTest(patch=patch), self.assertRaises(ValueError):
-                module.validate(baseline | patch, 'func testFirst() {}\nfunc testSecond() {}')
+                module.validate(baseline | patch, self.source)
+
+    def test_window_reopen_case_is_mandatory(self):
+        with self.assertRaisesRegex(ValueError, 'window reopening'):
+            module.validate(dict(result='Passed', passedTests=1, totalTestCount=1,
+                                 failedTests=0, skippedTests=0, expectedFailures=0),
+                            'func testSecond() {}')

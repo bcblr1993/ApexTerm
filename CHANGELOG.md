@@ -2,6 +2,23 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.4.1] - 2026-09-28
+
+### ✨ 新增特性 (Features)
+- 无新增产品功能；本次为窗口与终端绘制修复版本。
+
+### ⚡️ 体验优化 (Improvements)
+- 全屏终端程序使用独立屏幕网格绘制，退出后恢复原有命令输出和滚动历史。
+
+### 🐞 问题修复 (Bug Fixes)
+- 修复关闭最后一个主窗口后，再点击运行中的 ApexTerm 图标仍不出现窗口的问题。
+- 修复 Vim 使用光标定位与清屏指令时，文件内容只显示开头数行的问题。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- 新增真实产品应用的窗口重开 UI 回归测试及 Vim 全屏绘制单元测试，并加入每次发布的强制门禁。
+- Tart VM 真实 SSH、PTY、SFTP 集成测试与全量 Swift 测试通过；8 项 Release 性能基准全部达标，0 failures。
+- 基准实测：RingBuffer 1,887,116 行/秒，ANSI 411,217 spans/秒，RSS 峰值 103.52 MB，16 线程 2,074,687 writes/秒，指标解析 13,181 次/秒，OpenSSH 116,372 hosts/秒，SFTP 1,110 tasks/秒，单键延迟 5.67 μs。
+
 ## [v1.4.0] - 2026-09-28
 
 ### ✨ 新增特性 (Features)

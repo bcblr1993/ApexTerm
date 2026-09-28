@@ -16,8 +16,22 @@ private extension FocusedValues {
     }
 }
 
+@MainActor
+private final class ApexTermAppDelegate: NSObject, NSApplicationDelegate {
+    var reopenMainWindow: (() -> Void)?
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag {
+            reopenMainWindow?()
+        }
+        return true
+    }
+}
+
 @main
 struct ApexTermApp: App {
+    @NSApplicationDelegateAdaptor(ApexTermAppDelegate.self) private var appDelegate
+    @Environment(\.openWindow) private var openWindow
     @StateObject private var sessionStore = SessionStore.shared
     @ObservedObject private var updateManager = UpdateManager.shared
     @ObservedObject private var settings = AppSettings.shared
@@ -33,7 +47,7 @@ struct ApexTermApp: App {
     @State private var isNewSessionPresented = false
     
     var body: some Scene {
-        WindowGroup {
+        WindowGroup(id: "main") {
             NavigationSplitView {
                 SidebarView(
                     store: sessionStore,
@@ -80,6 +94,7 @@ struct ApexTermApp: App {
                 UpdateSheetView().apexTheme()
             }
             .task {
+                appDelegate.reopenMainWindow = { openWindow(id: "main") }
                 if settings.checkForUpdatesOnLaunch {
                     await updateManager.checkForUpdates(manual: false)
                 }

@@ -32,6 +32,46 @@ public final class TerminalRingBuffer: @unchecked Sendable {
     private var currentBold: Bool = false
     private var pendingSequence: String = ""
     private let vtParser = VTParser()
+    private var screen: [[TerminalCell]]? = nil
+    private var screenRows = 35
+    private var screenColumns = 120
+    private var screenRow = 0
+    private var screenColumn = 0
+    private var savedScreenPosition: (Int, Int)?
+    private var _screenRevision: Int64 = 0
+
+    public var screenRevision: Int64 {
+        lock.lock(); defer { lock.unlock() }
+        return _screenRevision
+    }
+
+    public var screenLines: [String]? {
+        lock.lock(); defer { lock.unlock() }
+        return screen?.map(renderCellsToString)
+    }
+
+    public func setDimensions(columns: Int, rows: Int) {
+        lock.lock()
+        if screenColumns == max(1, columns) && screenRows == max(1, rows) {
+            lock.unlock()
+            return
+        }
+        screenColumns = max(1, columns)
+        screenRows = max(1, rows)
+        var needsUpdate = false
+        if var grid = screen {
+            grid = Array(grid.prefix(screenRows))
+            while grid.count < screenRows { grid.append([]) }
+            screen = grid
+            screenRow = min(screenRow, screenRows - 1)
+            screenColumn = min(screenColumn, screenColumns - 1)
+            _screenRevision += 1
+            needsUpdate = true
+        }
+        let updateHandler = onUpdate
+        lock.unlock()
+        if needsUpdate { updateHandler?() }
+    }
     
     public var onUpdate: (@Sendable () -> Void)?
     
@@ -72,6 +112,7 @@ public final class TerminalRingBuffer: @unchecked Sendable {
     public var cursorColumn: Int {
         lock.lock()
         defer { lock.unlock() }
+        if screen != nil { return screenColumn }
         if isEditingActiveLine {
             return cursorCol
         } else {
@@ -143,20 +184,23 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         while i < fullText.endIndex {
             let ch = fullText[i]
             if ch == "\r\n" || ch == "\n" {
-                commitActiveLine()
+                if screen != nil { screenNewline() } else { commitActiveLine() }
                 i = fullText.index(after: i)
                 continue
             } else if ch == "\r" {
+                if screen != nil { screenColumn = 0; i = fullText.index(after: i); continue }
                 ensureEditingMode()
                 cursorCol = 0
                 i = fullText.index(after: i)
                 continue
             } else if ch == "\u{08}" { // Backspace (BS) - moves cursor left without deletion
+                if screen != nil { screenColumn = max(0, screenColumn - 1); i = fullText.index(after: i); continue }
                 ensureEditingMode()
                 cursorCol = max(0, cursorCol - 1)
                 i = fullText.index(after: i)
                 continue
             } else if ch == "\t" { // Tab - advance to multiple of 8
+                if screen != nil { screenColumn = min(screenColumns - 1, (screenColumn / 8 + 1) * 8); i = fullText.index(after: i); continue }
                 ensureEditingMode()
                 let nextTab = (cursorCol / 8 + 1) * 8
                 while cursorCol < nextTab {
@@ -205,8 +249,12 @@ public final class TerminalRingBuffer: @unchecked Sendable {
                     }
                     
                     let finalChar = fullText[j]
-                    ensureEditingMode()
-                    handleCSI(finalChar: finalChar, param: csiParam)
+                    if screen != nil || csiParam == "?1049" || csiParam == "?1047" || csiParam == "?47" {
+                        handleScreenCSI(finalChar: finalChar, param: csiParam)
+                    } else {
+                        ensureEditingMode()
+                        handleCSI(finalChar: finalChar, param: csiParam)
+                    }
                     i = fullText.index(after: j)
                     continue
                 } else if nextChar == "]" { // OSC Sequence
@@ -229,11 +277,24 @@ public final class TerminalRingBuffer: @unchecked Sendable {
                 } else {
                     // 2-byte escape sequence (e.g. ESC M, ESC =, ESC >, ESC 7, ESC 8)
                     // Consume both bytes so the second byte does not print as garbage
+                    if screen != nil {
+                        switch nextChar {
+                        case "7": savedScreenPosition = (screenRow, screenColumn)
+                        case "8": if let savedScreenPosition { (screenRow, screenColumn) = savedScreenPosition }
+                        case "M": screenRow = max(0, screenRow - 1)
+                        default: break
+                        }
+                    }
                     i = fullText.index(after: next)
                     continue
                 }
             } else {
                 if let ascii = ch.asciiValue, ascii < 32 {
+                    i = fullText.index(after: i)
+                    continue
+                }
+                if screen != nil {
+                    screenPut(TerminalCell(char: ch, fgHex: currentFgHex, isBold: currentBold, ansiColorIndex: currentANSIIndex))
                     i = fullText.index(after: i)
                     continue
                 }
@@ -274,6 +335,89 @@ public final class TerminalRingBuffer: @unchecked Sendable {
             activeCells.append(cell)
         }
         cursorCol += 1
+    }
+
+    private func screenNewline() {
+        screenColumn = 0
+        if screenRow < screenRows - 1 { screenRow += 1 }
+        else if var grid = screen {
+            grid.removeFirst()
+            grid.append([])
+            screen = grid
+        }
+        _screenRevision += 1
+    }
+
+    private func screenPut(_ cell: TerminalCell) {
+        guard var grid = screen else { return }
+        if screenColumn >= screenColumns { screenNewline(); grid = screen! }
+        var row = grid[screenRow]
+        if screenColumn > row.count {
+            row.append(contentsOf: repeatElement(TerminalCell(char: " "), count: screenColumn - row.count))
+        }
+        if screenColumn < row.count { row[screenColumn] = cell } else { row.append(cell) }
+        grid[screenRow] = row
+        screen = grid
+        screenColumn += 1
+        _screenRevision += 1
+    }
+
+    private func handleScreenCSI(finalChar: Character, param: String) {
+        if param == "?1049" || param == "?1047" || param == "?47" {
+            if finalChar == "h" {
+                screen = Array(repeating: [], count: screenRows)
+                screenRow = 0
+                screenColumn = 0
+                savedScreenPosition = nil
+                _screenRevision += 1
+            } else if finalChar == "l" {
+                screen = nil
+                _screenRevision += 1
+                _isClearPending = true
+            }
+            return
+        }
+        guard var grid = screen else { return }
+        let values = param.split(separator: ";", omittingEmptySubsequences: false).map { Int($0) ?? 0 }
+        let first = values.first ?? 0
+        let amount = max(1, first)
+        switch finalChar {
+        case "m":
+            var style = SGRStyle(foreground: currentFgHex, index: currentANSIIndex, bold: currentBold)
+            style.apply(param.split(separator: ";").compactMap { Int($0) })
+            currentFgHex = style.foreground; currentANSIIndex = style.index; currentBold = style.bold
+        case "H", "f":
+            screenRow = min(screenRows - 1, max(0, amount - 1))
+            screenColumn = min(screenColumns - 1, max(0, (values.count > 1 ? max(1, values[1]) : 1) - 1))
+        case "A": screenRow = max(0, screenRow - amount)
+        case "B": screenRow = min(screenRows - 1, screenRow + amount)
+        case "C": screenColumn = min(screenColumns - 1, screenColumn + amount)
+        case "D": screenColumn = max(0, screenColumn - amount)
+        case "G": screenColumn = min(screenColumns - 1, amount - 1)
+        case "d": screenRow = min(screenRows - 1, amount - 1)
+        case "J":
+            if first == 2 || first == 3 { grid = Array(repeating: [], count: screenRows) }
+            else if first == 0 {
+                grid[screenRow] = Array(grid[screenRow].prefix(screenColumn))
+                if screenRow + 1 < screenRows { for row in (screenRow + 1)..<screenRows { grid[row] = [] } }
+            }
+            screen = grid; _screenRevision += 1
+        case "K":
+            if first == 2 { grid[screenRow] = [] }
+            else if first == 0 { grid[screenRow] = Array(grid[screenRow].prefix(screenColumn)) }
+            else if first == 1 {
+                let end = min(screenColumn + 1, grid[screenRow].count)
+                if end > 0 { for col in 0..<end { grid[screenRow][col] = TerminalCell(char: " ") } }
+            }
+            screen = grid; _screenRevision += 1
+        case "L":
+            for _ in 0..<min(amount, screenRows - screenRow) { grid.insert([], at: screenRow); grid.removeLast() }
+            screen = grid; _screenRevision += 1
+        case "M":
+            for _ in 0..<min(amount, screenRows - screenRow) { grid.remove(at: screenRow); grid.append([]) }
+            screen = grid; _screenRevision += 1
+        default: break
+        }
     }
     
     private func handleCSI(finalChar: Character, param: String) {

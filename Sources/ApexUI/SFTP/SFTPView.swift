@@ -441,9 +441,19 @@ public struct SFTPView: View {
             loadDirectory(path: newPath)
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("SFTPDirectoryRefreshNeeded"))) { notification in
-            guard let path = notification.object as? String,
-                  (path as NSString).deletingLastPathComponent == currentPath else { return }
+            if let path = notification.object as? String, !path.isEmpty {
+                let parent = (path as NSString).deletingLastPathComponent
+                let normalizedPath = path.hasSuffix("/") && path.count > 1 ? String(path.dropLast()) : path
+                let normalizedCurrent = currentPath.hasSuffix("/") && currentPath.count > 1 ? String(currentPath.dropLast()) : currentPath
+                let normalizedParent = parent.hasSuffix("/") && parent.count > 1 ? String(parent.dropLast()) : parent
+                guard normalizedPath == normalizedCurrent || normalizedParent == normalizedCurrent || path == "~" else { return }
+            }
             loadDirectory(path: currentPath)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            if isLinkageEnabled {
+                loadDirectory(path: currentPath)
+            }
         }
         .sheet(item: $editingFile) { item in
             QuickEditorView(
@@ -581,6 +591,10 @@ public struct SFTPView: View {
 
     private func performDelete(_ item: SFTPItem) {
         guard let s = session else { return }
+        withAnimation {
+            self.items.removeAll { $0.path == item.path }
+            self.updateDisplayItems()
+        }
         Task {
             do {
                 if item.isDirectory {
@@ -600,6 +614,7 @@ public struct SFTPView: View {
             } catch {
                 await MainActor.run {
                     self.transferNotice = "删除失败: \(error.localizedDescription)"
+                    self.loadDirectory(path: self.currentPath)
                 }
             }
         }
@@ -713,12 +728,14 @@ public struct SFTPView: View {
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
                     self.items = fetched
+                    self.updateDisplayItems()
                     self.isLoading = false
                 }
             } catch {
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
                     self.items = []
+                    self.updateDisplayItems()
                     self.loadError = error.localizedDescription
                     self.isLoading = false
                 }

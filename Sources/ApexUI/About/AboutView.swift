@@ -123,7 +123,7 @@ public struct AboutView: View {
                     case .upToDate(let ver):
                         HStack(spacing: 4) {
                             Image(systemName: "checkmark.circle.fill")
-                            .foregroundColor(ApexStyle.success)
+                                .foregroundColor(ApexStyle.success)
                             Text(String(format: L10n.upToDateDesc, ver as CVarArg))
                                 .font(.caption)
                                 .foregroundColor(ApexStyle.secondary)
@@ -134,17 +134,53 @@ public struct AboutView: View {
                                 .foregroundColor(.accentColor)
                             Text("发现新版本 v\(rel.version)")
                                 .font(.caption.bold())
-                            Button("前往下载") {
-                                if let url = URL(string: rel.downloadUrl) {
-                                    NSWorkspace.shared.open(url)
-                                }
+                            Button(L10n.updateNow) {
+                                updateManager.isUpdateSheetPresented = true
+                            }
+                            .apexProminentButton()
+                            .controlSize(.small)
+                        }
+                    case .downloading(let progress, _, _):
+                        HStack(spacing: 8) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("\(L10n.downloadingUpdate) \(Int(progress * 100))%")
+                                .font(.caption)
+                                .foregroundColor(ApexStyle.secondary)
+                            Button("查看") {
+                                updateManager.isUpdateSheetPresented = true
                             }
                             .controlSize(.small)
                         }
+                    case .preparing(let msg):
+                        HStack(spacing: 8) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text(msg)
+                                .font(.caption)
+                                .foregroundColor(ApexStyle.secondary)
+                        }
+                    case .readyToRestart(let ver, _):
+                        HStack(spacing: 8) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundColor(ApexStyle.success)
+                            Text("v\(ver) \(L10n.readyToRestartTitle)")
+                                .font(.caption.bold())
+                            Button(L10n.restartAndInstall) {
+                                updateManager.relaunchAndInstall()
+                            }
+                            .apexProminentButton()
+                            .controlSize(.small)
+                        }
                     case .failed(let err):
-                        Text("检查失败: \(err)")
-                            .font(.caption)
-                            .foregroundColor(ApexStyle.secondary)
+                        HStack(spacing: 6) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundColor(ApexStyle.warning)
+                            Text("检查更新失败: \(err)")
+                                .font(.caption)
+                                .foregroundColor(ApexStyle.secondary)
+                                .lineLimit(1)
+                        }
                     case .idle:
                         EmptyView()
                     }

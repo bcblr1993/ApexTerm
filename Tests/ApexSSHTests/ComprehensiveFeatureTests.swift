@@ -219,6 +219,43 @@ final class ComprehensiveFeatureTests: XCTestCase {
         XCTAssertEqual(box.path, "/var/log")
     }
 
+    func testDirectoryLinkageRefreshOnSamePathPromptReturn() async throws {
+        final class RefreshTracker: @unchecked Sendable {
+            var refreshCount = 0
+        }
+        let tracker = RefreshTracker()
+        let session = Session(name: "Linkage Test", host: "192.0.2.10", port: 22, username: "user")
+        let client = MockSSHSession(session: session)
+        let tab = await MainActor.run {
+            TerminalTabItem(session: session, sshClient: client)
+        }
+        
+        await MainActor.run {
+            tab.isDirectoryLinkageEnabled = true
+            tab.currentRemotePath = "/home/ubuntu"
+        }
+        
+        let observer = NotificationCenter.default.addObserver(
+            forName: NSNotification.Name("SFTPDirectoryRefreshNeeded"),
+            object: nil,
+            queue: .main
+        ) { notif in
+            if let path = notif.object as? String, path == "/home/ubuntu" {
+                tracker.refreshCount += 1
+            }
+        }
+        defer { NotificationCenter.default.removeObserver(observer) }
+        
+        // When client triggers directory change to the same path
+        client.triggerDirectoryChange(to: "/home/ubuntu")
+        
+        // Wait for MainActor task
+        try await Task.sleep(nanoseconds: 50_000_000)
+        
+        let count = tracker.refreshCount
+        XCTAssertGreaterThanOrEqual(count, 1)
+    }
+
     // MARK: - 7. Terminal Split Panes & Multi-Tab Model
     
     func testTerminalTabItemSplits() {

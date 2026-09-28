@@ -121,13 +121,36 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
             }
         }
         
-        self.sshClient.setDirectoryChangeHandler { [weak self] path in
+        registerDirectoryLinkage(for: self.sshClient)
+    }
+
+    private var linkageRefreshTask: Task<Void, Never>? = nil
+
+    public func scheduleDirectoryLinkageRefresh() {
+        linkageRefreshTask?.cancel()
+        linkageRefreshTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 600_000_000)
+            guard let self = self, self.isDirectoryLinkageEnabled, !Task.isCancelled else { return }
+            NotificationCenter.default.post(
+                name: NSNotification.Name("SFTPDirectoryRefreshNeeded"),
+                object: self.currentRemotePath
+            )
+        }
+    }
+
+    public func registerDirectoryLinkage(for client: SSHSessionProtocol) {
+        client.setDirectoryChangeHandler { [weak self] path in
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
                 let needsHomeResolution = self.currentRemotePath == "~" || self.currentRemotePath.hasPrefix("~/")
                 guard self.isDirectoryLinkageEnabled || needsHomeResolution else { return }
                 if self.currentRemotePath != path {
                     self.currentRemotePath = path
+                } else if self.isDirectoryLinkageEnabled {
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("SFTPDirectoryRefreshNeeded"),
+                        object: path
+                    )
                 }
             }
         }
@@ -189,6 +212,7 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
         self.activePaneId = newPane.id
         self.splitMode = mode
         self.paneSplitRatio = 0.5
+        registerDirectoryLinkage(for: newClient)
         
         connect(pane: newPane)
     }
@@ -752,6 +776,9 @@ private struct PaneContainerView: View {
                         }
                     } else {
                         pane.sshClient.sendInputSync(inputData)
+                    }
+                    if tab.isDirectoryLinkageEnabled && (inputData.contains(13) || inputData.contains(10)) {
+                        tab.scheduleDirectoryLinkageRefresh()
                     }
                 }
                 

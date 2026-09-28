@@ -43,6 +43,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     private var passwordFeedSent = false
     private var recentPromptBuffer = ""
     private var lastReportedDirectory: String?
+    private var hasPendingCommandExecution = false
     private var remoteHomeDirectory: String?
     
     /// Locate bundled sshpass first, then Homebrew/system locations
@@ -301,6 +302,9 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
 
     public func sendInputSync(_ data: Data) {
         guard ptyMasterFd >= 0 else { return }
+        if data.contains(13) || data.contains(10) {
+            hasPendingCommandExecution = true
+        }
         data.withUnsafeBytes { rawBuffer in
             guard let baseAddress = rawBuffer.baseAddress else { return }
             _ = write(ptyMasterFd, baseAddress, rawBuffer.count)
@@ -397,9 +401,15 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         // Must resolve to a valid Unix absolute path
         guard path.hasPrefix("/") else { return }
         
-        if !path.isEmpty && path != lastReportedDirectory {
-            lastReportedDirectory = path
-            directoryChangeHandler?(path)
+        if !path.isEmpty {
+            if path != lastReportedDirectory {
+                lastReportedDirectory = path
+                hasPendingCommandExecution = false
+                directoryChangeHandler?(path)
+            } else if hasPendingCommandExecution {
+                hasPendingCommandExecution = false
+                directoryChangeHandler?(path)
+            }
         }
     }
     

@@ -360,7 +360,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         process.standardError = Pipe()
         do {
             try process.run()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            let data = (try? pipe.fileHandleForReading.readToEnd()) ?? Data()
             process.waitUntilExit()
             if let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines), output.hasPrefix("/") {
                 return output
@@ -602,11 +602,11 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         process.standardOutput = pipe
         process.standardError = errPipe
         try process.run()
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let data = (try? pipe.fileHandleForReading.readToEnd()) ?? Data()
         process.waitUntilExit()
         
         guard process.terminationStatus == 0 else {
-            let errorData = errPipe.fileHandleForReading.readDataToEndOfFile()
+            let errorData = (try? errPipe.fileHandleForReading.readToEnd()) ?? Data()
             let message = String(decoding: errorData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
             throw NSError(domain: "ApexSSH", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey:
                 message.isEmpty ? "无法读取远程目录（退出码 \(process.terminationStatus)）" : String(message.prefix(512))])
@@ -692,7 +692,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         process.standardError = errPipe
         try await Self.runTransferProcess(process)
         guard process.terminationStatus == 0 else {
-            let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+            let errData = (try? errPipe.fileHandleForReading.readToEnd()) ?? Data()
             let errMsg = String(data: errData, encoding: .utf8) ?? "scp download failed"
             throw NSError(domain: "ApexSSH", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: errMsg])
         }
@@ -730,7 +730,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         process.standardError = errPipe
         try await Self.runTransferProcess(process)
         guard process.terminationStatus == 0 else {
-            let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+            let errData = (try? errPipe.fileHandleForReading.readToEnd()) ?? Data()
             let errMsg = String(data: errData, encoding: .utf8) ?? "scp upload failed"
             throw NSError(domain: "ApexSSH", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: errMsg])
         }
@@ -741,7 +741,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     static func runProbeProcess(_ process: Process) async throws -> Data {
         let pipe = Pipe()
         process.standardOutput = pipe
-        let reader = Task.detached { pipe.fileHandleForReading.readDataToEndOfFile() }
+        let reader = Task.detached { (try? pipe.fileHandleForReading.readToEnd()) ?? Data() }
         do {
             try await runTransferProcess(process)
             try? pipe.fileHandleForWriting.close()
@@ -818,7 +818,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         process.waitUntilExit()
         
         guard process.terminationStatus == 0 else {
-            let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+            let errData = (try? errPipe.fileHandleForReading.readToEnd()) ?? Data()
             let errMsg = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "Remote command execution failed"
             throw NSError(domain: "ApexSSH", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: errMsg.isEmpty ? "Operation failed with exit code \(process.terminationStatus)" : errMsg])
         }

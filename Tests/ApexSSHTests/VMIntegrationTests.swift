@@ -213,7 +213,10 @@ final class VMIntegrationTests: XCTestCase {
         
         // Send remote command via PTY
         try await sshClient.sendInput("uname -m\r\n".data(using: .utf8)!)
-        try await Task.sleep(nanoseconds: 500_000_000)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while ContinuousClock.now < deadline && !(outputBox.contains("arm64") || outputBox.contains("Darwin") || outputBox.contains("x86_64")) {
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
         
         XCTAssertTrue(outputBox.contains("arm64") || outputBox.contains("Darwin") || outputBox.contains("x86_64"))
         

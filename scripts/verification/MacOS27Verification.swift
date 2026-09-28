@@ -78,8 +78,12 @@ struct ThemeVerificationApp: App {
         _selectedSession = State(initialValue: session)
         tab.connectionState = .connected
         tab.panes[0].connectionState = .connected
-        if ProcessInfo.processInfo.environment["APEX_QA_SCENE"] == "metrics" {
-            tab.metricsHistory.append(ServerMetricsSnapshot(cpuUsagePercent: 24, cpuCores: 8, cpuModel: "示例服务器", memoryTotalBytes: 8_589_934_592, memoryUsedBytes: 3_221_225_472))
+        if environment["APEX_QA_SCENE"] == "metrics", !["waiting", "disabled", "connecting"].contains(environment["APEX_QA_METRICS_STATE"] ?? "live") {
+            let end = environment["APEX_QA_METRICS_STATE"] == "stale" ? Date().addingTimeInterval(-60) : Date()
+            for index in 0..<20 {
+                tab.metricsHistory.append(ServerMetricsSnapshot(timestamp: end.addingTimeInterval(Double(index - 20) * 2), cpuUsagePercent: Double(15 + index % 8 * 4), memoryTotalBytes: 8_589_934_592, memoryUsedBytes: UInt64(2_000_000_000 + index * 40_000_000)))
+            }
+            tab.metricsHistory.append(ServerMetricsSnapshot(timestamp: environment["APEX_QA_METRICS_STATE"] == "stale" ? Date().addingTimeInterval(-60) : Date(), cpuUsagePercent: 24, cpuCores: 8, cpuModel: "示例服务器", memoryTotalBytes: 8_589_934_592, memoryUsedBytes: 3_221_225_472))
         }
         if let lines = ProcessInfo.processInfo.environment["APEX_QA_LINES"].flatMap(Int.init), lines > 0 {
             _editorContent = State(initialValue: (0..<lines).map { "配置行 \($0) = 示例内容" }.joined(separator: "\n"))
@@ -133,7 +137,7 @@ struct ThemeVerificationApp: App {
             } else if scene == "transfers" {
                 TransferDrawer(isExpanded: .constant(true))
             } else if scene == "metrics" {
-                MetricCapsuleView(historyStore: tab.metricsHistory)
+                MetricCapsuleView(historyStore: tab.metricsHistory, monitoringEnabled: !["disabled", "disabled-history"].contains(ProcessInfo.processInfo.environment["APEX_QA_METRICS_STATE"] ?? "live"), connectionActive: !["disconnected-history", "connecting", "connecting-history"].contains(ProcessInfo.processInfo.environment["APEX_QA_METRICS_STATE"] ?? "live"), connectionConnecting: ["connecting", "connecting-history"].contains(ProcessInfo.processInfo.environment["APEX_QA_METRICS_STATE"] ?? "live"))
             } else if scene == "import-sheet" {
                 #if APEX_BASELINE
                 Text("旧版导入界面请使用正式 App 验证")
@@ -174,6 +178,16 @@ struct ThemeVerificationApp: App {
             }
             }
             .apexTheme()
+            .onReceive(tab.metricsHistory.$snapshots) { snapshots in
+                if let path = ProcessInfo.processInfo.environment["APEX_QA_METRICS_RESULT"],
+                   let latest = snapshots.last {
+                    let record: [String: Any] = ["timestamp": latest.timestamp.timeIntervalSince1970,
+                                                 "count": snapshots.count]
+                    if let data = try? JSONSerialization.data(withJSONObject: record) {
+                        try? data.write(to: URL(fileURLWithPath: path), options: .atomic)
+                    }
+                }
+            }
             .frame(minWidth: scene == "main" ? 960 : 0, minHeight: scene == "main" ? 640 : 0)
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
                 for activeTab in tabs {
@@ -183,10 +197,13 @@ struct ThemeVerificationApp: App {
                 }
             }
             .onChange(of: scene) { _, page in
-                if page == "metrics" && tab.metricsHistory.latest == nil {
+                if page == "metrics" {
+                    for index in 0..<20 {
+                        tab.metricsHistory.append(ServerMetricsSnapshot(timestamp: Date().addingTimeInterval(Double(index - 20) * 2), cpuUsagePercent: Double(15 + index % 8 * 4), memoryTotalBytes: 8_589_934_592, memoryUsedBytes: UInt64(2_000_000_000 + index * 40_000_000)))
+                    }
                     tab.metricsHistory.append(ServerMetricsSnapshot(cpuUsagePercent: 24, cpuCores: 8, cpuModel: "示例服务器", memoryTotalBytes: 8_589_934_592, memoryUsedBytes: 3_221_225_472))
                 }
-                let sizes: [String: NSSize] = ["main": NSSize(width: 1100, height: 760), "settings": NSSize(width: 580, height: 460), "session": NSSize(width: 560, height: 560), "about": NSSize(width: 520, height: 650), "shortcuts": NSSize(width: 580, height: 480), "editor": NSSize(width: 900, height: 650), "transfers": NSSize(width: 900, height: 420), "metrics": NSSize(width: 500, height: 300), "import": NSSize(width: 620, height: 500)]
+                let sizes: [String: NSSize] = ["main": NSSize(width: 1100, height: 760), "settings": NSSize(width: 580, height: 460), "session": NSSize(width: 560, height: 560), "about": NSSize(width: 520, height: 650), "shortcuts": NSSize(width: 580, height: 590), "editor": NSSize(width: 900, height: 650), "transfers": NSSize(width: 900, height: 420), "metrics": NSSize(width: 500, height: 300), "import": NSSize(width: 620, height: 500)]
                 Task { @MainActor in
                     try? await Task.sleep(for: .milliseconds(100))
                     NSApplication.shared.windows.first(where: { $0.isVisible && $0.contentView != nil })?.setContentSize(sizes[page] ?? NSSize(width: 1100, height: 760))
@@ -203,9 +220,9 @@ struct ThemeVerificationApp: App {
                 }
                 // The initial scene does not trigger onChange, and restored window geometry
                 // can be smaller than a fixed-size form. Apply its real content size once.
-                if scene == "session" {
+                if scene == "session" || scene == "shortcuts" {
                     try? await Task.sleep(for: .milliseconds(100))
-                    NSApplication.shared.windows.first(where: { $0.isVisible && $0.contentView != nil })?.setContentSize(NSSize(width: 560, height: 560))
+                    NSApplication.shared.windows.first(where: { $0.isVisible && $0.contentView != nil })?.setContentSize(scene == "shortcuts" ? NSSize(width: 580, height: 590) : NSSize(width: 560, height: 560))
                 }
                 telemetry.start()
                 if ProcessInfo.processInfo.environment["APEX_QA_KEY_DIAGNOSTICS"] == "1" {

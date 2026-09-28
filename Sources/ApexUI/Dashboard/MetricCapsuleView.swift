@@ -1,4 +1,5 @@
 import SwiftUI
+import Charts
 import ApexCore
 
 /// FinalShell-style live performance monitoring capsule (CPU, RAM, Network, Disk) with Chinese localization
@@ -8,11 +9,15 @@ public struct MetricCapsuleView: View {
     @State private var showingDetail = false
     private let compact: Bool
     private let monitoringEnabled: Bool
+    private let connectionActive: Bool
+    private let connectionConnecting: Bool
 
-    public init(historyStore: ObservableMetricsHistory, compact: Bool = false, monitoringEnabled: Bool = true) {
+    public init(historyStore: ObservableMetricsHistory, compact: Bool = false, monitoringEnabled: Bool = true, connectionActive: Bool = true, connectionConnecting: Bool = false) {
         self.historyStore = historyStore
         self.compact = compact
         self.monitoringEnabled = monitoringEnabled
+        self.connectionActive = connectionActive
+        self.connectionConnecting = connectionConnecting
     }
 
     public var body: some View {
@@ -25,7 +30,16 @@ public struct MetricCapsuleView: View {
         let isStale = latest.map { date.timeIntervalSince($0.timestamp) > 30 } ?? false
         return Button(action: { showingDetail.toggle() }) {
             HStack(spacing: 12) {
-                if latest == nil {
+                if monitoringEnabled && connectionConnecting {
+                    ProgressView().controlSize(.mini)
+                    Text("监控连接中")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(ApexStyle.secondary)
+                } else if monitoringEnabled && !connectionActive {
+                    Image(systemName: "network.slash")
+                    Text("监控连接已中断")
+                        .foregroundStyle(ApexStyle.secondary)
+                } else if latest == nil {
                     Image(systemName: "waveform.path.ecg")
                         .foregroundStyle(ApexStyle.accent)
                     Text(monitoringEnabled ? "监控待命" : "监控已关闭")
@@ -102,16 +116,17 @@ public struct MetricCapsuleView: View {
             }
         }
         .buttonStyle(.bordered)
+        .accessibilityIdentifier("metrics.summary")
         .controlSize(compact ? .regular : .small)
         .help(isStale ? "超过 30 秒未收到新指标，详情为最后一次采样" : "查看服务器性能")
         .popover(isPresented: $showingDetail, arrowEdge: .bottom) {
-            MetricDetailView(historyStore: historyStore, monitoringEnabled: monitoringEnabled)
-                .frame(width: 390, height: 280)
+            MetricDetailView(historyStore: historyStore, monitoringEnabled: monitoringEnabled, connectionActive: connectionActive, connectionConnecting: connectionConnecting)
+                .frame(width: 390)
         }
     }
 
     private var latest: ServerMetricsSnapshot? {
-        historyStore.latest
+        monitoringEnabled ? historyStore.latest : nil
     }
 
     private var cpuColor: Color {
@@ -167,6 +182,8 @@ public struct MetricDetailView: View {
     @ObservedObject private var themeSettings = AppSettings.shared
     @ObservedObject var historyStore: ObservableMetricsHistory
     let monitoringEnabled: Bool
+    let connectionActive: Bool
+    let connectionConnecting: Bool
 
     public var body: some View {
         TimelineView(.periodic(from: .now, by: 10)) { context in
@@ -182,6 +199,7 @@ public struct MetricDetailView: View {
                     .font(.system(size: 11, weight: .bold))
                     .foregroundColor(ApexStyle.accent)
                 Text(L10n.serverPerformance)
+                    .accessibilityIdentifier("metrics.detail.title")
                     .font(.system(size: 11.5, weight: .bold))
 
                 if let cpuModel = latest?.cpuModel, !cpuModel.isEmpty {
@@ -205,7 +223,15 @@ public struct MetricDetailView: View {
                 }
             }
 
-            if let snapshot = latest {
+            if monitoringEnabled && connectionConnecting {
+                Label("正在连接，等待新监控数据", systemImage: "network")
+                    .font(.caption)
+                    .foregroundStyle(ApexStyle.secondary)
+            } else if monitoringEnabled && !connectionActive {
+                Label("连接已中断，以下为最后一次采样", systemImage: "network.slash")
+                    .font(.caption)
+                    .foregroundStyle(ApexStyle.secondary)
+            } else if let snapshot = latest {
                 let stale = date.timeIntervalSince(snapshot.timestamp) > 30
                 Label(stale ? "数据已过期 · 最后采样 \(snapshot.timestamp.formatted(date: .omitted, time: .shortened))" : "最后采样 \(snapshot.timestamp.formatted(date: .omitted, time: .shortened))", systemImage: stale ? "clock.badge.exclamationmark" : "clock")
                     .font(.caption)
@@ -216,12 +242,12 @@ public struct MetricDetailView: View {
 
             if latest == nil {
                 VStack(spacing: 8) {
-                    if monitoringEnabled { ProgressView().controlSize(.small) }
-                    Text(monitoringEnabled ? "等待监控数据…" : "监控已关闭，可在会话设置中开启")
+                    if monitoringEnabled && (connectionActive || connectionConnecting) { ProgressView().controlSize(.small) }
+                    Text(!monitoringEnabled ? "监控已关闭，可在会话设置中开启" : connectionConnecting ? "正在连接，等待监控数据…" : connectionActive ? "等待监控数据…" : "连接已中断，暂无监控数据")
                         .font(.caption)
                         .foregroundColor(ApexStyle.secondary)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(maxWidth: .infinity, minHeight: 80)
             } else {
                 VStack(spacing: 5) {
                     // CPU Row
@@ -338,6 +364,27 @@ public struct MetricDetailView: View {
 
                 Divider()
 
+                if historyStore.snapshots.count >= 2 {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("CPU 与内存历史 (%)")
+                            .font(.caption)
+                            .foregroundStyle(ApexStyle.secondary)
+                        Chart(historyStore.snapshots) { snapshot in
+                            LineMark(x: .value("采样时间", snapshot.timestamp),
+                                     y: .value("使用率", snapshot.cpuUsagePercent))
+                                .foregroundStyle(by: .value("指标", "CPU"))
+                            LineMark(x: .value("采样时间", snapshot.timestamp),
+                                     y: .value("使用率", snapshot.memoryUsagePercent))
+                                .foregroundStyle(by: .value("指标", "内存"))
+                                .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
+                        }
+                        .chartYScale(domain: 0...100)
+                        .chartForegroundStyleScale(["CPU": ApexStyle.accent, "内存": ApexStyle.success])
+                        .frame(height: 100)
+                        .accessibilityIdentifier("metrics.history.chart")
+                    }
+                }
+
                 // Top 3 Processes & Load Average
                 if let procs = latest?.topProcesses, !procs.isEmpty {
                     VStack(alignment: .leading, spacing: 3) {
@@ -390,7 +437,7 @@ public struct MetricDetailView: View {
     }
 
     private var latest: ServerMetricsSnapshot? {
-        historyStore.latest
+        monitoringEnabled ? historyStore.latest : nil
     }
 
     private var cpuColor: Color {

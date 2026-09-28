@@ -47,3 +47,17 @@ class RemoteUIRunnerTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 runner.main()
             transport.assert_not_called()
+
+    def test_missing_or_empty_report_stops_before_transport(self):
+        for arguments in [['runner'], ['runner', ''], ['runner', '   ']]:
+            with self.subTest(arguments=arguments), patch.object(runner.sys, 'argv', arguments), patch.object(runner, 'run') as transport:
+                with self.assertRaises(ValueError):
+                    runner.main()
+                transport.assert_not_called()
+
+    def test_repository_report_stops_before_transport(self):
+        root = Path(runner.__file__).resolve().parents[1]
+        with patch.object(runner.sys, 'argv', ['runner', str(root)]), patch.object(runner, 'run') as transport:
+            with self.assertRaises(ValueError):
+                runner.main()
+            transport.assert_not_called()

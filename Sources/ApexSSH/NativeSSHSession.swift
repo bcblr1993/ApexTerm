@@ -94,6 +94,13 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     }
     
     public func connect() async throws {
+        // A peer disconnect may leave the previous probe finishing cancellation.
+        let previousProbe = probeTask
+        previousProbe?.cancel()
+        probeTask = nil
+        await previousProbe?.value
+        prevCpu = nil
+        prevNet = nil
         self.connectionState = .connecting(step: "Initializing native Darwin PTY...")
         self.passwordFeedSent = false
         
@@ -214,6 +221,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
                 }
             } else if bytesRead <= 0 {
                 self.connectionState = .disconnected
+                self.probeTask?.cancel()
                 source.cancel()
             }
         }
@@ -241,8 +249,10 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     
     public func disconnect() async {
         self.connectionState = .disconnected
-        probeTask?.cancel()
+        let pendingProbe = probeTask
+        pendingProbe?.cancel()
         probeTask = nil
+        await pendingProbe?.value
         readSource?.cancel()
         readSource = nil
         
@@ -514,16 +524,13 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
                     ]
                 }
                 
-                let pipe = Pipe()
-                process.standardOutput = pipe
-                process.standardError = Pipe()
+                process.standardError = FileHandle.nullDevice
                 
                 do {
-                    try process.run()
-                    process.waitUntilExit()
+                    let outData = try await Self.runProbeProcess(process)
                     
-                    if process.terminationStatus == 0 {
-                        let outData = pipe.fileHandleForReading.readDataToEndOfFile()
+                    if process.terminationStatus == 0, !Task.isCancelled,
+                       self.connectionState == .connected {
                         if let output = String(data: outData, encoding: .utf8) {
                             let snapshot = self.monitor.parseOutput(
                                 output,
@@ -730,18 +737,47 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         progress(1.0)
     }
     
-    /// Cancel the underlying copy process as well as its Swift task.
+    /// Drain probe output while SSH runs, rather than waiting with a full pipe.
+    static func runProbeProcess(_ process: Process) async throws -> Data {
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        let reader = Task.detached { pipe.fileHandleForReading.readDataToEndOfFile() }
+        do {
+            try await runTransferProcess(process)
+            try? pipe.fileHandleForWriting.close()
+            let output = await reader.value
+            try? pipe.fileHandleForReading.close()
+            try Task.checkCancellation()
+            return output
+        } catch {
+            try? pipe.fileHandleForWriting.close()
+            _ = await reader.value
+            try? pipe.fileHandleForReading.close()
+            throw error
+        }
+    }
+
+    /// Cancel the underlying transfer or metrics process as well as its Swift task.
     static func runTransferProcess(_ process: Process) async throws {
         try await withTaskCancellationHandler {
             try Task.checkCancellation()
             try process.run()
             // A cancellation can arrive between the first check and process launch.
-            if Task.isCancelled && process.isRunning { process.terminate() }
+            if Task.isCancelled { stopCancelledProcess(process) }
             process.waitUntilExit()
             try Task.checkCancellation()
         } onCancel: {
-            if process.isRunning { process.terminate() }
+            stopCancelledProcess(process)
         }
+    }
+
+    private static func stopCancelledProcess(_ process: Process) {
+        guard process.isRunning else { return }
+        let pid = process.processIdentifier
+        // sshpass can own an SSH child in another process group. Stop the
+        // descendants before their parent so they cannot outlive cancellation.
+        for child in ptyDescendants(of: pid).reversed() { kill(child, SIGKILL) }
+        kill(pid, SIGKILL)
     }
 
     private func executeRemoteCommand(_ cmd: String) async throws {

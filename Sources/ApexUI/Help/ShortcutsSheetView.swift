@@ -85,6 +85,7 @@ public struct ShortcutsSheetView: View {
                 
                 Text(L10n.menuShortcuts)
                     .font(.title2.bold())
+                    .accessibilityIdentifier("shortcuts.title")
                 
                 Spacer()
                 
@@ -96,6 +97,7 @@ public struct ShortcutsSheetView: View {
                         .foregroundColor(ApexStyle.secondary)
                 }
                 .buttonStyle(.plain)
+                .accessibilityIdentifier("shortcuts.close.header")
             }
             .padding()
             .background(ApexStyle.subtleSurface)
@@ -161,6 +163,7 @@ public struct ShortcutsSheetView: View {
                 .keyboardShortcut(.cancelAction)
                 .keyboardShortcut(.defaultAction)
                 .controlSize(.regular)
+                .accessibilityIdentifier("shortcuts.close.footer")
             }
             .padding()
             .background(ApexStyle.subtleSurface)

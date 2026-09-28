@@ -13,7 +13,12 @@ def run(arguments, **kwargs):
 
 
 def main():
+    if len(sys.argv) < 2 or not sys.argv[1].strip():
+        raise ValueError('An explicit diagnostic report directory is required')
     report = Path(sys.argv[1]).resolve()
+    root = Path(__file__).resolve().parents[1]
+    if report == root or report == Path.cwd().resolve():
+        raise ValueError('The report directory must not be the repository or working directory')
     selections = sys.argv[2:]
     if any(not re.fullmatch(r'ApexTermUITests/ApexTermUITests/test[A-Za-z0-9_]+', selection) for selection in selections):
         raise ValueError('Invalid diagnostic test identifier')

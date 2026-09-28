@@ -621,6 +621,19 @@ final class ApexTermUITests: XCTestCase {
         add(composition)
         XCTAssertEqual(terminal.value as? String, outputBeforeComposition,
                        "No partial Pinyin preedit may enter the remote shell before candidate commit")
+        // Verify cancellation: Escape discards the preedit without sending input or ESC to the remote shell
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertEqual(terminal.value as? String, outputBeforeComposition,
+                       "Cancelling Pinyin composition with Escape must not send preedit or control codes to remote shell")
+        let cancelled = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        cancelled.name = "real-system-pinyin-cancelled-by-escape"
+        cancelled.lifetime = .keepAlways
+        add(cancelled)
+
+        // Type again and commit Chinese via Space candidate selection
+        app.typeText("zhongwen")
+        XCTAssertEqual(terminal.value as? String, outputBeforeComposition,
+                       "Pinyin preedit must remain isolated from remote shell")
         app.typeKey(" ", modifierFlags: [])
         app.typeKey(.return, modifierFlags: [])
         let committed = XCTNSPredicateExpectation(
@@ -1128,6 +1141,100 @@ final class ApexTermUITests: XCTestCase {
         }
     }
 
+    func testRealSSHMonitoringDisconnectAndReconnect() throws {
+        let environment = ProcessInfo.processInfo.environment
+        let host = try XCTUnwrap(environment["APEX_UI_TEST_HOST"])
+        let user = try XCTUnwrap(environment["APEX_UI_TEST_USER"])
+        let metricsResult = FileManager.default.temporaryDirectory.appendingPathComponent("apex-metrics-" + UUID().uuidString + ".json")
+        defer {
+            app?.terminate()
+            try? FileManager.default.removeItem(at: metricsResult)
+        }
+        launch("main", extra: ["APEX_QA_REAL_HOST": host, "APEX_QA_REAL_USER": user,
+                               "APEX_QA_CONNECT": "1", "APEX_QA_MONITOR": "1",
+                               "APEX_QA_METRICS_RESULT": metricsResult.path])
+        XCTAssertTrue(staticText("已连接", comparison: "BEGINSWITH").waitForExistence(timeout: 30))
+        let summary = app.buttons["metrics.summary"]
+        let sampled = NSPredicate(format: "label CONTAINS %@", "%")
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: sampled, object: summary)], timeout: 30), .completed)
+        capture("real-monitor-connected")
+        clickVisibleCenter(app.menuBars.menuBarItems["验收操作"])
+        clickVisibleCenter(app.menuItems["断开测试终端"])
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label CONTAINS %@", "监控连接已中断"), object: summary)], timeout: 5), .completed)
+        clickVisibleCenter(summary)
+        XCTAssertTrue(staticText("连接已中断，以下为最后一次采样").waitForExistence(timeout: 3))
+        XCTAssertTrue(staticText("CPU").exists)
+        capture("real-monitor-disconnected-history")
+        app.typeKey(.escape, modifierFlags: [])
+        let reconnect = app.windows.buttons["重新连接 (⌘R)"].firstMatch
+        XCTAssertTrue(reconnect.waitForExistence(timeout: 5))
+        let reconnectStarted = Date().timeIntervalSince1970
+        reconnect.click()
+        XCTAssertTrue(staticText("已连接", comparison: "BEGINSWITH").waitForExistence(timeout: 30))
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: sampled, object: summary)], timeout: 30), .completed)
+        let freshSample = NSPredicate { _, _ in
+            guard let data = try? Data(contentsOf: metricsResult),
+                  let record = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let timestamp = record["timestamp"] as? Double else { return false }
+            return timestamp > reconnectStarted
+        }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: freshSample, object: NSObject())], timeout: 30), .completed)
+        let samplingEvidence = XCTAttachment(data: try Data(contentsOf: metricsResult), uniformTypeIdentifier: "public.json")
+        samplingEvidence.name = "real-monitor-post-reconnect-sample"
+        samplingEvidence.lifetime = .keepAlways
+        add(samplingEvidence)
+        capture("real-monitor-reconnected")
+    }
+
+    func testMonitoringStatesAreExplicit() {
+        for state in ["live", "stale", "waiting", "disabled", "disabled-history", "disconnected-history", "connecting", "connecting-history"] {
+            launch("metrics", extra: ["APEX_QA_METRICS_STATE": state])
+            let summary = app.buttons["metrics.summary"]
+            XCTAssertTrue(summary.waitForExistence(timeout: 5))
+            if state == "connecting" || state == "connecting-history" {
+                XCTAssertTrue(summary.label.contains("监控连接中"))
+            } else if state == "disconnected-history" {
+                XCTAssertTrue(summary.label.contains("监控连接已中断"))
+            } else if state == "stale" {
+                XCTAssertTrue(summary.label.contains("监控已过期"))
+            } else if state == "waiting" {
+                XCTAssertTrue(summary.label.contains("监控待命"))
+            } else if state == "disabled" || state == "disabled-history" {
+                XCTAssertTrue(summary.label.contains("监控已关闭"))
+            } else {
+                XCTAssertTrue(summary.label.contains("24.0%"))
+            }
+            capture("metrics-" + state + "-summary")
+            clickVisibleCenter(summary)
+            XCTAssertTrue(app.staticTexts["metrics.detail.title"].waitForExistence(timeout: 3))
+            switch state {
+            case "connecting":
+                XCTAssertTrue(staticText("正在连接，等待监控数据…").exists)
+            case "connecting-history":
+                XCTAssertTrue(staticText("正在连接，等待新监控数据").exists)
+                XCTAssertTrue(staticText("CPU 与内存历史 (%)").exists)
+            case "disconnected-history":
+                XCTAssertTrue(staticText("连接已中断，以下为最后一次采样").exists)
+                XCTAssertTrue(staticText("CPU").exists)
+                XCTAssertTrue(staticText("CPU 与内存历史 (%)").exists)
+            case "stale":
+                XCTAssertTrue(staticText("数据已过期", comparison: "CONTAINS").exists)
+                XCTAssertTrue(staticText("CPU 与内存历史 (%)").exists)
+            case "waiting":
+                XCTAssertTrue(staticText("等待监控数据…").exists)
+            case "disabled", "disabled-history":
+                XCTAssertTrue(staticText("监控已关闭，可在会话设置中开启").exists)
+            default:
+                XCTAssertTrue(staticText("CPU").exists)
+                XCTAssertTrue(staticText("CPU 与内存历史 (%)").exists)
+            }
+            capture("metrics-" + state + "-detail")
+            app.typeKey(.escape, modifierFlags: [])
+            app.terminate()
+        }
+    }
+
     func testAllThemesAndPagesRender() {
         launch()
         let themes = ["经典白色（默认）", "VS Code Dark Modern", "Tokyo Night", "Catppuccin Mocha", "Catppuccin Latte", "Nord", "Dracula", "One Dark Pro", "Gruvbox Dark", "Everforest", "Rosé Pine", "Solarized Light"]
@@ -1152,6 +1259,32 @@ final class ApexTermUITests: XCTestCase {
                     XCTAssertTrue(app.windows.buttons["保存 (⌘S)"].firstMatch.isHittable)
                 case "about":
                     XCTAssertTrue(app.windows.buttons["立即检查更新"].firstMatch.waitForExistence(timeout: 3))
+                case "metrics":
+                    let summary = app.buttons["metrics.summary"]
+                    XCTAssertTrue(summary.waitForExistence(timeout: 3))
+                    XCTAssertTrue(summary.label.contains("24.0%"),
+                                  "Each theme must capture a fresh monitoring fixture")
+                    clickVisibleCenter(summary)
+                    let detail = app.staticTexts["metrics.detail.title"]
+                    XCTAssertTrue(detail.waitForExistence(timeout: 3))
+                    XCTAssertTrue(detail.isHittable)
+                    for label in ["CPU", "内存", "磁盘", "网络"] {
+                        XCTAssertTrue(staticText(label).exists, "Missing monitoring detail: " + label)
+                    }
+                    XCTAssertTrue(staticText("CPU 与内存历史 (%)").isHittable,
+                                  "Monitoring history must be visible: " + theme)
+                    capture("\(theme)-metrics-detail")
+                    app.typeKey(.escape, modifierFlags: [])
+                    let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: detail)
+                    XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 3), .completed)
+                case "shortcuts":
+                    let title = app.staticTexts["shortcuts.title"]
+                    XCTAssertTrue(title.waitForExistence(timeout: 3))
+                    XCTAssertTrue(title.isHittable, "Shortcuts header must be visible: " + theme)
+                    XCTAssertTrue(app.buttons["shortcuts.close.header"].isHittable,
+                                  "Shortcuts header close must be visible: " + theme)
+                    XCTAssertTrue(app.buttons["shortcuts.close.footer"].isHittable,
+                                  "Shortcuts footer close must be visible: " + theme)
                 case "transfers":
                     XCTAssertTrue(staticText("暂无传输任务", comparison: "CONTAINS").waitForExistence(timeout: 3))
                 case "import":

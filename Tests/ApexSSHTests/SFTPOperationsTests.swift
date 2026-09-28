@@ -36,6 +36,57 @@ final class SFTPOperationsTests: XCTestCase {
         XCTAssertEqual(process.terminationReason, .uncaughtSignal)
     }
 
+    func testCancellationStopsHelperChildEvenWhenHelperIgnoresTermination() async throws {
+        let childFile = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: childFile) }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", "trap '' TERM; /bin/sleep 30 & echo $! > \"$1\"; wait", "probe-test", childFile.path]
+        let task = Task { try await NativeSSHSession.runTransferProcess(process) }
+        defer { task.cancel() }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        var child: Int32?
+        while child == nil && ContinuousClock.now < deadline {
+            if let text = try? String(contentsOf: childFile, encoding: .utf8) {
+                child = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines))
+            }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        let childPID = try XCTUnwrap(child)
+        task.cancel()
+        do { try await task.value; XCTFail("Cancelled helper must not report success") }
+        catch { XCTAssertTrue(error is CancellationError) }
+        XCTAssertFalse(process.isRunning)
+        // A killed child may briefly remain a zombie until launchd reaps it;
+        // neither a live nor sleeping child is acceptable.
+        let inspection = Process()
+        inspection.executableURL = URL(fileURLWithPath: "/bin/ps")
+        inspection.arguments = ["-p", String(childPID), "-o", "stat="]
+        let pipe = Pipe()
+        inspection.standardOutput = pipe
+        try inspection.run()
+        inspection.waitUntilExit()
+        let state = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        XCTAssertTrue(state.isEmpty || state.hasPrefix("Z"), "Helper child must have exited: \(state)")
+    }
+
+    func testProbeDrainsOutputLargerThanPipeCapacity() async throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/dd")
+        process.arguments = ["if=/dev/zero", "bs=1024", "count=128"]
+        process.standardError = FileHandle.nullDevice
+        let task = Task { try await NativeSSHSession.runProbeProcess(process) }
+        let watchdog = Task {
+            try await Task.sleep(for: .seconds(3))
+            task.cancel()
+        }
+        defer { watchdog.cancel() }
+        let data = try await task.value
+        XCTAssertEqual(process.terminationStatus, 0)
+        XCTAssertEqual(data.count, 131_072)
+        XCTAssertTrue(data.allSatisfy { $0 == 0 })
+    }
+
     func testRemotePermissionsAreParsedAndDisplayedIncludingSpecialBits() {
         for (symbolic, mode): (String, UInt32) in [("-rw-------", 0o600), ("drwxr-xr-x", 0o755), ("-rwsr-Sr-t", 0o7745), ("drwxrwxrwt+", 0o1777)] {
             XCTAssertEqual(NativeSSHSession.permissionMode(from: symbolic), mode)

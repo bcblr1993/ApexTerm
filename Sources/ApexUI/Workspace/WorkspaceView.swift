@@ -417,7 +417,9 @@ public struct WorkspaceView: View {
                 .help("分屏 (⌘D / ⌘⇧D)")
             }
             ToolbarItem(placement: .primaryAction) {
-                MetricCapsuleView(historyStore: tab.metricsHistory, compact: true, monitoringEnabled: tab.session.agentlessMonitorEnabled)
+                if let primaryPane = tab.panes.first {
+                    WorkspaceMetricsView(pane: primaryPane, historyStore: tab.metricsHistory, monitoringEnabled: tab.session.agentlessMonitorEnabled)
+                }
             }
             ToolbarItem(placement: .primaryAction) {
                 Toggle(isOn: $isSFTPVisible) {
@@ -484,6 +486,24 @@ public struct WorkspaceView: View {
         if !activeTabs.contains(where: { $0.id == selectedTabId }) {
             selectedTabId = tab.id
         }
+    }
+}
+
+private struct WorkspaceMetricsView: View {
+    @ObservedObject var pane: TerminalPaneItem
+    let historyStore: ObservableMetricsHistory
+    let monitoringEnabled: Bool
+
+    var body: some View {
+        MetricCapsuleView(historyStore: historyStore, compact: true,
+                          monitoringEnabled: monitoringEnabled,
+                          connectionActive: pane.connectionState == .connected,
+                          connectionConnecting: isConnecting)
+    }
+
+    private var isConnecting: Bool {
+        if case .connecting = pane.connectionState { return true }
+        return false
     }
 }
 

@@ -1247,7 +1247,22 @@ public final class NativeTerminalView: NSTextView {
             }
         }
         
-        // 2. Handle Special keys by key code when not composing marked IME text
+        // 2. Handle Escape key with priority: if composing IME text, discard and cancel without sending to shell
+        if event.keyCode == 53 { // ESC
+            if hasMarkedText() {
+                inputContext?.discardMarkedText()
+                unmarkText()
+                return
+            }
+            if let sv = self.enclosingScrollView as? NativeTerminalScrollView, !sv.searchBarOverlay.isHidden {
+                sv.hideFindBar()
+                return
+            }
+            onInput?("\u{1B}".data(using: .utf8)!)
+            return
+        }
+        
+        // Handle Special keys by key code when not composing marked IME text
         if !hasMarkedText() {
             switch event.keyCode {
             case 36, 76: // Return / Enter / Numpad Enter
@@ -1261,13 +1276,6 @@ public final class NativeTerminalView: NSTextView {
                 return
             case 48: // Tab
                 onInput?("\t".data(using: .utf8)!)
-                return
-            case 53: // ESC
-                if let sv = self.enclosingScrollView as? NativeTerminalScrollView, !sv.searchBarOverlay.isHidden {
-                    sv.hideFindBar()
-                    return
-                }
-                onInput?("\u{1B}".data(using: .utf8)!)
                 return
             case 126: // Up arrow
                 onInput?("\u{1B}[A".data(using: .utf8)!)
@@ -1557,6 +1565,11 @@ public final class NativeTerminalView: NSTextView {
         case #selector(insertTab(_:)):
             onInput?("\t".data(using: .utf8)!)
         case #selector(cancelOperation(_:)):
+            if hasMarkedText() {
+                inputContext?.discardMarkedText()
+                unmarkText()
+                return
+            }
             onInput?("\u{1B}".data(using: .utf8)!)
         case #selector(moveUp(_:)):
             onInput?("\u{1B}[A".data(using: .utf8)!)
@@ -1588,6 +1601,11 @@ public final class NativeTerminalView: NSTextView {
     
     override public func cancelOperation(_ sender: Any?) {
         resetCursorBlink()
+        if hasMarkedText() {
+            inputContext?.discardMarkedText()
+            unmarkText()
+            return
+        }
         onInput?("\u{1B}".data(using: .utf8)!)
     }
     

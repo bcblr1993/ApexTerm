@@ -161,7 +161,7 @@ echo "🔐 Generating SHA256 distribution checksums..."
 (cd "${BUILD_DIR}" && shasum -a 256 "$(basename "${DIST_DMG}")" "$(basename "${DIST_ARCHIVE}")") > "${SHA_FILE}"
 cat "${SHA_FILE}"
 
-if [ -d "/Applications" ]; then
+if [ -z "${APEX_SKIP_LOCAL_INSTALL:-}" ] && [ -d "/Applications" ]; then
     echo "📲 Updating local /Applications/ApexTerm.app..."
     if [ -d "/Applications/ApexTerm.app" ]; then
         BACKUP_DIR="${BUILD_DIR}/installed-backup-$(date +%Y%m%d%H%M%S)"

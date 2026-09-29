@@ -2,7 +2,7 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
-## [v1.4.1] - 2026-09-28
+## [v1.4.1] - 2026-09-29
 
 ### ✨ 新增特性 (Features)
 - 无新增产品功能；本次为窗口与终端绘制修复版本。

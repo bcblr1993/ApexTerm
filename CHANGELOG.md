@@ -2,6 +2,26 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.5.0] - 2026-09-29
+
+### ✨ 新增特性 (Features)
+- **主流工具功能深度对齐 (Electerm & FinalShell 对齐)**：
+  - **SSH 密钥配置与跳板机 (ProxyJump) 穿透**：新建与编辑会话弹窗支持选择/指定私钥文件路径（支持 `~` 智能展开）及口令 (Passphrase)，支持通过跳板机（ProxyJump）经由 `-J` 隧道一键连接内网主机。
+  - **终端按键与快捷键全覆盖**：终端引擎新增 `Shift+Tab` 反向制表符 (`\e[Z`)、Option (Alt) 词级快速跳跃与删除 (`\eb`, `\ef`, `\e\x7F`, `\ed`)，以及 F1–F12 全功能键原生直通，完美对齐 `htop`, `mc`, `vim`, `nano` 快捷操作。
+  - **括号粘贴模式 (Bracketed Paste Mode)**：终端 RingBuffer 支持 DEC 2004 私有模式 (`\e[?2004h` / `\e[?2004l`)，粘贴多行文本时自动包裹转义边界，杜绝命令提前走火意外执行。
+  - **SFTP 文本编辑器多编码自适应容错**：打开远程文件时自适应支持 UTF-8 与 Windows-1252 / ISO-8859-1 等多字符集降级解析，消除打开非纯 UTF-8 文件时“读取失败”的问题。
+
+### ⚡️ 体验优化 (Improvements)
+- **重连生命周期与资源自清理**：会话断开重新连接时严格执行旧 PTY 描述符注销、子进程清理与 kqueue 事件注销，杜绝文件描述符与后台进程残留。
+
+### 🐞 问题修复 (Bug Fixes)
+- 修复私钥认证模式下，除 scp 之外的交互终端、目录枚举、SFTP 基础操作及无代理监控进程遗漏 `-i <keyPath>` 参数的问题。
+- 修复私钥路径包含 `~` 时因 posix_spawn 未经 Shell 展开导致 SSH 报错找不到密钥文件的问题。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- 新增主流工具对齐专项测试 `MainstreamParityTests`（18 个独立测试场景），涵盖密钥认证、跳板机路由、括号粘贴、按键映射、SFTP 转义与多系统指标容错。
+- 本地 100+ 自动化测试用例 100% 通过（0 failures），8 项 Release 性能基准达标。
+
 ## [v1.4.3] - 2026-09-29
 
 ### ✨ 新增特性 (Features)

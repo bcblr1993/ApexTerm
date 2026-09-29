@@ -753,7 +753,7 @@ final class ApexTermUITests: XCTestCase {
     }
 
     private var dragLocalDirectory: URL?
-    private var dragRemoteFixture: (destination: String, directory: String)?
+    private var dragRemoteFixture: (destination: String, directory: String, fileName: String)?
     private var dragFinderWindow: XCUIElement?
     func testRealFinderDragUploadAndRecord() throws {
         try exerciseFinderDrag(download: false)
@@ -763,7 +763,11 @@ final class ApexTermUITests: XCTestCase {
         try exerciseFinderDrag(download: true)
     }
 
-    private func exerciseFinderDrag(download: Bool) throws {
+    func testRealFinderDragLargeDownloadAndRecord() throws {
+        try exerciseFinderDrag(download: true, large: true)
+    }
+
+    private func exerciseFinderDrag(download: Bool, large: Bool = false) throws {
         let environment = ProcessInfo.processInfo.environment
         let host = try XCTUnwrap(environment["APEX_UI_TEST_HOST"])
         let user = try XCTUnwrap(environment["APEX_UI_TEST_USER"])
@@ -786,13 +790,17 @@ final class ApexTermUITests: XCTestCase {
         guard directory.range(of: "^/tmp/apex-ui-drag-[A-Za-z0-9]+$", options: .regularExpression) != nil else {
             throw NSError(domain: "ApexTerm.DragAcceptance", code: 1)
         }
-        dragRemoteFixture = (destination, directory)
-        let name = "ui-drag-payload.txt"
+        let name = large ? "ui-drag-large.bin" : "ui-drag-payload.txt"
+        dragRemoteFixture = (destination, directory, name)
         let file = local.appendingPathComponent(name)
-        let payload = Data((0..<262144).map { 65 + UInt8($0 % 26) })
+        let payload = large ? Data(repeating: 0, count: 64 * 1024 * 1024)
+                            : Data((0..<262144).map { 65 + UInt8($0 % 26) })
         let digest = SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
         if download {
-            terminal.typeText("awk 'BEGIN { for (i=0; i<262144; i++) printf \"%c\", 65+(i%26) }' > '\(directory)/\(name)' && printf '\\nAPEX_UI_DRAG_SEEDED\\n'\n")
+            let seed = large
+                ? "dd if=/dev/zero of='\(directory)/\(name)' bs=1048576 count=64 2>/dev/null"
+                : "awk 'BEGIN { for (i=0; i<262144; i++) printf \"%c\", 65+(i%26) }' > '\(directory)/\(name)'"
+            terminal.typeText("\(seed) && printf '\\nAPEX_UI_DRAG_SEEDED\\n'\n")
             let seeded = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "\nAPEX_UI_DRAG_SEEDED\n"), object: terminal)
             XCTAssertEqual(XCTWaiter.wait(for: [seeded], timeout: 15), .completed)
         } else { try payload.write(to: file) }
@@ -838,7 +846,7 @@ final class ApexTermUITests: XCTestCase {
             let landed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
                 FileManager.default.fileExists(atPath: file.path)
             }, object: nil)
-            XCTAssertEqual(XCTWaiter.wait(for: [landed], timeout: 30), .completed)
+            XCTAssertEqual(XCTWaiter.wait(for: [landed], timeout: large ? 120 : 30), .completed)
             XCTAssertEqual(try Data(contentsOf: file), payload)
         } else {
             let source = window.descendants(matching: .any).matching(NSPredicate(format: "label == %@ OR value == %@", name, name)).firstMatch
@@ -886,6 +894,17 @@ final class ApexTermUITests: XCTestCase {
                 }
             }
         }
+        if let fixture = dragRemoteFixture {
+            app.activate()
+            if app.sheets.firstMatch.exists {
+                let close = app.windows.buttons["收起传输任务"].firstMatch
+                if close.exists { clickVisibleCenter(close) }
+                guard app.sheets.firstMatch.waitForNonExistence(timeout: 10) else {
+                    throw NSError(domain: "ApexTerm.DragAcceptance", code: 2,
+                                  userInfo: [NSLocalizedDescriptionKey: "Cannot clean owned fixture behind an open transfer sheet"])
+                }
+            }
+        }
         if let window = dragFinderWindow, window.exists {
             let close = window.buttons[XCUIIdentifierCloseWindow].firstMatch
             XCTAssertTrue(close.exists, "Close only the owned UUID-directory Finder window")
@@ -894,19 +913,11 @@ final class ApexTermUITests: XCTestCase {
         dragFinderWindow = nil
         if let fixture = dragRemoteFixture {
             app.activate()
-            if app.sheets.firstMatch.exists {
-                let close = app.windows.buttons["收起传输任务"].firstMatch
-                if close.exists { clickVisibleCenter(close) }
-                guard app.sheets.firstMatch.waitForNonExistence(timeout: 5) else {
-                    throw NSError(domain: "ApexTerm.DragAcceptance", code: 2,
-                                  userInfo: [NSLocalizedDescriptionKey: "Cannot clean owned fixture behind an open transfer sheet"])
-                }
-            }
             let terminal = app.textViews.firstMatch
             XCTAssertTrue(terminal.waitForExistence(timeout: 5))
             terminal.click()
             let marker = "APEX_UI_DRAG_CLEAN_" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
-            terminal.typeText("/bin/rm -f '\(fixture.directory)/ui-drag-payload.txt' && /bin/rmdir '\(fixture.directory)' && printf '\\n\(marker)\\n'\n")
+            terminal.typeText("/bin/rm -f '\(fixture.directory)/\(fixture.fileName)' && /bin/rmdir '\(fixture.directory)' && printf '\\n\(marker)\\n'\n")
             let cleaned = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "\n\(marker)\n"), object: terminal)
             XCTAssertEqual(XCTWaiter.wait(for: [cleaned], timeout: 15), .completed)
             dragRemoteFixture = nil

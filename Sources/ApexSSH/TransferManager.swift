@@ -157,7 +157,8 @@ public final class TransferManager: ObservableObject {
     
     /// Update progress for an externally-driven transfer
     public func updateExternalProgress(taskId: UUID, fraction: Double, transferredBytes: Int64? = nil) {
-        guard let idx = tasks.firstIndex(where: { $0.id == taskId }) else { return }
+        guard let idx = tasks.firstIndex(where: { $0.id == taskId }),
+              tasks[idx].status == .transferring else { return }
         let total = tasks[idx].totalBytes
         let transferred: Int64
         if let direct = transferredBytes {

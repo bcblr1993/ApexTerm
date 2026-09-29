@@ -1,9 +1,11 @@
 import XCTest
 import Foundation
 import Darwin
+import CryptoKit
 @testable import ApexCore
 @testable import ApexSSH
 @testable import ApexTerminal
+@testable import ApexUI
 
 final class VMIntegrationTests: XCTestCase {
     
@@ -132,6 +134,54 @@ final class VMIntegrationTests: XCTestCase {
         try cleanupProcess.run()
         cleanupProcess.waitUntilExit()
         XCTAssertEqual(cleanupProcess.terminationStatus, 0)
+    }
+
+    @MainActor
+    func testVMLargeRemoteFileDragExportCompletesWithMatchingHash() async throws {
+        try requireVMConfig()
+        let client = NativeSSHSession(session: vmSession)
+        let local = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".bin")
+        let remote = "/tmp/apexterm-large-drag-\(UUID().uuidString).bin"
+        let bytes = 64 * 1024 * 1024
+        let block = Data(repeating: 0x5a, count: 1024 * 1024)
+        _ = FileManager.default.createFile(atPath: local.path, contents: nil)
+        let writer = try FileHandle(forWritingTo: local)
+        for _ in 0..<64 { try writer.write(contentsOf: block) }
+        try writer.close()
+        defer { try? FileManager.default.removeItem(at: local) }
+
+        try await client.uploadFile(localURL: local, remotePath: remote) { _ in }
+        defer { Task { try? await client.removeFile(remotePath: remote) } }
+
+        let item = SFTPItem(name: (remote as NSString).lastPathComponent, path: remote,
+                            isDirectory: false, size: UInt64(bytes))
+        let provider = SFTPDragExportHelper.makeItemProvider(for: item, session: client)
+        let completed = expectation(description: "64 MiB drag export finishes")
+        let expectedHash = try Self.sha256(of: local)
+        let loadProgress = provider.loadFileRepresentation(forTypeIdentifier: "public.file-url") { url, error in
+            defer { completed.fulfill() }
+            XCTAssertNil(error)
+            guard let url else { XCTFail("Finder file representation was empty"); return }
+            do {
+                let actualHash = try Self.sha256(of: url)
+                XCTAssertEqual(actualHash, expectedHash)
+            } catch { XCTFail("Cannot hash exported file: \(error)") }
+        }
+        await fulfillment(of: [completed], timeout: 120)
+        if !loadProgress.isFinished { loadProgress.cancel() }
+        let record = try XCTUnwrap(TransferManager.shared.tasks.first { $0.remotePath == remote })
+        XCTAssertEqual(record.status, .completed)
+        try await client.removeFile(remotePath: remote)
+    }
+
+    private static func sha256(of url: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var hash = SHA256()
+        while let data = try handle.read(upToCount: 1024 * 1024), !data.isEmpty {
+            hash.update(data: data)
+        }
+        return hash.finalize().map { String(format: "%02x", $0) }.joined()
     }
     
     func testVMFileOperationsPreserveLiteralNamesAndReportMissingDirectory() async throws {

@@ -987,11 +987,13 @@ public enum SFTPDragExportHelper {
         let localURL = tempDir.appendingPathComponent(item.name)
 
         let provider = NSItemProvider()
-        provider.suggestedName = item.name
-
-        // Determine specific UTType based on file extension
         let ext = (item.name as NSString).pathExtension
         let specificType: UTType = item.isDirectory ? .folder : (UTType(filenameExtension: ext) ?? .data)
+        // Finder preserves the supplied extension for text, but appends the
+        // content type's extension for binary file representations.
+        provider.suggestedName = item.isDirectory || ext.isEmpty || specificType.conforms(to: .text)
+            ? item.name
+            : (item.name as NSString).deletingPathExtension
 
         let taskId = UUID()
         let export = SFTPExportDownload {
@@ -1008,6 +1010,26 @@ public enum SFTPDragExportHelper {
             do {
                 try Task.checkCancellation()
                 try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+                // scp does not report byte progress through SSHSessionProtocol. Sample the
+                // destination file off the main actor while Finder waits for the file.
+                let expectedBytes = Int64(clamping: item.size)
+                let progressMonitor = Task.detached(priority: .utility) {
+                    while !Task.isCancelled {
+                        if let attributes = try? FileManager.default.attributesOfItem(atPath: localURL.path),
+                           let size = attributes[.size] as? NSNumber {
+                            let bytes = size.int64Value
+                            await MainActor.run {
+                                TransferManager.shared.updateExternalProgress(
+                                    taskId: taskId,
+                                    fraction: expectedBytes > 0 ? min(Double(bytes) / Double(expectedBytes), 1) : 0,
+                                    transferredBytes: bytes
+                                )
+                            }
+                        }
+                        try? await Task.sleep(for: .milliseconds(250))
+                    }
+                }
+                defer { progressMonitor.cancel() }
                 try await session.downloadFile(remotePath: item.path, localURL: localURL) { fraction in
                     Task { @MainActor in
                         TransferManager.shared.updateExternalProgress(taskId: taskId, fraction: fraction)
@@ -1020,6 +1042,8 @@ public enum SFTPDragExportHelper {
                 }
                 return localURL
             } catch {
+                try? FileManager.default.removeItem(at: localURL)
+                try? FileManager.default.removeItem(at: tempDir)
                 await MainActor.run {
                     if error is CancellationError {
                         TransferManager.shared.cancelExternalTransfer(taskId: taskId)
@@ -1035,7 +1059,17 @@ public enum SFTPDragExportHelper {
         let loadHandler: @Sendable (@escaping @Sendable (URL?, Bool, (any Error)?) -> Void) -> Progress? = { completion in
             let progress = Progress(totalUnitCount: Int64(max(item.size, 1)))
             progress.cancellationHandler = { Task { await export.cancel() } }
+            let progressMonitor = Task.detached(priority: .utility) {
+                while !Task.isCancelled {
+                    if let attributes = try? FileManager.default.attributesOfItem(atPath: localURL.path),
+                       let size = attributes[.size] as? NSNumber {
+                        progress.completedUnitCount = min(size.int64Value, progress.totalUnitCount)
+                    }
+                    try? await Task.sleep(for: .milliseconds(250))
+                }
+            }
             Task {
+                defer { progressMonitor.cancel() }
                 do {
                     guard !progress.isCancelled else { throw CancellationError() }
                     let url = try await export.value()

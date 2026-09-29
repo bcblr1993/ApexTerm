@@ -362,7 +362,7 @@ final class ComprehensiveFeatureTests: XCTestCase {
         
         let provider = SFTPDragExportHelper.makeItemProvider(for: fileItem, session: session)
         
-        XCTAssertEqual(provider.suggestedName, "test_report.pdf")
+        XCTAssertEqual(provider.suggestedName, "test_report")
         XCTAssertTrue(provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier))
         XCTAssertTrue(provider.hasItemConformingToTypeIdentifier(UTType.pdf.identifier))
         XCTAssertTrue(provider.hasItemConformingToTypeIdentifier(UTType.data.identifier))

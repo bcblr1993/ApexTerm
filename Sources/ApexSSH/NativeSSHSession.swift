@@ -678,7 +678,10 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         
         var baseArgs: [String] = [
             "-r",
-            "-o", "StrictHostKeyChecking=accept-new"
+            "-o", "StrictHostKeyChecking=accept-new",
+            "-o", "ConnectTimeout=10",
+            "-o", "ServerAliveInterval=15",
+            "-o", "ServerAliveCountMax=3"
         ]
         if case .privateKey(let keyPath, _) = session.authMethod, !keyPath.isEmpty {
             baseArgs.append(contentsOf: ["-i", keyPath])
@@ -696,14 +699,12 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             process.executableURL = URL(fileURLWithPath: "/usr/bin/scp")
             process.arguments = baseArgs
         }
-        let outPipe = Pipe()
         let errPipe = Pipe()
-        process.standardOutput = outPipe
+        process.standardOutput = FileHandle.nullDevice
         process.standardError = errPipe
-        try await Self.runTransferProcess(process)
+        let errorOutput = try await Self.runSCPProcess(process, standardError: errPipe)
         guard process.terminationStatus == 0 else {
-            let errData = (try? errPipe.fileHandleForReading.readToEnd()) ?? Data()
-            let errMsg = String(data: errData, encoding: .utf8) ?? "scp download failed"
+            let errMsg = String(data: errorOutput, encoding: .utf8) ?? "scp download failed"
             throw NSError(domain: "ApexSSH", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: errMsg])
         }
         progress(1.0)
@@ -716,7 +717,10 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         
         var baseArgs: [String] = [
             "-r",
-            "-o", "StrictHostKeyChecking=accept-new"
+            "-o", "StrictHostKeyChecking=accept-new",
+            "-o", "ConnectTimeout=10",
+            "-o", "ServerAliveInterval=15",
+            "-o", "ServerAliveCountMax=3"
         ]
         if case .privateKey(let keyPath, _) = session.authMethod, !keyPath.isEmpty {
             baseArgs.append(contentsOf: ["-i", keyPath])
@@ -734,14 +738,12 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             process.executableURL = URL(fileURLWithPath: "/usr/bin/scp")
             process.arguments = baseArgs
         }
-        let outPipe = Pipe()
         let errPipe = Pipe()
-        process.standardOutput = outPipe
+        process.standardOutput = FileHandle.nullDevice
         process.standardError = errPipe
-        try await Self.runTransferProcess(process)
+        let errorOutput = try await Self.runSCPProcess(process, standardError: errPipe)
         guard process.terminationStatus == 0 else {
-            let errData = (try? errPipe.fileHandleForReading.readToEnd()) ?? Data()
-            let errMsg = String(data: errData, encoding: .utf8) ?? "scp upload failed"
+            let errMsg = String(data: errorOutput, encoding: .utf8) ?? "scp upload failed"
             throw NSError(domain: "ApexSSH", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: errMsg])
         }
         progress(1.0)
@@ -778,6 +780,31 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             try Task.checkCancellation()
         } onCancel: {
             stopCancelledProcess(process)
+        }
+    }
+
+    /// Drain scp's stderr while it runs. Waiting first can deadlock once the pipe fills.
+    static func runSCPProcess(_ process: Process, standardError pipe: Pipe) async throws -> Data {
+        let reader = Task.detached(priority: .utility) { () -> Data in
+            var tail = Data()
+            while let chunk = try? pipe.fileHandleForReading.read(upToCount: 16_384),
+                  !chunk.isEmpty {
+                tail.append(chunk)
+                if tail.count > 65_536 { tail = Data(tail.suffix(65_536)) }
+            }
+            return tail
+        }
+        do {
+            try await runTransferProcess(process)
+            try? pipe.fileHandleForWriting.close()
+            let output = await reader.value
+            try? pipe.fileHandleForReading.close()
+            return output
+        } catch {
+            try? pipe.fileHandleForWriting.close()
+            _ = await reader.value
+            try? pipe.fileHandleForReading.close()
+            throw error
         }
     }
 

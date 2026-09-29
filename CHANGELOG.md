@@ -18,6 +18,7 @@
 - 新增真实产品应用的窗口重开 UI 回归测试及 Vim 全屏绘制单元测试，并加入每次发布的强制门禁。
 - Tart VM 真实 SSH、PTY、SFTP 集成测试与全量 Swift 测试通过；8 项 Release 性能基准全部达标，0 failures。
 - 基准实测：RingBuffer 1,887,116 行/秒，ANSI 411,217 spans/秒，RSS 峰值 103.52 MB，16 线程 2,074,687 writes/秒，指标解析 13,181 次/秒，OpenSSH 116,372 hosts/秒，SFTP 1,110 tasks/秒，单键延迟 5.67 μs。
+- 完整 UI 自动化验收按用户 2026-09-29 的发布决定延期；本版本不声明 UI 全量通过。未完成项与测试证据见 `docs/v1.4.1-ui-followup.md`。
 
 ## [v1.4.0] - 2026-09-28
 

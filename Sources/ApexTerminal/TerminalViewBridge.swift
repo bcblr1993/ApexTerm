@@ -1725,7 +1725,8 @@ public final class NativeTerminalView: NSTextView {
         CATransaction.commit()
         
         if self.isPinnedToBottom && (hasNewCommittedLines || isCleared || !self.isScrolledToBottom()) {
-            self.scrollToBottom(forceLayout: false)
+            // NSTextView may not have resized its document frame for the appended lines yet.
+            self.scrollToBottom(forceLayout: true)
         }
         self.resetCursorBlink()
     }

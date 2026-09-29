@@ -2,6 +2,25 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.4.3] - 2026-09-29
+
+### ✨ 新增特性 (Features)
+- 无新增产品功能；本次为 SFTP 文件拖放修复版本。
+
+### ⚡️ 体验优化 (Improvements)
+- 远端文件拖到 Finder 时，传输记录与拖拽进度随本地写入量更新。
+
+### 🐞 问题修复 (Bug Fixes)
+- 修复拖出远端文件后 Finder 为部分文件重复添加扩展名的问题，确保目标文件保留原名。
+- 修复 SCP 传输等待退出前未持续读取错误输出，输出量较大时可能卡住的问题；为网络停滞增加连接和保活超时。
+- 拖拽下载失败或取消后清理未完成的临时文件，并防止完成状态被迟到的进度回调覆盖。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- 新增 SCP 大量错误输出回归测试，以及 Tart VM 64 MiB 远端文件拖拽导出校验。
+- 专用 Mac mini 的真实 Finder 64 MiB 拖放测试通过，目标文件原名、内容校验与传输记录均正确。
+- Tart VM 真实链路与 165 项 Swift 测试通过，0 failures；其中 4 项未配置公共服务器的测试按预期跳过。8 项 Release 性能基准达标：RingBuffer 1,937,010 行/秒，ANSI 419,499 spans/秒，RSS 峰值 104.33 MB，16 线程 2,153,876 writes/秒，指标解析 15,142 次/秒，OpenSSH 151,725 hosts/秒，SFTP 1,163 tasks/秒，单键延迟 5.15 μs。
+- 完整 UI 验收执行 40 项，其中 34 项通过、6 项失败；修复后普通文本和 64 MiB Finder 拖放两项均通过，0 failures。UI 未全量通过，详细失败项与后续工作见 `docs/v1.4.3-ui-followup.md`。
+
 ## [v1.4.2] - 2026-09-29
 
 ### ✨ 新增特性 (Features)

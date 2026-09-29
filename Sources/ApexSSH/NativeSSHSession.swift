@@ -80,21 +80,81 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         self.stateChangeHandler = handler
     }
 
+    public static func expandPath(_ path: String) -> String {
+        if path.hasPrefix("~/") {
+            let home = FileManager.default.homeDirectoryForCurrentUser.path
+            return home + "/" + String(path.dropFirst(2))
+        } else if path == "~" {
+            return FileManager.default.homeDirectoryForCurrentUser.path
+        }
+        return path
+    }
+
+    public func sshAuthArgs() -> [String] {
+        var args: [String] = []
+        if case .privateKey(let keyPath, _) = session.authMethod, !keyPath.isEmpty {
+            let expanded = Self.expandPath(keyPath)
+            args.append(contentsOf: ["-i", expanded])
+        }
+        return args
+    }
+
+    private var resolvedJumpServer: Session?
+    public var customJumpSession: Session? {
+        get { stateLock.withLock { resolvedJumpServer } }
+        set { stateLock.withLock { resolvedJumpServer = newValue } }
+    }
+
+    public func jumpServerArgs() -> [String] {
+        let jumpSession = stateLock.withLock { resolvedJumpServer }
+        guard let jumpSession else { return [] }
+        let target = "\(jumpSession.username)@\(jumpSession.host):\(jumpSession.port)"
+        return ["-J", target]
+    }
+
     private func resolvePasswordIfNeeded() async {
-        if resolvedPassword != nil { return }
+        if stateLock.withLock({ resolvedPassword != nil }) {
+            await resolveJumpServerIfNeeded()
+            return
+        }
+        var foundPassword: String? = nil
         switch session.authMethod {
         case .password(let ref):
             if let pw = try? await KeychainStore.shared.get(key: ref) {
-                self.resolvedPassword = pw
+                foundPassword = pw
             } else {
-                self.resolvedPassword = ref
+                foundPassword = ref
+            }
+        case .privateKey(_, let passphraseRef):
+            if let ref = passphraseRef, !ref.isEmpty {
+                if let pw = try? await KeychainStore.shared.get(key: ref) {
+                    foundPassword = pw
+                } else {
+                    foundPassword = ref
+                }
             }
         default:
             break
         }
+        stateLock.withLock { self.resolvedPassword = foundPassword }
+        await resolveJumpServerIfNeeded()
+    }
+
+    private func resolveJumpServerIfNeeded() async {
+        if stateLock.withLock({ resolvedJumpServer != nil }) { return }
+        guard let jumpId = session.jumpServerId else { return }
+        let found = await MainActor.run {
+            SessionStore.shared.sessions.first(where: { $0.id == jumpId })
+        }
+        stateLock.withLock { self.resolvedJumpServer = found }
     }
     
     public func connect() async throws {
+        // Clean up any existing connection resources to prevent fd or process leaks on reconnect
+        if ptyMasterFd != -1 || readSource != nil || childPid > 0 {
+            await disconnect()
+        }
+        
         // A peer disconnect may leave the previous probe finishing cancellation.
         let previousProbe = probeTask
         previousProbe?.cancel()
@@ -124,10 +184,14 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             "-tt",
             "-o", "ServerAliveInterval=\(session.keepAliveIntervalSeconds)",
             "-o", "ServerAliveCountMax=3",
-            "-o", "StrictHostKeyChecking=accept-new",
+            "-o", "StrictHostKeyChecking=accept-new"
+        ]
+        sshArgs.append(contentsOf: sshAuthArgs())
+        sshArgs.append(contentsOf: jumpServerArgs())
+        sshArgs.append(contentsOf: [
             "-p", "\(session.port)",
             "\(session.username)@\(session.host)"
-        ]
+        ])
         
         if let pw = resolvedPassword, !pw.isEmpty, let sshpass = sshpassExecutablePath {
             binaryPath = sshpass
@@ -336,14 +400,16 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             "-o", "ControlPath=\(controlSocketPath)",
             "-o", "ControlPersist=60s"
         ]
+        let authArgs = sshAuthArgs()
+        let jumpArgs = jumpServerArgs()
         if let pw = resolvedPassword, !pw.isEmpty, let sshpass = sshpassExecutablePath {
             process.executableURL = URL(fileURLWithPath: sshpass)
             process.arguments = [
                 "-p", pw,
                 "/usr/bin/ssh",
                 "-o", "StrictHostKeyChecking=accept-new",
-                "-o", "ConnectTimeout=3",
-            ] + ctrlArgs + [
+                "-o", "ConnectTimeout=5",
+            ] + authArgs + jumpArgs + ctrlArgs + [
                 "-p", "\(session.port)",
                 "\(session.username)@\(session.host)",
                 cmd
@@ -352,8 +418,8 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
             process.arguments = [
                 "-o", "StrictHostKeyChecking=accept-new",
-                "-o", "ConnectTimeout=3",
-            ] + ctrlArgs + [
+                "-o", "ConnectTimeout=5",
+            ] + authArgs + jumpArgs + ctrlArgs + [
                 "-p", "\(session.port)",
                 "\(session.username)@\(session.host)",
                 cmd
@@ -509,6 +575,8 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
                     "-o", "ControlPersist=60s"
                 ]
                 
+                let authArgs = self.sshAuthArgs()
+                let jumpArgs = self.jumpServerArgs()
                 if let pw = self.resolvedPassword, !pw.isEmpty, let passBin = sshpass {
                     process.executableURL = URL(fileURLWithPath: passBin)
                     process.arguments = [
@@ -516,7 +584,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
                         "/usr/bin/ssh",
                         "-o", "StrictHostKeyChecking=accept-new",
                         "-o", "ConnectTimeout=3",
-                    ] + ctrlArgs + [
+                    ] + authArgs + jumpArgs + ctrlArgs + [
                         "-p", "\(self.session.port)",
                         "\(self.session.username)@\(self.session.host)",
                         AgentlessMonitor.autoProbeCommand
@@ -527,7 +595,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
                         "-o", "BatchMode=yes",
                         "-o", "StrictHostKeyChecking=accept-new",
                         "-o", "ConnectTimeout=3",
-                    ] + ctrlArgs + [
+                    ] + authArgs + jumpArgs + ctrlArgs + [
                         "-p", "\(self.session.port)",
                         "\(self.session.username)@\(self.session.host)",
                         AgentlessMonitor.autoProbeCommand
@@ -585,13 +653,15 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             "-o", "ControlPersist=60s"
         ]
         
+        let authArgs = sshAuthArgs()
+        let jumpArgs = jumpServerArgs()
         if let pw = resolvedPassword, !pw.isEmpty, let passBin = sshpass {
             process.executableURL = URL(fileURLWithPath: passBin)
             process.arguments = [
                 "-p", pw,
                 "/usr/bin/ssh",
                 "-o", "StrictHostKeyChecking=accept-new",
-            ] + ctrlArgs + [
+            ] + authArgs + jumpArgs + ctrlArgs + [
                 "-p", "\(session.port)",
                 "\(session.username)@\(session.host)",
                 cmd
@@ -600,7 +670,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
             process.arguments = [
                 "-o", "StrictHostKeyChecking=accept-new",
-            ] + ctrlArgs + [
+            ] + authArgs + jumpArgs + ctrlArgs + [
                 "-p", "\(session.port)",
                 "\(session.username)@\(session.host)",
                 cmd
@@ -683,9 +753,8 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             "-o", "ServerAliveInterval=15",
             "-o", "ServerAliveCountMax=3"
         ]
-        if case .privateKey(let keyPath, _) = session.authMethod, !keyPath.isEmpty {
-            baseArgs.append(contentsOf: ["-i", keyPath])
-        }
+        baseArgs.append(contentsOf: sshAuthArgs())
+        baseArgs.append(contentsOf: jumpServerArgs())
         baseArgs.append(contentsOf: [
             "-P", "\(session.port)",
             "\(session.username)@\(session.host):\(remotePath)",
@@ -722,9 +791,8 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             "-o", "ServerAliveInterval=15",
             "-o", "ServerAliveCountMax=3"
         ]
-        if case .privateKey(let keyPath, _) = session.authMethod, !keyPath.isEmpty {
-            baseArgs.append(contentsOf: ["-i", keyPath])
-        }
+        baseArgs.append(contentsOf: sshAuthArgs())
+        baseArgs.append(contentsOf: jumpServerArgs())
         baseArgs.append(contentsOf: [
             "-P", "\(session.port)",
             localURL.path,
@@ -827,13 +895,15 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             "-o", "ControlPersist=60s"
         ]
         
+        let authArgs = sshAuthArgs()
+        let jumpArgs = jumpServerArgs()
         if let pw = resolvedPassword, !pw.isEmpty, let passBin = sshpass {
             process.executableURL = URL(fileURLWithPath: passBin)
             process.arguments = [
                 "-p", pw,
                 "/usr/bin/ssh",
                 "-o", "StrictHostKeyChecking=accept-new",
-            ] + ctrlArgs + [
+            ] + authArgs + jumpArgs + ctrlArgs + [
                 "-p", "\(session.port)",
                 "\(session.username)@\(session.host)",
                 cmd
@@ -842,7 +912,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
             process.arguments = [
                 "-o", "StrictHostKeyChecking=accept-new",
-            ] + ctrlArgs + [
+            ] + authArgs + jumpArgs + ctrlArgs + [
                 "-p", "\(session.port)",
                 "\(session.username)@\(session.host)",
                 cmd

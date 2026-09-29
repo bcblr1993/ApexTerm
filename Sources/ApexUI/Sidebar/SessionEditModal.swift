@@ -16,6 +16,9 @@ public struct SessionEditModal: View {
     @State private var authType: AuthType = .password
     @State private var password: String = ""
     @State private var isPasswordVisible: Bool = false
+    @State private var privateKeyPath: String = ""
+    @State private var passphrase: String = ""
+    @State private var jumpServerId: UUID? = nil
     @State private var folder: String = "常用会话"
     @State private var tags: String = ""
     @State private var colorHex: String = "#0A84FF"
@@ -29,7 +32,7 @@ public struct SessionEditModal: View {
         case privateKey = "指定私钥"
         public var id: String { rawValue }
 
-        func retainedPrivateKey(from method: SSHAuthMethod?) -> SSHAuthMethod? {
+        public func retainedPrivateKey(from method: SSHAuthMethod?) -> SSHAuthMethod? {
             guard self == .privateKey, let method, case .privateKey = method else { return nil }
             return method
         }
@@ -80,6 +83,16 @@ public struct SessionEditModal: View {
                     
                     TextField(L10n.usernameLabel, text: $username)
                     .accessibilityLabel(L10n.usernameLabel)
+
+                    let otherSessions = SessionStore.shared.sessions.filter { $0.id != initialSession?.id }
+                    if !otherSessions.isEmpty {
+                        Picker("跳板机 (Jump Host)", selection: $jumpServerId) {
+                            Text("无 (直连)").tag(UUID?.none)
+                            ForEach(otherSessions) { s in
+                                Text("\(s.name) (\(s.host))").tag(UUID?.some(s.id))
+                            }
+                        }
+                    }
                 }
                 
                 // 2. 身份认证 (密码 / 密钥)
@@ -113,11 +126,30 @@ public struct SessionEditModal: View {
                             .controlSize(.small)
                             .help(isPasswordVisible ? "隐藏密码" : "显示明文密码")
                         }
+                    } else if authType == .privateKey {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                TextField("私钥路径 (如 ~/.ssh/id_ed25519)", text: $privateKeyPath)
+                                    .font(.system(.body, design: .monospaced))
+                                Button("浏览...") {
+                                    let panel = NSOpenPanel()
+                                    panel.canChooseFiles = true
+                                    panel.canChooseDirectories = false
+                                    panel.allowsMultipleSelection = false
+                                    if panel.runModal() == .OK, let url = panel.url {
+                                        privateKeyPath = url.path
+                                    }
+                                }
+                                .controlSize(.small)
+                            }
+                            SecureField("私钥口令 Passphrase (可选)", text: $passphrase)
+                                .font(.system(.body, design: .monospaced))
+                        }
                     } else {
                         HStack {
                             Image(systemName: "key.fill")
                                 .foregroundColor(ApexStyle.secondary)
-                            Text(authType == .privateKey ? "保留此会话原有的私钥与口令配置" : "使用 macOS 本机 SSH Agent 或 ~/.ssh 默认私钥自动鉴权")
+                            Text("使用 macOS 本机 SSH Agent 或 ~/.ssh 默认私钥自动鉴权")
                                 .font(.caption)
                                 .foregroundColor(ApexStyle.secondary)
                         }
@@ -219,6 +251,8 @@ public struct SessionEditModal: View {
         agentlessMonitor = s.agentlessMonitorEnabled
         sftpAutoSync = s.sftpAutoSyncEnabled
         
+        jumpServerId = s.jumpServerId
+        
         switch s.authMethod {
         case .password(let ref):
             authType = .password
@@ -230,8 +264,18 @@ public struct SessionEditModal: View {
                     await MainActor.run { self.password = ref }
                 }
             }
-        case .privateKey:
+        case .privateKey(let keyPath, let passRef):
             authType = .privateKey
+            privateKeyPath = keyPath
+            if let ref = passRef, !ref.isEmpty {
+                Task {
+                    if let saved = try? await KeychainStore.shared.get(key: ref) {
+                        await MainActor.run { self.passphrase = saved }
+                    } else {
+                        await MainActor.run { self.passphrase = ref }
+                    }
+                }
+            }
         case .agent, .none:
             authType = .agent
         }
@@ -241,8 +285,22 @@ public struct SessionEditModal: View {
         let sessionId = initialSession?.id ?? UUID()
         let authMethod: SSHAuthMethod
         
-        if let existing = authType.retainedPrivateKey(from: initialSession?.authMethod) {
-            authMethod = existing
+        if authType == .privateKey {
+            let path = privateKeyPath.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !passphrase.isEmpty {
+                let key = "passphrase_\(sessionId.uuidString)"
+                do {
+                    try KeychainStore.shared.save(key: key, secret: passphrase)
+                } catch {
+                    saveError = "口令保存失败：\(error.localizedDescription)"
+                    return
+                }
+                authMethod = .privateKey(keychainRef: path, passphraseRef: key)
+            } else if case .privateKey(_, let oldPassRef) = initialSession?.authMethod, passphrase.isEmpty {
+                authMethod = .privateKey(keychainRef: path, passphraseRef: oldPassRef)
+            } else {
+                authMethod = .privateKey(keychainRef: path, passphraseRef: nil)
+            }
         } else if authType == .password && !password.isEmpty {
             let key = "ssh_\(sessionId.uuidString)"
             do {
@@ -272,7 +330,7 @@ public struct SessionEditModal: View {
             folder: folder.trimmingCharacters(in: .whitespaces).isEmpty ? "常用会话" : folder.trimmingCharacters(in: .whitespaces),
             tags: tags.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) },
             colorHex: colorHex,
-            jumpServerId: initialSession?.jumpServerId,
+            jumpServerId: jumpServerId,
             agentlessMonitorEnabled: agentlessMonitor,
             sftpAutoSyncEnabled: sftpAutoSync,
             keepAliveIntervalSeconds: initialSession?.keepAliveIntervalSeconds ?? 30,

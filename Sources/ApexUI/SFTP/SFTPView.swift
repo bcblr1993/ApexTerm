@@ -780,7 +780,12 @@ public struct SFTPView: View {
             defer { try? FileManager.default.removeItem(at: localURL) }
             do {
                 try await session.downloadFile(remotePath: item.path, localURL: localURL, progress: { _ in })
-                editorContent = try String(contentsOf: localURL, encoding: .utf8)
+                let data = try Data(contentsOf: localURL)
+                let text = String(data: data, encoding: .utf8) ??
+                           String(data: data, encoding: .windowsCP1252) ??
+                           String(data: data, encoding: .isoLatin1) ??
+                           String(decoding: data, as: UTF8.self)
+                editorContent = text
                 editingFile = item
             } catch {
                 transferNotice = "读取失败：\(error.localizedDescription)"
@@ -805,7 +810,11 @@ public struct SFTPView: View {
         let localURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: localURL) }
         try await session.downloadFile(remotePath: item.path, localURL: localURL, progress: { _ in })
-        return try String(contentsOf: localURL, encoding: .utf8)
+        let data = try Data(contentsOf: localURL)
+        return String(data: data, encoding: .utf8) ??
+               String(data: data, encoding: .windowsCP1252) ??
+               String(data: data, encoding: .isoLatin1) ??
+               String(decoding: data, as: UTF8.self)
     }
 
     private func handleUploadResult(_ result: Result<String, Error>, fileName: String, targetDirectory: String) {

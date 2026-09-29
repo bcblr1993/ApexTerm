@@ -82,6 +82,14 @@ public final class TerminalRingBuffer: @unchecked Sendable {
     
     private var _totalCommittedCount: Int64 = 0
     private var _isClearPending: Bool = false
+    private var _isBracketedPasteEnabled: Bool = false
+    
+    /// Whether the remote shell has enabled bracketed paste mode (DEC private mode 2004)
+    public var isBracketedPasteEnabled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return _isBracketedPasteEnabled
+    }
     
     /// Atomically consume and reset clear pending flag
     public func consumeClearFlag() -> Bool {
@@ -377,6 +385,10 @@ public final class TerminalRingBuffer: @unchecked Sendable {
             }
             return
         }
+        if param == "?2004" {
+            _isBracketedPasteEnabled = (finalChar == "h")
+            return
+        }
         guard var grid = screen else { return }
         let values = param.split(separator: ";", omittingEmptySubsequences: false).map { Int($0) ?? 0 }
         let first = values.first ?? 0
@@ -422,6 +434,14 @@ public final class TerminalRingBuffer: @unchecked Sendable {
     
     private func handleCSI(finalChar: Character, param: String) {
         switch finalChar {
+        case "h":
+            if param == "?2004" {
+                _isBracketedPasteEnabled = true
+            }
+        case "l":
+            if param == "?2004" {
+                _isBracketedPasteEnabled = false
+            }
         case "m": // SGR Color & Style
             let codes = param.split(separator: ";").compactMap { Int($0) }
             var style = SGRStyle(foreground: currentFgHex, index: currentANSIIndex, bold: currentBold)

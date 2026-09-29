@@ -1263,6 +1263,35 @@ public final class NativeTerminalView: NSTextView {
             return
         }
         
+        // Option/Alt navigation (Meta key behavior for bash/zsh/fish)
+        if event.modifierFlags.contains(.option) && !event.modifierFlags.contains(.command) && !event.modifierFlags.contains(.control) {
+            switch event.keyCode {
+            case 123: // Option + Left arrow -> Meta-b (word backward)
+                onInput?("\u{1B}b".data(using: .utf8)!)
+                return
+            case 124: // Option + Right arrow -> Meta-f (word forward)
+                onInput?("\u{1B}f".data(using: .utf8)!)
+                return
+            case 126: // Option + Up arrow
+                onInput?("\u{1B}[1;3A".data(using: .utf8)!)
+                return
+            case 125: // Option + Down arrow
+                onInput?("\u{1B}[1;3B".data(using: .utf8)!)
+                return
+            case 51: // Option + Backspace -> Meta-DEL (delete word backward)
+                onInput?("\u{1B}\u{7F}".data(using: .utf8)!)
+                return
+            case 117: // Option + Forward Delete -> Meta-d (delete word forward)
+                onInput?("\u{1B}d".data(using: .utf8)!)
+                return
+            default:
+                if let chars = event.charactersIgnoringModifiers?.lowercased(), let first = chars.first, first.isASCII {
+                    onInput?("\u{1B}\(first)".data(using: .utf8)!)
+                    return
+                }
+            }
+        }
+
         // Handle Special keys by key code when not composing marked IME text
         if !hasMarkedText() {
             switch event.keyCode {
@@ -1276,7 +1305,11 @@ public final class NativeTerminalView: NSTextView {
                 onInput?("\u{1B}[3~".data(using: .utf8)!)
                 return
             case 48: // Tab
-                onInput?("\t".data(using: .utf8)!)
+                if event.modifierFlags.contains(.shift) {
+                    onInput?("\u{1B}[Z".data(using: .utf8)!) // Back-tab
+                } else {
+                    onInput?("\t".data(using: .utf8)!)
+                }
                 return
             case 126: // Up arrow
                 onInput?("\u{1B}[A".data(using: .utf8)!)
@@ -1302,6 +1335,43 @@ public final class NativeTerminalView: NSTextView {
             case 121: // Page Down
                 onInput?("\u{1B}[6~".data(using: .utf8)!)
                 return
+            // Function Keys F1 - F12
+            case 122: // F1
+                onInput?("\u{1B}OP".data(using: .utf8)!)
+                return
+            case 120: // F2
+                onInput?("\u{1B}OQ".data(using: .utf8)!)
+                return
+            case 99: // F3
+                onInput?("\u{1B}OR".data(using: .utf8)!)
+                return
+            case 118: // F4
+                onInput?("\u{1B}OS".data(using: .utf8)!)
+                return
+            case 96: // F5
+                onInput?("\u{1B}[15~".data(using: .utf8)!)
+                return
+            case 97: // F6
+                onInput?("\u{1B}[17~".data(using: .utf8)!)
+                return
+            case 98: // F7
+                onInput?("\u{1B}[18~".data(using: .utf8)!)
+                return
+            case 100: // F8
+                onInput?("\u{1B}[19~".data(using: .utf8)!)
+                return
+            case 101: // F9
+                onInput?("\u{1B}[20~".data(using: .utf8)!)
+                return
+            case 109: // F10
+                onInput?("\u{1B}[21~".data(using: .utf8)!)
+                return
+            case 103: // F11
+                onInput?("\u{1B}[23~".data(using: .utf8)!)
+                return
+            case 111: // F12
+                onInput?("\u{1B}[24~".data(using: .utf8)!)
+                return
             default:
                 break
             }
@@ -1324,12 +1394,18 @@ public final class NativeTerminalView: NSTextView {
         self.interpretKeyEvents([event])
     }
     
-    // Paste support (Cmd+V and Right-Click direct paste)
+    // Paste support (Cmd+V and Right-Click direct paste, with Bracketed Paste Mode support)
     @discardableResult
     public func pasteFromClipboard() -> Bool {
         guard let text = NSPasteboard.general.string(forType: .string), !text.isEmpty else { return false }
         let normalized = text.replacingOccurrences(of: "\r\n", with: "\r").replacingOccurrences(of: "\n", with: "\r")
-        guard let data = normalized.data(using: .utf8) else { return false }
+        let toSend: String
+        if ringBuffer?.isBracketedPasteEnabled == true {
+            toSend = "\u{1B}[200~" + normalized + "\u{1B}[201~"
+        } else {
+            toSend = normalized
+        }
+        guard let data = toSend.data(using: .utf8) else { return false }
         self.isPinnedToBottom = true
         onInput?(data)
         return true

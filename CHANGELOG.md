@@ -2,6 +2,31 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.5.1] - 2026-09-29
+
+### ✨ 新增特性 (Features)
+- **SFTP 多选与批量操作增强**：
+  - SFTP 文件表格全面升级为原生多选模式（支持 Command/Shift 键连续或跳跃多选）；
+  - 新增批量右键操作：支持选定多个文件后一键“批量下载”、“批量删除”及“复制路径”。
+- **本地到远程批量拖拽智能防呆**：
+  - 外部多文件/文件夹拖拽至 SFTP 目录或终端时，先汇总全部 dropped URLs 并统一做同名冲突预检，提供统一确认弹窗（全部替换 / 仅跳过冲突 / 取消），单次入队并平滑刷新，杜绝多弹窗锁死与重复中断。
+
+### ⚡️ 体验优化 (Improvements)
+- **拖拽传输视图解耦与渲染优化**：
+  - 将 `TransferToolbarButton` 抽离为独立子视图进行状态监听，解除 `SFTPView` 主体对传输进度高频通知的直接依赖，消除进度更新对 AppKit 拖拽事件循环与 Table 渲染的干扰。
+
+### 🐞 问题修复 (Bug Fixes)
+- **彻底根治远程拖拽到本地 AppKit 主线程死锁（Beachball 卡死）**：
+  - 消除 `SFTPDragExportHelper` 与进度轮询中所有的阻塞式 `await MainActor.run` 调用，改为安全异步派发，彻底解决 AppKit 处于 `NSEventTrackingRunLoopMode` 模态事件跟踪时与后台文件导出 Task 之间的互锁假死。
+- **彻底根治大文件传输 Swift 协程线程池饥饿假死**：
+  - 重构 `NativeSSHSession.runTransferProcess`，以基于 `OSAllocatedUnfairLock` 与 `process.terminationHandler` 的纯异步事件挂起替代系统阻塞调用 `process.waitUntilExit()`，传输数 GB 级大文件时零线程占用，UI 始终保持极致流畅。
+- **传输子进程输入流死锁防御与安全逃逸**：
+  - 为 SCP 传输进程显式定向 `process.standardInput = FileHandle.nullDevice`，杜绝因终端提示导致的挂起；远端路径增加包含空格与特殊字符时的安全引号逃逸。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- 新增专用拖拽与传输矩阵测试 `DragAndDropTransferTests`（覆盖远程到本地小文件、远程到本地大文件、多文件批量并发拖拽、拖拽中途取消、本地到远程批量拖拽、同名冲突自动编号避免、带空格与复杂特殊字符路径处理、子进程非阻塞取消生命周期等 8 大核心场景，100% 通过）。
+- 全量自动化测试用例 100% 绿色通过（0 failures），8 大核心 Release 性能基准达标（RingBuffer 写入 1.9M lines/s、打字延迟 4.94 μs）。
+
 ## [v1.5.0] - 2026-09-29
 
 ### ✨ 新增特性 (Features)

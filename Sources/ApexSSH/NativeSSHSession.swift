@@ -1,5 +1,6 @@
 import Foundation
 import ApexCore
+import os
 
 #if canImport(Darwin)
 import Darwin
@@ -744,6 +745,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     public func downloadFile(remotePath: String, localURL: URL, progress: @Sendable @escaping (Double) -> Void) async throws {
         await resolvePasswordIfNeeded()
         let process = Process()
+        process.standardInput = FileHandle.nullDevice
         let sshpass = self.sshpassExecutablePath
         
         var baseArgs: [String] = [
@@ -755,9 +757,10 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         ]
         baseArgs.append(contentsOf: sshAuthArgs())
         baseArgs.append(contentsOf: jumpServerArgs())
+        let escapedRemote = remotePath.contains(" ") ? "\"\(remotePath)\"" : remotePath
         baseArgs.append(contentsOf: [
             "-P", "\(session.port)",
-            "\(session.username)@\(session.host):\(remotePath)",
+            "\(session.username)@\(session.host):\(escapedRemote)",
             localURL.path
         ])
         
@@ -782,6 +785,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     public func uploadFile(localURL: URL, remotePath: String, progress: @Sendable @escaping (Double) -> Void) async throws {
         await resolvePasswordIfNeeded()
         let process = Process()
+        process.standardInput = FileHandle.nullDevice
         let sshpass = self.sshpassExecutablePath
         
         var baseArgs: [String] = [
@@ -793,10 +797,11 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         ]
         baseArgs.append(contentsOf: sshAuthArgs())
         baseArgs.append(contentsOf: jumpServerArgs())
+        let escapedRemote = remotePath.contains(" ") ? "\"\(remotePath)\"" : remotePath
         baseArgs.append(contentsOf: [
             "-P", "\(session.port)",
             localURL.path,
-            "\(session.username)@\(session.host):\(remotePath)"
+            "\(session.username)@\(session.host):\(escapedRemote)"
         ])
         
         if let pw = resolvedPassword, !pw.isEmpty, let passBin = sshpass {
@@ -837,14 +842,36 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         }
     }
 
-    /// Cancel the underlying transfer or metrics process as well as its Swift task.
+    /// Cancel the underlying transfer or metrics process as well as its Swift task without blocking threads.
     static func runTransferProcess(_ process: Process) async throws {
         try await withTaskCancellationHandler {
             try Task.checkCancellation()
-            try process.run()
-            // A cancellation can arrive between the first check and process launch.
-            if Task.isCancelled { stopCancelledProcess(process) }
-            process.waitUntilExit()
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                let lock = OSAllocatedUnfairLock(initialState: false)
+                process.terminationHandler = { _ in
+                    let shouldResume = lock.withLock { isResumed in
+                        let prev = isResumed
+                        isResumed = true
+                        return !prev
+                    }
+                    if shouldResume {
+                        continuation.resume()
+                    }
+                }
+                do {
+                    try process.run()
+                    if Task.isCancelled { stopCancelledProcess(process) }
+                } catch {
+                    let shouldResume = lock.withLock { isResumed in
+                        let prev = isResumed
+                        isResumed = true
+                        return !prev
+                    }
+                    if shouldResume {
+                        continuation.resume(throwing: error)
+                    }
+                }
+            }
             try Task.checkCancellation()
         } onCancel: {
             stopCancelledProcess(process)

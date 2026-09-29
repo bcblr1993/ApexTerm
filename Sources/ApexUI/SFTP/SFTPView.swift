@@ -4,6 +4,19 @@ import UniformTypeIdentifiers
 import ApexCore
 import ApexSSH
 
+private final class SFTPBatchTracker: @unchecked Sendable {
+    private let lock = NSLock()
+    private var completed = 0
+    let total: Int
+    init(total: Int) { self.total = total }
+    func advance() -> (completed: Int, isDone: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        completed += 1
+        return (completed, completed >= total)
+    }
+}
+
 /// High-performance integrated SFTP file manager (electerm-style with OSC 7 sync and drag-and-drop upload/download)
 public struct SFTPView: View {
     @ObservedObject private var themeSettings = AppSettings.shared
@@ -24,8 +37,8 @@ public struct SFTPView: View {
 
     @State private var items: [SFTPItem] = []
     @State private var isLoading = false
-    @State private var selectedPath: String?
-    @ObservedObject private var transferManager = TransferManager.shared
+    @State private var selectedPaths: Set<String> = []
+    @State private var batchItemsToDelete: [SFTPItem]? = nil
     @State private var searchFilter = ""
     @State private var tableSortOrder = [KeyPathComparator(\SFTPItem.name)]
     @State private var displayItems: [SFTPItem] = []
@@ -172,32 +185,7 @@ public struct SFTPView: View {
                     .opacity(0)
 
                 // Transfer records drawer toggle button
-                Button(action: {
-                    withAnimation(.spring(duration: 0.25)) {
-                        isTransferDrawerExpanded.toggle()
-                    }
-                }) {
-                    HStack(spacing: 4) {
-                        TransferActivitySymbol(isActive: transferManager.activeCount > 0,
-                                               inactiveSystemName: "arrow.up.arrow.down.circle")
-                            .foregroundColor(transferManager.activeCount > 0 ? ApexStyle.accent : ApexStyle.primary)
-                        
-                        if transferManager.activeCount > 0 {
-                            Text("传输中 (\(transferManager.activeCount))")
-                                .foregroundColor(ApexStyle.accent)
-                                .font(.system(size: 11, weight: .semibold))
-                        } else if !transferManager.tasks.isEmpty {
-                            Text("传输记录 (\(transferManager.tasks.count))")
-                                .font(.system(size: 11))
-                        } else {
-                            Text("传输记录")
-                                .font(.system(size: 11))
-                        }
-                    }
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .help("查看上传与下载记录 (快捷切换)")
+                TransferToolbarButton(isExpanded: $isTransferDrawerExpanded)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
@@ -320,7 +308,7 @@ public struct SFTPView: View {
                         systemImage: searchFilter.isEmpty ? "folder" : "magnifyingglass"
                     )
                 } else {
-                    Table(of: SFTPItem.self, selection: $selectedPath, sortOrder: $tableSortOrder) {
+                    Table(of: SFTPItem.self, selection: $selectedPaths, sortOrder: $tableSortOrder) {
                         TableColumn("名称", value: \.name) { item in
                             HStack {
                                 Image(systemName: fileIcon(for: item)).foregroundStyle(fileColor(for: item))
@@ -343,8 +331,10 @@ public struct SFTPView: View {
                         }
                     }
                     .contextMenu(forSelectionType: String.self) { ids in
-                        if let path = ids.first, let item = items.first(where: { $0.path == path }) {
+                        if ids.count == 1, let path = ids.first, let item = items.first(where: { $0.path == path }) {
                             fileContextActions(item)
+                        } else if ids.count > 1 {
+                            batchContextActions(for: ids)
                         }
                     } primaryAction: { ids in
                         if let path = ids.first, let item = items.first(where: { $0.path == path }) {
@@ -484,6 +474,23 @@ public struct SFTPView: View {
         } message: { item in
             Text("将从远程服务器永久删除「\(item.name)」\(item.isDirectory ? "及其内部所有文件" : "")，此操作不可撤销。")
         }
+        .confirmationDialog(
+            "确定批量删除？",
+            isPresented: Binding(
+                get: { batchItemsToDelete != nil },
+                set: { if !$0 { batchItemsToDelete = nil } }
+            ),
+            presenting: batchItemsToDelete
+        ) { targetItems in
+            Button("永久删除选中的 \(targetItems.count) 个项目", role: .destructive) {
+                performBatchDelete(targetItems)
+            }
+            Button("取消", role: .cancel) {
+                batchItemsToDelete = nil
+            }
+        } message: { targetItems in
+            Text("将从远程服务器永久删除选中的 \(targetItems.count) 个项目及其内部所有内容，此操作不可撤销。")
+        }
         .alert("新建文件夹", isPresented: $isShowingNewFolderAlert) {
             TextField("文件夹名称", text: $newFolderName)
                 .autocorrectionDisabled()
@@ -551,42 +558,134 @@ public struct SFTPView: View {
 
     @ViewBuilder
     private func fileContextActions(_ item: SFTPItem) -> some View {
+        Button(L10n.downloadToDownloads) {
+            selectedPaths = [item.path]
+            downloadAction(item)
+        }
+        if !item.isDirectory {
+            Button(L10n.quickViewEdit) {
+                selectedPaths = [item.path]
+                openEditor(item)
+            }
+        }
+        Divider()
+        Button("重命名...") {
+            selectedPaths = [item.path]
+            itemToRename = item
+            renameText = item.name
+            isShowingRenameAlert = true
+        }
+        Button("修改权限 (chmod)...") {
+            selectedPaths = [item.path]
+            itemToChmod = item
+            chmodText = item.isDirectory ? "755" : "644"
+            isShowingChmodAlert = true
+        }
+        Button(role: .destructive) {
+            selectedPaths = [item.path]
+            itemToDelete = item
+        } label: {
+            Label("删除", systemImage: "trash")
+        }
+        Divider()
+        Button(L10n.copyRemotePath) {
+            selectedPaths = [item.path]
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(item.path, forType: .string)
+        }
+    }
 
-                            Button(L10n.downloadToDownloads) {
-                                selectedPath = item.path
-                                downloadAction(item)
-                            }
-                            if !item.isDirectory {
-                                Button(L10n.quickViewEdit) {
-                                    selectedPath = item.path
-                                    openEditor(item)
-                                }
-                            }
-                            Divider()
-                            Button("重命名...") {
-                                selectedPath = item.path
-                                itemToRename = item
-                                renameText = item.name
-                                isShowingRenameAlert = true
-                            }
-                            Button("修改权限 (chmod)...") {
-                                selectedPath = item.path
-                                itemToChmod = item
-                                chmodText = item.isDirectory ? "755" : "644"
-                                isShowingChmodAlert = true
-                            }
-                            Button(role: .destructive) {
-                                selectedPath = item.path
-                                itemToDelete = item
-                            } label: {
-                                Label("删除", systemImage: "trash")
-                            }
-                            Divider()
-                            Button(L10n.copyRemotePath) {
-                                selectedPath = item.path
-                                NSPasteboard.general.clearContents()
-                                NSPasteboard.general.setString(item.path, forType: .string)
-                            }
+    @ViewBuilder
+    private func batchContextActions(for ids: Set<String>) -> some View {
+        let selectedItems = items.filter { ids.contains($0.path) }
+        Button("下载选中的 \(selectedItems.count) 个项目到「下载」") {
+            downloadBatchAction(selectedItems)
+        }
+        Divider()
+        Button(role: .destructive) {
+            batchItemsToDelete = selectedItems
+        } label: {
+            Label("删除选中的 \(selectedItems.count) 个项目", systemImage: "trash")
+        }
+        Divider()
+        Button("复制所有选中远程路径") {
+            let joined = selectedItems.map(\.path).joined(separator: "\n")
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(joined, forType: .string)
+        }
+    }
+
+    private func downloadBatchAction(_ targetItems: [SFTPItem]) {
+        guard let s = session, !targetItems.isEmpty else { return }
+        let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first!
+        transferNotice = "正在下载 \(targetItems.count) 个项目…"
+        withAnimation(.spring(duration: 0.25)) {
+            isTransferDrawerExpanded = true
+        }
+        let tracker = SFTPBatchTracker(total: targetItems.count)
+        for item in targetItems {
+            let localURL = TransferManager.shared.availableDownloadURL(in: downloads, fileName: item.name)
+            TransferManager.shared.enqueueDownload(
+                session: s,
+                remotePath: item.path,
+                localURL: localURL,
+                totalBytes: Int64(item.size),
+                onCompleted: {
+                    let status = tracker.advance()
+                    Task { @MainActor in
+                        if status.isDone {
+                            self.transferNotice = "批量下载完成 (\(tracker.total) 个文件)"
+                        } else {
+                            self.transferNotice = "下载完成: \(item.name)"
+                        }
+                    }
+                },
+                onResult: { result in
+                    Task { @MainActor in
+                        switch result {
+                        case .success:
+                            break
+                        case .failure(let error):
+                            self.transferNotice = error is CancellationError
+                                ? "已取消下载: \(item.name)"
+                                : "下载失败: \(error.localizedDescription)"
+                            self.isTransferDrawerExpanded = true
+                        }
+                    }
+                }
+            )
+        }
+    }
+
+    private func performBatchDelete(_ targetItems: [SFTPItem]) {
+        guard let s = session, !targetItems.isEmpty else { return }
+        let pathsToRemove = Set(targetItems.map(\.path))
+        withAnimation {
+            self.items.removeAll { pathsToRemove.contains($0.path) }
+            self.updateDisplayItems()
+        }
+        Task {
+            var failed: [String] = []
+            for item in targetItems {
+                do {
+                    if item.isDirectory {
+                        try await s.removeDirectory(remotePath: item.path, recursive: true)
+                    } else {
+                        try await s.removeFile(remotePath: item.path)
+                    }
+                } catch {
+                    failed.append(item.name)
+                }
+            }
+            await MainActor.run {
+                if failed.isEmpty {
+                    self.transferNotice = "已成功删除 \(targetItems.count) 个项目"
+                } else {
+                    self.transferNotice = "部分项目删除失败 (\(failed.joined(separator: ", ")))"
+                }
+                self.loadDirectory(path: self.currentPath)
+            }
+        }
     }
 
     private func performDelete(_ item: SFTPItem) {
@@ -720,7 +819,7 @@ public struct SFTPView: View {
         guard let s = session else { return }
         isLoading = true
         loadError = nil
-        selectedPath = nil
+        selectedPaths = []
         loadTask?.cancel()
         loadTask = Task {
             do {
@@ -850,34 +949,89 @@ public struct SFTPView: View {
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = true
         if panel.runModal() == .OK {
-            let targetDirectory = currentPath
-            for url in panel.urls { requestUpload(url, targetDirectory: targetDirectory) }
+            requestBatchUpload(panel.urls, targetDirectory: currentPath)
         }
     }
 
-    private func requestUpload(_ localURL: URL, targetDirectory: String) {
-        guard let session else { return }
+    private func requestBatchUpload(_ urls: [URL], targetDirectory: String) {
+        guard let session, !urls.isEmpty else { return }
         Task { @MainActor in
             do {
                 let existing = try await session.listDirectory(path: targetDirectory)
-                if existing.contains(where: { $0.name == localURL.lastPathComponent }) {
+                let existingNames = Set(existing.map(\.name))
+                let conflicts = urls.filter { existingNames.contains($0.lastPathComponent) }
+                
+                var filesToUpload = urls
+                if !conflicts.isEmpty {
                     guard let window = windowReference.window else { return }
                     let alert = NSAlert()
-                    alert.messageText = "替换远程同名文件？"
-                    alert.informativeText = "\(localURL.lastPathComponent) 已存在于目标目录。替换会覆盖远端内容。"
-                    alert.addButton(withTitle: "取消")
-                    alert.addButton(withTitle: "替换")
+                    alert.messageText = "目标目录已存在同名文件"
+                    if conflicts.count == 1 {
+                        alert.informativeText = "「\(conflicts[0].lastPathComponent)」已存在于目标目录。替换会覆盖远端内容。"
+                        alert.addButton(withTitle: "取消")
+                        alert.addButton(withTitle: "替换")
+                    } else {
+                        alert.informativeText = "检测到 \(conflicts.count) 个同名文件（如「\(conflicts[0].lastPathComponent)」等）。是否覆盖替换？"
+                        alert.addButton(withTitle: "取消")
+                        alert.addButton(withTitle: "全部替换")
+                        alert.addButton(withTitle: "跳过同名文件")
+                    }
                     let response = await withCheckedContinuation { continuation in
                         alert.beginSheetModal(for: window) { continuation.resume(returning: $0) }
                     }
-                    guard response == .alertSecondButtonReturn else { return }
+                    if conflicts.count == 1 {
+                        guard response == .alertSecondButtonReturn else { return }
+                    } else {
+                        if response == .alertFirstButtonReturn {
+                            return // 取消
+                        } else if response == .alertThirdButtonReturn {
+                            filesToUpload = urls.filter { !existingNames.contains($0.lastPathComponent) }
+                        }
+                    }
                 }
-                let destination = targetDirectory.hasSuffix("/") ? targetDirectory + localURL.lastPathComponent : targetDirectory + "/" + localURL.lastPathComponent
-                transferNotice = "正在上传 \(localURL.lastPathComponent)…"
-                isTransferDrawerExpanded = true
-                transferManager.enqueueUpload(session: session, localURL: localURL, remotePath: destination, onResult: { result in
-                    Task { @MainActor in handleUploadResult(result, fileName: localURL.lastPathComponent, targetDirectory: targetDirectory) }
-                })
+                
+                guard !filesToUpload.isEmpty else { return }
+                
+                transferNotice = filesToUpload.count == 1
+                    ? "正在上传 \(filesToUpload[0].lastPathComponent)…"
+                    : "正在批量上传 \(filesToUpload.count) 个文件…"
+                withAnimation(.spring(duration: 0.25)) {
+                    isTransferDrawerExpanded = true
+                }
+                
+                let tracker = SFTPBatchTracker(total: filesToUpload.count)
+                for localURL in filesToUpload {
+                    let destination = targetDirectory.hasSuffix("/")
+                        ? "\(targetDirectory)\(localURL.lastPathComponent)"
+                        : "\(targetDirectory)/\(localURL.lastPathComponent)"
+                    
+                    TransferManager.shared.enqueueUpload(session: session, localURL: localURL, remotePath: destination, onResult: { result in
+                        let status = tracker.advance()
+                        Task { @MainActor in
+                            switch result {
+                            case .success:
+                                if status.isDone {
+                                    self.transferNotice = tracker.total == 1
+                                        ? "上传成功: \(localURL.lastPathComponent)"
+                                        : "批量上传完成 (\(tracker.total) 个文件)"
+                                    self.loadDirectory(path: self.currentPath)
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                                        if self.transferNotice?.hasPrefix("上传成功") == true || self.transferNotice?.hasPrefix("批量上传完成") == true {
+                                            self.transferNotice = nil
+                                        }
+                                    }
+                                }
+                            case .failure(let error):
+                                if error is CancellationError {
+                                    self.transferNotice = "已取消上传: \(localURL.lastPathComponent)"
+                                } else {
+                                    self.transferNotice = "上传失败: \(error.localizedDescription)"
+                                }
+                                self.isTransferDrawerExpanded = true
+                            }
+                        }
+                    })
+                }
             } catch {
                 transferNotice = "上传失败：\(error.localizedDescription)"
             }
@@ -888,7 +1042,7 @@ public struct SFTPView: View {
     private func downloadAction(_ item: SFTPItem) {
         guard let s = session else { return }
         let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first!
-        let localURL = transferManager.availableDownloadURL(in: downloads, fileName: item.name)
+        let localURL = TransferManager.shared.availableDownloadURL(in: downloads, fileName: item.name)
         self.transferNotice = "正在下载: \(item.name)..."
         withAnimation(.spring(duration: 0.25)) {
             self.isTransferDrawerExpanded = true
@@ -921,21 +1075,37 @@ public struct SFTPView: View {
     private func handleDropUpload(providers: [NSItemProvider]) {
         guard session != nil else { return }
         let targetDirectory = currentPath
-        for provider in providers {
+        Task {
+            var droppedURLs: [URL] = []
+            for provider in providers {
+                if let url = await loadDroppedURL(from: provider) {
+                    droppedURLs.append(url)
+                }
+            }
+            guard !droppedURLs.isEmpty else { return }
+            await MainActor.run {
+                requestBatchUpload(droppedURLs, targetDirectory: targetDirectory)
+            }
+        }
+    }
+
+    private func loadDroppedURL(from provider: NSItemProvider) async -> URL? {
+        await withCheckedContinuation { continuation in
             if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
                 provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
-                    let localURL: URL?
-                    if let url = item as? URL { localURL = url }
-                    else if let data = item as? Data { localURL = URL(dataRepresentation: data, relativeTo: nil) }
-                    else if let string = item as? String { localURL = URL(string: string) }
-                    else { localURL = nil }
-                    guard let localURL else { return }
-                    Task { @MainActor in requestUpload(localURL, targetDirectory: targetDirectory) }
+                    if let url = item as? URL {
+                        continuation.resume(returning: url)
+                    } else if let data = item as? Data, let url = URL(dataRepresentation: data, relativeTo: nil) {
+                        continuation.resume(returning: url)
+                    } else if let str = item as? String, let url = URL(string: str) {
+                        continuation.resume(returning: url)
+                    } else {
+                        continuation.resume(returning: nil)
+                    }
                 }
             } else {
-                _ = provider.loadObject(ofClass: URL.self) { localURL, _ in
-                    guard let localURL else { return }
-                    Task { @MainActor in requestUpload(localURL, targetDirectory: targetDirectory) }
+                _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                    continuation.resume(returning: url)
                 }
             }
         }
@@ -1010,7 +1180,7 @@ public enum SFTPDragExportHelper {
                 throw NSError(domain: "SFTPDragExport", code: 404,
                               userInfo: [NSLocalizedDescriptionKey: "No active SSH session"])
             }
-            await MainActor.run {
+            Task { @MainActor in
                 TransferManager.shared.beginExternalTransfer(
                     id: taskId, fileName: item.name, remotePath: item.path,
                     localURL: localURL, direction: .download, totalBytes: Int64(item.size))
@@ -1027,7 +1197,7 @@ public enum SFTPDragExportHelper {
                         if let attributes = try? FileManager.default.attributesOfItem(atPath: localURL.path),
                            let size = attributes[.size] as? NSNumber {
                             let bytes = size.int64Value
-                            await MainActor.run {
+                            Task { @MainActor in
                                 TransferManager.shared.updateExternalProgress(
                                     taskId: taskId,
                                     fraction: expectedBytes > 0 ? min(Double(bytes) / Double(expectedBytes), 1) : 0,
@@ -1045,7 +1215,7 @@ public enum SFTPDragExportHelper {
                     }
                 }
                 try Task.checkCancellation()
-                await MainActor.run {
+                Task { @MainActor in
                     TransferManager.shared.completeExternalTransfer(taskId: taskId)
                     onStatusChange?("拖拽导出完成: \(item.name)")
                 }
@@ -1053,7 +1223,7 @@ public enum SFTPDragExportHelper {
             } catch {
                 try? FileManager.default.removeItem(at: localURL)
                 try? FileManager.default.removeItem(at: tempDir)
-                await MainActor.run {
+                Task { @MainActor in
                     if error is CancellationError {
                         TransferManager.shared.cancelExternalTransfer(taskId: taskId)
                         onStatusChange?("拖拽下载已取消: \(item.name)")
@@ -1125,5 +1295,40 @@ private actor SFTPExportDownload {
     func cancel() {
         isCancelled = true
         task?.cancel()
+    }
+}
+
+// MARK: - Isolated Transfer Toolbar Button
+struct TransferToolbarButton: View {
+    @ObservedObject private var transferManager = TransferManager.shared
+    @Binding var isExpanded: Bool
+
+    var body: some View {
+        Button(action: {
+            withAnimation(.spring(duration: 0.25)) {
+                isExpanded.toggle()
+            }
+        }) {
+            HStack(spacing: 4) {
+                TransferActivitySymbol(isActive: transferManager.activeCount > 0,
+                                       inactiveSystemName: "arrow.up.arrow.down.circle")
+                    .foregroundColor(transferManager.activeCount > 0 ? ApexStyle.accent : ApexStyle.primary)
+                
+                if transferManager.activeCount > 0 {
+                    Text("传输中 (\(transferManager.activeCount))")
+                        .foregroundColor(ApexStyle.accent)
+                        .font(.system(size: 11, weight: .semibold))
+                } else if !transferManager.tasks.isEmpty {
+                    Text("传输记录 (\(transferManager.tasks.count))")
+                        .font(.system(size: 11))
+                } else {
+                    Text("传输记录")
+                        .font(.system(size: 11))
+                }
+            }
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .help("查看上传与下载记录 (快捷切换)")
     }
 }

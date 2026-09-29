@@ -7,7 +7,7 @@ set -euo pipefail
 # ==============================================================================
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VM_NAME="${APEX_TEST_VM:-aether-diag-1434}"
+VM_NAME="${APEX_TEST_VM:-macos27}"
 VM_USER="${APEX_TEST_VM_USER:-chenxu}"
 SSH_KEY="${APEX_TEST_VM_SSH_KEY:-$HOME/.ssh/id_ed25519}"
 REPORT_DIR="${ROOT_DIR}/outputs/vm-acceptance"

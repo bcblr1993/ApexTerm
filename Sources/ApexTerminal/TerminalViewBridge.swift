@@ -400,9 +400,11 @@ public final class NativeTerminalScrollView: NSScrollView {
     
     override public func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         guard let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL],
-              let first = urls.first else { return false }
+              !urls.isEmpty else { return false }
         if let dropHandler = terminalView.onFileDrop {
-            dropHandler(first)
+            for url in urls {
+                dropHandler(url)
+            }
             return true
         }
         return false
@@ -559,9 +561,11 @@ public final class NativeTerminalView: NSTextView {
     
     override public func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         guard let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL],
-              let first = urls.first else { return false }
+              !urls.isEmpty else { return false }
         if let dropHandler = onFileDrop {
-            dropHandler(first)
+            for url in urls {
+                dropHandler(url)
+            }
             return true
         }
         return false

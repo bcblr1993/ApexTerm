@@ -2,6 +2,22 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.4.2] - 2026-09-29
+
+### ✨ 新增特性 (Features)
+- 无新增产品功能；本次为终端滚动修复版本。
+
+### ⚡️ 体验优化 (Improvements)
+- 连续输出多屏文件列表时，终端继续跟随最新内容；用户主动上翻阅读时仍保持当前位置。
+
+### 🐞 问题修复 (Bug Fixes)
+- 修复反复执行 `ll` 后未自动滚动到底部的问题。新行追加后先完成末尾文本排版，再按更新后的文档高度定位视口。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- 新增长列表自动跟随及手动上翻保持位置的回归测试。
+- Tart VM 真实链路与 163 项 Swift 测试通过，0 failures；其中 4 项未配置公共服务器的测试按预期跳过。8 项 Release 性能基准全部达标。
+- 基准实测：RingBuffer 1,833,720 行/秒，ANSI 387,664 spans/秒，RSS 峰值 104.5 MB，16 线程 2,345,869 writes/秒，指标解析 14,500 次/秒，OpenSSH 149,151 hosts/秒，SFTP 1,255 tasks/秒，单键延迟 5.19 μs。
+
 ## [v1.4.1] - 2026-09-29
 
 ### ✨ 新增特性 (Features)

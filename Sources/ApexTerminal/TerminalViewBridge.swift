@@ -473,8 +473,10 @@ public final class NativeTerminalView: NSTextView {
         let visibleWidth = max(60, self.enclosingScrollView?.contentView.bounds.width ?? self.bounds.width)
         let visibleHeight = max(40, self.enclosingScrollView?.contentView.bounds.height ?? self.bounds.height)
         
-        let cols = max(10, Int((visibleWidth - 8) / charWidth))
-        let rows = max(3, Int((visibleHeight - 4) / lineHeight))
+        let horizontalInset = textContainerInset.width * 2
+        let verticalInset = textContainerInset.height * 2
+        let cols = max(10, Int((visibleWidth - horizontalInset) / charWidth))
+        let rows = max(3, Int((visibleHeight - verticalInset) / lineHeight))
         return (cols, rows)
     }
     
@@ -612,6 +614,10 @@ public final class NativeTerminalView: NSTextView {
         
         // Apply settings initially
         applyAppSettings()
+        
+        // Terminal padding / insets: 10px horizontal and vertical breathing room
+        self.textContainerInset = NSSize(width: 10, height: 10)
+        self.textContainer?.lineFragmentPadding = 0
         
         // Critical for AppKit NSTextView vertical auto-resizing in NSScrollView
         self.minSize = NSSize(width: 0, height: 0)
@@ -1060,12 +1066,13 @@ public final class NativeTerminalView: NSTextView {
               let layoutManager = self.layoutManager,
               let textContainer = self.textContainer else { return nil }
         
-        let glyphIndex = layoutManager.glyphIndex(for: point, in: textContainer)
+        let containerPoint = NSPoint(x: point.x - textContainerOrigin.x, y: point.y - textContainerOrigin.y)
+        let glyphIndex = layoutManager.glyphIndex(for: containerPoint, in: textContainer)
         let charIndex = layoutManager.characterIndexForGlyph(at: glyphIndex)
         guard charIndex < storage.length else { return nil }
         
         let lineRect = layoutManager.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil)
-        guard lineRect.insetBy(dx: -4, dy: -4).contains(point) else { return nil }
+        guard lineRect.insetBy(dx: -4, dy: -4).contains(containerPoint) else { return nil }
         
         let text = storage.string as NSString
         let lineRange = text.lineRange(for: NSRange(location: charIndex, length: 0))

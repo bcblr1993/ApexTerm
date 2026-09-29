@@ -395,8 +395,9 @@ public struct WorkspaceView: View {
                         .foregroundColor(ApexStyle.secondary)
                     Spacer()
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 7)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .frame(minHeight: 32)
                 .background(ApexStyle.surface)
             }
         }
@@ -846,7 +847,7 @@ private struct WorkspaceBottomStatusBar: View {
     @ObservedObject var transferManager = TransferManager.shared
     
     var body: some View {
-        HStack(spacing: 16) {
+        HStack(spacing: 14) {
             if let pane = tab.activePane ?? tab.panes.first {
                 ConnectionStatusView(tab: tab, pane: pane)
             }
@@ -856,14 +857,15 @@ private struct WorkspaceBottomStatusBar: View {
                 .foregroundColor(ApexStyle.secondary)
             
             if showsDirectoryControls {
-            Toggle(isOn: $tab.isDirectoryLinkageEnabled) {
-                Label(tab.isDirectoryLinkageEnabled ? L10n.linkageOn : L10n.linkageOff,
-                      systemImage: tab.isDirectoryLinkageEnabled ? "link" : "link.slash")
-            }
-            .toggleStyle(.button)
-            .controlSize(.small)
-            .help(tab.isDirectoryLinkageEnabled ? L10n.linkageHelpOn : L10n.linkageHelpOff)
-            
+                Divider().frame(height: 12)
+                
+                Toggle(isOn: $tab.isDirectoryLinkageEnabled) {
+                    Label(tab.isDirectoryLinkageEnabled ? L10n.linkageOn : L10n.linkageOff,
+                          systemImage: tab.isDirectoryLinkageEnabled ? "link" : "link.slash")
+                }
+                .toggleStyle(.button)
+                .controlSize(.small)
+                .help(tab.isDirectoryLinkageEnabled ? L10n.linkageHelpOn : L10n.linkageHelpOff)
             }
 
             if !transferManager.tasks.isEmpty {
@@ -887,15 +889,16 @@ private struct WorkspaceBottomStatusBar: View {
             Spacer()
             
             if showsDirectoryControls {
-            Text("\(L10n.currentDirectory): \(tab.currentRemotePath)")
-                .font(.caption.monospaced())
-                .foregroundColor(ApexStyle.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
+                Text("\(L10n.currentDirectory): \(tab.currentRemotePath)")
+                    .font(.caption.monospaced())
+                    .foregroundColor(ApexStyle.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 7)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .frame(minHeight: 32)
         .background(ApexStyle.surface)
     }
 }

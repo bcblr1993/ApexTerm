@@ -374,4 +374,186 @@ final class VimAndScreenModeTests: XCTestCase {
         XCTAssertEqual(buffer.dimensions.rows, reportedDimensions!.rows)
         XCTAssertEqual(buffer.dimensions.columns, reportedDimensions!.cols)
     }
+
+    // MARK: - 13. DECCKM Application Cursor Keys Mode (?1h / ?1l)
+
+    @MainActor
+    func testVimApplicationCursorKeysModeDECCKM() {
+        let scrollView = NativeTerminalScrollView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        let terminal = scrollView.terminalView
+        let buffer = TerminalRingBuffer()
+        terminal.ringBuffer = buffer
+        
+        var receivedInput = ""
+        terminal.onInput = { data in
+            receivedInput = String(decoding: data, as: UTF8.self)
+        }
+        
+        // Enter Vim alternate screen
+        buffer.appendStream("\u{1B}[?1049h")
+        XCTAssertFalse(buffer.isApplicationCursorKeys)
+        
+        // Vim enables Application Cursor Keys (\e[?1h)
+        buffer.appendStream("\u{1B}[?1h")
+        XCTAssertTrue(buffer.isApplicationCursorKeys)
+        
+        // Simulate Up Arrow key (126)
+        let eventUp = try! XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: 126))
+        terminal.keyDown(with: eventUp)
+        XCTAssertEqual(receivedInput, "\u{1B}OA")
+        
+        // Simulate Down Arrow key (125)
+        let eventDown = try! XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: 125))
+        terminal.keyDown(with: eventDown)
+        XCTAssertEqual(receivedInput, "\u{1B}OB")
+        
+        // Simulate Right Arrow key (124)
+        let eventRight = try! XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: 124))
+        terminal.keyDown(with: eventRight)
+        XCTAssertEqual(receivedInput, "\u{1B}OC")
+        
+        // Simulate Left Arrow key (123)
+        let eventLeft = try! XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: 123))
+        terminal.keyDown(with: eventLeft)
+        XCTAssertEqual(receivedInput, "\u{1B}OD")
+        
+        // Vim exits: resets Application Cursor Keys (\e[?1l)
+        buffer.appendStream("\u{1B}[?1l")
+        XCTAssertFalse(buffer.isApplicationCursorKeys)
+        
+        // Normal cursor keys send \e[A, \e[B, etc.
+        terminal.keyDown(with: eventUp)
+        XCTAssertEqual(receivedInput, "\u{1B}[A")
+        terminal.keyDown(with: eventDown)
+        XCTAssertEqual(receivedInput, "\u{1B}[B")
+    }
+
+    // MARK: - 14. Cursor Movements Bump Screen Revision & Trigger Updates
+
+    final class TestCounter: @unchecked Sendable {
+        var count = 0
+    }
+
+    func testVimCursorMovementsBumpScreenRevision() {
+        let buffer = TerminalRingBuffer()
+        buffer.setDimensions(columns: 80, rows: 24)
+        buffer.appendStream("\u{1B}[?1049h")
+        
+        let counter = TestCounter()
+        buffer.onUpdate = {
+            counter.count += 1
+        }
+        
+        let initialRevision = buffer.screenRevision
+        
+        // Move to row 5, col 10 (\e[5;10H)
+        buffer.appendStream("\u{1B}[5;10H")
+        XCTAssertGreaterThan(buffer.screenRevision, initialRevision)
+        XCTAssertEqual(buffer.cursorPosition.row, 4)
+        XCTAssertEqual(buffer.cursorPosition.column, 9)
+        XCTAssertGreaterThan(counter.count, 0)
+        
+        // Move Down 2 rows (\e[2B)
+        let rev1 = buffer.screenRevision
+        buffer.appendStream("\u{1B}[2B")
+        XCTAssertGreaterThan(buffer.screenRevision, rev1)
+        XCTAssertEqual(buffer.cursorPosition.row, 6)
+        
+        // Move Right 4 cols (\e[4C)
+        let rev2 = buffer.screenRevision
+        buffer.appendStream("\u{1B}[4C")
+        XCTAssertGreaterThan(buffer.screenRevision, rev2)
+        XCTAssertEqual(buffer.cursorPosition.column, 13)
+        
+        // Move Up 1 row (\e[1A)
+        let rev3 = buffer.screenRevision
+        buffer.appendStream("\u{1B}[1A")
+        XCTAssertGreaterThan(buffer.screenRevision, rev3)
+        XCTAssertEqual(buffer.cursorPosition.row, 5)
+        
+        // Move Left 3 cols (\e[3D)
+        let rev4 = buffer.screenRevision
+        buffer.appendStream("\u{1B}[3D")
+        XCTAssertGreaterThan(buffer.screenRevision, rev4)
+        XCTAssertEqual(buffer.cursorPosition.column, 10)
+    }
+
+    // MARK: - 15. Vim Exit and Chinese IME Full-Width Colon Normalization
+
+    @MainActor
+    func testVimExitKeystrokesAndIMEFullWidthColonNormalization() {
+        let scrollView = NativeTerminalScrollView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        let terminal = scrollView.terminalView
+        let buffer = TerminalRingBuffer()
+        terminal.ringBuffer = buffer
+        
+        var receivedInput = ""
+        terminal.onInput = { data in
+            receivedInput = String(decoding: data, as: UTF8.self)
+        }
+        
+        // Enter Vim
+        buffer.appendStream("\u{1B}[?1049h")
+        
+        // 1. Chinese IME inputs full-width colon command: "：wq\r"
+        terminal.insertText("：wq\r", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertEqual(receivedInput, ":wq\r")
+        
+        // 2. Chinese IME inputs ":q!\r"
+        terminal.insertText("：q!\r", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertEqual(receivedInput, ":q!\r")
+        
+        // 3. ESC in alternate screen buffer sends \x1b directly
+        let eventEsc = try! XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil, characters: "\u{1B}", charactersIgnoringModifiers: "\u{1B}", isARepeat: false, keyCode: 53))
+        terminal.keyDown(with: eventEsc)
+        XCTAssertEqual(receivedInput, "\u{1B}")
+    }
+
+    // MARK: - 16. Alternate Screen Viewport Origin Zero Locking (No SFTP Clipping)
+
+    @MainActor
+    func testAlternateScreenViewportZeroOriginOnSplitResize() {
+        let scrollView = NativeTerminalScrollView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        let terminal = scrollView.terminalView
+        let buffer = TerminalRingBuffer()
+        terminal.ringBuffer = buffer
+        
+        // Enter Vim alternate screen
+        buffer.appendStream("\u{1B}[?1049h")
+        for i in 1...30 { buffer.appendStream("\u{1B}[\(i);1Hnetworks: service_\(i)") }
+        terminal.refresh()
+        
+        XCTAssertEqual(terminal.frame.origin, .zero)
+        XCTAssertEqual(scrollView.contentView.bounds.origin, .zero)
+        
+        // Simulate SFTP panel opening: frame height shrinks from 600 to 280
+        scrollView.setFrameSize(NSSize(width: 800, height: 280))
+        terminal.refresh()
+        
+        // Both documentView frame origin and clipView bounds origin must remain strictly at .zero
+        XCTAssertEqual(terminal.frame.origin, .zero, "Top line of Vim text must never be pushed to negative space")
+        XCTAssertEqual(scrollView.contentView.bounds.origin, .zero, "ClipView must not be scrolled upward when split opens")
+    }
+
+    // MARK: - 17. Unfocused Terminal Cursor Remains Visually Represented
+
+    @MainActor
+    func testUnfocusedTerminalCursorRemainsVisuallyRepresented() {
+        let scrollView = NativeTerminalScrollView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        let terminal = scrollView.terminalView
+        let buffer = TerminalRingBuffer()
+        buffer.setDimensions(columns: 80, rows: 24)
+        terminal.ringBuffer = buffer
+        
+        buffer.appendStream("\u{1B}[?1049h\u{1B}[5;10H")
+        terminal.refresh()
+        
+        // Resign first responder (e.g. user clicked SFTP panel)
+        _ = terminal.resignFirstResponder()
+        
+        // Cursor position remains valid and is visible for rendering
+        XCTAssertEqual(buffer.cursorPosition.row, 4)
+        XCTAssertEqual(buffer.cursorPosition.column, 9)
+        XCTAssertFalse(buffer.isCursorHidden)
+    }
 }

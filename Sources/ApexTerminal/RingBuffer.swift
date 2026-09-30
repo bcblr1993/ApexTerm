@@ -42,10 +42,16 @@ public final class TerminalRingBuffer: @unchecked Sendable {
     private var savedScreenPosition: (Int, Int)?
     private var _screenRevision: Int64 = 0
     private var _isCursorHidden: Bool = false
+    private var _isApplicationCursorKeys: Bool = false
 
     public var screenRevision: Int64 {
         lock.lock(); defer { lock.unlock() }
         return _screenRevision
+    }
+
+    public var isApplicationCursorKeys: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return _isApplicationCursorKeys
     }
 
     public var screenLines: [String]? {
@@ -327,8 +333,8 @@ public final class TerminalRingBuffer: @unchecked Sendable {
                     if screen != nil {
                         switch nextChar {
                         case "7": savedScreenPosition = (screenRow, screenColumn)
-                        case "8": if let savedScreenPosition { (screenRow, screenColumn) = savedScreenPosition }
-                        case "M": screenRow = max(0, screenRow - 1)
+                        case "8": if let savedScreenPosition { (screenRow, screenColumn) = savedScreenPosition; _screenRevision += 1 }
+                        case "M": screenRow = max(0, screenRow - 1); _screenRevision += 1
                         default: break
                         }
                     }
@@ -433,13 +439,17 @@ public final class TerminalRingBuffer: @unchecked Sendable {
                     scrollTop = 0
                     scrollBottom = max(0, screenRows - 1)
                     _isCursorHidden = false
+                    _isApplicationCursorKeys = false
                     _screenRevision += 1
                     _isClearPending = true
                 }
+            case 1:
+                _isApplicationCursorKeys = isSet
             case 2004:
                 _isBracketedPasteEnabled = isSet
             case 25:
                 _isCursorHidden = !isSet
+                _screenRevision += 1
             default:
                 break
             }
@@ -459,12 +469,13 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         case "H", "f":
             screenRow = min(screenRows - 1, max(0, amount - 1))
             screenColumn = min(screenColumns - 1, max(0, (values.count > 1 ? max(1, values[1]) : 1) - 1))
-        case "A": screenRow = max(0, screenRow - amount)
-        case "B": screenRow = min(screenRows - 1, screenRow + amount)
-        case "C": screenColumn = min(screenColumns - 1, screenColumn + amount)
-        case "D": screenColumn = max(0, screenColumn - amount)
-        case "G": screenColumn = min(screenColumns - 1, amount - 1)
-        case "d": screenRow = min(screenRows - 1, amount - 1)
+            _screenRevision += 1
+        case "A": screenRow = max(0, screenRow - amount); _screenRevision += 1
+        case "B": screenRow = min(screenRows - 1, screenRow + amount); _screenRevision += 1
+        case "C": screenColumn = min(screenColumns - 1, screenColumn + amount); _screenRevision += 1
+        case "D": screenColumn = max(0, screenColumn - amount); _screenRevision += 1
+        case "G": screenColumn = min(screenColumns - 1, max(0, amount - 1)); _screenRevision += 1
+        case "d": screenRow = min(screenRows - 1, max(0, amount - 1)); _screenRevision += 1
         case "J":
             if first == 2 || first == 3 { grid = Array(repeating: [], count: screenRows) }
             else if first == 0 {
@@ -573,6 +584,7 @@ public final class TerminalRingBuffer: @unchecked Sendable {
             if let saved = savedScreenPosition {
                 screenRow = min(screenRows - 1, max(0, saved.0))
                 screenColumn = min(screenColumns - 1, max(0, saved.1))
+                _screenRevision += 1
             }
         default: break
         }

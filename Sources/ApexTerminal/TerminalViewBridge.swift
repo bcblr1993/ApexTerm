@@ -60,7 +60,9 @@ public struct TerminalRepresentable: NSViewRepresentable {
                 if !isEditingControl { window.makeFirstResponder(scrollView.terminalView) }
             }
             scrollView.terminalView.notifyDimensionsChangedIfNeeded(immediate: true)
-            scrollView.terminalView.scrollToBottom(forceLayout: true)
+            if scrollView.terminalView.ringBuffer?.isInAlternateScreen != true {
+                scrollView.terminalView.scrollToBottom(forceLayout: true)
+            }
         }
         
         return scrollView
@@ -297,6 +299,19 @@ public final class TerminalClipView: NSClipView {
         super.scroll(to: constrained)
     }
     
+    override public func layout() {
+        super.layout()
+        if let termView = documentView as? NativeTerminalView,
+           termView.ringBuffer?.isInAlternateScreen == true {
+            if termView.frame.origin != .zero {
+                termView.frame.origin = .zero
+            }
+            if bounds.origin != .zero {
+                bounds.origin = .zero
+            }
+        }
+    }
+    
     private func constrainPoint(_ p: NSPoint, in size: NSSize) -> NSPoint {
         guard size.height > 0 else { return .zero }
         
@@ -442,11 +457,18 @@ public final class NativeTerminalScrollView: NSScrollView {
         let sizeChanged = (newSize != self.frame.size)
         super.setFrameSize(newSize)
         if sizeChanged {
-            if terminalView.frame.origin != .zero {
+            if terminalView.ringBuffer?.isInAlternateScreen == true {
                 terminalView.frame.origin = .zero
-            }
-            if terminalView.isPinnedToBottom {
-                terminalView.scrollToBottom(forceLayout: true)
+                contentView.bounds.origin = .zero
+                contentView.scroll(to: .zero)
+                terminalView.isPinnedToBottom = false
+            } else {
+                if terminalView.frame.origin != .zero {
+                    terminalView.frame.origin = .zero
+                }
+                if terminalView.isPinnedToBottom {
+                    terminalView.scrollToBottom(forceLayout: true)
+                }
             }
             terminalView.notifyDimensionsChangedIfNeeded(immediate: true)
         }
@@ -530,6 +552,7 @@ public final class NativeTerminalView: NSTextView {
     private var cursorBlinkTimer: Timer?
     private var settingsObserver: NSObjectProtocol?
     private var isFocused: Bool = false
+    private var lastRenderedCursorRect: NSRect? = nil
     
     // High-performance styling cache for zero-allocation 120Hz rendering
     private var cachedBaseFont: NSFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
@@ -581,6 +604,14 @@ public final class NativeTerminalView: NSTextView {
     /// Canonical rock-solid scroll to bottom ensuring prompt line is always visible without flicker.
     /// forceLayout is only needed when geometry changed (e.g. divider drag / setFrameSize).
     public func scrollToBottom(forceLayout: Bool = false) {
+        if ringBuffer?.isInAlternateScreen == true {
+            self.frame.origin = .zero
+            if let clipView = self.enclosingScrollView?.contentView, clipView.bounds.origin != .zero {
+                clipView.bounds.origin = .zero
+                clipView.scroll(to: .zero)
+            }
+            return
+        }
         guard let storage = self.textStorage, storage.length > 0 else { return }
         guard let clipView = self.enclosingScrollView?.contentView else { return }
         
@@ -961,18 +992,29 @@ public final class NativeTerminalView: NSTextView {
             drawComposition()
             return
         }
-        guard isCursorVisible, ringBuffer?.isCursorHidden != true, let rect = getCursorRect() else { return }
+        guard ringBuffer?.isCursorHidden != true, let rect = getCursorRect() else { return }
         let focused = (window?.isKeyWindow == true && window?.firstResponder == self)
+        if focused {
+            guard isCursorVisible else { return }
+        }
+        lastRenderedCursorRect = rect
         let themeCursor = NSColor(hex: AppSettings.shared.themePreset.cursorColorHex)
         let shape = AppSettings.shared.cursorShape
-        let baseColor = focused
-            ? (themeCursor ?? NSColor(red: 0.20, green: 0.78, blue: 0.95, alpha: 0.95))
-            : NSColor(white: 0.6, alpha: 0.5)
-        
-        let cursorColor = (shape == .block) ? baseColor.withAlphaComponent(0.65) : baseColor
-        cursorColor.setFill()
-        let path = NSBezierPath(roundedRect: rect, xRadius: 1.0, yRadius: 1.0)
-        path.fill()
+        if focused {
+            let baseColor = themeCursor ?? NSColor(red: 0.20, green: 0.78, blue: 0.95, alpha: 0.95)
+            let cursorColor = (shape == .block) ? baseColor.withAlphaComponent(0.70) : baseColor
+            cursorColor.setFill()
+            let path = NSBezierPath(roundedRect: rect, xRadius: 1.0, yRadius: 1.0)
+            path.fill()
+        } else {
+            // Unfocused: render clear hollow outline border so cursor position is never lost
+            let unfocusedColor = (themeCursor ?? NSColor.textColor).withAlphaComponent(0.55)
+            unfocusedColor.setStroke()
+            let strokeRect = rect.insetBy(dx: 0.5, dy: 0.5)
+            let path = NSBezierPath(roundedRect: strokeRect, xRadius: 1.0, yRadius: 1.0)
+            path.lineWidth = 1.2
+            path.stroke()
+        }
     }
     
     /// Preedit is an overlay: it must never enter the remote-output storage or SSH stream.
@@ -1023,6 +1065,9 @@ public final class NativeTerminalView: NSTextView {
                 guard let self = self else { return }
                 self.isCursorVisible.toggle()
                 if let rect = self.getCursorRect() {
+                    if let old = self.lastRenderedCursorRect, old != rect {
+                        self.setNeedsDisplay(old.insetBy(dx: -4, dy: -4))
+                    }
                     self.setNeedsDisplay(rect.insetBy(dx: -4, dy: -4))
                 } else {
                     self.needsDisplay = true
@@ -1034,14 +1079,18 @@ public final class NativeTerminalView: NSTextView {
     public func stopCursorBlink() {
         cursorBlinkTimer?.invalidate()
         cursorBlinkTimer = nil
-        isCursorVisible = false
         needsDisplay = true
     }
     
     public func resetCursorBlink() {
         isCursorVisible = true
-        if let rect = getCursorRect() {
-            setNeedsDisplay(rect.insetBy(dx: -4, dy: -4))
+        let newRect = getCursorRect()
+        if let old = lastRenderedCursorRect {
+            setNeedsDisplay(old.insetBy(dx: -4, dy: -4))
+        }
+        if let current = newRect {
+            setNeedsDisplay(current.insetBy(dx: -4, dy: -4))
+            lastRenderedCursorRect = current
         } else {
             needsDisplay = true
         }
@@ -1303,7 +1352,8 @@ public final class NativeTerminalView: NSTextView {
             if abs(deltaY) > 0.1 {
                 let isUp = deltaY > 0
                 let count = max(1, min(5, Int(abs(deltaY) / 4.0)))
-                let seq = isUp ? "\u{1B}[A" : "\u{1B}[B"
+                let isApp = buffer.isApplicationCursorKeys
+                let seq = isUp ? (isApp ? "\u{1B}OA" : "\u{1B}[A") : (isApp ? "\u{1B}OB" : "\u{1B}[B")
                 var fullSeq = ""
                 for _ in 0..<count { fullSeq.append(seq) }
                 if let data = fullSeq.data(using: .utf8) {
@@ -1352,7 +1402,9 @@ public final class NativeTerminalView: NSTextView {
     }
 
     override public func keyDown(with event: NSEvent) {
-        self.isPinnedToBottom = true
+        if ringBuffer?.isInAlternateScreen != true {
+            self.isPinnedToBottom = true
+        }
         
         // Preserve the system full-screen shortcut while terminal input has focus.
         let shortcutModifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
@@ -1406,16 +1458,20 @@ public final class NativeTerminalView: NSTextView {
         
         // 2. Handle Escape key with priority: if composing IME text, discard and cancel without sending to shell
         if event.keyCode == 53 { // ESC
-            if hasMarkedText() {
+            let hadMarked = hasMarkedText()
+            if hadMarked {
                 inputContext?.discardMarkedText()
                 unmarkText()
-                return
             }
             if let sv = self.enclosingScrollView as? NativeTerminalScrollView, !sv.searchBarOverlay.isHidden {
                 sv.hideFindBar()
                 return
             }
-            onInput?("\u{1B}".data(using: .utf8)!)
+            // In alternate screen buffer (Vim, less, nano), ALWAYS pass ESC to remote shell
+            // even if marked text was just discarded so user reliably exits insert/command mode.
+            if ringBuffer?.isInAlternateScreen == true || !hadMarked {
+                onInput?("\u{1B}".data(using: .utf8)!)
+            }
             return
         }
         
@@ -1450,6 +1506,7 @@ public final class NativeTerminalView: NSTextView {
 
         // Handle Special keys by key code when not composing marked IME text
         if !hasMarkedText() {
+            let isAppCursor = ringBuffer?.isApplicationCursorKeys == true
             switch event.keyCode {
             case 36, 76: // Return / Enter / Numpad Enter
                 onInput?("\r".data(using: .utf8)!)
@@ -1468,22 +1525,30 @@ public final class NativeTerminalView: NSTextView {
                 }
                 return
             case 126: // Up arrow
-                onInput?("\u{1B}[A".data(using: .utf8)!)
+                if event.modifierFlags.contains(.shift) { onInput?("\u{1B}[1;2A".data(using: .utf8)!); return }
+                if event.modifierFlags.contains(.control) { onInput?("\u{1B}[1;5A".data(using: .utf8)!); return }
+                onInput?((isAppCursor ? "\u{1B}OA" : "\u{1B}[A").data(using: .utf8)!)
                 return
             case 125: // Down arrow
-                onInput?("\u{1B}[B".data(using: .utf8)!)
+                if event.modifierFlags.contains(.shift) { onInput?("\u{1B}[1;2B".data(using: .utf8)!); return }
+                if event.modifierFlags.contains(.control) { onInput?("\u{1B}[1;5B".data(using: .utf8)!); return }
+                onInput?((isAppCursor ? "\u{1B}OB" : "\u{1B}[B").data(using: .utf8)!)
                 return
             case 124: // Right arrow
-                onInput?("\u{1B}[C".data(using: .utf8)!)
+                if event.modifierFlags.contains(.shift) { onInput?("\u{1B}[1;2C".data(using: .utf8)!); return }
+                if event.modifierFlags.contains(.control) { onInput?("\u{1B}[1;5C".data(using: .utf8)!); return }
+                onInput?((isAppCursor ? "\u{1B}OC" : "\u{1B}[C").data(using: .utf8)!)
                 return
             case 123: // Left arrow
-                onInput?("\u{1B}[D".data(using: .utf8)!)
+                if event.modifierFlags.contains(.shift) { onInput?("\u{1B}[1;2D".data(using: .utf8)!); return }
+                if event.modifierFlags.contains(.control) { onInput?("\u{1B}[1;5D".data(using: .utf8)!); return }
+                onInput?((isAppCursor ? "\u{1B}OD" : "\u{1B}[D").data(using: .utf8)!)
                 return
             case 115: // Home
-                onInput?("\u{1B}[H".data(using: .utf8)!)
+                onInput?((isAppCursor ? "\u{1B}OH" : "\u{1B}[H").data(using: .utf8)!)
                 return
             case 119: // End
-                onInput?("\u{1B}[F".data(using: .utf8)!)
+                onInput?((isAppCursor ? "\u{1B}OF" : "\u{1B}[F").data(using: .utf8)!)
                 return
             case 116: // Page Up
                 onInput?("\u{1B}[5~".data(using: .utf8)!)
@@ -1702,7 +1767,9 @@ public final class NativeTerminalView: NSTextView {
     
     /// Called when user commits a Chinese candidate word or types standard text
     override public func insertText(_ string: Any, replacementRange: NSRange) {
-        self.isPinnedToBottom = true
+        if ringBuffer?.isInAlternateScreen != true {
+            self.isPinnedToBottom = true
+        }
         var text: String
         if let s = string as? String {
             text = s
@@ -1717,6 +1784,9 @@ public final class NativeTerminalView: NSTextView {
         needsDisplay = true
         
         if !text.isEmpty {
+            // Normalize full-width symbols commonly entered by Chinese/CJK input methods that break terminal commands and Vim
+            text = text.replacingOccurrences(of: "：", with: ":")
+                       .replacingOccurrences(of: "；", with: ";")
             text = text.replacingOccurrences(of: "\r\n", with: "\r").replacingOccurrences(of: "\n", with: "\r")
             if let data = text.data(using: .utf8) {
                 onInput?(data)
@@ -1903,12 +1973,15 @@ public final class NativeTerminalView: NSTextView {
             activeLineStartLocation = self.textStorage?.length ?? 0
             lastCommittedIndex = buffer.totalCommittedCount
             isPinnedToBottom = false
+            self.frame.origin = .zero
             if let clipView = self.enclosingScrollView?.contentView {
                 if clipView.bounds.origin != .zero {
+                    clipView.bounds.origin = .zero
                     clipView.scroll(to: .zero)
                     self.enclosingScrollView?.reflectScrolledClipView(clipView)
                 }
             }
+            self.needsDisplay = true
             resetCursorBlink()
             return
         }

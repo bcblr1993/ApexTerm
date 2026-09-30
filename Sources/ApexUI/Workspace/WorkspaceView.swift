@@ -166,6 +166,8 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
         Task {
             do {
                 try await p.sshClient.connect()
+                let dims = p.ringBuffer.dimensions
+                try? await p.sshClient.resizeTerminal(columns: dims.columns, rows: dims.rows)
                 p.connectionState = p.sshClient.connectionState
                 if p.id == (self.activePane?.id ?? self.panes.first?.id) {
                     self.connectionState = p.sshClient.connectionState

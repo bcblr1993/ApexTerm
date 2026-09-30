@@ -34,6 +34,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     
     private var ptyMasterFd: Int32 = -1
     private var childPid: pid_t = -1
+    private var currentDimensions: (columns: Int, rows: Int) = (120, 35)
     private var readSource: DispatchSourceRead?
     private var probeTask: Task<Void, Never>?
     
@@ -170,7 +171,12 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         
         var master: Int32 = 0
         var slave: Int32 = 0
-        var win = winsize(ws_row: 35, ws_col: 120, ws_xpixel: 0, ws_ypixel: 0)
+        var win = winsize(
+            ws_row: UInt16(currentDimensions.rows),
+            ws_col: UInt16(currentDimensions.columns),
+            ws_xpixel: 0,
+            ws_ypixel: 0
+        )
         
         guard openpty(&master, &slave, nil, nil, &win) == 0 else {
             self.connectionState = .failed("Failed to allocate Darwin PTY")
@@ -178,6 +184,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         }
         
         self.ptyMasterFd = master
+        _ = ioctl(master, TIOCSWINSZ, &win)
         
         // Setup command & arguments
         var binaryPath = "/usr/bin/ssh"
@@ -381,8 +388,11 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     }
     
     public func resizeTerminal(columns: Int, rows: Int) async throws {
+        let validCols = max(10, columns)
+        let validRows = max(3, rows)
+        currentDimensions = (validCols, validRows)
         guard ptyMasterFd >= 0 else { return }
-        var win = winsize(ws_row: UInt16(rows), ws_col: UInt16(columns), ws_xpixel: 0, ws_ypixel: 0)
+        var win = winsize(ws_row: UInt16(validRows), ws_col: UInt16(validCols), ws_xpixel: 0, ws_ypixel: 0)
         _ = ioctl(ptyMasterFd, TIOCSWINSZ, &win)
     }
     

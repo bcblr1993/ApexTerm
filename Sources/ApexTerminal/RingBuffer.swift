@@ -37,6 +37,8 @@ public final class TerminalRingBuffer: @unchecked Sendable {
     private var screenColumns = 120
     private var screenRow = 0
     private var screenColumn = 0
+    private var scrollTop = 0
+    private var scrollBottom = 34
     private var savedScreenPosition: (Int, Int)?
     private var _screenRevision: Int64 = 0
 
@@ -50,14 +52,30 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         return screen?.map(renderCellsToString)
     }
 
+    /// Whether terminal is currently in alternate screen buffer mode (e.g. Vim, less, htop)
+    public var isInAlternateScreen: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return screen != nil
+    }
+
+    /// Current terminal dimensions (columns, rows)
+    public var dimensions: (columns: Int, rows: Int) {
+        lock.lock(); defer { lock.unlock() }
+        return (screenColumns, screenRows)
+    }
+
     public func setDimensions(columns: Int, rows: Int) {
         lock.lock()
-        if screenColumns == max(1, columns) && screenRows == max(1, rows) {
+        let newCols = max(1, columns)
+        let newRows = max(1, rows)
+        if screenColumns == newCols && screenRows == newRows {
             lock.unlock()
             return
         }
-        screenColumns = max(1, columns)
-        screenRows = max(1, rows)
+        screenColumns = newCols
+        screenRows = newRows
+        scrollTop = 0
+        scrollBottom = max(0, newRows - 1)
         var needsUpdate = false
         if var grid = screen {
             grid = Array(grid.prefix(screenRows))
@@ -257,7 +275,9 @@ public final class TerminalRingBuffer: @unchecked Sendable {
                     }
                     
                     let finalChar = fullText[j]
-                    if screen != nil || csiParam == "?1049" || csiParam == "?1047" || csiParam == "?47" {
+                    if csiParam.hasPrefix("?") {
+                        handleDECPrivateMode(finalChar: finalChar, param: csiParam)
+                    } else if screen != nil {
                         handleScreenCSI(finalChar: finalChar, param: csiParam)
                     } else {
                         ensureEditingMode()
@@ -347,11 +367,14 @@ public final class TerminalRingBuffer: @unchecked Sendable {
 
     private func screenNewline() {
         screenColumn = 0
-        if screenRow < screenRows - 1 { screenRow += 1 }
-        else if var grid = screen {
-            grid.removeFirst()
-            grid.append([])
-            screen = grid
+        if screenRow < scrollBottom {
+            screenRow += 1
+        } else if var grid = screen {
+            if scrollTop < grid.count && scrollBottom < grid.count && scrollTop <= scrollBottom {
+                grid.remove(at: scrollTop)
+                grid.insert([], at: scrollBottom)
+                screen = grid
+            }
         }
         _screenRevision += 1
     }
@@ -370,25 +393,40 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         _screenRevision += 1
     }
 
-    private func handleScreenCSI(finalChar: Character, param: String) {
-        if param == "?1049" || param == "?1047" || param == "?47" {
-            if finalChar == "h" {
-                screen = Array(repeating: [], count: screenRows)
-                screenRow = 0
-                screenColumn = 0
-                savedScreenPosition = nil
-                _screenRevision += 1
-            } else if finalChar == "l" {
-                screen = nil
-                _screenRevision += 1
-                _isClearPending = true
+    private func handleDECPrivateMode(finalChar: Character, param: String) {
+        let isSet = (finalChar == "h")
+        let isReset = (finalChar == "l")
+        guard isSet || isReset else { return }
+        let modes = param.dropFirst().split(separator: ";").compactMap { Int($0) }
+        for mode in modes {
+            switch mode {
+            case 1049, 1047, 47:
+                if isSet {
+                    screen = Array(repeating: [], count: screenRows)
+                    screenRow = 0
+                    screenColumn = 0
+                    scrollTop = 0
+                    scrollBottom = max(0, screenRows - 1)
+                    savedScreenPosition = nil
+                    _screenRevision += 1
+                } else {
+                    screen = nil
+                    scrollTop = 0
+                    scrollBottom = max(0, screenRows - 1)
+                    _screenRevision += 1
+                    _isClearPending = true
+                }
+            case 2004:
+                _isBracketedPasteEnabled = isSet
+            case 25:
+                break
+            default:
+                break
             }
-            return
         }
-        if param == "?2004" {
-            _isBracketedPasteEnabled = (finalChar == "h")
-            return
-        }
+    }
+
+    private func handleScreenCSI(finalChar: Character, param: String) {
         guard var grid = screen else { return }
         let values = param.split(separator: ";", omittingEmptySubsequences: false).map { Int($0) ?? 0 }
         let first = values.first ?? 0
@@ -422,12 +460,100 @@ public final class TerminalRingBuffer: @unchecked Sendable {
                 if end > 0 { for col in 0..<end { grid[screenRow][col] = TerminalCell(char: " ") } }
             }
             screen = grid; _screenRevision += 1
+        case "r":
+            let top = (values.count > 0 && values[0] > 0) ? values[0] : 1
+            let bottom = (values.count > 1 && values[1] > 0) ? values[1] : screenRows
+            scrollTop = max(0, min(screenRows - 1, top - 1))
+            scrollBottom = max(scrollTop, min(screenRows - 1, bottom - 1))
+            screenRow = 0
+            screenColumn = 0
         case "L":
-            for _ in 0..<min(amount, screenRows - screenRow) { grid.insert([], at: screenRow); grid.removeLast() }
-            screen = grid; _screenRevision += 1
+            if screenRow >= scrollTop && screenRow <= scrollBottom {
+                let limit = min(amount, scrollBottom - screenRow + 1)
+                for _ in 0..<limit {
+                    grid.insert([], at: screenRow)
+                    if scrollBottom + 1 < grid.count {
+                        grid.remove(at: scrollBottom + 1)
+                    } else if !grid.isEmpty {
+                        grid.removeLast()
+                    }
+                }
+                screen = grid; _screenRevision += 1
+            }
         case "M":
-            for _ in 0..<min(amount, screenRows - screenRow) { grid.remove(at: screenRow); grid.append([]) }
+            if screenRow >= scrollTop && screenRow <= scrollBottom {
+                let limit = min(amount, scrollBottom - screenRow + 1)
+                for _ in 0..<limit {
+                    grid.remove(at: screenRow)
+                    grid.insert([], at: scrollBottom)
+                }
+                screen = grid; _screenRevision += 1
+            }
+        case "S":
+            let limit = min(amount, scrollBottom - scrollTop + 1)
+            for _ in 0..<limit {
+                if scrollTop < grid.count {
+                    grid.remove(at: scrollTop)
+                    grid.insert([], at: scrollBottom)
+                }
+            }
             screen = grid; _screenRevision += 1
+        case "T":
+            let limit = min(amount, scrollBottom - scrollTop + 1)
+            for _ in 0..<limit {
+                if scrollBottom < grid.count {
+                    grid.remove(at: scrollBottom)
+                    grid.insert([], at: scrollTop)
+                }
+            }
+            screen = grid; _screenRevision += 1
+        case "P":
+            if screenRow < grid.count {
+                var row = grid[screenRow]
+                if screenColumn < row.count {
+                    let toRemove = min(amount, row.count - screenColumn)
+                    row.removeSubrange(screenColumn..<(screenColumn + toRemove))
+                    grid[screenRow] = row
+                    screen = grid; _screenRevision += 1
+                }
+            }
+        case "@":
+            if screenRow < grid.count {
+                var row = grid[screenRow]
+                if screenColumn > row.count {
+                    row.append(contentsOf: repeatElement(TerminalCell(char: " "), count: screenColumn - row.count))
+                }
+                let blanks = Array(repeating: TerminalCell(char: " ", fgHex: currentFgHex, isBold: currentBold, ansiColorIndex: currentANSIIndex), count: amount)
+                row.insert(contentsOf: blanks, at: min(screenColumn, row.count))
+                if row.count > screenColumns {
+                    row = Array(row.prefix(screenColumns))
+                }
+                grid[screenRow] = row
+                screen = grid; _screenRevision += 1
+            }
+        case "X":
+            if screenRow < grid.count {
+                var row = grid[screenRow]
+                let end = min(screenColumn + amount, screenColumns)
+                if screenColumn > row.count {
+                    row.append(contentsOf: repeatElement(TerminalCell(char: " "), count: screenColumn - row.count))
+                }
+                while row.count < end {
+                    row.append(TerminalCell(char: " "))
+                }
+                for c in screenColumn..<min(end, row.count) {
+                    row[c] = TerminalCell(char: " ", fgHex: currentFgHex, isBold: false, ansiColorIndex: currentANSIIndex)
+                }
+                grid[screenRow] = row
+                screen = grid; _screenRevision += 1
+            }
+        case "s":
+            savedScreenPosition = (screenRow, screenColumn)
+        case "u":
+            if let saved = savedScreenPosition {
+                screenRow = min(screenRows - 1, max(0, saved.0))
+                screenColumn = min(screenColumns - 1, max(0, saved.1))
+            }
         default: break
         }
     }

@@ -36,6 +36,7 @@ public final class MockSSHSession: SSHSessionProtocol, @unchecked Sendable {
     private var mockCpu = 12.5
     private var mockMemUsed: UInt64 = 4 * 1024 * 1024 * 1024 // 4GB
     private let mockMemTotal: UInt64 = 16 * 1024 * 1024 * 1024 // 16GB
+    public private(set) var lastResizedDimensions: (columns: Int, rows: Int)? = nil
     
     public init(session: Session) {
         self.session = session
@@ -127,7 +128,7 @@ public final class MockSSHSession: SSHSessionProtocol, @unchecked Sendable {
     }
     
     public func resizeTerminal(columns: Int, rows: Int) async throws {
-        // Mock pty resize
+        lastResizedDimensions = (columns, rows)
     }
     
     private func processCommand(_ cmd: String) {

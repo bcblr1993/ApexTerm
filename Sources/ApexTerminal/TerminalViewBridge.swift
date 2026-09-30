@@ -297,6 +297,13 @@ public final class TerminalClipView: NSClipView {
     
     private func constrainPoint(_ p: NSPoint, in size: NSSize) -> NSPoint {
         guard size.height > 0 else { return .zero }
+        
+        // If terminal is in alternate screen mode (e.g. Vim, less, htop), origin MUST be locked to .zero
+        if let termView = documentView as? NativeTerminalView,
+           termView.ringBuffer?.isInAlternateScreen == true {
+            return .zero
+        }
+        
         var targetY = p.y
         if let doc = documentView {
             let docHeight = doc.frame.height
@@ -1224,6 +1231,26 @@ public final class NativeTerminalView: NSTextView {
         }
     }
     
+    override public func scrollWheel(with event: NSEvent) {
+        if let buffer = ringBuffer, buffer.isInAlternateScreen {
+            // When in alternate screen mode (e.g. Vim, less, htop), scrolling trackpad/mouse
+            // should send Up/Down arrow sequences to navigate the document instead of scrolling the clipview
+            let deltaY = event.scrollingDeltaY
+            if abs(deltaY) > 0.1 {
+                let isUp = deltaY > 0
+                let count = max(1, min(5, Int(abs(deltaY) / 4.0)))
+                let seq = isUp ? "\u{1B}[A" : "\u{1B}[B"
+                var fullSeq = ""
+                for _ in 0..<count { fullSeq.append(seq) }
+                if let data = fullSeq.data(using: .utf8) {
+                    onInput?(data)
+                }
+            }
+            return
+        }
+        super.scrollWheel(with: event)
+    }
+    
     override public func rightMouseDown(with event: NSEvent) {
         self.window?.makeFirstResponder(self)
         onFocus?()
@@ -1463,15 +1490,17 @@ public final class NativeTerminalView: NSTextView {
     @discardableResult
     public func pasteFromClipboard() -> Bool {
         guard let text = NSPasteboard.general.string(forType: .string), !text.isEmpty else { return false }
-        let normalized = text.replacingOccurrences(of: "\r\n", with: "\r").replacingOccurrences(of: "\n", with: "\r")
+        let isAltScreen = ringBuffer?.isInAlternateScreen == true
+        let normalized = text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
         let toSend: String
         if ringBuffer?.isBracketedPasteEnabled == true {
-            toSend = "\u{1B}[200~" + normalized + "\u{1B}[201~"
+            let pasteContent = normalized.replacingOccurrences(of: "\n", with: "\r")
+            toSend = "\u{1B}[200~" + pasteContent + "\u{1B}[201~"
         } else {
-            toSend = normalized
+            toSend = normalized.replacingOccurrences(of: "\n", with: "\r")
         }
         guard let data = toSend.data(using: .utf8) else { return false }
-        self.isPinnedToBottom = true
+        self.isPinnedToBottom = !isAltScreen
         onInput?(data)
         return true
     }
@@ -1809,7 +1838,13 @@ public final class NativeTerminalView: NSTextView {
             self.textStorage?.setAttributedString(formatANSI(rendered))
             activeLineStartLocation = self.textStorage?.length ?? 0
             lastCommittedIndex = buffer.totalCommittedCount
-            if isPinnedToBottom { scrollToBottom(forceLayout: false) }
+            isPinnedToBottom = false
+            if let clipView = self.enclosingScrollView?.contentView {
+                if clipView.bounds.origin != .zero {
+                    clipView.scroll(to: .zero)
+                    self.enclosingScrollView?.reflectScrolledClipView(clipView)
+                }
+            }
             resetCursorBlink()
             return
         }

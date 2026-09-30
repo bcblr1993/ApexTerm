@@ -41,6 +41,7 @@ public final class TerminalRingBuffer: @unchecked Sendable {
     private var scrollBottom = 34
     private var savedScreenPosition: (Int, Int)?
     private var _screenRevision: Int64 = 0
+    private var _isCursorHidden: Bool = false
 
     public var screenRevision: Int64 {
         lock.lock(); defer { lock.unlock() }
@@ -144,6 +145,24 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         } else {
             return activeLine.count
         }
+    }
+    
+    /// Current cursor position (row, column) in 0-indexed coordinates
+    public var cursorPosition: (row: Int, column: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        if screen != nil {
+            return (screenRow, screenColumn)
+        } else {
+            return (0, isEditingActiveLine ? cursorCol : activeLine.count)
+        }
+    }
+
+    /// Whether cursor visibility is suppressed by DECTCEM (\e[?25l)
+    public var isCursorHidden: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return _isCursorHidden
     }
     
     /// Current in-progress active line text (e.g. prompt and typed characters)
@@ -413,13 +432,14 @@ public final class TerminalRingBuffer: @unchecked Sendable {
                     screen = nil
                     scrollTop = 0
                     scrollBottom = max(0, screenRows - 1)
+                    _isCursorHidden = false
                     _screenRevision += 1
                     _isClearPending = true
                 }
             case 2004:
                 _isBracketedPasteEnabled = isSet
             case 25:
-                break
+                _isCursorHidden = !isSet
             default:
                 break
             }

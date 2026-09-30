@@ -59,7 +59,7 @@ public struct TerminalRepresentable: NSViewRepresentable {
                     || window.firstResponder is NSTextField
                 if !isEditingControl { window.makeFirstResponder(scrollView.terminalView) }
             }
-            scrollView.terminalView.notifyDimensionsChangedIfNeeded()
+            scrollView.terminalView.notifyDimensionsChangedIfNeeded(immediate: true)
             scrollView.terminalView.scrollToBottom(forceLayout: true)
         }
         
@@ -87,6 +87,8 @@ public struct TerminalRepresentable: NSViewRepresentable {
         if (terminal.textStorage?.length ?? 0) == 0 && (ringBuffer.totalCommittedCount > 0 || !ringBuffer.currentActiveLine.isEmpty) {
             terminal.refresh()
         }
+        
+        nsView.terminalView.notifyDimensionsChangedIfNeeded(immediate: false)
         
         let shouldFocus = isFocused && (!context.coordinator.wasFocused || bufferChanged)
         context.coordinator.wasFocused = isFocused
@@ -339,6 +341,16 @@ public final class NativeTerminalScrollView: NSScrollView {
     
     override public func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        NotificationCenter.default.removeObserver(self, name: NSWindow.didResizeNotification, object: nil)
+        NotificationCenter.default.removeObserver(self, name: NSWindow.didEnterFullScreenNotification, object: nil)
+        NotificationCenter.default.removeObserver(self, name: NSWindow.didExitFullScreenNotification, object: nil)
+        
+        if let window = self.window {
+            NotificationCenter.default.addObserver(self, selector: #selector(handleWindowBoundsChange), name: NSWindow.didResizeNotification, object: window)
+            NotificationCenter.default.addObserver(self, selector: #selector(handleWindowBoundsChange), name: NSWindow.didEnterFullScreenNotification, object: window)
+            NotificationCenter.default.addObserver(self, selector: #selector(handleWindowBoundsChange), name: NSWindow.didExitFullScreenNotification, object: window)
+        }
+        
         guard requestsInitialFocus, let window else { return }
         if !window.isVisible {
             window.initialFirstResponder = terminalView
@@ -350,6 +362,13 @@ public final class NativeTerminalScrollView: NSScrollView {
                     || window.firstResponder is NSTextField
                 if !isEditingControl { window.makeFirstResponder(self.terminalView) }
             }
+        }
+    }
+
+    @objc private func handleWindowBoundsChange() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.terminalView.notifyDimensionsChangedIfNeeded(immediate: true)
         }
     }
 
@@ -429,8 +448,18 @@ public final class NativeTerminalScrollView: NSScrollView {
             if terminalView.isPinnedToBottom {
                 terminalView.scrollToBottom(forceLayout: true)
             }
-            terminalView.notifyDimensionsChangedIfNeeded()
+            terminalView.notifyDimensionsChangedIfNeeded(immediate: true)
         }
+    }
+    
+    override public func tile() {
+        super.tile()
+        terminalView.notifyDimensionsChangedIfNeeded(immediate: false)
+    }
+
+    override public func viewDidEndLiveResize() {
+        super.viewDidEndLiveResize()
+        terminalView.notifyDimensionsChangedIfNeeded(immediate: true)
     }
     
     override public func mouseDown(with event: NSEvent) {
@@ -518,8 +547,19 @@ public final class NativeTerminalView: NSTextView {
         let lineHeight = max(12, layoutManager?.defaultLineHeight(for: font) ?? 16)
         let charWidth = max(6, ("M" as NSString).size(withAttributes: [.font: font]).width)
         
-        let visibleWidth = max(60, self.enclosingScrollView?.contentView.bounds.width ?? self.bounds.width)
-        let visibleHeight = max(40, self.enclosingScrollView?.contentView.bounds.height ?? self.bounds.height)
+        let containerWidth = max(
+            self.enclosingScrollView?.contentView.bounds.width ?? 0,
+            self.enclosingScrollView?.bounds.width ?? 0,
+            self.bounds.width
+        )
+        let containerHeight = max(
+            self.enclosingScrollView?.contentView.bounds.height ?? 0,
+            self.enclosingScrollView?.bounds.height ?? 0,
+            self.bounds.height
+        )
+        
+        let visibleWidth = max(60, containerWidth)
+        let visibleHeight = max(40, containerHeight)
         
         let horizontalInset = textContainerInset.width * 2
         let verticalInset = textContainerInset.height * 2
@@ -576,17 +616,24 @@ public final class NativeTerminalView: NSTextView {
     }
     
     /// Notify remote PTY of new dimensions with debounce (prevents SIGWINCH storm during drag)
-    public func notifyDimensionsChangedIfNeeded() {
+    public func notifyDimensionsChangedIfNeeded(immediate: Bool = false) {
         let (cols, rows) = calculateTerminalDimensions()
         ringBuffer?.setDimensions(columns: cols, rows: rows)
         if lastReportedDimensions?.cols != cols || lastReportedDimensions?.rows != rows {
-            lastReportedDimensions = (cols, rows)
             resizeDebounceTask?.cancel()
-            resizeDebounceTask = Task { @MainActor [weak self] in
-                // 150ms debounce ensures remote PTY only resizes after active dragging pauses
-                try? await Task.sleep(nanoseconds: 150_000_000)
-                guard !Task.isCancelled, let self = self else { return }
+            resizeDebounceTask = nil
+            
+            if immediate {
+                self.lastReportedDimensions = (cols, rows)
                 self.onResize?(cols, rows)
+            } else {
+                resizeDebounceTask = Task { @MainActor [weak self] in
+                    // 100ms debounce ensures remote PTY only resizes after active dragging pauses
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                    guard !Task.isCancelled, let self = self else { return }
+                    self.lastReportedDimensions = (cols, rows)
+                    self.onResize?(cols, rows)
+                }
             }
         }
     }
@@ -839,6 +886,21 @@ public final class NativeTerminalView: NSTextView {
         let charWidth = max(7, ("M" as NSString).size(withAttributes: [.font: font]).width)
         let cursorWidth: CGFloat = (shape == .bar) ? 2.5 : charWidth
         
+        // 1. Alternate screen buffer mode (Vim, Less, Htop): precise 2D cell grid coordinates
+        if let buffer = ringBuffer, buffer.isInAlternateScreen {
+            let pos = buffer.cursorPosition
+            let row = max(0, pos.row)
+            let col = max(0, pos.column)
+            let x = origin.x + CGFloat(col) * charWidth
+            let y = origin.y + CGFloat(row) * lineHeight
+            if shape == .underline {
+                return NSRect(x: x, y: y + lineHeight - 2.5, width: cursorWidth, height: 2.5)
+            } else {
+                return NSRect(x: x, y: y, width: cursorWidth, height: lineHeight)
+            }
+        }
+        
+        // 2. Normal scrollback mode:
         let length = storage.length
         if length == 0 {
             if shape == .underline {
@@ -899,13 +961,15 @@ public final class NativeTerminalView: NSTextView {
             drawComposition()
             return
         }
-        guard isCursorVisible, let rect = getCursorRect() else { return }
+        guard isCursorVisible, ringBuffer?.isCursorHidden != true, let rect = getCursorRect() else { return }
         let focused = (window?.isKeyWindow == true && window?.firstResponder == self)
         let themeCursor = NSColor(hex: AppSettings.shared.themePreset.cursorColorHex)
-        let cursorColor = focused
+        let shape = AppSettings.shared.cursorShape
+        let baseColor = focused
             ? (themeCursor ?? NSColor(red: 0.20, green: 0.78, blue: 0.95, alpha: 0.95))
             : NSColor(white: 0.6, alpha: 0.5)
         
+        let cursorColor = (shape == .block) ? baseColor.withAlphaComponent(0.65) : baseColor
         cursorColor.setFill()
         let path = NSBezierPath(roundedRect: rect, xRadius: 1.0, yRadius: 1.0)
         path.fill()

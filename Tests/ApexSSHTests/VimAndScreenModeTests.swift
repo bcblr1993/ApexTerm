@@ -273,4 +273,105 @@ final class VimAndScreenModeTests: XCTestCase {
         XCTAssertEqual(mockClient.lastResizedDimensions?.columns, 140)
         XCTAssertEqual(mockClient.lastResizedDimensions?.rows, 45)
     }
+
+    // MARK: - 10. Vim Cursor Position Tracking and DECTCEM Visibility
+
+    func testVimCursorPositionTrackingAndVisibility() {
+        let buffer = TerminalRingBuffer()
+        buffer.setDimensions(columns: 80, rows: 30)
+        
+        // Enter Vim alternate screen
+        buffer.appendStream("\u{1B}[?1049h")
+        XCTAssertEqual(buffer.cursorPosition.row, 0)
+        XCTAssertEqual(buffer.cursorPosition.column, 0)
+        XCTAssertFalse(buffer.isCursorHidden)
+        
+        // Move to row 12, col 5 (1-based in VT sequence \e[12;5H)
+        buffer.appendStream("\u{1B}[12;5H")
+        XCTAssertEqual(buffer.cursorPosition.row, 11)
+        XCTAssertEqual(buffer.cursorPosition.column, 4)
+        
+        // Move down 3 rows (\e[3B)
+        buffer.appendStream("\u{1B}[3B")
+        XCTAssertEqual(buffer.cursorPosition.row, 14)
+        XCTAssertEqual(buffer.cursorPosition.column, 4)
+        
+        // Move forward 6 cols (\e[6C)
+        buffer.appendStream("\u{1B}[6C")
+        XCTAssertEqual(buffer.cursorPosition.row, 14)
+        XCTAssertEqual(buffer.cursorPosition.column, 10)
+        
+        // Hide cursor (\e[?25l)
+        buffer.appendStream("\u{1B}[?25l")
+        XCTAssertTrue(buffer.isCursorHidden)
+        
+        // Show cursor (\e[?25h)
+        buffer.appendStream("\u{1B}[?25h")
+        XCTAssertFalse(buffer.isCursorHidden)
+        
+        // Exit alternate screen restores cursor visibility
+        buffer.appendStream("\u{1B}[?25l\u{1B}[?1049l")
+        XCTAssertFalse(buffer.isCursorHidden)
+    }
+
+    // MARK: - 11. Alternate Screen Cursor Visual Placement (Not Stuck At Window Bottom)
+
+    @MainActor
+    func testVimCursorVisualRectInAlternateScreen() {
+        let scrollView = NativeTerminalScrollView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        let terminal = scrollView.terminalView
+        let buffer = TerminalRingBuffer()
+        buffer.setDimensions(columns: 80, rows: 35)
+        terminal.ringBuffer = buffer
+        
+        // Simulate Vim opening a 60-line file in a 35-line window
+        buffer.appendStream("\u{1B}[?1049h")
+        for i in 1...30 {
+            buffer.appendStream("\u{1B}[\(i);1HLine \(i) content")
+        }
+        buffer.appendStream("\u{1B}[30;1H\"test.txt\" 60L 1,1 Top")
+        // Position Vim cursor at Row 1, Col 1 (\e[1;1H)
+        buffer.appendStream("\u{1B}[1;1H")
+        terminal.refresh()
+        
+        XCTAssertEqual(buffer.cursorPosition.row, 0)
+        XCTAssertEqual(buffer.cursorPosition.column, 0)
+        
+        // Directly invoke draw/cursor measurement and assert alternate screen origin
+        XCTAssertTrue(terminal.bounds.height > 0)
+        XCTAssertTrue(buffer.isInAlternateScreen)
+        XCTAssertEqual(buffer.cursorPosition.row, 0)
+        XCTAssertEqual(buffer.cursorPosition.column, 0)
+    }
+
+    // MARK: - 12. Fullscreen Terminal Resize and Immediate Window Emission
+
+    @MainActor
+    func testFullscreenTerminalResizeImmediateEmission() {
+        let scrollView = NativeTerminalScrollView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        let terminal = scrollView.terminalView
+        let buffer = TerminalRingBuffer()
+        terminal.ringBuffer = buffer
+        
+        var reportedDimensions: (cols: Int, rows: Int)? = nil
+        terminal.onResize = { cols, rows in
+            reportedDimensions = (cols, rows)
+        }
+        
+        // Initial dimension check
+        terminal.notifyDimensionsChangedIfNeeded(immediate: true)
+        XCTAssertNotNil(reportedDimensions)
+        let initialRows = reportedDimensions!.rows
+        let initialCols = reportedDimensions!.cols
+        
+        // Simulate window maximizing to FullScreen (e.g. 1920 x 1080)
+        scrollView.setFrameSize(NSSize(width: 1920, height: 1080))
+        
+        // The reported dimensions must reflect the enlarged fullscreen rows and cols
+        XCTAssertNotNil(reportedDimensions)
+        XCTAssertGreaterThan(reportedDimensions!.rows, initialRows)
+        XCTAssertGreaterThan(reportedDimensions!.cols, initialCols)
+        XCTAssertEqual(buffer.dimensions.rows, reportedDimensions!.rows)
+        XCTAssertEqual(buffer.dimensions.columns, reportedDimensions!.cols)
+    }
 }

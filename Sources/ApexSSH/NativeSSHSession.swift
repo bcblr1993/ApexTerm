@@ -394,6 +394,14 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         guard ptyMasterFd >= 0 else { return }
         var win = winsize(ws_row: UInt16(validRows), ws_col: UInt16(validCols), ws_xpixel: 0, ws_ypixel: 0)
         _ = ioctl(ptyMasterFd, TIOCSWINSZ, &win)
+        if childPid > 0 {
+            kill(childPid, SIGWINCH)
+            kill(-childPid, SIGWINCH)
+            for child in Self.ptyDescendants(of: childPid) {
+                kill(child, SIGWINCH)
+                kill(-child, SIGWINCH)
+            }
+        }
     }
     
     private var controlSocketPath: String {

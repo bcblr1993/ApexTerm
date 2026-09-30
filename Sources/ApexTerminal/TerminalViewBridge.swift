@@ -279,18 +279,55 @@ public final class TerminalFindBarView: NSView, NSTextFieldDelegate {
     }
 }
 
+/// Dedicated Flipped ClipView for Terminal ensuring 1:1 coordinate alignment with NSTextView
+/// and preventing negative origin drift or top-line clipping during layout and scrolling.
+public final class TerminalClipView: NSClipView {
+    override public var isFlipped: Bool { true }
+    
+    override public func constrainBoundsRect(_ proposedBounds: NSRect) -> NSRect {
+        var rect = super.constrainBoundsRect(proposedBounds)
+        rect.origin = constrainPoint(rect.origin, in: proposedBounds.size)
+        return rect
+    }
+    
+    override public func scroll(to newOrigin: NSPoint) {
+        let constrained = constrainPoint(newOrigin, in: bounds.size)
+        super.scroll(to: constrained)
+    }
+    
+    private func constrainPoint(_ p: NSPoint, in size: NSSize) -> NSPoint {
+        guard size.height > 0 else { return .zero }
+        var targetY = p.y
+        if let doc = documentView {
+            let docHeight = doc.frame.height
+            let clipHeight = size.height
+            if docHeight <= clipHeight {
+                targetY = 0
+            } else {
+                targetY = min(max(0, targetY), max(0, docHeight - clipHeight))
+            }
+        } else {
+            targetY = max(0, targetY)
+        }
+        return NSPoint(x: 0, y: targetY)
+    }
+}
+
 public final class NativeTerminalScrollView: NSScrollView {
     public let terminalView = NativeTerminalView()
     public let searchBarOverlay = TerminalFindBarView()
     var requestsInitialFocus = false
     
     override public init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
+        let initialFrame = (frameRect.width <= 0 || frameRect.height <= 0)
+            ? NSRect(x: 0, y: 0, width: 800, height: 600)
+            : frameRect
+        super.init(frame: initialFrame)
         setupScrollView()
     }
     
     public convenience init() {
-        self.init(frame: .zero)
+        self.init(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
     }
     
     override public func viewDidMoveToWindow() {
@@ -310,6 +347,7 @@ public final class NativeTerminalScrollView: NSScrollView {
     }
 
     private func setupScrollView() {
+        self.contentView = TerminalClipView()
         self.hasVerticalScroller = true
         self.hasHorizontalScroller = false
         self.autohidesScrollers = true
@@ -378,6 +416,9 @@ public final class NativeTerminalScrollView: NSScrollView {
         let sizeChanged = (newSize != self.frame.size)
         super.setFrameSize(newSize)
         if sizeChanged {
+            if terminalView.frame.origin != .zero {
+                terminalView.frame.origin = .zero
+            }
             if terminalView.isPinnedToBottom {
                 terminalView.scrollToBottom(forceLayout: true)
             }
@@ -483,8 +524,9 @@ public final class NativeTerminalView: NSTextView {
     /// Check whether clipView is currently resting at the bottom of the document
     public func isScrolledToBottom() -> Bool {
         guard let clipView = self.enclosingScrollView?.contentView else { return true }
-        let docHeight = self.frame.height
         let clipHeight = clipView.bounds.height
+        guard clipHeight > 0 else { return true }
+        let docHeight = self.frame.height
         let targetY = max(0, docHeight - clipHeight)
         return abs(clipView.bounds.origin.y - targetY) <= 1.0
     }
@@ -495,13 +537,25 @@ public final class NativeTerminalView: NSTextView {
         guard let storage = self.textStorage, storage.length > 0 else { return }
         guard let clipView = self.enclosingScrollView?.contentView else { return }
         
+        let clipHeight = clipView.bounds.height
+        // Prevent scrolling on zero/unmounted clipView: scrolling with zero height corrupts
+        // documentView.frame.origin into negative space in AppKit.
+        guard clipHeight > 0 else { return }
+        
+        // Ensure documentView origin is never negative (which pushes the first line off-screen)
+        if self.frame.origin.y < 0 || self.frame.origin.x != 0 {
+            self.frame.origin = NSPoint(x: 0, y: max(0, self.frame.origin.y))
+        }
+        
         if forceLayout {
             let endRange = NSRange(location: storage.length - 1, length: 1)
             self.layoutManager?.ensureLayout(forCharacterRange: endRange)
         }
         
         let docHeight = self.frame.height
-        let clipHeight = clipView.bounds.height
+        guard docHeight > 0 else { return }
+        
+        // If content fits within the viewport, the canonical resting position is always 0 (top line visible)
         let targetY = max(0, docHeight - clipHeight)
         
         // Only scroll if the offset actually changed, avoiding jitter and scroll feedback loops

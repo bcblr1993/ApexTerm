@@ -40,4 +40,66 @@ final class TerminalAutoScrollTests: XCTestCase {
         XCTAssertEqual(scrollView.contentView.bounds.origin.y, 0, accuracy: 1)
         XCTAssertFalse(scrollView.terminalView.isPinnedToBottom)
     }
+
+    @MainActor
+    func testSingleLinePromptStaysAtTop() {
+        _ = NSApplication.shared
+        let scrollView = NativeTerminalScrollView(frame: NSRect(x: 0, y: 0, width: 640, height: 240))
+        let buffer = TerminalRingBuffer()
+        scrollView.terminalView.ringBuffer = buffer
+        buffer.appendStream("root@node-1:~# ")
+        scrollView.terminalView.refresh()
+        scrollView.layoutSubtreeIfNeeded()
+        XCTAssertEqual(scrollView.contentView.bounds.origin.y, 0, accuracy: 1)
+    }
+
+    @MainActor
+    func testMakeNSViewZeroFrameInitialScroll() {
+        _ = NSApplication.shared
+        let scrollView = NativeTerminalScrollView()
+        let tv = scrollView.terminalView
+        tv.ringBuffer = TerminalRingBuffer()
+        tv.ringBuffer?.appendStream("root@node-1:~# ")
+        tv.refresh()
+        
+        scrollView.setFrameSize(NSSize(width: 800, height: 600))
+        scrollView.layoutSubtreeIfNeeded()
+        XCTAssertEqual(scrollView.contentView.bounds.origin.y, 0, accuracy: 1)
+        XCTAssertEqual(tv.frame.origin.y, 0, accuracy: 1)
+    }
+
+    @MainActor
+    func testResizeScrollViewDoesNotScrollPromptOffScreen() {
+        _ = NSApplication.shared
+        let scrollView = NativeTerminalScrollView(frame: NSRect(x: 0, y: 0, width: 640, height: 600))
+        let buffer = TerminalRingBuffer()
+        scrollView.terminalView.ringBuffer = buffer
+        buffer.appendStream("root@node-1:~# ")
+        scrollView.terminalView.refresh()
+        scrollView.layoutSubtreeIfNeeded()
+        XCTAssertEqual(scrollView.contentView.bounds.origin.y, 0, accuracy: 1)
+        
+        // Resize to smaller height (e.g. split divider drag or SFTP panel toggle)
+        scrollView.setFrameSize(NSSize(width: 640, height: 300))
+        scrollView.layoutSubtreeIfNeeded()
+        XCTAssertEqual(scrollView.contentView.bounds.origin.y, 0, accuracy: 1)
+    }
+
+    @MainActor
+    func testClearScreenResetsScrollToTop() {
+        _ = NSApplication.shared
+        let scrollView = NativeTerminalScrollView(frame: NSRect(x: 0, y: 0, width: 640, height: 300))
+        let buffer = TerminalRingBuffer()
+        scrollView.terminalView.ringBuffer = buffer
+        buffer.appendStream((0..<50).map { "line \($0)" }.joined(separator: "\n") + "\n")
+        scrollView.terminalView.refresh()
+        scrollView.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(scrollView.contentView.bounds.origin.y, 100)
+
+        // Clear screen (ESC [ 2 J and ESC [ H)
+        buffer.appendStream("\u{1b}[2J\u{1b}[Hroot@node-1:~# ")
+        scrollView.terminalView.refresh()
+        scrollView.layoutSubtreeIfNeeded()
+        XCTAssertEqual(scrollView.contentView.bounds.origin.y, 0, accuracy: 1)
+    }
 }

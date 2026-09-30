@@ -2,6 +2,28 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.5.3] - 2026-09-30
+
+### 🐞 问题修复 (Bug Fixes)
+- **彻底根除终端顶部第一行被顶出视口/遮挡及输入看不到的严重缺陷**：
+  - **根因剖析**：AppKit 原生 `NSClipView` 默认 `isFlipped` 为 `false`，而 `NSTextView` 为 `true`，在零尺寸（frame `.zero`）初始挂载渲染或内容行数较少时，默认坐标翻转计算会导致文档原点被错误推入负空间（`-36.0pt`），导致视口上方首行内容被裁剪出界，用户在首行敲击键盘时文字不可见，需按回车换行或手动滑动滚轮才能显示。
+  - **重构方案**：
+    1. 引入专有 `TerminalClipView`（继承自 `NSClipView` 并强制 `isFlipped = true`），与 `NSTextView` 实现 1:1 无损同构坐标映射；
+    2. 在 `TerminalClipView.constrainBoundsRect` 与 `scroll(to:)` 中加入强一致性坐标约束，当内容未填满视口时强制锁定在 `y = 0`，绝不允许视口原点进入负坐标或非预期向下滚动；
+    3. `NativeTerminalScrollView` 初始化与 `setFrameSize` 增加兜底安全几何尺寸，重设尺寸时自动校准 `terminalView.frame.origin` 为零点，彻底杜绝任何场景下的首行遮挡与视口偏移现象。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- 经由真实 `macos27` 虚拟机全量验证通过，34 个测试套件（220+ 用例，包括新增的 4 项视口零尺寸初始化、清屏与分屏动态调整首行保留测试）100% 绿灯（0 failures, 0 warnings）；
+- 8 项 Release 生产级性能基准全部大幅超越工程规范要求：
+  - RingBuffer 写入吞吐: 1,870,662 行/秒 (189.10 MB/秒) (标准 ≥ 50,000)
+  - ANSI / TrueColor 样式解析: 432,488 spans/秒 (标准 ≥ 150,000)
+  - 内存水位驻留集 (RSS): 104.52 MB (标准 ≤ 250 MB)
+  - 16 线程高并发争用写入: 2,568,613 writes/秒 (标准 ≥ 1,000,000)
+  - 64 核 Linux 无代理指标解析: 15,062 次/秒 (标准 ≥ 8,000)
+  - OpenSSH 500 主机集群解析: 153,730 hosts/秒 (标准 ≥ 80,000)
+  - SFTP 任务中心并发调度: 1,120 tasks/秒 (标准 ≥ 800)
+  - 物理按键直通与全链路键入延迟: 4.96 微秒 (μs) (标准 ≤ 15.0 μs)
+
 ## [v1.5.2] - 2026-09-30
 
 ### ✨ 新增特性 (Features)

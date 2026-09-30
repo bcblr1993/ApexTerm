@@ -120,10 +120,29 @@ if ! security find-identity -v -p codesigning | grep -Fq "$SIGNING_IDENTITY"; th
     echo "❌ Required Developer ID certificate unavailable."
     exit 1
 fi
+sign_with_retry() {
+    local target="$1"
+    local deep="${2:-}"
+    for i in 1 2 3; do
+        if [ "$deep" = "--deep" ]; then
+            if codesign --force --deep --sign "${SIGNING_IDENTITY}" --options runtime --timestamp "${target}"; then
+                return 0
+            fi
+        else
+            if codesign --force --sign "${SIGNING_IDENTITY}" --options runtime --timestamp "${target}"; then
+                return 0
+            fi
+        fi
+        echo "⚠️ [Code Signing] Timestamp service glitch (attempt $i/3), retrying in 2s..."
+        sleep 2
+    done
+    return 1
+}
+
 if [ -f "${MACOS_DIR}/sshpass" ]; then
-    codesign --force --sign "${SIGNING_IDENTITY}" --options runtime --timestamp "${MACOS_DIR}/sshpass"
+    sign_with_retry "${MACOS_DIR}/sshpass"
 fi
-codesign --force --deep --sign "${SIGNING_IDENTITY}" --options runtime --timestamp "${APP_DIR}"
+sign_with_retry "${APP_DIR}" --deep
 
 # Verify signature
 echo "🔍 Verifying code signature..."

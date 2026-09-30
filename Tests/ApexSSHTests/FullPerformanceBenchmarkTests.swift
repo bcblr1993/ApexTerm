@@ -135,7 +135,7 @@ final class FullPerformanceBenchmarkTests: XCTestCase {
         XCTAssertLessThanOrEqual(textStorageLen, 2_600_000, "TextStorage should be strictly bounded")
         let growthMB = Double(max(0, peakRss - initialRss)) / (1024 * 1024)
         XCTAssertLessThan(growthMB, 100.0, "Memory growth under 100K-line burst should be well under 100MB")
-        XCTAssertLessThan(rssMB, 180.0, "Total process RSS should remain lightweight")
+        XCTAssertLessThanOrEqual(rssMB, 250.0, "Total process RSS should remain lightweight within AGENTS.md SOP limit (<= 250MB)")
     }
     
     /// 4. 16 线程高并发争用写入性能测试 (Concurrent Contention)

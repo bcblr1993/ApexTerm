@@ -53,7 +53,8 @@ public struct TransferTask: Identifiable, Sendable, Equatable {
     }
     
     public var progress: Double {
-        guard totalBytes > 0 else { return 0 }
+        if status == .completed { return 1.0 }
+        guard totalBytes > 0 else { return 0.0 }
         return min(max(Double(transferredBytes) / Double(totalBytes), 0.0), 1.0)
     }
     

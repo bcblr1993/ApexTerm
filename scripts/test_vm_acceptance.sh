@@ -7,8 +7,12 @@ set -euo pipefail
 # ==============================================================================
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ -f "${APEX_UI_CONFIG_FILE:-$ROOT_DIR/.ui-acceptance.env}" ]]; then
+    source "${APEX_UI_CONFIG_FILE:-$ROOT_DIR/.ui-acceptance.env}"
+fi
+
 VM_NAME="${APEX_TEST_VM:-macos27}"
-VM_USER="${APEX_TEST_VM_USER:-chenxu}"
+VM_USER="${APEX_TEST_VM_USER:-${APEX_UI_TEST_USER:-chenxu}}"
 SSH_KEY="${APEX_TEST_VM_SSH_KEY:-$HOME/.ssh/id_ed25519}"
 REPORT_DIR="${ROOT_DIR}/outputs/vm-acceptance"
 mkdir -p "${REPORT_DIR}"
@@ -23,7 +27,7 @@ echo "======================================================="
 
 # Step 1: Check connectivity (via explicit APEX_TEST_VM_HOST or local Tart VM)
 IS_VM_SSH_READY=false
-VM_IP="${APEX_TEST_VM_HOST:-}"
+VM_IP="${APEX_TEST_VM_HOST:-${APEX_UI_TEST_HOST:-}}"
 
 if [ -n "${VM_IP}" ]; then
     echo "🔍 [Tart VM Gate] Using configured test host: ${VM_IP}..."

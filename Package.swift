@@ -13,6 +13,7 @@ let package = Package(
             name: "ApexTerm",
             targets: ["ApexTerm"]
         ),
+        .executable(name: "ApexSSHBridge", targets: ["ApexSSHBridge"]),
         .library(
             name: "ApexCore",
             targets: ["ApexCore"]
@@ -67,6 +68,12 @@ let package = Package(
             path: "Sources/ApexTerm"
         ),
         
+        .executableTarget(
+            name: "ApexSSHBridge",
+            dependencies: ["ApexCore"],
+            path: "Sources/ApexSSHBridge"
+        ),
+
         // MARK: - Unit Tests
         .testTarget(
             name: "ApexCoreTests",

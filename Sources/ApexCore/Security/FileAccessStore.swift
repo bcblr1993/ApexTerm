@@ -3,12 +3,26 @@ import Foundation
 /// Keeps a security-scoped URL alive until an asynchronous operation has ended.
 public final class FileAccessLease: @unchecked Sendable {
     public let url: URL
+    private let grantURL: URL
     private let lock = NSLock()
     private var release: (@Sendable () -> Void)?
 
-    init(url: URL, release: @escaping @Sendable () -> Void) {
+    init(url: URL, grantURL: URL? = nil, release: @escaping @Sendable () -> Void) {
         self.url = url
+        self.grantURL = grantURL ?? url
         self.release = release
+    }
+
+    /// A normal bookmark carries an implicit grant to an inheriting child process.
+    /// Persistent app-scoped bookmarks cannot be replaced by passing a path alone.
+    public func childProcessGrant() throws -> ChildProcessFileGrant {
+        try lock.withLock {
+            guard release != nil else { throw CocoaError(.fileReadNoPermission) }
+            let root = FileManager.default.fileExists(atPath: grantURL.path)
+                ? grantURL : grantURL.deletingLastPathComponent()
+            return ChildProcessFileGrant(path: root.path,
+                bookmark: try root.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil))
+        }
     }
 
     public func close() {
@@ -99,7 +113,7 @@ public final class FileAccessStore: @unchecked Sendable {
                     let suffix = requested.pathComponents.dropFirst(ancestor.pathComponents.count)
                     let resolved = suffix.reduce(granted) { $0.appendingPathComponent($1) }
                     let backend = self.backend
-                    return FileAccessLease(url: resolved) { if started { backend.stop(granted) } }
+                    return FileAccessLease(url: resolved, grantURL: granted) { if started { backend.stop(granted) } }
                 } catch {
                     if started { backend.stop(granted) }
                     throw error

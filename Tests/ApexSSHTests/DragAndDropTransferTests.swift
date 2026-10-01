@@ -171,6 +171,9 @@ final class DragAndDropTransferTests: XCTestCase {
         
         let provider = SFTPDragExportHelper.makeItemProvider(for: item, session: mockSession)
         let exp = expectation(description: "Cancellation handled smoothly")
+        // Foundation can deliver both its cancellation response and the provider's
+        // eventual completion on macOS 26. Cancellation must remain idempotent.
+        exp.assertForOverFulfill = false
         
         let progress = provider.loadFileRepresentation(forTypeIdentifier: UTType.fileURL.identifier) { _, _ in
             exp.fulfill()
@@ -180,6 +183,17 @@ final class DragAndDropTransferTests: XCTestCase {
         progress.cancel()
         
         await fulfillment(of: [exp], timeout: 5.0)
+        XCTAssertTrue(progress.isCancelled)
+        // The lazy download may not have started when cancellation wins the race.
+        // If it did start, wait for the underlying transfer to settle as cancelled.
+        let deadline = Date().addingTimeInterval(5)
+        while TransferManager.shared.tasks.contains(where: {
+            $0.remotePath == remotePath && ($0.status == .queued || $0.status == .transferring)
+        }), Date() < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(TransferManager.shared.tasks.filter { $0.remotePath == remotePath }
+            .allSatisfy { $0.status == .cancelled })
     }
 
     // MARK: - 5. Local to Remote Drag Upload (Single Small & Large File)

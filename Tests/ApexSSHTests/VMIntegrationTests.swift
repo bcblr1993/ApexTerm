@@ -62,7 +62,9 @@ final class VMIntegrationTests: XCTestCase {
             try await client.sendInput(Data("printf '\\nAPEX_VIM_READY\\n'\r".utf8))
             try await waitFor { buffer.allLines().contains("APEX_VIM_READY") }
             try await client.sendInput(Data("vim -Nu NONE -n '\(path)'\r".utf8))
-            try await waitFor { buffer.isInAlternateScreen }
+            // Vim hides the cursor while painting its initial screen. The
+            // alternate-screen control can arrive before the cursor-show control.
+            try await waitFor { buffer.isInAlternateScreen && !buffer.isCursorHidden }
             XCTAssertFalse(buffer.isCursorHidden)
             try await client.sendInput(Data("i中文\rtwo\rthree\u{1B}".utf8))
             try await waitFor { buffer.screenLines?.contains(where: { $0.contains("three") }) == true }

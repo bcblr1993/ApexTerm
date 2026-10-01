@@ -987,10 +987,11 @@ final class ApexTermUITests: XCTestCase {
         let window = finder.windows[local.lastPathComponent]
         XCTAssertTrue(window.waitForExistence(timeout: 10))
         dragFinderWindow = window
-        finder.typeKey(.rightArrow, modifierFlags: [.function, .control])
         if window.frame.minX + 350 <= app.windows.firstMatch.frame.maxX {
             let frame = window.frame
-            let chrome = window.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: frame.width - 80, dy: 8))
+            // Use the empty top margin of Finder's title bar. The rounded
+            // corner near the search control does not start a window drag.
+            let chrome = window.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: frame.width - 200, dy: 20))
             let shift = app.windows.firstMatch.frame.maxX + 30 - frame.minX
             chrome.click(forDuration: 0.5, thenDragTo: chrome.withOffset(CGVector(dx: shift, dy: 0)))
         }

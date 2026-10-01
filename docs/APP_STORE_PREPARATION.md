@@ -53,3 +53,7 @@ python3 scripts/audit_app_store_bundle.py /path/to/ApexTerm.app --output /path/t
 校验应用与 profile 的 App ID、Team、证书绑定、有效期、macOS 商店分发类型、更新渠道、沙盒权限及 helper 继承；任一必需检查失败退出1并保留 JSON 诊断。`get-task-allow` 与 `com.apple.security.get-task-allow` 两种调试权限都会拒绝。隐私声明仅提供技术检查信息，仍需按最终 API 使用审核。15项脚本回归覆盖错误签名、失效/错误类型 profile、调试权限及缺少 bundle；用现有官网下载1.5.6包实测得到退出1，正确拒绝把官网下载包当作商店包。该工具不编译、安装或上传产品，检查通过也不能替代全量门禁与真实沙盒 UI 验收。
 
 `python3 scripts/build_store_qa.py` 生成独立的 Debug 沙盒测试应用，用于随后在 macos27 运行真实文件选择、SSH/SFTP和菜单测试。每次使用新的 `com.apexterm.qa.store.*` 标识，已有 QA 会话目录隔离逻辑也会生效；输出写入全新目录，已有文件或符号链接会直接拒绝。应用设置商店更新渠道，携带隐私清单与继承沙盒的两个 helper，并执行私密信息扫描、架构检查和深度验签。该工具不启动或安装应用，不复制会话库/私钥，不产生安装包，不上传；ad hoc 签名与0.0.0版本仅用于开发验收，仍需对正式商店签名包独立执行全部门禁。
+
+2026-10-02 Debug 沙盒 QA 包实际构建、私密信息扫描、arm64检查及深度验签通过，已放入macos27独立测试目录；VM侧签名校验及三个可执行文件的SHA256均与原构建一致，尚未启动UI。脚本全量51项通过，含6项QA隔离与拒绝覆盖回归。
+
+SSH agent能力探针在macos27有效ad hoc沙盒中观察到：独立测试目录中的空agent Unix socket连接返回EPERM；给该目录传入书签后，目录文件已可读，但socket仍返回EPERM；同一应用容器内的空agent socket可连接并完成空密钥列表协议。每组测试同时确认容器home和未授权文件拒绝，测试agent及容器/目录均已清理。这仅验证上述测试路径的IPC能力，未覆盖系统launchd agent、真实密钥认证或产品UI；不能把书签文件授权当作外部agent连接授权，也不能据此宣称商店agent功能已完成。

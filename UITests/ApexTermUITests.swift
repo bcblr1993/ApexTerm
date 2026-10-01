@@ -63,7 +63,9 @@ final class ApexTermUITests: XCTestCase {
             XCTAssertNotNil(directory.range(of: "^/tmp/apex-ui-[A-Za-z0-9]+$", options: .regularExpression))
             let cleanup = Process()
             cleanup.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-            cleanup.arguments = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "\(user)@\(host)",
+            cleanup.environment = ProcessInfo.processInfo.environment
+            let agentSocket = try XCTUnwrap(ProcessInfo.processInfo.environment["APEX_UI_AGENT_SOCKET"] ?? ProcessInfo.processInfo.environment["SSH_AUTH_SOCK"])
+            cleanup.arguments = ["-F", "/dev/null", "-o", "IdentitiesOnly=no", "-o", "IdentityAgent=\(agentSocket)", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "\(user)@\(host)",
                                  "/bin/rm -f '\(directory)/ui-real-file.txt' && /bin/rmdir '\(directory)'"]
             let output = Pipe()
             cleanup.standardOutput = output
@@ -86,7 +88,7 @@ final class ApexTermUITests: XCTestCase {
         }
         app.launchEnvironment = ["APEX_QA_SCENE": scene, "APEX_QA_DISABLE_TELEMETRY": "1", "APEX_QA_RAISE_WINDOW": "1", "APEX_QA_UI_RUN_ID": UUID().uuidString]
             .merging(extra) { _, new in new }
-        if let socket = ProcessInfo.processInfo.environment["SSH_AUTH_SOCK"] {
+        if let socket = ProcessInfo.processInfo.environment["APEX_UI_AGENT_SOCKET"] ?? ProcessInfo.processInfo.environment["SSH_AUTH_SOCK"] {
             app.launchEnvironment["SSH_AUTH_SOCK"] = socket
         }
         app.launch()
@@ -744,14 +746,23 @@ final class ApexTermUITests: XCTestCase {
         XCTAssertTrue(clipboard.string(forType: .string)?.contains("中文\ntXo\nthree") == true)
         let read = Process()
         read.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-        read.arguments = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "\(user)@\(host)", "cat '\(directory)/ui-real-file.txt'"]
+        read.environment = ProcessInfo.processInfo.environment
+        let agentSocket = try XCTUnwrap(ProcessInfo.processInfo.environment["APEX_UI_AGENT_SOCKET"] ?? ProcessInfo.processInfo.environment["SSH_AUTH_SOCK"])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: agentSocket), "The forwarded SSH agent socket must exist")
+        read.arguments = ["-F", "/dev/null", "-o", "IdentitiesOnly=no", "-o", "IdentityAgent=\(agentSocket)", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "\(user)@\(host)", "cat '\(directory)/ui-real-file.txt'"]
         let output = Pipe()
         read.standardOutput = output
-        read.standardError = FileHandle.nullDevice
+        let errors = Pipe()
+        read.standardError = errors
         try read.run()
         let bytes = output.fileHandleForReading.readDataToEndOfFile()
         read.waitUntilExit()
-        XCTAssertEqual(read.terminationStatus, 0)
+        let sshError = String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        let sshDiagnostic = XCTAttachment(string: "SSH exit: \(read.terminationStatus)\n" + sshError)
+        sshDiagnostic.name = "real-vim-independent-ssh-verification"
+        sshDiagnostic.lifetime = .keepAlways
+        add(sshDiagnostic)
+        XCTAssertEqual(read.terminationStatus, 0, sshError)
         XCTAssertEqual(bytes, Data("中文\ntXo\nthree\n".utf8))
         capture("real-vim-copy-and-saved-bytes-verified")
     }
@@ -1047,8 +1058,22 @@ final class ApexTermUITests: XCTestCase {
             finder.typeKey("2", modifierFlags: .command)
             XCTAssertTrue(source.waitForExistence(timeout: 5))
             XCTAssertTrue(source.isHittable, "Finder's source file must be visible before dragging")
-            let dragStart = source.coordinate(withNormalizedOffset: .zero).withOffset(
-                CGVector(dx: -12, dy: source.frame.height / 2))
+            let sourceTree = XCTAttachment(string: window.debugDescription)
+            sourceTree.name = "finder-upload-source-tree"
+            sourceTree.lifetime = .keepAlways
+            add(sourceTree)
+            let sourceFrame = source.frame
+            let sourceIcon = try XCTUnwrap(window.images.allElementsBoundByIndex.first { image in
+                let frame = image.frame
+                return frame.width > 0 && frame.height > 0
+                    && abs(frame.midY - sourceFrame.midY) <= 3
+                    && frame.maxX <= sourceFrame.minX
+                    && sourceFrame.minX - frame.maxX <= 12
+            }, "Finder must expose the file icon immediately beside its filename")
+            let iconFrame = sourceIcon.frame
+            print("Finder upload icon=\(iconFrame)")
+            let dragStart = window.coordinate(withNormalizedOffset: .zero).withOffset(
+                CGVector(dx: iconFrame.midX - window.frame.minX, dy: iconFrame.midY - window.frame.minY))
             print("Finder upload source=\(source.frame) target=\(uploadPoint)")
             dragStart.click(forDuration: 0.6,
                 thenDragTo: window.coordinate(withNormalizedOffset: .zero).withOffset(

@@ -137,7 +137,14 @@ public struct SessionEditModal: View {
                                     panel.canChooseDirectories = false
                                     panel.allowsMultipleSelection = false
                                     if panel.runModal() == .OK, let url = panel.url {
-                                        privateKeyPath = url.path
+                                        do {
+                                            if DistributionChannel.current == .appStore {
+                                                try FileAccessStore.shared.remember(url, readOnly: true)
+                                            }
+                                            privateKeyPath = url.path
+                                        } catch {
+                                            saveError = "无法保存私钥文件授权：\(error.localizedDescription)"
+                                        }
                                     }
                                 }
                                 .controlSize(.small)

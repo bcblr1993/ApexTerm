@@ -638,7 +638,7 @@ public struct SFTPView: View {
     @ViewBuilder
     private func batchContextActions(for ids: Set<String>) -> some View {
         let selectedItems = items.filter { ids.contains($0.path) }
-        Button("下载选中的 \(selectedItems.count) 个项目到「下载」") {
+        Button("下载选中的 \(selectedItems.count) 个项目") {
             downloadBatchAction(selectedItems)
         }
         Divider()
@@ -655,9 +655,46 @@ public struct SFTPView: View {
         }
     }
 
+    /// Resolve a configured destination and retain its grant through queue construction.
+    private func downloadDirectoryAccess() throws -> FileAccessLease {
+        let configured = URL(fileURLWithPath: NativeSSHSession.expandPath(AppSettings.shared.defaultDownloadDirectory))
+        var access = try? FileAccessStore.shared.acquire(configured)
+        if let existing = access, FileManager.default.isWritableFile(atPath: existing.url.path) {
+            return existing
+        }
+        access?.close()
+        guard DistributionChannel.current == .appStore else {
+            throw CocoaError(.fileWriteNoPermission)
+        }
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.message = "选择下载文件的保存目录"
+        panel.prompt = "选择目录"
+        guard panel.runModal() == .OK, let url = panel.url else { throw CancellationError() }
+        try FileAccessStore.shared.remember(url, isDirectory: true)
+        access = try FileAccessStore.shared.acquire(url)
+        guard let access else { throw CocoaError(.fileWriteNoPermission) }
+        guard FileManager.default.isWritableFile(atPath: access.url.path) else {
+            access.close()
+            throw CocoaError(.fileWriteNoPermission)
+        }
+        AppSettings.shared.defaultDownloadDirectory = access.url.path
+        return access
+    }
+
     private func downloadBatchAction(_ targetItems: [SFTPItem]) {
         guard let s = session, !targetItems.isEmpty else { return }
-        let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first!
+        let access: FileAccessLease
+        do { access = try downloadDirectoryAccess() }
+        catch is CancellationError { return }
+        catch {
+            transferNotice = "无法访问下载目录：\(error.localizedDescription)"
+            return
+        }
+        defer { access.close() }
+        let downloads = access.url
         transferNotice = "正在下载 \(targetItems.count) 个项目…"
         withAnimation(.spring(duration: 0.25)) {
             isTransferDrawerExpanded = true
@@ -1013,6 +1050,12 @@ public struct SFTPView: View {
         guard let session, !urls.isEmpty else { return }
         Task { @MainActor in
             do {
+                var accesses: [FileAccessLease] = []
+                defer { accesses.forEach { $0.close() } }
+                if DistributionChannel.current == .appStore {
+                    for url in urls { accesses.append(try FileAccessStore.shared.acquire(url)) }
+                }
+                let urls = accesses.isEmpty ? urls : accesses.map(\.url)
                 let existing = try await session.listDirectory(path: targetDirectory)
                 let existingNames = Set(existing.map(\.name))
                 let conflicts = urls.filter { existingNames.contains($0.lastPathComponent) }
@@ -1097,7 +1140,15 @@ public struct SFTPView: View {
 
     private func downloadAction(_ item: SFTPItem) {
         guard let s = session else { return }
-        let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first!
+        let access: FileAccessLease
+        do { access = try downloadDirectoryAccess() }
+        catch is CancellationError { return }
+        catch {
+            transferNotice = "无法访问下载目录：\(error.localizedDescription)"
+            return
+        }
+        defer { access.close() }
+        let downloads = access.url
         let localURL = TransferManager.shared.availableDownloadURL(in: downloads, fileName: item.name)
         self.transferNotice = "正在下载: \(item.name)..."
         withAnimation(.spring(duration: 0.25)) {

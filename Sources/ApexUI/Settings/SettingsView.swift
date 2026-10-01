@@ -283,7 +283,17 @@ private struct SFTPSettingsTab: View {
         panel.canCreateDirectories = true
         panel.prompt = "选择"
         if panel.runModal() == .OK, let url = panel.url {
-            settings.defaultDownloadDirectory = url.path
+            do {
+                if DistributionChannel.current == .appStore {
+                    try FileAccessStore.shared.remember(url, isDirectory: true)
+                }
+                settings.defaultDownloadDirectory = url.path
+            } catch {
+                let alert = NSAlert()
+                alert.messageText = "无法保存文件夹授权"
+                alert.informativeText = error.localizedDescription
+                alert.runModal()
+            }
         }
     }
 }

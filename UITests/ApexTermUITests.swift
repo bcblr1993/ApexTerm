@@ -987,17 +987,15 @@ final class ApexTermUITests: XCTestCase {
         let window = finder.windows[local.lastPathComponent]
         XCTAssertTrue(window.waitForExistence(timeout: 10))
         dragFinderWindow = window
-        if window.frame.minX + 350 <= app.windows.firstMatch.frame.maxX {
-            let frame = window.frame
-            // Use the empty top margin of Finder's title bar. The rounded
-            // corner near the search control does not start a window drag.
-            let chrome = window.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: frame.width - 200, dy: 20))
-            let shift = app.windows.firstMatch.frame.maxX + 30 - frame.minX
-            chrome.click(forDuration: 0.5, thenDragTo: chrome.withOffset(CGVector(dx: shift, dy: 0)))
-        }
-        print("Finder fixture layout app=\(app.windows.firstMatch.frame) finder=\(window.frame)")
+        // Finder retains window positions across runs. Choose a content point
+        // beyond the app's right edge instead of moving Finder via its toolbar.
+        let finderDropOffset = CGPoint(
+            x: max(350, app.windows.firstMatch.frame.maxX + 40 - window.frame.minX),
+            y: 200)
+        print("Finder fixture layout app=\(app.windows.firstMatch.frame) finder=\(window.frame) dropOffset=\(finderDropOffset)")
         let tiled = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            let target = CGPoint(x: window.frame.minX + 350, y: window.frame.minY + 200)
+            let target = CGPoint(x: window.frame.minX + finderDropOffset.x,
+                                 y: window.frame.minY + finderDropOffset.y)
             return window.frame.contains(target) && !self.app.windows.firstMatch.frame.contains(target)
         }, object: window)
         XCTAssertEqual(XCTWaiter.wait(for: [tiled], timeout: 10), .completed)
@@ -1015,7 +1013,7 @@ final class ApexTermUITests: XCTestCase {
             geometry.lifetime = .keepAlways
             add(geometry)
             remoteFile.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click(forDuration: 0.6,
-                thenDragTo: window.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: 350, dy: 200)),
+                thenDragTo: window.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: finderDropOffset.x, dy: finderDropOffset.y)),
                 withVelocity: .slow, thenHoldForDuration: 1.0)
             let landed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
                 FileManager.default.fileExists(atPath: file.path)
@@ -1024,9 +1022,38 @@ final class ApexTermUITests: XCTestCase {
             XCTAssertEqual(try Data(contentsOf: file), payload)
         } else {
             let source = window.descendants(matching: .any).matching(NSPredicate(format: "label == %@ OR value == %@", name, name)).firstMatch
-            XCTAssertTrue(source.waitForExistence(timeout: 10))
-            source.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click(forDuration: 0.6,
-                thenDragTo: staticText("文件夹为空").coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)))
+            let emptyFrame = staticText("文件夹为空").frame
+            let appFrame = app.windows.firstMatch.frame
+            // All candidates lie in the file browser's empty content area.
+            let uploadCandidates = [
+                CGPoint(x: appFrame.minX + appFrame.width * 0.3, y: emptyFrame.midY),
+                CGPoint(x: emptyFrame.midX, y: emptyFrame.midY),
+                CGPoint(x: appFrame.maxX - 30, y: emptyFrame.midY),
+                CGPoint(x: appFrame.minX + appFrame.width * 0.3, y: appFrame.maxY - 60),
+                CGPoint(x: appFrame.maxX - 30, y: appFrame.maxY - 60)
+            ]
+            let finderFrames = finder.windows.allElementsBoundByIndex.map(\.frame)
+            let uploadPoint = try XCTUnwrap(uploadCandidates.first { point in
+                appFrame.contains(point) && !finderFrames.contains { $0.contains(point) }
+            }, "The upload target must remain visible beside Finder")
+            // Resolving a coordinate owned by the other application activates it
+            // before the gesture and covers Finder's source icon. Resolve the
+            // endpoint through Finder's window using the same screen location.
+            finder.activate()
+            // Activate alone does not reliably raise Finder on macOS 27.
+            // Click its visible title strip before resolving the source icon.
+            window.coordinate(withNormalizedOffset: .zero).withOffset(
+                CGVector(dx: finderDropOffset.x, dy: 8)).click()
+            finder.typeKey("2", modifierFlags: .command)
+            XCTAssertTrue(source.waitForExistence(timeout: 5))
+            XCTAssertTrue(source.isHittable, "Finder's source file must be visible before dragging")
+            let dragStart = source.coordinate(withNormalizedOffset: .zero).withOffset(
+                CGVector(dx: -12, dy: source.frame.height / 2))
+            print("Finder upload source=\(source.frame) target=\(uploadPoint)")
+            dragStart.click(forDuration: 0.6,
+                thenDragTo: window.coordinate(withNormalizedOffset: .zero).withOffset(
+                    CGVector(dx: uploadPoint.x - window.frame.minX, dy: uploadPoint.y - window.frame.minY)),
+                withVelocity: .slow, thenHoldForDuration: 1.0)
             // A real upload opens its progress sheet. Inspect it before returning
             // to the underlying directory; querying behind a sheet hides AX rows.
             XCTAssertTrue(app.sheets.firstMatch.waitForExistence(timeout: 15))
@@ -1082,7 +1109,12 @@ final class ApexTermUITests: XCTestCase {
         if let window = dragFinderWindow, window.exists {
             let close = window.buttons[XCUIIdentifierCloseWindow].firstMatch
             XCTAssertTrue(close.exists, "Close only the owned UUID-directory Finder window")
-            if close.exists { close.click() }
+            if close.exists {
+                let finder = XCUIApplication(bundleIdentifier: "com.apple.finder")
+                finder.activate()
+                close.click()
+                XCTAssertTrue(window.waitForNonExistence(timeout: 5), "The owned Finder window must close before removing its directory")
+            }
         }
         dragFinderWindow = nil
         if let fixture = dragRemoteFixture {

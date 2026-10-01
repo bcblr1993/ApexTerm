@@ -280,7 +280,9 @@ struct ThemeVerificationApp: App {
                     }
                     // Isolate QA input from unrelated floating review windows on the test desktop.
                     for window in NSApplication.shared.windows where window.isVisible {
-                        window.level = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 1)
+                        // Finder drag acceptance must use production window ordering.
+                        window.level = ProcessInfo.processInfo.environment["APEX_QA_SIDE_BY_SIDE"] == "1"
+                            ? .normal : NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 1)
                         if ProcessInfo.processInfo.environment["APEX_QA_SIDE_BY_SIDE"] == "1", let screen = window.screen {
                             let visible = screen.visibleFrame
                             window.setFrame(NSRect(x: visible.minX, y: visible.maxY - 700, width: max(960, visible.width / 2), height: 700), display: true)

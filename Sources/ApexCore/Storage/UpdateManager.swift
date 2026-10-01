@@ -55,6 +55,7 @@ public enum UpdateCheckStatus: Equatable, Sendable {
 @MainActor
 public final class UpdateManager: ObservableObject {
     public static let shared = UpdateManager()
+    public let distributionChannel: DistributionChannel
     
     @Published public var status: UpdateCheckStatus = .idle
     @Published public var isUpdateSheetPresented: Bool = false
@@ -102,17 +103,20 @@ public final class UpdateManager: ObservableObject {
     private var activeDownloadSession: URLSession?
     private var activeDownloadTask: URLSessionDownloadTask?
 
-    public init() {
+    public init(distributionChannel: DistributionChannel = .current) {
+        self.distributionChannel = distributionChannel
         self.fetch = { try await URLSession.shared.data(for: $0) }
         self.downloadFileHandler = nil
         self.extractPackageHandler = nil
     }
 
     public init(
+        distributionChannel: DistributionChannel = .current,
         fetch: @escaping FetchHandler,
         downloadHandler: DownloadHandler? = nil,
         extractHandler: ExtractHandler? = nil
     ) {
+        self.distributionChannel = distributionChannel
         self.fetch = fetch
         self.downloadFileHandler = downloadHandler
         self.extractPackageHandler = extractHandler
@@ -141,6 +145,10 @@ public final class UpdateManager: ObservableObject {
     
     /// Trigger an update check. If `manual` is true, prompts sheet even when up-to-date.
     public func checkForUpdates(manual: Bool = false) async {
+        guard distributionChannel == .direct else {
+            status = .failed("更新由 App Store 管理，请在 App Store 查看。")
+            return
+        }
         guard !isChecking else { return }
         isChecking = true
         status = .checking
@@ -192,6 +200,10 @@ public final class UpdateManager: ObservableObject {
     
     /// Starts in-app one-click update: downloads archive, verifies bundle, and prepares for relaunch
     public func startInAppUpdate(release: ReleaseInfo? = nil) async {
+        guard distributionChannel == .direct else {
+            status = .failed("更新由 App Store 管理，请在 App Store 查看。")
+            return
+        }
         let rel = release ?? latestRelease
         guard let rel = rel else {
             self.status = .failed("未找到可更新的发布信息")
@@ -289,6 +301,10 @@ public final class UpdateManager: ObservableObject {
     
     /// Executes detached update replacement script and restarts the application
     public func relaunchAndInstall(targetURL: URL? = nil) {
+        guard distributionChannel == .direct else {
+            status = .failed("更新由 App Store 管理，请在 App Store 查看。")
+            return
+        }
         guard case .readyToRestart(_, let stagingAppURL) = status else {
             return
         }

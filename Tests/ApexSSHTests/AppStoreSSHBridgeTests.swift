@@ -3,6 +3,11 @@ import XCTest
 @testable import ApexSSH
 
 final class AppStoreSSHBridgeTests: XCTestCase {
+    private let sandboxHome = FileManager.default.temporaryDirectory.appendingPathComponent("apex-store-paths-" + UUID().uuidString)
+
+    override func tearDownWithError() throws {
+        if FileManager.default.fileExists(atPath: sandboxHome.path) { try FileManager.default.removeItem(at: sandboxHome) }
+    }
     private var bridge: URL {
         Bundle(for: AppStoreSSHBridgeTests.self).bundleURL.deletingLastPathComponent().appendingPathComponent("ApexSSHBridge")
     }
@@ -17,7 +22,7 @@ final class AppStoreSSHBridgeTests: XCTestCase {
         let access = try FileAccessStore().acquire(file)
         defer { access.close() }
         let client = NativeSSHSession(session: Session(name: "fixture", host: "example.test", username: "qa"),
-                                      distributionChannel: .appStore, bridgeExecutableURL: bridge)
+                                      distributionChannel: .appStore, bridgeExecutableURL: bridge, sandboxHomeURL: sandboxHome)
         let command = try XCTUnwrap(client.prepareStoreCommand(binaryPath: "/usr/bin/ssh",
             arguments: ["-F", "/dev/null", "-G", "-i", file.path, "example.test", file.path], accesses: [access]))
         defer { command.grants.close() }
@@ -46,7 +51,7 @@ final class AppStoreSSHBridgeTests: XCTestCase {
 
     func testSCPRoutesItsNestedSSHThroughBridge() throws {
         let client = NativeSSHSession(session: Session(name: "fixture", host: "example.test", username: "qa"),
-                                      distributionChannel: .appStore, bridgeExecutableURL: bridge)
+                                      distributionChannel: .appStore, bridgeExecutableURL: bridge, sandboxHomeURL: sandboxHome)
         let command = try XCTUnwrap(client.prepareStoreCommand(binaryPath: "/usr/bin/scp",
             arguments: ["-P", "2222", "qa@example.test:/fixture", "/tmp/fixture"], accesses: []))
         defer { command.grants.close() }

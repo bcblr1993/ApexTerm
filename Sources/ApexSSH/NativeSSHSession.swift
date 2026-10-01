@@ -14,6 +14,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     private var connectionKeyAccess: FileAccessLease?
     private var connectionGrantRequest: ChildProcessFileGrants?
     private let bridgeExecutableURL: URL
+    private let sandboxPaths: SandboxSSHPaths
     private let stateLock = NSLock()
     private var storedConnectionState: SSHConnectionState = .disconnected
     public private(set) var connectionState: SSHConnectionState {
@@ -72,11 +73,14 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     }
     
     public init(session: Session, distributionChannel: DistributionChannel = .current,
-                fileAccessStore: FileAccessStore = .shared, bridgeExecutableURL: URL? = nil) {
+                fileAccessStore: FileAccessStore = .shared, bridgeExecutableURL: URL? = nil,
+                sandboxHomeURL: URL? = nil, sandboxTemporaryURL: URL? = nil) {
         self.session = session
         self.distributionChannel = distributionChannel
         self.fileAccessStore = fileAccessStore
         self.bridgeExecutableURL = bridgeExecutableURL ?? URL(fileURLWithPath: Bundle.main.bundlePath + "/Contents/MacOS/ApexSSHBridge")
+        self.sandboxPaths = SandboxSSHPaths(home: sandboxHomeURL ?? URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true),
+            temporary: sandboxTemporaryURL ?? FileManager.default.temporaryDirectory)
     }
     
     public func setOutputHandler(_ handler: @Sendable @escaping (Data) -> Void) {
@@ -150,6 +154,8 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         }
         guard toolPath == "/usr/bin/ssh" || toolPath == "/usr/bin/scp" else { throw CocoaError(.fileReadNoPermission) }
         let tool = toolPath == "/usr/bin/scp" ? "scp" : "ssh"
+        try sandboxPaths.prepare()
+        toolArguments = try sandboxPaths.arguments(prependingTo: toolArguments, tool: tool)
         if tool == "scp" { toolArguments = ["-S", bridgeExecutableURL.path] + toolArguments }
         let grants = try ChildProcessFileGrants(files: accesses.compactMap { try $0?.childProcessGrant() })
         let bridgeArguments = ["--tool", tool] + toolArguments
@@ -457,9 +463,13 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         if FileManager.default.fileExists(atPath: socket) {
             let proc = Process()
             proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-            proc.arguments = ["-O", "exit", "-o", "ControlPath=\(socket)", "\(session.username)@\(session.host)"]
-            try? proc.run()
-            proc.waitUntilExit()
+            proc.arguments = ["-O", "exit", "-o", controlSocketOption, "\(session.username)@\(session.host)"]
+            do {
+                let grants = try configureStoreProcess(proc, accesses: [])
+                defer { grants?.close() }
+                try proc.run()
+                proc.waitUntilExit()
+            } catch { /* The control master may already have exited. */ }
             try? FileManager.default.removeItem(atPath: socket)
         }
     }
@@ -543,7 +553,13 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         }
     }
     
-    var controlSocketPath: String { "/tmp/apex_ctrl_\(controlSocketIdentifier)" }
+    var controlSocketPath: String {
+        distributionChannel == .appStore ? sandboxPaths.controlSocket.path : "/tmp/apex_ctrl_\(controlSocketIdentifier)"
+    }
+
+    private var controlSocketOption: String {
+        "ControlPath=" + (distributionChannel == .appStore ? SandboxSSHPaths.quotedPath(controlSocketPath) : controlSocketPath)
+    }
 
     public func probeRemoteHome() async -> String? {
         await resolvePasswordIfNeeded()
@@ -555,7 +571,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         let cmd = "printf '%s\\n' \"$HOME\""
         let ctrlArgs = [
             "-o", "ControlMaster=auto",
-            "-o", "ControlPath=\(controlSocketPath)",
+            "-o", controlSocketOption,
             "-o", "ControlPersist=60s"
         ]
         let authArgs = sshAuthArgs(privateKeyURL: keyAccess?.url)
@@ -707,7 +723,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
                 let sshpass = self.sshpassExecutablePath
                 let ctrlArgs = [
                     "-o", "ControlMaster=auto",
-                    "-o", "ControlPath=\(self.controlSocketPath)",
+                    "-o", self.controlSocketOption,
                     "-o", "ControlPersist=60s"
                 ]
                 
@@ -796,7 +812,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         let cmd = "LC_ALL=C ls -la --time-style=+%s \(quotedPath) 2>/dev/null || LC_ALL=C ls -la -D '%s' \(quotedPath) 2>/dev/null || LC_ALL=C ls -la \(quotedPath)"
         let ctrlArgs = [
             "-o", "ControlMaster=auto",
-            "-o", "ControlPath=\(controlSocketPath)",
+            "-o", controlSocketOption,
             "-o", "ControlPersist=60s"
         ]
         
@@ -1096,7 +1112,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         let sshpass = self.sshpassExecutablePath
         let ctrlArgs = [
             "-o", "ControlMaster=auto",
-            "-o", "ControlPath=\(controlSocketPath)",
+            "-o", controlSocketOption,
             "-o", "ControlPersist=60s"
         ]
         

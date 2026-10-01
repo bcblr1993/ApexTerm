@@ -12,10 +12,13 @@ public struct SSHConfigImportSheet: View {
     @State private var targetFolder = "SSH Config"
     @State private var configPath: String = SSHConfigParser.standardConfigURL.path
     @State private var importResultNotice: String?
+    @State private var configReadError: String?
+    private static let selectedConfigKey = "sandbox.selectedSSHConfigPath"
     
     public init(store: SessionStore, configURL: URL = SSHConfigParser.standardConfigURL) {
         self.store = store
-        self._configPath = State(initialValue: configURL.path)
+        let savedPath = DistributionChannel.current == .appStore ? UserDefaults.standard.string(forKey: Self.selectedConfigKey) : nil
+        self._configPath = State(initialValue: savedPath ?? configURL.path)
     }
     
     public var body: some View {
@@ -31,11 +34,16 @@ public struct SSHConfigImportSheet: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("从 ~/.ssh/config 导入主机")
                         .font(.headline)
-                    Text("自动扫描系统已知配置与密钥，一键导入 ApexTerm 会话库")
+                    Text(DistributionChannel.current == .appStore ? "选择 SSH 配置文件，预览并导入主机" : "自动扫描系统已知配置与密钥，一键导入 ApexTerm 会话库")
                         .font(.subheadline)
                         .foregroundColor(ApexStyle.secondary)
                 }
                 Spacer()
+
+                if DistributionChannel.current == .appStore {
+                    Button("选择配置文件…", action: chooseConfigFile)
+                        .controlSize(.small)
+                }
             }
             .padding(18)
             .background(ApexStyle.surface)
@@ -71,7 +79,9 @@ public struct SSHConfigImportSheet: View {
                 ContentUnavailableView(
                     "没有找到主机配置",
                     systemImage: "doc.text.magnifyingglass",
-                    description: Text("请检查 \(configPath) 中的 Host 与 HostName 配置。")
+                    description: Text(configReadError ?? (DistributionChannel.current == .appStore
+                        ? "请选择 SSH 配置文件，导入其中的 Host 与 HostName。"
+                        : "请检查 \(configPath) 中的 Host 与 HostName 配置。"))
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -157,12 +167,47 @@ public struct SSHConfigImportSheet: View {
         }
         .frame(minWidth: 540, minHeight: 440)
         .onAppear {
+            if DistributionChannel.current == .direct || UserDefaults.standard.string(forKey: Self.selectedConfigKey) != nil {
+                scanHosts()
+            }
+        }
+    }
+
+    private func chooseConfigFile() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.showsHiddenFiles = true
+        panel.message = "选择要导入的 SSH 配置文件"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try FileAccessStore.shared.remember(url, readOnly: true)
+            configPath = url.path
             scanHosts()
+            if configReadError == nil { UserDefaults.standard.set(configPath, forKey: Self.selectedConfigKey) }
+        } catch {
+            discoveredHosts = []
+            selectedHostIds = []
+            configReadError = "无法读取配置文件，请重新选择文件。"
         }
     }
     
     private func scanHosts() {
-        let content = (try? String(contentsOfFile: configPath, encoding: .utf8)) ?? ""
+        let content: String
+        do {
+            let url = URL(fileURLWithPath: configPath)
+            let access = DistributionChannel.current == .appStore ? try FileAccessStore.shared.acquire(url) : nil
+            defer { access?.close() }
+            content = try String(contentsOf: access?.url ?? url, encoding: .utf8)
+            if let access { configPath = access.url.path }
+            configReadError = nil
+        } catch {
+            discoveredHosts = []
+            selectedHostIds = []
+            configReadError = DistributionChannel.current == .appStore ? "无法读取配置文件，请重新选择文件。" : nil
+            return
+        }
         let hosts = SSHConfigParser.parse(content: content)
         self.discoveredHosts = hosts
         self.selectedHostIds = Set(hosts.map(\.id))

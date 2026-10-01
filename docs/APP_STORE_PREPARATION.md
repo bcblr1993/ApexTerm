@@ -43,3 +43,11 @@ OpenSSH配置依据：https://man.openbsd.org/ssh.1 和 https://man.openbsd.org/
 拖拽导出现在等待主线程记录开始、完成或取消状态后再返回文件回调，防止取消回调已结束但传输列表仍显示进行中；16项相关回归通过。
 
 商店签名准备已完成：Mac App Distribution和Mac Installer Distribution均在本机钥匙串中，分别通过独立临时文件/空安装包签名与验签；匹配本应用的Mac App Store provisioning profile通过App ID、Team、签名证书、有效期、调试权限及分发类型检查。私钥和临时签名夹具不在仓库中，临时文件已清理。这些检查不代表最终商店包、上传或审核通过。
+
+签名沙盒包的只读检查已纳入仓库和 CI 的脚本回归：
+
+```bash
+python3 scripts/audit_app_store_bundle.py /path/to/ApexTerm.app --output /path/to/store-audit.json
+```
+
+校验应用与 profile 的 App ID、Team、证书绑定、有效期、macOS 商店分发类型、更新渠道、沙盒权限及 helper 继承；任一必需检查失败退出1并保留 JSON 诊断。`get-task-allow` 与 `com.apple.security.get-task-allow` 两种调试权限都会拒绝。隐私声明仅提供技术检查信息，仍需按最终 API 使用审核。15项脚本回归覆盖错误签名、失效/错误类型 profile、调试权限及缺少 bundle；用现有官网下载1.5.6包实测得到退出1，正确拒绝把官网下载包当作商店包。该工具不编译、安装或上传产品，检查通过也不能替代全量门禁与真实沙盒 UI 验收。

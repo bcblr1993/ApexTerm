@@ -2,7 +2,7 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
-## [v1.6.0] - 2026-10-01
+## [v1.6.0] - 2026-10-02
 
 ### ✨ 新增特性 (Features)
 - 路径栏新增“复制当前路径”按钮，复制当前浏览目录；未提交的路径草稿不会被复制为当前目录。

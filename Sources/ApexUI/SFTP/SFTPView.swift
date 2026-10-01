@@ -85,7 +85,7 @@ public struct SFTPView: View {
         self.session = session
     }
 
-    public var body: some View {
+    private var fileBrowser: some View {
         VStack(spacing: 0) {
             // Path and action toolbar
             HStack(spacing: 10) {
@@ -416,6 +416,10 @@ public struct SFTPView: View {
                 return true
             }
         }
+    }
+
+    private var observedFileBrowser: some View {
+        fileBrowser
         .background(WindowReferenceView(reference: windowReference).frame(width: 0, height: 0))
         .alert("创建失败", isPresented: $isShowingCreationFailure) {
             Button("好", role: .cancel) {}
@@ -469,6 +473,10 @@ public struct SFTPView: View {
                 loadDirectory(path: currentPath)
             }
         }
+    }
+
+    public var body: some View {
+        observedFileBrowser
         .sheet(item: $editingFile) { item in
             QuickEditorView(
                 item: item,
@@ -483,10 +491,7 @@ public struct SFTPView: View {
         }
         .confirmationDialog(
             "确定删除？",
-            isPresented: Binding(
-                get: { itemToDelete != nil },
-                set: { if !$0 { itemToDelete = nil } }
-            ),
+            isPresented: isShowingDeleteConfirmation,
             presenting: itemToDelete
         ) { item in
             Button("永久删除「\(item.name)」", role: .destructive) {
@@ -500,10 +505,7 @@ public struct SFTPView: View {
         }
         .confirmationDialog(
             "确定批量删除？",
-            isPresented: Binding(
-                get: { batchItemsToDelete != nil },
-                set: { if !$0 { batchItemsToDelete = nil } }
-            ),
+            isPresented: isShowingBatchDeleteConfirmation,
             presenting: batchItemsToDelete
         ) { targetItems in
             Button("永久删除选中的 \(targetItems.count) 个项目", role: .destructive) {
@@ -561,6 +563,20 @@ public struct SFTPView: View {
                 Text("修改当前目录 (\(currentPath)) 的访问权限（推荐 755 赋予读写与遍历权限）")
             }
         }
+    }
+
+    private var isShowingDeleteConfirmation: Binding<Bool> {
+        Binding<Bool>(
+            get: { itemToDelete != nil },
+            set: { isPresented in if !isPresented { itemToDelete = nil } }
+        )
+    }
+
+    private var isShowingBatchDeleteConfirmation: Binding<Bool> {
+        Binding<Bool>(
+            get: { batchItemsToDelete != nil },
+            set: { isPresented in if !isPresented { batchItemsToDelete = nil } }
+        )
     }
 
     private var filteredItems: [SFTPItem] { displayItems }

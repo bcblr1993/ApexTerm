@@ -72,6 +72,30 @@ class RemoteUIRunnerTests(unittest.TestCase):
     def test_success_collects_result_bundle(self):
         self.execute(0)
 
+    def test_desktop_lock_refuses_a_second_run_without_replacing_owner(self):
+        script = self.execute(0)
+        acquisition = script.split('LOCK_DIR=', 1)[1].split('cleanup_qa_host()', 1)[0]
+        with tempfile.TemporaryDirectory() as directory:
+            environment = dict(os.environ, HOME=directory)
+            command = ['bash', '-c', 'LOCK_DIR=' + acquisition + '\ntrap - EXIT']
+            first = subprocess.run(command, env=environment, capture_output=True, text=True)
+            self.assertEqual(first.returncode, 0, first.stderr)
+            owner = Path(directory) / '.apexterm-ui-automation.lock/owner'
+            original = owner.read_text()
+            second = subprocess.run(command, env=environment, capture_output=True, text=True)
+            self.assertNotEqual(second.returncode, 0)
+            self.assertIn('Another ApexTerm UI run', second.stderr)
+            self.assertEqual(owner.read_text(), original)
+
+    def test_desktop_lock_is_released_on_normal_exit(self):
+        script = self.execute(0)
+        acquisition = script.split('LOCK_DIR=', 1)[1].split('cleanup_qa_host()', 1)[0]
+        with tempfile.TemporaryDirectory() as directory:
+            result = subprocess.run(['bash', '-c', 'LOCK_DIR=' + acquisition],
+                                    env=dict(os.environ, HOME=directory), capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse((Path(directory) / '.apexterm-ui-automation.lock').exists())
+
     def test_failure_collects_result_bundle_and_stops_gate(self):
         self.execute(65)
 

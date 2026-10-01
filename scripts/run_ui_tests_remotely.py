@@ -49,6 +49,19 @@ def main():
          f'{target}:{workspace}/input.tar.gz'])
     script = r'''set -euo pipefail
 cd "$1"
+LOCK_DIR="$HOME/.apexterm-ui-automation.lock"
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+    echo "Another ApexTerm UI run owns this desktop; wait for it to finish." >&2
+    exit 1
+fi
+printf '%s\n' "$PWD" > "$LOCK_DIR/owner"
+release_desktop_lock() {
+    if [[ "$(cat "$LOCK_DIR/owner" 2>/dev/null)" == "$PWD" ]]; then
+        rm -f "$LOCK_DIR/owner"
+        rmdir "$LOCK_DIR"
+    fi
+}
+trap release_desktop_lock EXIT
 cleanup_qa_host() {
 python3 - <<'PY_CLEANUP'
 import json, os, pathlib, signal, subprocess
@@ -86,7 +99,7 @@ for pid in parents:
 (root / 'reports/qa-cleanup.json').write_text(json.dumps({'ownedHostPIDs': sorted(parents), 'ownedChildPIDs': stopped_children}, indent=2))
 PY_CLEANUP
 }
-trap cleanup_qa_host EXIT
+trap 'cleanup_qa_host; release_desktop_lock' EXIT
 tar -xzf input.tar.gz
 mkdir -p reports
 xcrun swiftc -swift-version 6 -target arm64-apple-macos14.0 UITests/Fixtures/IMEInputSourceRestorer.swift -o reports/IMEInputSourceRestorer

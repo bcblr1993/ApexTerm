@@ -1287,7 +1287,7 @@ public enum SFTPDragExportHelper {
                 throw NSError(domain: "SFTPDragExport", code: 404,
                               userInfo: [NSLocalizedDescriptionKey: "No active SSH session"])
             }
-            Task { @MainActor in
+            await MainActor.run {
                 TransferManager.shared.beginExternalTransfer(
                     id: taskId, fileName: item.name, remotePath: item.path,
                     localURL: localURL, direction: .download, totalBytes: Int64(item.size))
@@ -1322,7 +1322,7 @@ public enum SFTPDragExportHelper {
                     }
                 }
                 try Task.checkCancellation()
-                Task { @MainActor in
+                await MainActor.run {
                     TransferManager.shared.completeExternalTransfer(taskId: taskId)
                     onStatusChange?("拖拽导出完成: \(item.name)")
                 }
@@ -1330,7 +1330,7 @@ public enum SFTPDragExportHelper {
             } catch {
                 try? FileManager.default.removeItem(at: localURL)
                 try? FileManager.default.removeItem(at: tempDir)
-                Task { @MainActor in
+                await MainActor.run {
                     if error is CancellationError {
                         TransferManager.shared.cancelExternalTransfer(taskId: taskId)
                         onStatusChange?("拖拽下载已取消: \(item.name)")

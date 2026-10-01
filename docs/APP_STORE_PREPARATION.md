@@ -37,3 +37,9 @@ SSH路径阶段全量验证：342项、0 failures、14远程skip，0编译warnin
 文件元数据理由依据：https://developer.apple.com/documentation/bundleresources/app-privacy-configuration/nsprivacyaccessedapitypes/nsprivacyaccessedapitype
 
 OpenSSH配置依据：https://man.openbsd.org/ssh.1 和 https://man.openbsd.org/ssh_config.5
+
+2026-10-02 主干同步后验证：全量 `swift test` 342项，328通过、14项因未配置外部环境跳过、0失败、0 Swift编译警告。另向真实 macos27 执行10项SSH/SFTP/Vim集成测试，全部通过；这些由主机测试进程发起，不代表最终沙盒包已通过验收。UI测试目标编译通过，但仍待实际运行；Xcode的AppIntents元数据工具提示本目标没有AppIntents.framework依赖。
+
+拖拽导出现在等待主线程记录开始、完成或取消状态后再返回文件回调，防止取消回调已结束但传输列表仍显示进行中；16项相关回归通过。
+
+商店签名准备已完成：Mac App Distribution和Mac Installer Distribution均在本机钥匙串中，分别通过独立临时文件/空安装包签名与验签；匹配本应用的Mac App Store provisioning profile通过App ID、Team、签名证书、有效期、调试权限及分发类型检查。私钥和临时签名夹具不在仓库中，临时文件已清理。这些检查不代表最终商店包、上传或审核通过。

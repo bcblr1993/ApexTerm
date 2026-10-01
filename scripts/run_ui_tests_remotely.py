@@ -49,6 +49,44 @@ def main():
          f'{target}:{workspace}/input.tar.gz'])
     script = r'''set -euo pipefail
 cd "$1"
+cleanup_qa_host() {
+python3 - <<'PY_CLEANUP'
+import json, os, pathlib, signal, subprocess
+root = pathlib.Path.cwd().resolve()
+metadata = root / 'reports/qa-host.json'
+if not metadata.exists():
+    raise SystemExit(0)
+host = json.loads(metadata.read_text())
+app = pathlib.Path(host['path']).resolve()
+if not app.is_relative_to(root) or not host['bundleIdentifier'].startswith('com.apexterm.qa.'):
+    raise SystemExit('Refusing to stop an application outside this QA workspace')
+executable = str(app / 'Contents/MacOS/Verification')
+rows = [line.strip().split(None, 2) for line in subprocess.check_output(['ps', '-axo', 'pid=,ppid=,comm='], text=True).splitlines()]
+rows = [(int(p[0]), int(p[1]), p[2]) for p in rows if len(p) == 3]
+parents = {pid for pid, _, command in rows if command == executable}
+owned = set(parents)
+while True:
+    descendants = {pid for pid, parent, _ in rows if parent in owned}
+    if descendants <= owned:
+        break
+    owned.update(descendants)
+stopped_children = []
+for pid, _, command in rows:
+    if pid in owned - parents and pathlib.Path(command).name in ('ssh', 'scp', 'sshpass'):
+        try:
+            os.kill(pid, signal.SIGKILL)
+            stopped_children.append(pid)
+        except ProcessLookupError:
+            pass
+for pid in parents:
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+(root / 'reports/qa-cleanup.json').write_text(json.dumps({'ownedHostPIDs': sorted(parents), 'ownedChildPIDs': stopped_children}, indent=2))
+PY_CLEANUP
+}
+trap cleanup_qa_host EXIT
 tar -xzf input.tar.gz
 mkdir -p reports
 xcrun swiftc -swift-version 6 -target arm64-apple-macos14.0 UITests/Fixtures/IMEInputSourceRestorer.swift -o reports/IMEInputSourceRestorer

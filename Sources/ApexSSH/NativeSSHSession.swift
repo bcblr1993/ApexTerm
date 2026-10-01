@@ -33,6 +33,8 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     private var stateChangeHandler: (@Sendable (SSHConnectionState) -> Void)?
     
     private var ptyMasterFd: Int32 = -1
+    private let controlSocketIdentifier = UUID().uuidString
+    private let inputQueue = DispatchQueue(label: "com.apexterm.pty-input", qos: .userInteractive)
     private var childPid: pid_t = -1
     private var currentDimensions: (columns: Int, rows: Int) = (120, 35)
     private var readSource: DispatchSourceRead?
@@ -44,6 +46,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     private var resolvedPassword: String?
     private var passwordFeedSent = false
     private var recentPromptBuffer = ""
+    private var directoryStream = DirectoryChangeStreamParser()
     private var lastReportedDirectory: String?
     private var hasPendingCommandExecution = false
     private var remoteHomeDirectory: String?
@@ -110,7 +113,8 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     public func jumpServerArgs() -> [String] {
         let jumpSession = stateLock.withLock { resolvedJumpServer }
         guard let jumpSession else { return [] }
-        let target = "\(jumpSession.username)@\(jumpSession.host):\(jumpSession.port)"
+        let host = jumpSession.host.contains(":") && !jumpSession.host.hasPrefix("[") ? "[\(jumpSession.host)]" : jumpSession.host
+        let target = "\(jumpSession.username)@\(host):\(jumpSession.port)"
         return ["-J", target]
     }
 
@@ -164,6 +168,9 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         await previousProbe?.value
         prevCpu = nil
         prevNet = nil
+        directoryStream = DirectoryChangeStreamParser()
+        recentPromptBuffer = ""
+        lastReportedDirectory = ""
         self.connectionState = .connecting(step: "Initializing native Darwin PTY...")
         self.passwordFeedSent = false
         
@@ -183,7 +190,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             throw NSError(domain: "ApexSSH", code: 1, userInfo: [NSLocalizedDescriptionKey: "openpty failed"])
         }
         
-        self.ptyMasterFd = master
+        stateLock.withLock { self.ptyMasterFd = master }
         _ = ioctl(master, TIOCSWINSZ, &win)
         
         // Setup command & arguments
@@ -245,7 +252,15 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         var spawnAttributes: posix_spawnattr_t?
         posix_spawnattr_init(&spawnAttributes)
         defer { posix_spawnattr_destroy(&spawnAttributes) }
-        posix_spawnattr_setflags(&spawnAttributes, Int16(POSIX_SPAWN_SETPGROUP))
+        // Swift concurrency workers may inherit blocked signals. SSH must receive SIGWINCH.
+        var signalMask = sigset_t()
+        sigemptyset(&signalMask)
+        posix_spawnattr_setsigmask(&spawnAttributes, &signalMask)
+        var defaultSignals = sigset_t()
+        sigemptyset(&defaultSignals)
+        sigaddset(&defaultSignals, SIGWINCH)
+        posix_spawnattr_setsigdefault(&spawnAttributes, &defaultSignals)
+        posix_spawnattr_setflags(&spawnAttributes, Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF))
         posix_spawnattr_setpgroup(&spawnAttributes, 0)
         let spawnResult = posix_spawnp(&pid, binaryPath, &fileActions, &spawnAttributes, cArgs, cEnv)
         for ptr in cArgs {
@@ -258,6 +273,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         
         guard spawnResult == 0 else {
             self.connectionState = .failed("posix_spawn failed with error: \(spawnResult)")
+            stateLock.withLock { self.ptyMasterFd = -1 }
             close(master)
             return
         }
@@ -298,8 +314,15 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
                 source.cancel()
             }
         }
-        source.setCancelHandler {
-            close(master)
+        source.setCancelHandler { [weak self] in
+            if let self {
+                self.stateLock.withLock {
+                    if self.ptyMasterFd == master { self.ptyMasterFd = -1 }
+                    close(master)
+                }
+            } else {
+                close(master)
+            }
         }
         source.resume()
         self.readSource = source
@@ -326,16 +349,19 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         pendingProbe?.cancel()
         probeTask = nil
         await pendingProbe?.value
-        readSource?.cancel()
+        let source = readSource
         readSource = nil
-        
-        terminatePTYProcess()
-        
-        if ptyMasterFd >= 0 {
-            close(ptyMasterFd)
+        let master = stateLock.withLock { () -> Int32 in
+            let descriptor = ptyMasterFd
             ptyMasterFd = -1
+            return descriptor
         }
-        
+        source?.cancel()
+        terminatePTYProcess()
+        // Once a read source owns the descriptor, only its cancel handler closes it.
+        // Closing twice can close an unrelated descriptor reused by another connection.
+        if source == nil, master >= 0 { close(master) }
+
         // Clean up multiplex socket
         let socket = controlSocketPath
         if FileManager.default.fileExists(atPath: socket) {
@@ -373,16 +399,30 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     }
 
     public func sendInputSync(_ data: Data) {
-        guard ptyMasterFd >= 0 else { return }
-        if data.contains(13) || data.contains(10) {
-            hasPendingCommandExecution = true
-        }
-        data.withUnsafeBytes { rawBuffer in
-            guard let baseAddress = rawBuffer.baseAddress else { return }
-            _ = write(ptyMasterFd, baseAddress, rawBuffer.count)
+        guard !data.isEmpty else { return }
+        let descriptor = stateLock.withLock { ptyMasterFd >= 0 ? dup(ptyMasterFd) : -1 }
+        guard descriptor >= 0 else { return }
+        if data.contains(13) || data.contains(10) { hasPendingCommandExecution = true }
+        // A duplicated descriptor prevents queued input from reaching a reused fd after reconnect.
+        inputQueue.async {
+            defer { close(descriptor) }
+            Self.writePTYInput(data, to: descriptor)
         }
     }
-    
+
+    static func writePTYInput(_ data: Data, to descriptor: Int32) {
+        data.withUnsafeBytes { raw in
+            guard let base = raw.baseAddress else { return }
+            var offset = 0
+            while offset < raw.count {
+                let written = write(descriptor, base.advanced(by: offset), min(4096, raw.count - offset))
+                if written > 0 { offset += written }
+                else if written < 0 && errno == EINTR { continue }
+                else { return }
+            }
+        }
+    }
+
     public func sendInput(_ data: Data) async throws {
         sendInputSync(data)
     }
@@ -404,12 +444,8 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         }
     }
     
-    private var controlSocketPath: String {
-        let safeHost = session.host.replacingOccurrences(of: "/", with: "_")
-        let safeUser = session.username.replacingOccurrences(of: "/", with: "_")
-        return "/tmp/apex_ctrl_\(safeHost)_\(session.port)_\(safeUser)"
-    }
-    
+    var controlSocketPath: String { "/tmp/apex_ctrl_\(controlSocketIdentifier)" }
+
     public func probeRemoteHome() async -> String? {
         await resolvePasswordIfNeeded()
         let process = Process()
@@ -499,8 +535,8 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     }
     
     private static let promptRegex: NSRegularExpression? = {
-        let pattern = #"(?:[:\s]|^)((?:/|~)[a-zA-Z0-9_\-\./]*)\s*(?:\([^\)]+\)\s*)?[\$#%>](?:\s|$)"#
-        return try? NSRegularExpression(pattern: pattern)
+        let pattern = #"(?:[: \t]|^)((?:/|~)[a-zA-Z0-9_\-\./]*)[ \t]*(?:\([^\)\r\n]+\)[ \t]*)?[\$#%>](?:[ \t]|$)"#
+        return try? NSRegularExpression(pattern: pattern, options: [.anchorsMatchLines])
     }()
     
     private static let stripCsiRegex: NSRegularExpression? = {
@@ -512,38 +548,11 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     }()
 
     private func parseOSC7DirectoryChange(data: Data) {
-        guard let text = String(data: data, encoding: .utf8) else { return }
-        
-        // Fast path: skip directory parsing for normal keystroke echoes and pure text streams
-        let hasTrigger = text.contains("\u{001B}]") || text.contains("\n") || text.contains("\r") ||
-                         text.contains("$") || text.contains("#") || text.contains("%") || text.contains(">")
-        guard hasTrigger else { return }
-        
-        // 1. Standard OSC 7 format (\e]7;file://hostname/path\a or \e\\)
-        if let start = text.range(of: "\u{001B}]7;file://") {
-            let rest = text[start.upperBound...]
-            if let end = rest.firstIndex(of: "\u{0007}") ?? rest.range(of: "\u{001B}\\")?.lowerBound {
-                let urlString = String(rest[..<end])
-                if let slash = urlString.firstIndex(of: "/") {
-                    let path = String(urlString[slash...])
-                    resolveAndDispatchDirectory(path)
-                    return
-                }
-            }
-        }
-        
-        // 2. OSC 0 & OSC 2 Window Title format (\e]0;user@host: ~/dir\a - default in Ubuntu/Debian/CentOS bash PS1)
-        if let start = text.range(of: "\u{001B}]0;") ?? text.range(of: "\u{001B}]2;") {
-            let rest = text[start.upperBound...]
-            if let end = rest.firstIndex(of: "\u{0007}") ?? rest.range(of: "\u{001B}\\")?.lowerBound {
-                let title = String(rest[..<end])
-                if let rawPath = Self.directoryFromWindowTitle(title) {
-                    resolveAndDispatchDirectory(rawPath)
-                    return
-                }
-            }
-        }
-        
+        let parsed = directoryStream.consume(data)
+        for path in parsed.paths { resolveAndDispatchDirectory(path) }
+        let text = parsed.text
+        guard !text.isEmpty else { return }
+
         // 3. Shell prompt CWD tracking fallback using sliding window to handle packet fragmentation
         var clean = text
         if let csi = Self.stripCsiRegex {
@@ -559,14 +568,17 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         }
         
         // Match prompt pattern like ubuntu@host:~/services$ or user@host /var/log % or root@host:/etc#
-        if let regex = Self.promptRegex {
-            let nsStr = recentPromptBuffer as NSString
-            let matches = regex.matches(in: recentPromptBuffer, range: NSRange(location: 0, length: nsStr.length))
-            if let lastMatch = matches.last, lastMatch.numberOfRanges > 1 {
-                let raw = nsStr.substring(with: lastMatch.range(at: 1))
-                resolveAndDispatchDirectory(raw)
-            }
+        if let raw = Self.directoryFromPrompt(recentPromptBuffer) {
+            resolveAndDispatchDirectory(raw)
         }
+    }
+
+    static func directoryFromPrompt(_ text: String) -> String? {
+        guard let regex = promptRegex else { return nil }
+        let nsText = text as NSString
+        guard let match = regex.matches(in: text, range: NSRange(location: 0, length: nsText.length)).last,
+              match.numberOfRanges > 1 else { return nil }
+        return nsText.substring(with: match.range(at: 1))
     }
 
     /// Shells also put the running command in OSC titles. Only a host-prefixed title is a CWD hint.
@@ -665,7 +677,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         // Ensure trailing slash so that symbolic links pointing to directories are properly traversed by ls
         let targetPath = path.hasSuffix("/") ? path : "\(path)/"
         let quotedPath = Self.quoteRemotePath(targetPath)
-        let cmd = "ls -la --time-style=+%s \(quotedPath) 2>/dev/null || ls -la \(quotedPath)"
+        let cmd = "LC_ALL=C ls -la --time-style=+%s \(quotedPath) 2>/dev/null || LC_ALL=C ls -la -D '%s' \(quotedPath) 2>/dev/null || LC_ALL=C ls -la \(quotedPath)"
         let ctrlArgs = [
             "-o", "ControlMaster=auto",
             "-o", "ControlPath=\(controlSocketPath)",
@@ -712,6 +724,10 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         }
         guard let output = String(data: data, encoding: .utf8) else { return [] }
 
+        return Self.parseDirectoryListing(output, path: path)
+    }
+
+    static func parseDirectoryListing(_ output: String, path: String) -> [SFTPItem] {
         var items: [SFTPItem] = []
         let lines = output.components(separatedBy: "\n")
         for line in lines {
@@ -729,7 +745,8 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             let nameIndex = isEpoch ? 6 : (parts.count >= 9 ? 8 : 7)
             guard parts.count > nameIndex else { continue }
             
-            let rawName = parts.dropFirst(nameIndex).joined(separator: " ")
+            // Keep the original filename suffix; joining tokens destroys repeated spaces.
+            let rawName = String(line[parts[nameIndex].startIndex...])
             if rawName == "." || rawName == ".." || rawName.isEmpty { continue }
             
             var name = rawName
@@ -760,6 +777,11 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         return items
     }
     
+    static func scpRemoteSpecifier(username: String, host: String, path: String) -> String {
+        let address = host.contains(":") && !host.hasPrefix("[") ? "[\(host)]" : host
+        return "\(username)@\(address):\(path)"
+    }
+
     public func downloadFile(remotePath: String, localURL: URL, progress: @Sendable @escaping (Double) -> Void) async throws {
         await resolvePasswordIfNeeded()
         let process = Process()
@@ -775,10 +797,12 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         ]
         baseArgs.append(contentsOf: sshAuthArgs())
         baseArgs.append(contentsOf: jumpServerArgs())
-        let escapedRemote = remotePath.contains(" ") ? "\"\(remotePath)\"" : remotePath
+        // Modern scp uses SFTP: the remote path is already one argv operand.
+        // Shell quote characters would become part of the filename.
+        let escapedRemote = remotePath
         baseArgs.append(contentsOf: [
             "-P", "\(session.port)",
-            "\(session.username)@\(session.host):\(escapedRemote)",
+            Self.scpRemoteSpecifier(username: session.username, host: session.host, path: escapedRemote),
             localURL.path
         ])
         
@@ -815,11 +839,13 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         ]
         baseArgs.append(contentsOf: sshAuthArgs())
         baseArgs.append(contentsOf: jumpServerArgs())
-        let escapedRemote = remotePath.contains(" ") ? "\"\(remotePath)\"" : remotePath
+        // Modern scp uses SFTP: the remote path is already one argv operand.
+        // Shell quote characters would become part of the filename.
+        let escapedRemote = remotePath
         baseArgs.append(contentsOf: [
             "-P", "\(session.port)",
             localURL.path,
-            "\(session.username)@\(session.host):\(escapedRemote)"
+            Self.scpRemoteSpecifier(username: session.username, host: session.host, path: escapedRemote)
         ])
         
         if let pw = resolvedPassword, !pw.isEmpty, let passBin = sshpass {

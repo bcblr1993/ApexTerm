@@ -235,6 +235,7 @@ final class ComprehensiveFeatureTests: XCTestCase {
             tab.currentRemotePath = "/home/ubuntu"
         }
         
+        let refreshed = expectation(description: "Same-directory refresh after prompt debounce")
         let observer = NotificationCenter.default.addObserver(
             forName: NSNotification.Name("SFTPDirectoryRefreshNeeded"),
             object: nil,
@@ -242,6 +243,7 @@ final class ComprehensiveFeatureTests: XCTestCase {
         ) { notif in
             if let path = notif.object as? String, path == "/home/ubuntu" {
                 tracker.refreshCount += 1
+                refreshed.fulfill()
             }
         }
         defer { NotificationCenter.default.removeObserver(observer) }
@@ -249,8 +251,7 @@ final class ComprehensiveFeatureTests: XCTestCase {
         // When client triggers directory change to the same path
         client.triggerDirectoryChange(to: "/home/ubuntu")
         
-        // Wait for MainActor task
-        try await Task.sleep(nanoseconds: 50_000_000)
+        await fulfillment(of: [refreshed], timeout: 2)
         
         let count = tracker.refreshCount
         XCTAssertGreaterThanOrEqual(count, 1)

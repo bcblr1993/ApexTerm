@@ -51,6 +51,9 @@ public struct SFTPView: View {
     @State private var editorContent = ""
     @State private var isDropTargeted = false
     @State private var transferNotice: String?
+    @State private var creationFailureDetails: String?
+    @State private var creationFailureNotice: String?
+    @State private var isShowingCreationFailure = false
     @State private var loadError: String?
     @State private var isOpeningEditor = false
     @State private var isTransferDrawerExpanded = false
@@ -110,6 +113,16 @@ public struct SFTPView: View {
                 .autocorrectionDisabled()
                 .textFieldStyle(.roundedBorder)
                 .font(.system(size: 12, design: .monospaced))
+
+                Button("复制当前路径", systemImage: "doc.on.doc") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(currentPath, forType: .string)
+                }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("复制当前浏览目录的路径")
+                .disabled(currentPath.isEmpty)
 
                 Toggle(isOn: $isLinkageEnabled) {
                     Label(isLinkageEnabled ? L10n.linkageOn : L10n.linkageOff,
@@ -196,8 +209,12 @@ public struct SFTPView: View {
             HStack {
                 if let notice = transferNotice {
                     Button(action: {
-                        withAnimation(.spring(duration: 0.25)) {
-                            isTransferDrawerExpanded = true
+                        if creationFailureNotice == notice, creationFailureDetails != nil {
+                            isShowingCreationFailure = true
+                        } else {
+                            withAnimation(.spring(duration: 0.25)) {
+                                isTransferDrawerExpanded = true
+                            }
                         }
                     }) {
                         HStack(spacing: 5) {
@@ -223,7 +240,7 @@ public struct SFTPView: View {
                         )
                     }
                     .buttonStyle(.plain)
-                    .help("点击打开传输任务记录抽屉")
+                    .help(creationFailureNotice == notice ? "点击查看创建失败原因与完整远端错误" : "点击打开传输任务记录抽屉")
                     .transition(.opacity)
                     if notice.contains("失败") {
                         Button(action: { transferNotice = nil }) {
@@ -311,7 +328,7 @@ public struct SFTPView: View {
                     Table(of: SFTPItem.self, selection: $selectedPaths, sortOrder: $tableSortOrder) {
                         TableColumn("名称", value: \.name) { item in
                             HStack {
-                                Image(systemName: fileIcon(for: item)).foregroundStyle(fileColor(for: item))
+                                Image(systemName: fileIcon(for: item)).foregroundStyle(selectedPaths.contains(item.path) ? Color.primary : fileColor(for: item))
                                 Text(item.name).lineLimit(1)
                             }.help(item.path)
                         }
@@ -330,6 +347,8 @@ public struct SFTPView: View {
                             TableRow(item).itemProvider { handleDragDownload(for: item) }
                         }
                     }
+                    // Keep the system's semantic selection foreground instead of inheriting a theme's fixed text color.
+                    .foregroundStyle(Color.primary)
                     .contextMenu(forSelectionType: String.self) { ids in
                         if ids.count == 1, let path = ids.first, let item = items.first(where: { $0.path == path }) {
                             fileContextActions(item)
@@ -398,6 +417,11 @@ public struct SFTPView: View {
             }
         }
         .background(WindowReferenceView(reference: windowReference).frame(width: 0, height: 0))
+        .alert("创建失败", isPresented: $isShowingCreationFailure) {
+            Button("好", role: .cancel) {}
+        } message: {
+            Text(creationFailureDetails ?? "")
+        }
         .sheet(isPresented: $isTransferDrawerExpanded) {
             TransferDrawer(isExpanded: $isTransferDrawerExpanded)
                 .frame(width: 700, height: 360)
@@ -719,6 +743,22 @@ public struct SFTPView: View {
         }
     }
     
+    private func showCreationFailure(operation: String, target: String, error: Error) {
+        let remoteError = error.localizedDescription
+        let reason: String
+        if remoteError.localizedCaseInsensitiveContains("Permission denied") {
+            reason = "当前用户没有目标文件或目录的写入权限，请联系管理员授权或选择可写目录。"
+        } else if remoteError.localizedCaseInsensitiveContains("Read-only file system") {
+            reason = "目标文件系统为只读，请选择可写目录。"
+        } else {
+            reason = remoteError
+        }
+        let notice = "\(operation)失败：\(reason)"
+        creationFailureNotice = notice
+        creationFailureDetails = "\(reason)\n\n目标：\(target)\n\n远端错误：\(remoteError)"
+        transferNotice = notice
+    }
+
     private func performCreateFolder(name: String) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, let s = session else { return }
@@ -737,7 +777,7 @@ public struct SFTPView: View {
                 }
             } catch {
                 await MainActor.run {
-                    self.transferNotice = "新建文件夹失败: \(error.localizedDescription)"
+                    self.showCreationFailure(operation: "新建文件夹", target: target, error: error)
                 }
             }
         }
@@ -761,7 +801,7 @@ public struct SFTPView: View {
                 }
             } catch {
                 await MainActor.run {
-                    self.transferNotice = "新建文件失败: \(error.localizedDescription)"
+                    self.showCreationFailure(operation: "新建文件", target: target, error: error)
                 }
             }
         }

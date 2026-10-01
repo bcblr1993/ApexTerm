@@ -1,11 +1,6 @@
 // Restores only input sources temporarily created by the real-IME UI fixture.
 import Carbon
 import Foundation
-guard CommandLine.arguments.count == 2, let data = Data(base64Encoded: CommandLine.arguments[1]),
-      let configuration = try JSONSerialization.jsonObject(with: data) as? [Any], configuration.count == 2 else { exit(64) }
-guard let originalID = configuration[0] as? String,
-      let originalEnabled = configuration[1] as? [String] else { exit(64) }
-let baseline = Set(originalEnabled)
 func identifier(_ source: TISInputSource) -> String {
     Unmanaged<CFString>.fromOpaque(TISGetInputSourceProperty(source, kTISPropertyInputSourceID)).takeUnretainedValue() as String
 }
@@ -18,7 +13,22 @@ func source(_ id: String) -> TISInputSource? {
           let object = (list.takeRetainedValue() as NSArray).firstObject else { return nil }
     return (object as! TISInputSource)
 }
+guard CommandLine.arguments.count == 2 else { exit(64) }
+if CommandLine.arguments[1] == "--snapshot" {
+    guard let current = TISCopyCurrentKeyboardInputSource() else { exit(4) }
+    FileHandle.standardOutput.write(try JSONSerialization.data(withJSONObject: [
+        "enabled": Array(enabled()), "selected": identifier(current.takeRetainedValue())]))
+    exit(0)
+}
+guard let data = Data(base64Encoded: CommandLine.arguments[1]),
+      let configuration = try JSONSerialization.jsonObject(with: data) as? [Any], configuration.count == 2,
+      let originalID = configuration[0] as? String,
+      let originalEnabled = configuration[1] as? [String] else { exit(64) }
+let baseline = Set(originalEnabled)
 for _ in 0..<4 {
+    for id in baseline.subtracting(enabled()) {
+        if let input = source(id) { guard TISEnableInputSource(input) == noErr else { exit(5) } }
+    }
     if let original = source(originalID) { guard TISSelectInputSource(original) == noErr else { exit(2) } }
     let added = enabled().subtracting(baseline).filter {
         $0 == "com.apple.keylayout.PinyinKeyboard" || $0 == "com.apple.inputmethod.SCIM" || $0.hasPrefix("com.apple.inputmethod.SCIM.")

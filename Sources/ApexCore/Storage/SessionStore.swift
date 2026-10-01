@@ -30,6 +30,10 @@ public final class SessionStore: ObservableObject {
     }
 
     static func defaultDirectory(appSupport: URL, bundleIdentifier: String?) -> URL {
+        if let bundleIdentifier, bundleIdentifier.hasPrefix("com.apexterm.qa.") {
+            return appSupport.appendingPathComponent("ApexTerm QA", isDirectory: true)
+                .appendingPathComponent(bundleIdentifier, isDirectory: true)
+        }
         let name = bundleIdentifier == "com.apexterm.candidate" ? "ApexTerm Candidate" : "ApexTerm"
         return appSupport.appendingPathComponent(name, isDirectory: true)
     }

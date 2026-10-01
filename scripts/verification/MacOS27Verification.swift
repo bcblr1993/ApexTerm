@@ -35,6 +35,11 @@ struct ThemeVerificationApp: App {
         if testRun != nil {
             precondition(bundleID.hasPrefix("com.apexterm.qa."), "Only isolated QA applications may reset test settings")
             AppSettings.shared.resetToDefaults()
+            UserDefaults.standard.set(true, forKey: "workspace.filesVisible")
+            UserDefaults.standard.set(0.70, forKey: "workspace.filesSplitRatio")
+        }
+        if let name = environment["APEX_QA_THEME"], let theme = TerminalThemePreset(rawValue: name) {
+            AppSettings.shared.themePreset = theme
         }
         let directoryName = "store-" + bundleID + (testRun.map { "-" + $0.uuidString } ?? "")
         let directory = qaRepositoryRoot.appendingPathComponent("outputs/macos27/qa/" + directoryName)
@@ -268,6 +273,21 @@ struct ThemeVerificationApp: App {
                     }
                 }
                 NSApplication.shared.setActivationPolicy(.regular)
+                if ProcessInfo.processInfo.environment["APEX_QA_RAISE_WINDOW"] == "1" {
+                    for _ in 0..<10 {
+                        if NSApplication.shared.windows.contains(where: { $0.isVisible }) { break }
+                        try? await Task.sleep(for: .milliseconds(20))
+                    }
+                    // Isolate QA input from unrelated floating review windows on the test desktop.
+                    for window in NSApplication.shared.windows where window.isVisible {
+                        window.level = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 1)
+                        if ProcessInfo.processInfo.environment["APEX_QA_SIDE_BY_SIDE"] == "1", let screen = window.screen {
+                            let visible = screen.visibleFrame
+                            window.setFrame(NSRect(x: visible.minX, y: visible.maxY - 700, width: max(960, visible.width / 2), height: 700), display: true)
+                        }
+                        window.makeKeyAndOrderFront(nil)
+                    }
+                }
                 if ProcessInfo.processInfo.environment["APEX_QA_SOAK"] != "1" { NSApplication.shared.activate(ignoringOtherApps: true) }
                 if ProcessInfo.processInfo.environment["APEX_QA_CONNECT"] == "1" || ProcessInfo.processInfo.environment["APEX_QA_SOAK"] == "1" {
                     try? await tab.sshClient.connect()
@@ -321,6 +341,7 @@ struct ThemeVerificationApp: App {
                             }
                         }
                     }
+                    .keyboardShortcut("x", modifiers: [.command, .option, .shift])
                 }
             }
         }
@@ -350,7 +371,9 @@ struct ThemeVerificationApp: App {
         var failures: [String] = []
         let manager = TransferManager.shared
         func report(completed: Bool, phase: String = "workload") {
-            let data: [String: Any] = ["completed": completed, "phase": phase, "requestedDurationSeconds": durationSeconds, "outputSource": realSSH ? "real SSH PTY output" : "synthetic RingBuffer load", "elapsed": start.duration(to: .now).description,
+            let data: [String: Any] = ["processIdentifier": ProcessInfo.processInfo.processIdentifier,
+                "runIdentifier": ProcessInfo.processInfo.environment["APEX_QA_UI_RUN_ID"] ?? "",
+                "completed": completed, "phase": phase, "requestedDurationSeconds": durationSeconds, "outputSource": realSSH ? "real SSH PTY output" : "synthetic RingBuffer load", "elapsed": start.duration(to: .now).description,
                 "outputLines": cycle * 80, "committedLines": tab.ringBuffer.committedLineCount,
                 "historyLimit": tab.ringBuffer.maxLines, "transferChecks": transfers,
                 "transferRecords": manager.tasks.count, "inputChecks": echoes, "metricHistory": tab.metricsHistory.snapshots.count,
@@ -359,6 +382,7 @@ struct ThemeVerificationApp: App {
                 try? json.write(to: root.appendingPathComponent("progress.json"), options: .atomic)
             }
         }
+        report(completed: false, phase: "connected")
         while start.duration(to: .now) < .seconds(durationSeconds) && !Task.isCancelled {
             let logs = (0..<80).map { "[QA] cycle=\(cycle) row=\($0) status=OK simulated output for bounded scrollback\n" }.joined()
             if realSSH {

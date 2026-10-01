@@ -51,7 +51,8 @@ public struct ShortcutsSheetView: View {
                 ShortcutItem(keys: ["⌃", "Z"], description: "挂起后台任务 (SIGTSTP)"),
                 ShortcutItem(keys: ["⌃", "L"], description: "清空终端屏幕"),
                 ShortcutItem(keys: ["⌘", "C"], description: "复制选中文本"),
-                ShortcutItem(keys: ["⌘", "V"], description: "粘贴剪切板内容")
+                ShortcutItem(keys: ["⌘", "V"], description: "粘贴剪切板内容"),
+                ShortcutItem(keys: ["⌘", "+ / − / 0"], description: "放大、缩小或重置终端字号")
             ]
         ),
         ShortcutGroup(

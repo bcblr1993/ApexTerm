@@ -5,6 +5,12 @@ public struct FormattedSpan: Sendable, Equatable {
     public let foregroundColorHex: String?
     public let isBold: Bool
     public let ansiColorIndex: Int?
+    public var backgroundColorHex: String? = nil
+    public var backgroundANSIColorIndex: Int? = nil
+    public var isItalic = false
+    public var isUnderlined = false
+    public var isStrikethrough = false
+    public var isInverse = false
     
     public init(text: String, foregroundColorHex: String? = nil, isBold: Bool = false, ansiColorIndex: Int? = nil) {
         self.text = text
@@ -18,20 +24,29 @@ public struct FormattedSpan: Sendable, Equatable {
 public final class VTParser: Sendable {
     public init() {}
     
+    private func span(_ text: String, style: SGRStyle) -> FormattedSpan {
+        var result = FormattedSpan(text: text, foregroundColorHex: style.foreground, isBold: style.bold, ansiColorIndex: style.index)
+        result.backgroundColorHex = style.background
+        result.backgroundANSIColorIndex = style.backgroundIndex
+        result.isItalic = style.italic
+        result.isUnderlined = style.underline
+        result.isStrikethrough = style.strikethrough
+        result.isInverse = style.inverse
+        return result
+    }
+
     /// Parse raw terminal output into readable text and formatted spans
     public func parseANSI(_ raw: String) -> [FormattedSpan] {
         var spans: [FormattedSpan] = []
         var currentText = ""
-        var currentColor: String? = nil
-        var currentBold = false
-        var currentIndex: Int? = nil
+        var style = SGRStyle(foreground: nil, index: nil, bold: false)
         
         var i = raw.startIndex
         while i < raw.endIndex {
             if raw[i] == "\u{001B}" { // ESC
                 // Flush accumulated text
                 if !currentText.isEmpty {
-                    spans.append(FormattedSpan(text: currentText, foregroundColorHex: currentColor, isBold: currentBold, ansiColorIndex: currentIndex))
+                    spans.append(span(currentText, style: style))
                     currentText = ""
                 }
                 
@@ -54,11 +69,7 @@ public final class VTParser: Sendable {
                         let finalChar = raw[j]
                         if finalChar == "m" { // SGR color/style
                             let codes = csiParam.split(separator: ";").compactMap { Int($0) }
-                            var style = SGRStyle(foreground: currentColor, index: currentIndex, bold: currentBold)
                             style.apply(codes)
-                            currentColor = style.foreground
-                            currentIndex = style.index
-                            currentBold = style.bold
                         }
                         i = j
                     } else {
@@ -87,7 +98,7 @@ public final class VTParser: Sendable {
         }
         
         if !currentText.isEmpty {
-            spans.append(FormattedSpan(text: currentText, foregroundColorHex: currentColor, isBold: currentBold, ansiColorIndex: currentIndex))
+            spans.append(span(currentText, style: style))
         }
         return spans
     }
@@ -104,9 +115,10 @@ public final class VTParser: Sendable {
             return standard16[idx]
         } else if idx < 232 {
             let offset = idx - 16
-            let r = (offset / 36) * 51
-            let g = ((offset % 36) / 6) * 51
-            let b = (offset % 6) * 51
+            let levels = [0, 95, 135, 175, 215, 255]
+            let r = levels[offset / 36]
+            let g = levels[(offset % 36) / 6]
+            let b = levels[offset % 6]
             return String(format: "#%02X%02X%02X", r, g, b)
         } else {
             let gray = (idx - 232) * 10 + 8

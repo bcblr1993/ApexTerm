@@ -39,6 +39,94 @@ final class VMIntegrationTests: XCTestCase {
         )
     }
     
+    func testVMVimEditingResizeAndSavedFileContents() async throws {
+        try requireVMConfig()
+        var config = vmSession
+        config.agentlessMonitorEnabled = false
+        let client = NativeSSHSession(session: config)
+        let buffer = TerminalRingBuffer()
+        buffer.setDimensions(columns: 80, rows: 24)
+        client.setOutputHandler { buffer.appendData($0) }
+        let directory = "/tmp/apex-vim-" + UUID().uuidString
+        let path = directory + "/vim.txt"
+        func waitFor(_ predicate: () -> Bool) async throws {
+            let deadline = ContinuousClock.now.advanced(by: .seconds(15))
+            while !predicate() && ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(100))
+            }
+            XCTAssertTrue(predicate(), "Remote Vim did not reach the expected state")
+        }
+        do {
+            try await client.createDirectory(remotePath: directory)
+            try await client.connect()
+            try await client.sendInput(Data("printf '\\nAPEX_VIM_READY\\n'\r".utf8))
+            try await waitFor { buffer.allLines().contains("APEX_VIM_READY") }
+            try await client.sendInput(Data("vim -Nu NONE -n '\(path)'\r".utf8))
+            try await waitFor { buffer.isInAlternateScreen }
+            XCTAssertFalse(buffer.isCursorHidden)
+            try await client.sendInput(Data("i中文\rtwo\rthree\u{1B}".utf8))
+            try await waitFor { buffer.screenLines?.contains(where: { $0.contains("three") }) == true }
+            // Exercise the application-cursor arrow encoding used by the AppKit key path.
+            let left = buffer.isApplicationCursorKeys ? "\u{1B}OD" : "\u{1B}[D"
+            try await client.sendInput(Data((left + "rx").utf8))
+            // Verify the remote acknowledgement, not just the local buffer size.
+            for (columns, rows) in [(60, 18), (90, 32), (70, 21)] {
+                buffer.setDimensions(columns: columns, rows: rows)
+                try await client.resizeTerminal(columns: columns, rows: rows)
+                try await Task.sleep(for: .milliseconds(300))
+                try await client.sendInput(Data("\u{1B}:set lines? columns?\r".utf8))
+                try await waitFor {
+                    let screen = buffer.screenLines?.joined(separator: "\n") ?? ""
+                    return screen.contains("lines=\(rows)") && screen.contains("columns=\(columns)")
+                }
+                try await client.sendInput(Data("\r".utf8))
+            }
+            try await client.sendInput(Data("\r\u{1B}:wq\r".utf8))
+            try await waitFor { !buffer.isInAlternateScreen }
+            let local = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: local) }
+            try await client.downloadFile(remotePath: path, localURL: local, progress: { _ in })
+            XCTAssertEqual(try String(contentsOf: local, encoding: .utf8), "中文\ntwo\nthrxe\n")
+            await client.disconnect()
+            try await client.removeFile(remotePath: path)
+            try await client.removeDirectory(remotePath: directory, recursive: false)
+        } catch {
+            await client.disconnect()
+            try? await client.removeFile(remotePath: path)
+            try? await client.removeDirectory(remotePath: directory, recursive: false)
+            throw error
+        }
+    }
+
+    func testVMUnicodeSpacesQuotesAndShellMetacharacterFileTransfer() async throws {
+        try requireVMConfig()
+        let client = NativeSSHSession(session: vmSession)
+        let directory = "/tmp/apex-transfer-" + UUID().uuidString
+        try await client.createDirectory(remotePath: directory)
+        let localDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: localDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: localDirectory) }
+        let name = "中文  'single' \"double\" $literal ; end.txt"
+        let source = localDirectory.appendingPathComponent(name)
+        let downloaded = localDirectory.appendingPathComponent("downloaded.txt")
+        let payload = Data("Unicode file transfer \n中文🚀\n".utf8)
+        try payload.write(to: source)
+        let path = directory + "/" + name
+        do {
+            try await client.uploadFile(localURL: source, remotePath: path, progress: { _ in })
+            let entries = try await client.listDirectory(path: directory)
+            XCTAssertTrue(entries.contains(where: { $0.name == name }))
+            try await client.downloadFile(remotePath: path, localURL: downloaded, progress: { _ in })
+            XCTAssertEqual(try Data(contentsOf: downloaded), payload)
+        } catch {
+            try? await client.removeFile(remotePath: path)
+            try? await client.removeDirectory(remotePath: directory, recursive: false)
+            throw error
+        }
+        try await client.removeFile(remotePath: path)
+        try await client.removeDirectory(remotePath: directory, recursive: false)
+    }
+
     // MARK: - Test 1: Real Agentless Metrics Probe
     func testVMRealAgentlessMetricsCollection() async throws {
         try requireVMConfig()

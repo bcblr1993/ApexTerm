@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import CoreText
 import ApexCore
 
 /// High-performance native AppKit Terminal View wrapper for SwiftUI with 120Hz ProMotion support
@@ -8,6 +9,7 @@ public struct TerminalRepresentable: NSViewRepresentable {
     public var isFocused: Bool = false
     public var onFocus: (() -> Void)? = nil
     public var isCopyOnSelectEnabled: Bool = true
+    public var triggers: [Trigger] = []
     public var onResize: ((Int, Int) -> Void)? = nil
     public var onFileDrop: ((URL) -> Void)? = nil
     public let onInput: (Data) -> Void
@@ -17,6 +19,7 @@ public struct TerminalRepresentable: NSViewRepresentable {
         isFocused: Bool = false,
         onFocus: (() -> Void)? = nil,
         isCopyOnSelectEnabled: Bool = true,
+        triggers: [Trigger] = [],
         onResize: ((Int, Int) -> Void)? = nil,
         onFileDrop: ((URL) -> Void)? = nil,
         onInput: @escaping (Data) -> Void
@@ -25,6 +28,7 @@ public struct TerminalRepresentable: NSViewRepresentable {
         self.isFocused = isFocused
         self.onFocus = onFocus
         self.isCopyOnSelectEnabled = isCopyOnSelectEnabled
+        self.triggers = triggers
         self.onResize = onResize
         self.onFileDrop = onFileDrop
         self.onInput = onInput
@@ -35,6 +39,7 @@ public struct TerminalRepresentable: NSViewRepresentable {
         scrollView.requestsInitialFocus = isFocused
         scrollView.terminalView.onInput = onInput
         scrollView.terminalView.ringBuffer = ringBuffer
+        scrollView.terminalView.setTriggers(triggers)
         scrollView.terminalView.isCopyOnSelectEnabled = isCopyOnSelectEnabled
         scrollView.terminalView.onResize = onResize
         scrollView.terminalView.onFileDrop = onFileDrop
@@ -76,6 +81,7 @@ public struct TerminalRepresentable: NSViewRepresentable {
             terminal.ringBuffer = ringBuffer
         }
         terminal.onInput = onInput
+        terminal.setTriggers(triggers)
         terminal.isCopyOnSelectEnabled = isCopyOnSelectEnabled
         terminal.onResize = onResize
         terminal.onFileDrop = onFileDrop
@@ -341,6 +347,15 @@ public final class NativeTerminalScrollView: NSScrollView {
     public let terminalView = NativeTerminalView()
     public let searchBarOverlay = TerminalFindBarView()
     var requestsInitialFocus = false
+
+    override public var scrollerStyle: NSScroller.Style {
+        get { super.scrollerStyle }
+        set {
+            // Input-device changes must not alter terminal columns or reflow the
+            // entire scrollback. Overlay scrollers keep the viewport width stable.
+            if super.scrollerStyle != .overlay { super.scrollerStyle = .overlay }
+        }
+    }
     
     override public init(frame frameRect: NSRect) {
         let initialFrame = (frameRect.width <= 0 || frameRect.height <= 0)
@@ -390,6 +405,7 @@ public final class NativeTerminalScrollView: NSScrollView {
     private func setupScrollView() {
         self.contentView = TerminalClipView()
         self.hasVerticalScroller = true
+        self.scrollerStyle = .overlay
         self.hasHorizontalScroller = false
         self.autohidesScrollers = true
         self.drawsBackground = true
@@ -406,10 +422,9 @@ public final class NativeTerminalScrollView: NSScrollView {
         
         self.documentView = terminalView
         
-        // 120Hz ProMotion GPU hardware acceleration layer
+        // AppKit owns synchronous text drawing; the compositor handles layer updates.
         self.wantsLayer = true
         self.layerContentsRedrawPolicy = .onSetNeedsDisplay
-        self.layer?.drawsAsynchronously = true
         self.contentView.wantsLayer = true
         self.contentView.layerContentsRedrawPolicy = .onSetNeedsDisplay
         
@@ -470,7 +485,7 @@ public final class NativeTerminalScrollView: NSScrollView {
                     terminalView.scrollToBottom(forceLayout: true)
                 }
             }
-            terminalView.notifyDimensionsChangedIfNeeded(immediate: true)
+            terminalView.notifyDimensionsChangedIfNeeded(immediate: !inLiveResize)
         }
     }
     
@@ -520,6 +535,10 @@ public final class NativeTerminalView: NSTextView {
     public var ringBuffer: TerminalRingBuffer? {
         didSet {
             if oldValue !== ringBuffer {
+                resizeDebounceTask?.cancel()
+                resizeDebounceTask = nil
+                pendingDimensions = nil
+                lastReportedDimensions = nil
                 lastCommittedIndex = 0
                 activeLineStartLocation = 0
                 textStorage?.setAttributedString(NSAttributedString())
@@ -534,10 +553,38 @@ public final class NativeTerminalView: NSTextView {
     public var onFocus: (() -> Void)? = nil
     
     private var lastReportedDimensions: (cols: Int, rows: Int)? = nil
+    private var renderedScreenRows: [NSAttributedString]?
     private var resizeDebounceTask: Task<Void, Never>? = nil
+    private var pendingDimensions: (cols: Int, rows: Int)?
     
     private let parser = VTParser()
-    private var lastCommittedIndex: Int64 = 0
+    private let keywordHighlighter = KeywordHighlighter()
+    private var activeTriggers: [Trigger] = []
+
+    public func setTriggers(_ triggers: [Trigger]) {
+        guard triggers != activeTriggers else { return }
+        activeTriggers = triggers
+        keywordHighlighter.setTriggers(triggers)
+        renderedScreenRows = nil
+        if (textStorage?.length ?? 0) > 0 {
+            textStorage?.setAttributedString(NSAttributedString())
+            lastCommittedIndex = 0
+            activeLineStartLocation = 0
+            refresh()
+        }
+    }
+    private var renderedActiveLine: String?
+    private var renderedCommittedLineLengths: [Int] = []
+    private var renderedLineHead = 0
+    private var lastCommittedIndex: Int64 = 0 {
+        didSet {
+            if lastCommittedIndex == 0 {
+                renderedActiveLine = nil
+                renderedCommittedLineLengths.removeAll(keepingCapacity: true)
+                renderedLineHead = 0
+            }
+        }
+    }
     private var activeLineStartLocation = 0
     private var customInputContext: NSTextInputContext?
     private var currentMarkedText: String = ""
@@ -546,6 +593,7 @@ public final class NativeTerminalView: NSTextView {
     // Terminal frame coalescing & throttling
     private let refreshLock = NSLock()
     nonisolated(unsafe) private var isRefreshScheduled: Bool = false
+    nonisolated(unsafe) private var refreshRequestedDuringRefresh: Bool = false
     
     // Terminal cursor and blinking state
     private var isCursorVisible: Bool = true
@@ -557,6 +605,7 @@ public final class NativeTerminalView: NSTextView {
     // High-performance styling cache for zero-allocation 120Hz rendering
     private var cachedBaseFont: NSFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
     private var cachedBoldFont: NSFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .bold)
+    private var glyphAdvanceCache: [String: CGFloat] = [:]
     private static var colorCache: [String: NSColor] = [:]
     private static let colorCacheLock = NSLock()
     
@@ -565,22 +614,16 @@ public final class NativeTerminalView: NSTextView {
     
     /// Calculate current rows and columns based on visible scroll view bounds and font metrics
     public func calculateTerminalDimensions() -> (cols: Int, rows: Int) {
-        let font = self.font ?? cachedBaseFont
+        let font = cachedBaseFont
         let layoutManager = self.layoutManager
         let lineHeight = max(12, layoutManager?.defaultLineHeight(for: font) ?? 16)
         let charWidth = max(6, ("M" as NSString).size(withAttributes: [.font: font]).width)
         
-        let containerWidth = max(
-            self.enclosingScrollView?.contentView.bounds.width ?? 0,
-            self.enclosingScrollView?.bounds.width ?? 0,
-            self.bounds.width
-        )
-        let containerHeight = max(
-            self.enclosingScrollView?.contentView.bounds.height ?? 0,
-            self.enclosingScrollView?.bounds.height ?? 0,
-            self.bounds.height
-        )
-        
+        // PTY dimensions describe the visible viewport, never the scrollback document.
+        let viewport = enclosingScrollView?.contentView.bounds.size ?? bounds.size
+        let containerWidth = viewport.width
+        let containerHeight = viewport.height
+
         let visibleWidth = max(60, containerWidth)
         let visibleHeight = max(40, containerHeight)
         
@@ -651,21 +694,31 @@ public final class NativeTerminalView: NSTextView {
         let (cols, rows) = calculateTerminalDimensions()
         ringBuffer?.setDimensions(columns: cols, rows: rows)
         if lastReportedDimensions?.cols != cols || lastReportedDimensions?.rows != rows {
+            if !immediate, pendingDimensions?.cols == cols, pendingDimensions?.rows == rows { return }
             resizeDebounceTask?.cancel()
             resizeDebounceTask = nil
+            pendingDimensions = nil
             
             if immediate {
                 self.lastReportedDimensions = (cols, rows)
                 self.onResize?(cols, rows)
             } else {
+                pendingDimensions = (cols, rows)
                 resizeDebounceTask = Task { @MainActor [weak self] in
                     // 100ms debounce ensures remote PTY only resizes after active dragging pauses
                     try? await Task.sleep(nanoseconds: 100_000_000)
                     guard !Task.isCancelled, let self = self else { return }
+                    self.pendingDimensions = nil
+                    self.resizeDebounceTask = nil
                     self.lastReportedDimensions = (cols, rows)
                     self.onResize?(cols, rows)
                 }
             }
+        } else if pendingDimensions != nil {
+            // The divider returned to the already-reported size before the timer fired.
+            resizeDebounceTask?.cancel()
+            resizeDebounceTask = nil
+            pendingDimensions = nil
         }
     }
     
@@ -716,18 +769,26 @@ public final class NativeTerminalView: NSTextView {
     nonisolated public func scheduleRefresh() {
         refreshLock.lock()
         if isRefreshScheduled {
+            refreshRequestedDuringRefresh = true
             refreshLock.unlock()
             return
         }
         isRefreshScheduled = true
         refreshLock.unlock()
         
-        DispatchQueue.main.async { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(8)) { [weak self] in
             guard let self = self else { return }
             self.refreshLock.lock()
-            self.isRefreshScheduled = false
+            self.refreshRequestedDuringRefresh = false
             self.refreshLock.unlock()
             self.refresh()
+            self.refreshLock.lock()
+            let needsAnotherRefresh = self.refreshRequestedDuringRefresh
+            self.isRefreshScheduled = false
+            self.refreshLock.unlock()
+            // Start the next deadline after this layout completes, so slow frames
+            // cannot leave an already-due refresh continuously draining the main queue.
+            if needsAnotherRefresh { self.scheduleRefresh() }
         }
     }
     
@@ -770,7 +831,6 @@ public final class NativeTerminalView: NSTextView {
         // Enable hardware accelerated rendering
         self.wantsLayer = true
         self.layerContentsRedrawPolicy = .onSetNeedsDisplay
-        self.layer?.drawsAsynchronously = true
         
         self.registerForDraggedTypes([.fileURL])
         
@@ -791,6 +851,9 @@ public final class NativeTerminalView: NSTextView {
 
     public func applyAppSettings() {
         let settings = AppSettings.shared
+        let wasPinned = isPinnedToBottom
+        let previousScrollOrigin = enclosingScrollView?.contentView.bounds.origin
+        ringBuffer?.setHistoryLimit(settings.scrollbackMaxLines)
         
         // 1. Font
         let baseSize = CGFloat(settings.fontSize)
@@ -802,9 +865,11 @@ public final class NativeTerminalView: NSTextView {
         } else {
             resolvedFont = NSFont.monospacedSystemFont(ofSize: baseSize, weight: .regular)
         }
-        self.font = resolvedFont
+        let fontChanged = cachedBaseFont.fontName != resolvedFont.fontName || cachedBaseFont.pointSize != resolvedFont.pointSize
+        if fontChanged || (textStorage?.length ?? 0) == 0 { self.font = resolvedFont }
         self.cachedBaseFont = resolvedFont
         self.cachedBoldFont = NSFontManager.shared.convert(resolvedFont, toHaveTrait: .boldFontMask)
+        glyphAdvanceCache.removeAll(keepingCapacity: true)
         
         // 2. Theme & Colors
         let theme = settings.themePreset
@@ -823,9 +888,15 @@ public final class NativeTerminalView: NSTextView {
             storage.enumerateAttribute(NSAttributedString.Key("ApexThemeColor"), in: NSRange(location: 0, length: storage.length)) { value, range, _ in
                 guard let index = value as? Int else { return }
                 if index == -1 { storage.addAttribute(.foregroundColor, value: fg, range: range) }
+                else if index == -3 { storage.addAttribute(.foregroundColor, value: bg, range: range) }
                 else if index >= 0, let color = NSColor(hex: theme.palette.terminalColor(at: index)) {
                     storage.addAttribute(.foregroundColor, value: color, range: range)
                 }
+            }
+            storage.enumerateAttribute(NSAttributedString.Key("ApexThemeBackground"), in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+                guard let index = value as? Int else { return }
+                if index == -1 { storage.addAttribute(.backgroundColor, value: fg, range: range) }
+                else if index >= 0, let color = NSColor(hex: theme.palette.terminalColor(at: index)) { storage.addAttribute(.backgroundColor, value: color, range: range) }
             }
             storage.endEditing()
         }
@@ -838,6 +909,22 @@ public final class NativeTerminalView: NSTextView {
             startCursorBlink()
         }
         
+        renderedScreenRows = nil
+        if ringBuffer?.isInAlternateScreen == true { refresh() }
+        else if fontChanged, ringBuffer != nil {
+            // Recompute wide-glyph advances and ANSI font traits for existing output.
+            textStorage?.setAttributedString(NSAttributedString())
+            lastCommittedIndex = 0
+            activeLineStartLocation = 0
+            isPinnedToBottom = wasPinned
+            refresh()
+            if !wasPinned, let origin = previousScrollOrigin, let clip = enclosingScrollView?.contentView {
+                clip.scroll(to: origin)
+                enclosingScrollView?.reflectScrolledClipView(clip)
+                isPinnedToBottom = false
+            }
+        }
+
         // 4. Copy behavior
         self.isCopyOnSelectEnabled = settings.isCopyOnSelectEnabled
         
@@ -858,6 +945,7 @@ public final class NativeTerminalView: NSTextView {
         let ok = super.becomeFirstResponder()
         if ok {
             isFocused = true
+            inputContext?.activate()
             startCursorBlink()
             onFocus?()
         }
@@ -867,6 +955,7 @@ public final class NativeTerminalView: NSTextView {
     override public func resignFirstResponder() -> Bool {
         let ok = super.resignFirstResponder()
         if ok {
+            inputContext?.deactivate()
             isFocused = false
             stopCursorBlink()
         }
@@ -905,16 +994,19 @@ public final class NativeTerminalView: NSTextView {
     
     // MARK: - Terminal Cursor Implementation
     
+    /// Cursor geometry is also used by IME positioning and viewport regression checks.
+    var terminalCursorRect: NSRect? { getCursorRect() }
+
     private func getCursorRect() -> NSRect? {
         guard let layoutManager = self.layoutManager,
               let textContainer = self.textContainer,
               let storage = self.textStorage else { return nil }
         
         let origin = self.textContainerOrigin
-        let font = self.font ?? cachedBaseFont
+        let font = cachedBaseFont
         let lineHeight = layoutManager.defaultLineHeight(for: font)
         let shape = AppSettings.shared.cursorShape
-        let charWidth = max(7, ("M" as NSString).size(withAttributes: [.font: font]).width)
+        let charWidth = max(6, ("M" as NSString).size(withAttributes: [.font: font]).width)
         let cursorWidth: CGFloat = (shape == .bar) ? 2.5 : charWidth
         
         // 1. Alternate screen buffer mode (Vim, Less, Htop): precise 2D cell grid coordinates
@@ -941,7 +1033,7 @@ public final class NativeTerminalView: NSTextView {
             }
         }
         
-        let cursorCol = ringBuffer?.cursorColumn ?? (length - activeLineStartLocation)
+        let cursorCol = ringBuffer?.activeCursorUTF16Offset ?? (length - activeLineStartLocation)
         let cursorCharIndex = min(length, max(0, activeLineStartLocation + cursorCol))
         
         let x: CGFloat
@@ -1019,7 +1111,7 @@ public final class NativeTerminalView: NSTextView {
     
     /// Preedit is an overlay: it must never enter the remote-output storage or SSH stream.
     private func drawComposition() {
-        let font = self.font ?? cachedBaseFont
+        let font = cachedBaseFont
         let attributes: [NSAttributedString.Key: Any] = [
             .font: font, .foregroundColor: textColor ?? .textColor,
             .backgroundColor: backgroundColor,
@@ -1032,7 +1124,7 @@ public final class NativeTerminalView: NSTextView {
     }
 
     private func compositionRect() -> NSRect {
-        let font = self.font ?? cachedBaseFont
+        let font = cachedBaseFont
         let height = layoutManager?.defaultLineHeight(for: font) ?? 18
         var rect = getCursorRect() ?? NSRect(x: textContainerOrigin.x, y: textContainerOrigin.y, width: 12, height: height)
         if AppSettings.shared.cursorShape == .underline { rect.origin.y -= height - 2.5 }
@@ -1285,6 +1377,7 @@ public final class NativeTerminalView: NSTextView {
     }
     
     override public func mouseMoved(with event: NSEvent) {
+        if ringBuffer?.mouseTrackingMode == 1003, sendMouseReport(event, button: 35) { return }
         super.mouseMoved(with: event)
         updateCursorForEvent(event)
     }
@@ -1316,10 +1409,78 @@ public final class NativeTerminalView: NSTextView {
         super.cursorUpdate(with: event)
     }
     
+    /// Shift temporarily restores local selection while an application owns the mouse.
+    private func mouseReport(_ event: NSEvent, button: Int, release: Bool = false) -> Data? {
+        guard let buffer = ringBuffer, buffer.mouseTrackingMode != 0,
+              !event.modifierFlags.contains(.shift), !event.modifierFlags.contains(.command) else { return nil }
+        let point = convert(event.locationInWindow, from: nil)
+        let font = cachedBaseFont
+        let width = max(6, ("M" as NSString).size(withAttributes: [.font: font]).width)
+        let height = max(12, layoutManager?.defaultLineHeight(for: font) ?? 16)
+        let dimensions = buffer.dimensions
+        let column = min(dimensions.columns, max(1, Int(floor((point.x - textContainerOrigin.x) / width)) + 1))
+        let row = min(dimensions.rows, max(1, Int(floor((point.y - textContainerOrigin.y) / height)) + 1))
+        let modifiers = (event.modifierFlags.contains(.option) ? 8 : 0) + (event.modifierFlags.contains(.control) ? 16 : 0)
+        let code = button + modifiers
+        if buffer.isSGRMouseEnabled {
+            return Data("\u{1B}[<\(code);\(column);\(row)\(release ? "m" : "M")".utf8)
+        }
+        return Data([0x1B, 0x5B, 0x4D, UInt8((release ? 3 + modifiers : code) + 32), UInt8(min(column, 223) + 32), UInt8(min(row, 223) + 32)])
+    }
+
+    private func sendMouseReport(_ event: NSEvent, button: Int, release: Bool = false) -> Bool {
+        guard let report = mouseReport(event, button: button, release: release) else { return false }
+        onInput?(report)
+        return true
+    }
+
+    override public func mouseDragged(with event: NSEvent) {
+        if let buffer = ringBuffer, buffer.mouseTrackingMode != 0,
+           !event.modifierFlags.contains(.shift), !event.modifierFlags.contains(.command) {
+            if buffer.mouseTrackingMode != 1000 { _ = sendMouseReport(event, button: 32) }
+            return
+        }
+        super.mouseDragged(with: event)
+    }
+
+    override public func rightMouseUp(with event: NSEvent) {
+        if sendMouseReport(event, button: 2, release: true) { return }
+        super.rightMouseUp(with: event)
+    }
+
+    override public func rightMouseDragged(with event: NSEvent) {
+        if let buffer = ringBuffer, buffer.mouseTrackingMode != 0,
+           !event.modifierFlags.contains(.shift), !event.modifierFlags.contains(.command) {
+            if buffer.mouseTrackingMode != 1000 { _ = sendMouseReport(event, button: 34) }
+            return
+        }
+        super.rightMouseDragged(with: event)
+    }
+
+    override public func otherMouseDown(with event: NSEvent) {
+        if event.buttonNumber == 2, sendMouseReport(event, button: 1) { return }
+        super.otherMouseDown(with: event)
+    }
+
+    override public func otherMouseUp(with event: NSEvent) {
+        if event.buttonNumber == 2, sendMouseReport(event, button: 1, release: true) { return }
+        super.otherMouseUp(with: event)
+    }
+
+    override public func otherMouseDragged(with event: NSEvent) {
+        if event.buttonNumber == 2, let buffer = ringBuffer, buffer.mouseTrackingMode != 0,
+           !event.modifierFlags.contains(.shift), !event.modifierFlags.contains(.command) {
+            if buffer.mouseTrackingMode != 1000 { _ = sendMouseReport(event, button: 33) }
+            return
+        }
+        super.otherMouseDragged(with: event)
+    }
+
     override public func mouseDown(with event: NSEvent) {
         self.window?.makeFirstResponder(self)
         onFocus?()
         
+        if sendMouseReport(event, button: 0) { return }
         if event.modifierFlags.contains(.command) {
             let pt = convert(event.locationInWindow, from: nil)
             if let url = urlAtPoint(pt) {
@@ -1338,6 +1499,7 @@ public final class NativeTerminalView: NSTextView {
     }
     
     override public func mouseUp(with event: NSEvent) {
+        if sendMouseReport(event, button: 0, release: true) { return }
         super.mouseUp(with: event)
         if isCopyOnSelectEnabled {
             copySelectionToPasteboardIfAny()
@@ -1345,6 +1507,8 @@ public final class NativeTerminalView: NSTextView {
     }
     
     override public func scrollWheel(with event: NSEvent) {
+        if abs(event.scrollingDeltaY) > 0.1,
+           sendMouseReport(event, button: event.scrollingDeltaY > 0 ? 64 : 65) { return }
         if let buffer = ringBuffer, buffer.isInAlternateScreen {
             // When in alternate screen mode (e.g. Vim, less, htop), scrolling trackpad/mouse
             // should send Up/Down arrow sequences to navigate the document instead of scrolling the clipview
@@ -1368,6 +1532,7 @@ public final class NativeTerminalView: NSTextView {
     override public func rightMouseDown(with event: NSEvent) {
         self.window?.makeFirstResponder(self)
         onFocus?()
+        if sendMouseReport(event, button: 2) { return }
         
         // If Shift is pressed or right-click paste is disabled in settings, allow standard context menu popup
         if event.modifierFlags.contains(.shift) || !AppSettings.shared.isRightClickPasteEnabled {
@@ -1417,6 +1582,28 @@ public final class NativeTerminalView: NSTextView {
         // 0. Handle Cmd shortcuts: Cmd+K (Clear), Cmd+F (Find), Cmd+G (Next Match), Cmd+Shift+G (Prev Match)
         if event.modifierFlags.contains(.command) {
             if let chars = event.charactersIgnoringModifiers?.lowercased() {
+                if shortcutModifiers == [.command] || shortcutModifiers == [.command, .shift] {
+                    if chars == "+" || chars == "=" {
+                        AppSettings.shared.fontSize = min(22, AppSettings.shared.fontSize + 1)
+                        return
+                    }
+                    if chars == "-" {
+                        AppSettings.shared.fontSize = max(10, AppSettings.shared.fontSize - 1)
+                        return
+                    }
+                    if shortcutModifiers == [.command] && chars == "0" {
+                        AppSettings.shared.fontSize = 13
+                        return
+                    }
+                }
+                if shortcutModifiers == [.command] && chars == "c" {
+                    copySelectionToPasteboardIfAny()
+                    return
+                }
+                if shortcutModifiers == [.command] && chars == "a" {
+                    selectAll(nil)
+                    return
+                }
                 if shortcutModifiers == [.command] && chars == "v" {
                     _ = pasteFromClipboard()
                     return
@@ -1438,6 +1625,9 @@ public final class NativeTerminalView: NSTextView {
                     return
                 }
             }
+            // Unhandled application shortcuts must never become Vim editing commands.
+            super.keyDown(with: event)
+            return
         }
         
         // 1. Handle Ctrl key combinations: Ctrl+C, Ctrl+D, Ctrl+Z, Ctrl+L, etc. (HIGHEST PRIORITY)
@@ -1877,13 +2067,13 @@ public final class NativeTerminalView: NSTextView {
             }
             onInput?("\u{1B}".data(using: .utf8)!)
         case #selector(moveUp(_:)):
-            onInput?("\u{1B}[A".data(using: .utf8)!)
+            onInput?((ringBuffer?.isApplicationCursorKeys == true ? "\u{1B}OA" : "\u{1B}[A").data(using: .utf8)!)
         case #selector(moveDown(_:)):
-            onInput?("\u{1B}[B".data(using: .utf8)!)
+            onInput?((ringBuffer?.isApplicationCursorKeys == true ? "\u{1B}OB" : "\u{1B}[B").data(using: .utf8)!)
         case #selector(moveLeft(_:)):
-            onInput?("\u{1B}[D".data(using: .utf8)!)
+            onInput?((ringBuffer?.isApplicationCursorKeys == true ? "\u{1B}OD" : "\u{1B}[D").data(using: .utf8)!)
         case #selector(moveRight(_:)):
-            onInput?("\u{1B}[C".data(using: .utf8)!)
+            onInput?((ringBuffer?.isApplicationCursorKeys == true ? "\u{1B}OC" : "\u{1B}[C").data(using: .utf8)!)
         default:
             super.doCommand(by: selector)
         }
@@ -1920,7 +2110,9 @@ public final class NativeTerminalView: NSTextView {
         let spans = parser.parseANSI(text)
         let attrString = NSMutableAttributedString()
         
-        let baseFont = self.font ?? cachedBaseFont
+        // NSTextView.font can become a fallback font after Chinese/emoji output.
+        // All terminal cells must retain the configured monospaced grid.
+        let baseFont = cachedBaseFont
         let boldFont = self.cachedBoldFont
         let palette = AppSettings.shared.themePreset.palette
         let defaultColor = NSColor(hex: palette.foreground) ?? .labelColor
@@ -1945,12 +2137,56 @@ public final class NativeTerminalView: NSTextView {
             if let index = span.ansiColorIndex {
                 textColor = NSColor(hex: palette.terminalColor(at: index)) ?? defaultColor
             }
-            var attrs: [NSAttributedString.Key: Any] = [
-                .font: span.isBold ? boldFont : baseFont,
-                .foregroundColor: textColor
-            ]
-            attrs[NSAttributedString.Key("ApexThemeColor")] = span.ansiColorIndex ?? (span.foregroundColorHex == nil ? -1 : -2)
-            attrString.append(NSAttributedString(string: span.text, attributes: attrs))
+            var renderFont = span.isBold ? boldFont : baseFont
+            if span.isItalic { renderFont = NSFontManager.shared.convert(renderFont, toHaveTrait: .italicFontMask) }
+            var background = span.backgroundColorHex.flatMap(NSColor.init(hex:))
+            if let index = span.backgroundANSIColorIndex { background = NSColor(hex: palette.terminalColor(at: index)) }
+            if span.isInverse {
+                let originalForeground = textColor
+                textColor = background ?? NSColor(hex: AppSettings.shared.themePreset.backgroundColorHex) ?? self.backgroundColor
+                background = originalForeground
+            }
+            var attrs: [NSAttributedString.Key: Any] = [.font: renderFont, .foregroundColor: textColor, .ligature: 0, .kern: 0]
+            if let background { attrs[.backgroundColor] = background }
+            if span.isUnderlined { attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue }
+            if span.isStrikethrough { attrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
+            attrs[NSAttributedString.Key("ApexThemeColor")] = span.isInverse
+                ? (span.backgroundANSIColorIndex ?? (span.backgroundColorHex == nil ? -3 : -2))
+                : (span.ansiColorIndex ?? (span.foregroundColorHex == nil ? -1 : -2))
+            if background != nil {
+                attrs[NSAttributedString.Key("ApexThemeBackground")] = span.isInverse
+                    ? (span.ansiColorIndex ?? (span.foregroundColorHex == nil ? -1 : -2))
+                    : (span.backgroundANSIColorIndex ?? -2)
+            }
+            let run = NSMutableAttributedString(string: span.text, attributes: attrs)
+            if !span.text.utf8.allSatisfy({ $0 < 128 }) {
+                let columnWidth = max(6, ("M" as NSString).size(withAttributes: [.font: baseFont]).width)
+                var offset = 0
+                for character in span.text {
+                    let grapheme = String(character)
+                    let length = grapheme.utf16.count
+                    if character != "\n" && character != "\r" && !grapheme.utf8.allSatisfy({ $0 < 128 }) {
+                        let key = "\(renderFont.fontName):\(renderFont.pointSize):\(grapheme)"
+                        let advance: CGFloat
+                        if let cached = glyphAdvanceCache[key] { advance = cached }
+                        else {
+                            let line = CTLineCreateWithAttributedString(NSAttributedString(string: grapheme, attributes: [.font: renderFont, .ligature: 0, .kern: 0]))
+                            advance = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
+                            if glyphAdvanceCache.count < 4096 { glyphAdvanceCache[key] = advance }
+                        }
+                        let target = CGFloat(TerminalCharacterWidth.columns(character)) * columnWidth
+                        run.addAttribute(.kern, value: target - advance, range: NSRange(location: offset, length: length))
+                    }
+                    offset += length
+                }
+            }
+            attrString.append(run)
+        }
+        for match in keywordHighlighter.findMatches(in: attrString.string) {
+            guard let color = NSColor(hex: match.colorHex) else { continue }
+            attrString.addAttribute(.foregroundColor, value: color, range: match.range)
+            // Keep explicit trigger colors when the theme recolors ANSI runs.
+            attrString.addAttribute(NSAttributedString.Key("ApexThemeColor"), value: -2, range: match.range)
         }
         return attrString
     }
@@ -1968,8 +2204,35 @@ public final class NativeTerminalView: NSTextView {
         guard let buffer = ringBuffer else { return }
 
         if let screenLines = buffer.screenLines {
-            let rendered = screenLines.joined(separator: "\n")
-            self.textStorage?.setAttributedString(formatANSI(rendered))
+            let lineHeight = layoutManager?.defaultLineHeight(for: cachedBaseFont) ?? 16
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.minimumLineHeight = lineHeight
+            paragraph.maximumLineHeight = lineHeight
+            let rows = screenLines.enumerated().map { index, line -> NSAttributedString in
+                let row = NSMutableAttributedString(attributedString: formatANSI(line))
+                if index < screenLines.count - 1 { row.append(formatANSI("\n")) }
+                row.addAttribute(.paragraphStyle, value: paragraph, range: NSRange(location: 0, length: row.length))
+                return row
+            }
+            if let storage = textStorage {
+                storage.beginEditing()
+                if let previous = renderedScreenRows, previous.count == rows.count,
+                   previous.reduce(0, { $0 + $1.length }) == storage.length {
+                    var offset = storage.length
+                    for index in rows.indices.reversed() {
+                        offset -= previous[index].length
+                        if !previous[index].isEqual(to: rows[index]) {
+                            storage.replaceCharacters(in: NSRange(location: offset, length: previous[index].length), with: rows[index])
+                        }
+                    }
+                } else {
+                    let rendered = NSMutableAttributedString()
+                    for row in rows { rendered.append(row) }
+                    storage.setAttributedString(rendered)
+                }
+                storage.endEditing()
+                renderedScreenRows = rows
+            }
             activeLineStartLocation = self.textStorage?.length ?? 0
             lastCommittedIndex = buffer.totalCommittedCount
             isPinnedToBottom = false
@@ -1986,11 +2249,21 @@ public final class NativeTerminalView: NSTextView {
             return
         }
         
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        
+        renderedScreenRows = nil
         let currentTotal = buffer.totalCommittedCount
         let isCleared = buffer.consumeClearFlag() || (currentTotal < lastCommittedIndex)
+        let active = buffer.currentActiveLine
+        if !isCleared, currentTotal == lastCommittedIndex, active == renderedActiveLine {
+            // Cursor/control-only packets do not invalidate the entire scrollback layout.
+            self.needsDisplay = true
+            self.resetCursorBlink()
+            return
+        }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        // Active-line replacement, appended history and eviction form one edit.
+        // Avoid repeated TextKit layout and document resizing for each packet.
+        textStorage?.beginEditing()
         
         // 1. Buffer cleared or initial render
         if isCleared {
@@ -2017,24 +2290,39 @@ public final class NativeTerminalView: NSTextView {
                     let joined = newLines.joined(separator: "\n") + "\n"
                     let attr = formatANSI(joined)
                     self.textStorage?.append(attr)
+                    renderedCommittedLineLengths.append(contentsOf: attr.string.components(separatedBy: "\n").dropLast().map { $0.utf16.count + 1 })
                 }
             }
-            
-            // Memory Guard: Bound textStorage length to prevent unbounded memory growth under massive streams
-            if let storage = self.textStorage, storage.length > 2_500_000 {
-                let excess = storage.length - 1_500_000
-                storage.deleteCharacters(in: NSRange(location: 0, length: excess))
+
+            // Evict complete rendered lines along with the buffer and keep UTF-16 boundaries intact.
+            if let storage = textStorage {
+                let lineLimit = buffer.maxLines
+                let characterLimit = storage.length > 2_500_000 ? 1_500_000 : Int.max
+                var removedCharacters = 0
+                while renderedLineHead < renderedCommittedLineLengths.count &&
+                      (renderedCommittedLineLengths.count - renderedLineHead > lineLimit || storage.length - removedCharacters > characterLimit) {
+                    removedCharacters += renderedCommittedLineLengths[renderedLineHead]
+                    renderedLineHead += 1
+                }
+                if removedCharacters > 0 {
+                    storage.deleteCharacters(in: NSRange(location: 0, length: min(removedCharacters, storage.length)))
+                }
+                if renderedLineHead > 4096 && renderedLineHead * 2 > renderedCommittedLineLengths.count {
+                    renderedCommittedLineLengths.removeFirst(renderedLineHead)
+                    renderedLineHead = 0
+                }
             }
             activeLineStartLocation = self.textStorage?.length ?? 0
         }
         
         // 4. Render current active line at the bottom
-        let active = buffer.currentActiveLine
         if !active.isEmpty {
             let attr = formatANSI(active)
             self.textStorage?.append(attr)
         }
         
+        renderedActiveLine = active
+        textStorage?.endEditing()
         CATransaction.commit()
         
         if self.isPinnedToBottom && (hasNewCommittedLines || isCleared || !self.isScrolledToBottom()) {

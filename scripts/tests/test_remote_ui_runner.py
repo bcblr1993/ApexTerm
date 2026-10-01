@@ -1,7 +1,9 @@
 import importlib.util
+import json
 import os
 from pathlib import Path
 import subprocess
+import signal
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -33,6 +35,39 @@ class RemoteUIRunnerTests(unittest.TestCase):
                 self.assertEqual(collections[-1][-1], str(Path(directory).resolve() / 'remote-results.tar.gz'))
                 self.assertEqual(transport.call_args.args[0][0], 'tar')
                 self.assertTrue((Path(directory) / 'guest-workspace.txt').exists())
+                return execution.call_args.kwargs['input']
+
+    def test_cleanup_refuses_a_product_or_another_workspace(self):
+        script = self.execute(0)
+        cleanup = script.split("python3 - <<'PY_CLEANUP'\n", 1)[1].split('\nPY_CLEANUP\n', 1)[0]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / 'reports').mkdir()
+            for app, identifier in [(root / 'Product.app', 'com.apexterm'),
+                                    (root.parent / 'Other.app', 'com.apexterm.qa.other')]:
+                with self.subTest(identifier=identifier):
+                    (root / 'reports/qa-host.json').write_text(json.dumps({'path': str(app), 'bundleIdentifier': identifier}))
+                    with patch.object(Path, 'cwd', return_value=root), patch('os.kill') as kill, patch('subprocess.check_output') as processes:
+                        with self.assertRaises(SystemExit):
+                            exec(cleanup, {})
+                        kill.assert_not_called()
+                        processes.assert_not_called()
+
+    def test_cleanup_stops_only_owned_host_and_ssh_descendants(self):
+        script = self.execute(0)
+        cleanup = script.split("python3 - <<'PY_CLEANUP'\n", 1)[1].split('\nPY_CLEANUP\n', 1)[0]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            app = root / 'Verification.app'
+            (root / 'reports').mkdir()
+            (root / 'reports/qa-host.json').write_text(json.dumps({'path': str(app), 'bundleIdentifier': 'com.apexterm.qa.synthetic'}))
+            rows = f'100 1 {app}/Contents/MacOS/Verification\n110 100 /usr/bin/ssh\n130 110 /usr/bin/scp\n140 100 /usr/bin/cat\n200 1 /Applications/Product.app/Contents/MacOS/Verification\n210 200 /usr/bin/ssh\n'
+            with patch.object(Path, 'cwd', return_value=root), patch('os.kill') as kill, patch('subprocess.check_output', return_value=rows):
+                exec(cleanup, {})
+                self.assertEqual(kill.call_args_list, [unittest.mock.call(110, signal.SIGKILL), unittest.mock.call(130, signal.SIGKILL), unittest.mock.call(100, signal.SIGTERM)])
+            record = json.loads((root / 'reports/qa-cleanup.json').read_text())
+            self.assertEqual(record['ownedHostPIDs'], [100])
+            self.assertEqual(record['ownedChildPIDs'], [110, 130])
 
     def test_success_collects_result_bundle(self):
         self.execute(0)

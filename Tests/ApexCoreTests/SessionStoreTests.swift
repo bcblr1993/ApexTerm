@@ -15,6 +15,11 @@ final class SessionStoreTests: XCTestCase {
         let candidate = SessionStore(baseDirectory: candidateURL)
         XCTAssertTrue(candidate.sessions.isEmpty)
         candidate.addSession(Session(name: "Candidate", host: "192.0.2.2", username: "qa", authMethod: .agent))
+        let qaURL = SessionStore.defaultDirectory(appSupport: tempDirectory, bundleIdentifier: "com.apexterm.qa.reopen")
+        XCTAssertNotEqual(qaURL, productionURL)
+        let qa = SessionStore(baseDirectory: qaURL)
+        XCTAssertTrue(qa.sessions.isEmpty)
+        qa.addSession(Session(name: "QA", host: "192.0.2.3", username: "qa", authMethod: .agent))
         XCTAssertEqual(try Data(contentsOf: file), original)
         XCTAssertEqual(SessionStore(baseDirectory: productionURL).sessions.map(\.name), ["Existing"])
     }

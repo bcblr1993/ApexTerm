@@ -95,7 +95,7 @@ struct ApexTermApp: App {
             }
             .task {
                 appDelegate.reopenMainWindow = { openWindow(id: "main") }
-                if settings.checkForUpdatesOnLaunch {
+                if settings.checkForUpdatesOnLaunch && ProcessInfo.processInfo.environment["APEX_UI_TEST_REOPEN"] != "1" {
                     await updateManager.checkForUpdates(manual: false)
                 }
             }

@@ -14,7 +14,7 @@ public final class TerminalPaneItem: Identifiable, ObservableObject {
     public let id = UUID()
     public let session: Session
     public let sshClient: SSHSessionProtocol
-    public let ringBuffer = TerminalRingBuffer(maxLines: 50_000)
+    public let ringBuffer = TerminalRingBuffer(maxLines: AppSettings.shared.scrollbackMaxLines)
     @Published public var title: String
     @Published public var connectionState: SSHConnectionState {
         didSet {
@@ -33,15 +33,12 @@ public final class TerminalPaneItem: Identifiable, ObservableObject {
         
         let ringBuffer = self.ringBuffer
         self.sshClient.setOutputHandler { data in
-            if let text = String(data: data, encoding: .utf8) {
-                ringBuffer.appendStream(text)
-            } else {
-                let lossy = String(decoding: data, as: UTF8.self)
-                ringBuffer.appendStream(lossy)
-            }
+            ringBuffer.appendData(data)
         }
 
         self.sshClient.setStateChangeHandler { [weak self] state in
+            if case .disconnected = state { ringBuffer.finishStream() }
+            if case .failed = state { ringBuffer.finishStream() }
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
                 self.connectionState = state
@@ -86,7 +83,7 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
     }
     @Published public var splitMode: PaneSplitMode = .single
     
-    private let fallbackRingBuffer = TerminalRingBuffer(maxLines: 50_000)
+    private let fallbackRingBuffer = TerminalRingBuffer(maxLines: AppSettings.shared.scrollbackMaxLines)
     public var ringBuffer: TerminalRingBuffer {
         activePane?.ringBuffer ?? panes.first?.ringBuffer ?? fallbackRingBuffer
     }
@@ -145,12 +142,10 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
                 let needsHomeResolution = self.currentRemotePath == "~" || self.currentRemotePath.hasPrefix("~/")
                 guard self.isDirectoryLinkageEnabled || needsHomeResolution else { return }
                 if self.currentRemotePath != path {
+                    self.linkageRefreshTask?.cancel()
                     self.currentRemotePath = path
                 } else if self.isDirectoryLinkageEnabled {
-                    NotificationCenter.default.post(
-                        name: NSNotification.Name("SFTPDirectoryRefreshNeeded"),
-                        object: path
-                    )
+                    self.scheduleDirectoryLinkageRefresh()
                 }
             }
         }
@@ -343,6 +338,13 @@ public struct WorkspaceView: View {
             
             // Hidden buttons for split and reconnect keyboard shortcuts
             Group {
+                ForEach(1...9, id: \.self) { number in
+                    Button("") {
+                        guard activeTabs.indices.contains(number - 1) else { return }
+                        selectedTabId = activeTabs[number - 1].id
+                    }
+                    .keyboardShortcut(KeyEquivalent(Character(String(number))), modifiers: .command)
+                }
                 Button("") { currentTab?.split(mode: .vertical) }
                     .keyboardShortcut("d", modifiers: .command)
                 Button("") { currentTab?.split(mode: .horizontal) }
@@ -360,6 +362,7 @@ public struct WorkspaceView: View {
             // Workspace Split: Terminal on Top, SFTP on Bottom (electerm layout)
             if let tab = currentTab {
                 WorkspaceActiveTabSplitView(
+                    store: store,
                     tab: tab,
                     activeTabs: activeTabs,
                     isBroadcastActive: isBroadcastActive,
@@ -536,6 +539,7 @@ private struct WorkspaceMetricsView: View {
 
 private struct WorkspaceActiveTabSplitView: View {
     @ObservedObject private var themeSettings = AppSettings.shared
+    @ObservedObject var store: SessionStore
     @ObservedObject var tab: TerminalTabItem
     let activeTabs: [TerminalTabItem]
     let isBroadcastActive: Bool
@@ -551,7 +555,7 @@ private struct WorkspaceActiveTabSplitView: View {
                 Group {
                     if tab.splitMode == .single || tab.panes.count < 2 {
                         if let pane = tab.panes.first {
-                            PaneContainerView(pane: pane, tab: tab, activeTabs: activeTabs, isBroadcastActive: isBroadcastActive)
+                            PaneContainerView(store: store, pane: pane, tab: tab, activeTabs: activeTabs, isBroadcastActive: isBroadcastActive)
                                 .id(pane.id)
                         }
                     } else if tab.splitMode == .vertical {
@@ -562,7 +566,7 @@ private struct WorkspaceActiveTabSplitView: View {
                             
                             HStack(spacing: 0) {
                                 if let firstPane = tab.panes.first {
-                                    PaneContainerView(pane: firstPane, tab: tab, activeTabs: activeTabs, isBroadcastActive: isBroadcastActive)
+                                    PaneContainerView(store: store, pane: firstPane, tab: tab, activeTabs: activeTabs, isBroadcastActive: isBroadcastActive)
                                         .frame(width: leftW)
                                         .id(firstPane.id)
                                 }
@@ -599,7 +603,7 @@ private struct WorkspaceActiveTabSplitView: View {
                                 
                                 if tab.panes.count > 1 {
                                     let secondPane = tab.panes[1]
-                                    PaneContainerView(pane: secondPane, tab: tab, activeTabs: activeTabs, isBroadcastActive: isBroadcastActive)
+                                    PaneContainerView(store: store, pane: secondPane, tab: tab, activeTabs: activeTabs, isBroadcastActive: isBroadcastActive)
                                         .frame(width: rightW)
                                         .id(secondPane.id)
                                 }
@@ -613,7 +617,7 @@ private struct WorkspaceActiveTabSplitView: View {
                             
                             VStack(spacing: 0) {
                                 if let firstPane = tab.panes.first {
-                                    PaneContainerView(pane: firstPane, tab: tab, activeTabs: activeTabs, isBroadcastActive: isBroadcastActive)
+                                    PaneContainerView(store: store, pane: firstPane, tab: tab, activeTabs: activeTabs, isBroadcastActive: isBroadcastActive)
                                         .frame(height: topH)
                                         .id(firstPane.id)
                                 }
@@ -650,7 +654,7 @@ private struct WorkspaceActiveTabSplitView: View {
                                 
                                 if tab.panes.count > 1 {
                                     let secondPane = tab.panes[1]
-                                    PaneContainerView(pane: secondPane, tab: tab, activeTabs: activeTabs, isBroadcastActive: isBroadcastActive)
+                                    PaneContainerView(store: store, pane: secondPane, tab: tab, activeTabs: activeTabs, isBroadcastActive: isBroadcastActive)
                                         .frame(height: bottomH)
                                         .id(secondPane.id)
                                 }
@@ -710,6 +714,7 @@ private struct WorkspaceActiveTabSplitView: View {
 
 private struct PaneContainerView: View {
     @ObservedObject private var themeSettings = AppSettings.shared
+    @ObservedObject var store: SessionStore
     @ObservedObject var pane: TerminalPaneItem
     @ObservedObject var tab: TerminalTabItem
     let activeTabs: [TerminalTabItem]
@@ -756,6 +761,7 @@ private struct PaneContainerView: View {
                             tab.activePaneId = pane.id
                         }
                     },
+                    triggers: store.triggers,
                     onResize: { cols, rows in
                         Task {
                             try? await pane.sshClient.resizeTerminal(columns: cols, rows: rows)

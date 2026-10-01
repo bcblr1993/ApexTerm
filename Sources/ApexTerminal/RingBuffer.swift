@@ -1,4 +1,5 @@
 import Foundation
+import ApexCore
 
 /// Individual styled terminal cell
 public struct TerminalCell: Equatable, Sendable {
@@ -6,6 +7,13 @@ public struct TerminalCell: Equatable, Sendable {
     public var fgHex: String?
     public var isBold: Bool
     public var ansiColorIndex: Int?
+    var isContinuation = false
+    var extraStyle = SGRStyle(foreground: nil, index: nil, bold: false)
+    var style: SGRStyle {
+        var result = extraStyle
+        result.foreground = fgHex; result.index = ansiColorIndex; result.bold = isBold
+        return result
+    }
     
     public init(char: Character, fgHex: String? = nil, isBold: Bool = false, ansiColorIndex: Int? = nil) {
         self.char = char
@@ -17,19 +25,29 @@ public struct TerminalCell: Equatable, Sendable {
 
 /// High-performance circular line buffer for terminal scrollback history with real-time update notifications
 public final class TerminalRingBuffer: @unchecked Sendable {
-    public let maxLines: Int
+    private var historyLimit: Int
+    public var maxLines: Int { lock.withLock { historyLimit } }
     private var buffer: [String]
     private var head: Int = 0
     private var count: Int = 0
     private let lock = NSLock()
+    private let streamLock = NSLock()
+    private var streamDecoder = UTF8StreamDecoder()
     
     private var activeLine: String = ""
     private var isEditingActiveLine: Bool = false
     private var activeCells: [TerminalCell] = []
     private var cursorCol: Int = 0
-    private var currentFgHex: String? = nil
-    private var currentANSIIndex: Int? = nil
-    private var currentBold: Bool = false
+    private var currentStyle = SGRStyle(foreground: nil, index: nil, bold: false)
+    private var currentFgHex: String? { get { currentStyle.foreground } set { currentStyle.foreground = newValue } }
+    private var currentANSIIndex: Int? { get { currentStyle.index } set { currentStyle.index = newValue } }
+    private var currentBold: Bool { get { currentStyle.bold } set { currentStyle.bold = newValue } }
+
+    private func styledCell(_ char: Character) -> TerminalCell {
+        var cell = TerminalCell(char: char, fgHex: currentFgHex, isBold: currentBold, ansiColorIndex: currentANSIIndex)
+        cell.extraStyle = currentStyle
+        return cell
+    }
     private var pendingSequence: String = ""
     private let vtParser = VTParser()
     private var screen: [[TerminalCell]]? = nil
@@ -43,6 +61,11 @@ public final class TerminalRingBuffer: @unchecked Sendable {
     private var _screenRevision: Int64 = 0
     private var _isCursorHidden: Bool = false
     private var _isApplicationCursorKeys: Bool = false
+    private var _mouseTrackingMode = 0
+    private var _isSGRMouseEnabled = false
+
+    public var mouseTrackingMode: Int { lock.lock(); defer { lock.unlock() }; return _mouseTrackingMode }
+    public var isSGRMouseEnabled: Bool { lock.lock(); defer { lock.unlock() }; return _isSGRMouseEnabled }
 
     public var screenRevision: Int64 {
         lock.lock(); defer { lock.unlock() }
@@ -85,7 +108,11 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         scrollBottom = max(0, newRows - 1)
         var needsUpdate = false
         if var grid = screen {
-            grid = Array(grid.prefix(screenRows))
+            grid = grid.prefix(screenRows).map {
+                var row = Array($0.prefix(screenColumns))
+                normalizeWideCells(&row)
+                return row
+            }
             while grid.count < screenRows { grid.append([]) }
             screen = grid
             screenRow = min(screenRow, screenRows - 1)
@@ -100,9 +127,27 @@ public final class TerminalRingBuffer: @unchecked Sendable {
     
     public var onUpdate: (@Sendable () -> Void)?
     
+    public func setHistoryLimit(_ requestedLimit: Int) {
+        lock.lock()
+        let limit = max(1, requestedLimit)
+        guard limit != historyLimit else { lock.unlock(); return }
+        let retained = min(count, limit)
+        let start = count - retained
+        var resized = [String](repeating: "", count: limit)
+        for offset in 0..<retained { resized[offset] = buffer[(head + start + offset) % historyLimit] }
+        buffer = resized
+        historyLimit = limit
+        count = retained
+        head = 0
+        _isClearPending = true
+        let update = onUpdate
+        lock.unlock()
+        update?()
+    }
+
     public init(maxLines: Int = 10_000) {
-        self.maxLines = maxLines
-        self.buffer = [String](repeating: "", count: maxLines)
+        self.historyLimit = max(1, maxLines)
+        self.buffer = [String](repeating: "", count: self.historyLimit)
     }
     
     private var _totalCommittedCount: Int64 = 0
@@ -134,7 +179,7 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         return _totalCommittedCount
     }
     
-    /// Committed historical line count in circular window (capped at maxLines)
+    /// Committed historical line count in circular window (capped at historyLimit)
     public var committedLineCount: Int {
         lock.lock()
         defer { lock.unlock() }
@@ -149,10 +194,19 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         if isEditingActiveLine {
             return cursorCol
         } else {
-            return activeLine.count
+            return activeLine.reduce(0) { $0 + TerminalCharacterWidth.columns($1) }
         }
     }
     
+    /// Map cell columns to the UTF-16 offset used by AppKit's text storage.
+    public var activeCursorUTF16Offset: Int {
+        lock.lock(); defer { lock.unlock() }
+        if isEditingActiveLine {
+            return activeCells.prefix(cursorCol).filter { !$0.isContinuation }.reduce(0) { $0 + String($1.char).utf16.count }
+        }
+        return activeLine.utf16.count
+    }
+
     /// Current cursor position (row, column) in 0-indexed coordinates
     public var cursorPosition: (row: Int, column: Int) {
         lock.lock()
@@ -160,7 +214,7 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         if screen != nil {
             return (screenRow, screenColumn)
         } else {
-            return (0, isEditingActiveLine ? cursorCol : activeLine.count)
+            return (0, isEditingActiveLine ? cursorCol : activeLine.reduce(0) { $0 + TerminalCharacterWidth.columns($1) })
         }
     }
 
@@ -192,18 +246,32 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         
+        guard requestedCount > 0 else { return [] }
         let fetchCount = min(requestedCount, count)
         guard fetchCount > 0 else { return [] }
         var result = [String]()
         result.reserveCapacity(fetchCount)
         let startOffset = count - fetchCount
         for i in 0..<fetchCount {
-            let index = (head + startOffset + i) % maxLines
+            let index = (head + startOffset + i) % historyLimit
             result.append(buffer[index])
         }
         return result
     }
     
+    /// Decode raw PTY bytes without corrupting characters split across reads.
+    public func appendData(_ data: Data) {
+        streamLock.lock(); defer { streamLock.unlock() }
+        let text = streamDecoder.decode(data)
+        if !text.isEmpty { appendStream(text) }
+    }
+
+    public func finishStream() {
+        streamLock.lock(); defer { streamLock.unlock() }
+        let text = streamDecoder.finish()
+        if !text.isEmpty { appendStream(text) }
+    }
+
     /// Append streaming raw output from terminal PTY
     public func appendStream(_ text: String) {
         lock.lock()
@@ -215,8 +283,8 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         
         // Ordinary ASCII log chunks can be committed in whole lines. Control sequences,
         // Unicode and cursor editing continue through the terminal state machine below.
-        if pendingSequence.isEmpty, !isEditingActiveLine,
-           currentFgHex == nil, currentANSIIndex == nil, !currentBold,
+        if screen == nil, pendingSequence.isEmpty, !isEditingActiveLine,
+           currentStyle == SGRStyle(foreground: nil, index: nil, bold: false),
            text.utf8.allSatisfy({ $0 == 10 || ($0 >= 32 && $0 < 127) }) {
             let segments = text.utf8.split(separator: 10, omittingEmptySubsequences: false)
             for (offset, segment) in segments.enumerated() {
@@ -235,7 +303,10 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         while i < fullText.endIndex {
             let ch = fullText[i]
             if ch == "\r\n" || ch == "\n" {
-                if screen != nil { screenNewline() } else { commitActiveLine() }
+                if screen != nil {
+                    if ch == "\r\n" { screenColumn = 0 }
+                    screenNewline()
+                } else { commitActiveLine() }
                 i = fullText.index(after: i)
                 continue
             } else if ch == "\r" {
@@ -255,7 +326,7 @@ public final class TerminalRingBuffer: @unchecked Sendable {
                 ensureEditingMode()
                 let nextTab = (cursorCol / 8 + 1) * 8
                 while cursorCol < nextTab {
-                    putCell(TerminalCell(char: " ", fgHex: currentFgHex, isBold: currentBold, ansiColorIndex: currentANSIIndex))
+                    putCell(styledCell(" "))
                 }
                 i = fullText.index(after: i)
                 continue
@@ -310,6 +381,19 @@ public final class TerminalRingBuffer: @unchecked Sendable {
                     }
                     i = fullText.index(after: j)
                     continue
+                } else if "P^_X".contains(nextChar) {
+                    // DCS/PM/APC/SOS payloads are controls, never visible terminal text.
+                    let payloadStart = fullText.index(after: next)
+                    if let terminator = fullText.range(of: "\u{1B}\\", range: payloadStart..<fullText.endIndex) {
+                        i = terminator.upperBound
+                        continue
+                    }
+                    pendingSequence = String(fullText[escapeStart...])
+                    break
+                } else if nextChar == "c" {
+                    resetTerminalState()
+                    i = fullText.index(after: next)
+                    continue
                 } else if nextChar == "]" { // OSC Sequence
                     var j = fullText.index(after: next)
                     while j < fullText.endIndex && fullText[j] != "\u{0007}" && fullText[j] != "\u{001B}" {
@@ -327,14 +411,38 @@ public final class TerminalRingBuffer: @unchecked Sendable {
                     }
                     i = fullText.index(after: j)
                     continue
+                } else if "()*+-./".contains(nextChar) {
+                    // Charset designation has a third byte; it can arrive in another PTY packet.
+                    let designator = fullText.index(after: next)
+                    if designator == fullText.endIndex {
+                        pendingSequence = String(fullText[escapeStart...])
+                        break
+                    }
+                    i = fullText.index(after: designator)
+                    continue
                 } else {
                     // 2-byte escape sequence (e.g. ESC M, ESC =, ESC >, ESC 7, ESC 8)
                     // Consume both bytes so the second byte does not print as garbage
                     if screen != nil {
                         switch nextChar {
                         case "7": savedScreenPosition = (screenRow, screenColumn)
-                        case "8": if let savedScreenPosition { (screenRow, screenColumn) = savedScreenPosition; _screenRevision += 1 }
-                        case "M": screenRow = max(0, screenRow - 1); _screenRevision += 1
+                        case "8":
+                            if let savedScreenPosition {
+                                screenRow = min(screenRows - 1, max(0, savedScreenPosition.0))
+                                screenColumn = min(screenColumns - 1, max(0, savedScreenPosition.1))
+                                _screenRevision += 1
+                            }
+                        case "M":
+                            if screenRow == scrollTop, var grid = screen {
+                                grid.remove(at: scrollBottom)
+                                grid.insert([], at: scrollTop)
+                                screen = grid
+                            } else {
+                                screenRow = max(0, screenRow - 1)
+                            }
+                            _screenRevision += 1
+                        case "D": screenNewline()
+                        case "E": screenColumn = 0; screenNewline()
                         default: break
                         }
                     }
@@ -347,12 +455,12 @@ public final class TerminalRingBuffer: @unchecked Sendable {
                     continue
                 }
                 if screen != nil {
-                    screenPut(TerminalCell(char: ch, fgHex: currentFgHex, isBold: currentBold, ansiColorIndex: currentANSIIndex))
+                    screenPut(styledCell(ch))
                     i = fullText.index(after: i)
                     continue
                 }
                 if isEditingActiveLine {
-                    putCell(TerminalCell(char: ch, fgHex: currentFgHex, isBold: currentBold, ansiColorIndex: currentANSIIndex))
+                    putCell(styledCell(ch))
                 } else {
                     activeLine.append(ch)
                 }
@@ -369,7 +477,19 @@ public final class TerminalRingBuffer: @unchecked Sendable {
             let spans = vtParser.parseANSI(activeLine)
             for span in spans {
                 for c in span.text {
-                    activeCells.append(TerminalCell(char: c, fgHex: span.foregroundColorHex, isBold: span.isBold, ansiColorIndex: span.ansiColorIndex))
+                    var cell = TerminalCell(char: c, fgHex: span.foregroundColorHex, isBold: span.isBold, ansiColorIndex: span.ansiColorIndex)
+                    cell.extraStyle.background = span.backgroundColorHex
+                    cell.extraStyle.backgroundIndex = span.backgroundANSIColorIndex
+                    cell.extraStyle.italic = span.isItalic
+                    cell.extraStyle.underline = span.isUnderlined
+                    cell.extraStyle.strikethrough = span.isStrikethrough
+                    cell.extraStyle.inverse = span.isInverse
+                    activeCells.append(cell)
+                    if TerminalCharacterWidth.columns(c) == 2 {
+                        var continuation = TerminalCell(char: " ")
+                        continuation.isContinuation = true
+                        activeCells.append(continuation)
+                    }
                 }
             }
             activeLine = ""
@@ -377,44 +497,115 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         cursorCol = activeCells.count
     }
     
-    private func putCell(_ cell: TerminalCell) {
-        if cursorCol < activeCells.count {
-            activeCells[cursorCol] = cell
-        } else {
-            if cursorCol > activeCells.count {
-                let pad = cursorCol - activeCells.count
-                activeCells.append(contentsOf: repeatElement(TerminalCell(char: " ", fgHex: nil, isBold: false), count: pad))
-            }
-            activeCells.append(cell)
+    /// Clear a whole wide glyph if either of its cells is overwritten.
+    private func eraseScreenCells(_ cells: inout [TerminalCell], from start: Int, through end: Int) {
+        while cells.count < end { cells.append(TerminalCell(char: " ")) }
+        for column in start..<end {
+            clearGlyph(in: &cells, at: column)
+            cells[column] = styledCell(" ")
         }
-        cursorCol += 1
+    }
+
+    private func normalizeWideCells(_ cells: inout [TerminalCell]) {
+        for index in cells.indices {
+            if cells[index].isContinuation {
+                if index == 0 || TerminalCharacterWidth.columns(cells[index - 1].char) != 2 {
+                    cells[index] = TerminalCell(char: " ")
+                }
+            } else if TerminalCharacterWidth.columns(cells[index].char) == 2 {
+                if index + 1 == cells.count || !cells[index + 1].isContinuation {
+                    cells[index] = TerminalCell(char: " ")
+                }
+            }
+        }
+    }
+
+    private func clearGlyph(in cells: inout [TerminalCell], at column: Int) {
+        guard column >= 0 && column < cells.count else { return }
+        if cells[column].isContinuation && column > 0 { cells[column - 1] = TerminalCell(char: " ") }
+        if column + 1 < cells.count && cells[column + 1].isContinuation { cells[column + 1] = TerminalCell(char: " ") }
+        cells[column] = TerminalCell(char: " ")
+    }
+
+    private func appendedGrapheme(_ character: Character, in cells: [TerminalCell], column: Int) -> (index: Int, character: Character, oldWidth: Int, newWidth: Int)? {
+        var previous = column - 1
+        guard previous >= 0, previous < cells.count else { return nil }
+        if cells[previous].isContinuation { previous -= 1 }
+        guard previous >= 0 else { return nil }
+        let joined = String(cells[previous].char) + String(character)
+        guard joined.count == 1, let merged = joined.first else { return nil }
+        let oldWidth = column - previous
+        return (previous, merged, oldWidth, TerminalCharacterWidth.columns(merged))
+    }
+
+    private func writeCell(_ cell: TerminalCell, into cells: inout [TerminalCell], column: Int) -> Int {
+        let width = TerminalCharacterWidth.columns(cell.char)
+        if let merged = appendedGrapheme(cell.char, in: cells, column: column) {
+            if merged.newWidth > merged.oldWidth {
+                while cells.count <= merged.index + 1 { cells.append(TerminalCell(char: " ")) }
+                clearGlyph(in: &cells, at: merged.index + 1)
+                var continuation = TerminalCell(char: " ")
+                continuation.isContinuation = true
+                cells[merged.index + 1] = continuation
+            }
+            cells[merged.index].char = merged.character
+            return merged.newWidth - merged.oldWidth
+        }
+        if width == 0 {
+            var previous = min(column - 1, cells.count - 1)
+            if previous >= 0 && cells[previous].isContinuation { previous -= 1 }
+            if previous >= 0, let combined = (String(cells[previous].char) + String(cell.char)).first { cells[previous].char = combined }
+            return 0
+        }
+        while cells.count < column + width { cells.append(TerminalCell(char: " ")) }
+        for offset in 0..<width { clearGlyph(in: &cells, at: column + offset) }
+        cells[column] = cell
+        if width == 2 {
+            var continuation = TerminalCell(char: " ")
+            continuation.isContinuation = true
+            cells[column + 1] = continuation
+        }
+        return width
+    }
+
+    private func putCell(_ cell: TerminalCell) {
+        cursorCol += writeCell(cell, into: &activeCells, column: cursorCol)
     }
 
     private func screenNewline() {
-        screenColumn = 0
-        if screenRow < scrollBottom {
-            screenRow += 1
-        } else if var grid = screen {
+        if screenRow == scrollBottom, var grid = screen {
             if scrollTop < grid.count && scrollBottom < grid.count && scrollTop <= scrollBottom {
                 grid.remove(at: scrollTop)
                 grid.insert([], at: scrollBottom)
                 screen = grid
             }
+        } else {
+            screenRow = min(screenRows - 1, screenRow + 1)
         }
         _screenRevision += 1
     }
 
     private func screenPut(_ cell: TerminalCell) {
         guard var grid = screen else { return }
-        if screenColumn >= screenColumns { screenNewline(); grid = screen! }
-        var row = grid[screenRow]
-        if screenColumn > row.count {
-            row.append(contentsOf: repeatElement(TerminalCell(char: " "), count: screenColumn - row.count))
+        let merged = appendedGrapheme(cell.char, in: grid[screenRow], column: screenColumn)
+        var cell = cell
+        let width = merged.map { $0.newWidth - $0.oldWidth } ?? TerminalCharacterWidth.columns(cell.char)
+        if width > 0 && screenColumn + width > screenColumns {
+            if let merged {
+                cell = grid[screenRow][merged.index]
+                cell.char = merged.character
+                clearGlyph(in: &grid[screenRow], at: merged.index)
+                screen = grid
+            }
+            screenColumn = 0
+            screenNewline()
+            grid = screen!
         }
-        if screenColumn < row.count { row[screenColumn] = cell } else { row.append(cell) }
+        guard TerminalCharacterWidth.columns(cell.char) <= screenColumns else { return }
+        var row = grid[screenRow]
+        screenColumn += writeCell(cell, into: &row, column: screenColumn)
         grid[screenRow] = row
         screen = grid
-        screenColumn += 1
         _screenRevision += 1
     }
 
@@ -443,6 +634,11 @@ public final class TerminalRingBuffer: @unchecked Sendable {
                     _screenRevision += 1
                     _isClearPending = true
                 }
+            case 1000, 1002, 1003:
+                if isSet { _mouseTrackingMode = mode }
+                else if _mouseTrackingMode == mode { _mouseTrackingMode = 0 }
+            case 1006:
+                _isSGRMouseEnabled = isSet
             case 1:
                 _isApplicationCursorKeys = isSet
             case 2004:
@@ -458,14 +654,20 @@ public final class TerminalRingBuffer: @unchecked Sendable {
 
     private func handleScreenCSI(finalChar: Character, param: String) {
         guard var grid = screen else { return }
+        defer {
+            if "JKP@X".contains(finalChar), var updated = screen {
+                for row in updated.indices { normalizeWideCells(&updated[row]) }
+                screen = updated
+            }
+        }
         let values = param.split(separator: ";", omittingEmptySubsequences: false).map { Int($0) ?? 0 }
         let first = values.first ?? 0
         let amount = max(1, first)
         switch finalChar {
         case "m":
-            var style = SGRStyle(foreground: currentFgHex, index: currentANSIIndex, bold: currentBold)
+            var style = currentStyle
             style.apply(param.split(separator: ";").compactMap { Int($0) })
-            currentFgHex = style.foreground; currentANSIIndex = style.index; currentBold = style.bold
+            currentStyle = style
         case "H", "f":
             screenRow = min(screenRows - 1, max(0, amount - 1))
             screenColumn = min(screenColumns - 1, max(0, (values.count > 1 ? max(1, values[1]) : 1) - 1))
@@ -477,19 +679,24 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         case "G": screenColumn = min(screenColumns - 1, max(0, amount - 1)); _screenRevision += 1
         case "d": screenRow = min(screenRows - 1, max(0, amount - 1)); _screenRevision += 1
         case "J":
-            if first == 2 || first == 3 { grid = Array(repeating: [], count: screenRows) }
-            else if first == 0 {
-                grid[screenRow] = Array(grid[screenRow].prefix(screenColumn))
-                if screenRow + 1 < screenRows { for row in (screenRow + 1)..<screenRows { grid[row] = [] } }
+            if first == 2 || first == 3 {
+                for row in grid.indices { eraseScreenCells(&grid[row], from: 0, through: screenColumns) }
+            } else if first == 0 {
+                eraseScreenCells(&grid[screenRow], from: screenColumn, through: screenColumns)
+                if screenRow + 1 < screenRows {
+                    for row in (screenRow + 1)..<screenRows { eraseScreenCells(&grid[row], from: 0, through: screenColumns) }
+                }
+            } else if first == 1 {
+                if screenRow > 0 {
+                    for row in 0..<screenRow { eraseScreenCells(&grid[row], from: 0, through: screenColumns) }
+                }
+                eraseScreenCells(&grid[screenRow], from: 0, through: screenColumn + 1)
             }
             screen = grid; _screenRevision += 1
         case "K":
-            if first == 2 { grid[screenRow] = [] }
-            else if first == 0 { grid[screenRow] = Array(grid[screenRow].prefix(screenColumn)) }
-            else if first == 1 {
-                let end = min(screenColumn + 1, grid[screenRow].count)
-                if end > 0 { for col in 0..<end { grid[screenRow][col] = TerminalCell(char: " ") } }
-            }
+            if first == 2 { eraseScreenCells(&grid[screenRow], from: 0, through: screenColumns) }
+            else if first == 0 { eraseScreenCells(&grid[screenRow], from: screenColumn, through: screenColumns) }
+            else if first == 1 { eraseScreenCells(&grid[screenRow], from: 0, through: screenColumn + 1) }
             screen = grid; _screenRevision += 1
         case "r":
             let top = (values.count > 0 && values[0] > 0) ? values[0] : 1
@@ -554,7 +761,7 @@ public final class TerminalRingBuffer: @unchecked Sendable {
                 if screenColumn > row.count {
                     row.append(contentsOf: repeatElement(TerminalCell(char: " "), count: screenColumn - row.count))
                 }
-                let blanks = Array(repeating: TerminalCell(char: " ", fgHex: currentFgHex, isBold: currentBold, ansiColorIndex: currentANSIIndex), count: amount)
+                let blanks = Array(repeating: styledCell(" "), count: min(amount, screenColumns))
                 row.insert(contentsOf: blanks, at: min(screenColumn, row.count))
                 if row.count > screenColumns {
                     row = Array(row.prefix(screenColumns))
@@ -573,7 +780,8 @@ public final class TerminalRingBuffer: @unchecked Sendable {
                     row.append(TerminalCell(char: " "))
                 }
                 for c in screenColumn..<min(end, row.count) {
-                    row[c] = TerminalCell(char: " ", fgHex: currentFgHex, isBold: false, ansiColorIndex: currentANSIIndex)
+                    clearGlyph(in: &row, at: c)
+                    row[c] = styledCell(" ")
                 }
                 grid[screenRow] = row
                 screen = grid; _screenRevision += 1
@@ -591,6 +799,9 @@ public final class TerminalRingBuffer: @unchecked Sendable {
     }
     
     private func handleCSI(finalChar: Character, param: String) {
+        defer {
+            if "JKP@X".contains(finalChar) { normalizeWideCells(&activeCells) }
+        }
         switch finalChar {
         case "h":
             if param == "?2004" {
@@ -602,11 +813,9 @@ public final class TerminalRingBuffer: @unchecked Sendable {
             }
         case "m": // SGR Color & Style
             let codes = param.split(separator: ";").compactMap { Int($0) }
-            var style = SGRStyle(foreground: currentFgHex, index: currentANSIIndex, bold: currentBold)
+            var style = currentStyle
             style.apply(codes)
-            currentFgHex = style.foreground
-            currentANSIIndex = style.index
-            currentBold = style.bold
+            currentStyle = style
         case "J": // Erase in Display
             let mode = Int(param) ?? 0
             if mode == 0 {
@@ -668,7 +877,7 @@ public final class TerminalRingBuffer: @unchecked Sendable {
                 let pad = cursorCol - activeCells.count
                 activeCells.append(contentsOf: repeatElement(TerminalCell(char: " ", fgHex: nil, isBold: false), count: pad))
             }
-            let blanks = Array(repeating: TerminalCell(char: " ", fgHex: currentFgHex, isBold: currentBold, ansiColorIndex: currentANSIIndex), count: n)
+            let blanks = Array(repeating: styledCell(" "), count: n)
             activeCells.insert(contentsOf: blanks, at: min(cursorCol, activeCells.count))
         case "P": // Delete Character (DCH)
             let n = max(1, Int(param) ?? 1)
@@ -703,13 +912,13 @@ public final class TerminalRingBuffer: @unchecked Sendable {
     }
     
     private func commitFastLine(_ line: String) {
-        let index = (head + count) % maxLines
-        if count < maxLines {
+        let index = (head + count) % historyLimit
+        if count < historyLimit {
             buffer[index] = line
             count += 1
         } else {
             buffer[head] = line
-            head = (head + 1) % maxLines
+            head = (head + 1) % historyLimit
         }
         _totalCommittedCount += 1
     }
@@ -717,49 +926,23 @@ public final class TerminalRingBuffer: @unchecked Sendable {
     private func renderCellsToString(_ cells: [TerminalCell]) -> String {
         // Trim trailing erasure spaces at or past cursorCol (e.g. from \b \b or erase operations)
         var effectiveCount = cells.count
-        while effectiveCount > cursorCol && cells[effectiveCount - 1].char == " " {
+        while effectiveCount > cursorCol && cells[effectiveCount - 1].char == " " && !cells[effectiveCount - 1].isContinuation && cells[effectiveCount - 1].style.background == nil && cells[effectiveCount - 1].style.backgroundIndex == nil && !cells[effectiveCount - 1].style.inverse {
             effectiveCount -= 1
         }
         guard effectiveCount > 0 else { return "" }
         var result = ""
         result.reserveCapacity(effectiveCount + 16)
-        var currentFg: String? = nil
-        var currentIndex: Int? = nil
-        var currentBold = false
-        
-        for idx in 0..<effectiveCount {
-            let cell = cells[idx]
-            if cell.fgHex != currentFg || cell.ansiColorIndex != currentIndex || cell.isBold != currentBold {
-                if cell.fgHex == nil && !cell.isBold {
-                    result.append("\u{001B}[0m")
-                } else {
-                    var params = [String]()
-                    if cell.isBold { params.append("1") }
-                    if let index = cell.ansiColorIndex {
-                        params.append(String(index < 8 ? 30 + index : 90 + index - 8))
-                    } else if let hex = cell.fgHex {
-                        if hex.count == 7 && hex.hasPrefix("#") {
-                            let start = hex.index(hex.startIndex, offsetBy: 1)
-                            let rEnd = hex.index(start, offsetBy: 2)
-                            let gEnd = hex.index(rEnd, offsetBy: 2)
-                            let bEnd = hex.index(gEnd, offsetBy: 2)
-                            let r = Int(hex[start..<rEnd], radix: 16) ?? 0
-                            let g = Int(hex[rEnd..<gEnd], radix: 16) ?? 0
-                            let b = Int(hex[gEnd..<bEnd], radix: 16) ?? 0
-                            params.append("38;2;\(r);\(g);\(b)")
-                        }
-                    }
-                    result.append("\u{001B}[" + params.joined(separator: ";") + "m")
-                }
-                currentFg = cell.fgHex
-                currentIndex = cell.ansiColorIndex
-                currentBold = cell.isBold
+        let defaultStyle = SGRStyle(foreground: nil, index: nil, bold: false)
+        var previousStyle = defaultStyle
+        for cell in cells.prefix(effectiveCount) where !cell.isContinuation {
+            let style = cell.style
+            if style != previousStyle {
+                result.append(style.escapeSequence)
+                previousStyle = style
             }
             result.append(cell.char)
         }
-        if currentFg != nil || currentBold {
-            result.append("\u{001B}[0m")
-        }
+        if previousStyle != defaultStyle { result.append("\u{1B}[0m") }
         return result
     }
     
@@ -777,13 +960,13 @@ public final class TerminalRingBuffer: @unchecked Sendable {
     public func appendLines(_ lines: [String]) {
         lock.lock()
         for line in lines {
-            let index = (head + count) % maxLines
-            if count < maxLines {
+            let index = (head + count) % historyLimit
+            if count < historyLimit {
                 buffer[index] = line
                 count += 1
             } else {
                 buffer[head] = line
-                head = (head + 1) % maxLines
+                head = (head + 1) % historyLimit
             }
         }
         _totalCommittedCount += Int64(lines.count)
@@ -802,7 +985,7 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         var result = [String]()
         result.reserveCapacity(count + (active.isEmpty ? 0 : 1))
         for i in 0..<count {
-            let index = (head + i) % maxLines
+            let index = (head + i) % historyLimit
             result.append(buffer[index])
         }
         if !active.isEmpty {
@@ -816,13 +999,13 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         
-        guard start < count else { return [] }
+        guard start >= 0, start < count, requestedCount > 0 else { return [] }
         let available = count - start
         let fetchCount = min(requestedCount, available)
         var result = [String]()
         result.reserveCapacity(fetchCount)
         for i in 0..<fetchCount {
-            let index = (head + start + i) % maxLines
+            let index = (head + start + i) % historyLimit
             result.append(buffer[index])
         }
         return result
@@ -836,6 +1019,20 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         return count + (hasActive ? 1 : 0)
     }
     
+    private func resetTerminalState() {
+        head = 0; count = 0; _totalCommittedCount = 0
+        activeLine = ""; activeCells.removeAll(keepingCapacity: true)
+        isEditingActiveLine = false; cursorCol = 0
+        currentStyle = SGRStyle(foreground: nil, index: nil, bold: false)
+        pendingSequence = ""; screen = nil
+        screenRow = 0; screenColumn = 0
+        scrollTop = 0; scrollBottom = screenRows - 1
+        savedScreenPosition = nil
+        _isCursorHidden = false; _isApplicationCursorKeys = false
+        _isBracketedPasteEnabled = false; _mouseTrackingMode = 0; _isSGRMouseEnabled = false
+        _screenRevision += 1; _isClearPending = true
+    }
+
     /// Clear all lines
     public func clear() {
         lock.lock()
@@ -847,9 +1044,7 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         isEditingActiveLine = false
         cursorCol = 0
         pendingSequence = ""
-        currentFgHex = nil
-        currentANSIIndex = nil
-        currentBold = false
+        currentStyle = SGRStyle(foreground: nil, index: nil, bold: false)
         _isClearPending = true
         let updateHandler = onUpdate
         lock.unlock()

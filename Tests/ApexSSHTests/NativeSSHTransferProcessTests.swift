@@ -1,8 +1,21 @@
 import Foundation
+import ApexCore
 import XCTest
 @testable import ApexSSH
 
 final class NativeSSHTransferProcessTests: XCTestCase {
+    func testIdenticalHostsHaveIndependentControlConnections() {
+        let config = Session(name: "same host", host: "example.test", username: "qa", authMethod: .agent)
+        let first = NativeSSHSession(session: config)
+        let second = NativeSSHSession(session: config)
+        XCTAssertNotEqual(first.controlSocketPath, second.controlSocketPath, "Closing one tab must not close another tab's SFTP and monitoring control connection")
+    }
+
+    func testSCPRemotePathIsLiteralAndIPv6IsBracketed() {
+        XCTAssertEqual(NativeSSHSession.scpRemoteSpecifier(username: "qa", host: "::1", path: "/tmp/中文 'quote' $literal.txt"), "qa@[::1]:/tmp/中文 'quote' $literal.txt")
+        XCTAssertEqual(NativeSSHSession.scpRemoteSpecifier(username: "qa", host: "[::1]", path: "/tmp/a b"), "qa@[::1]:/tmp/a b")
+    }
+
     func testLargeSCPErrorOutputCannotBlockTransfer() async throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")

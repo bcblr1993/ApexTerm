@@ -46,6 +46,18 @@ final class QAFileSession: SSHSessionProtocol {
     func uploadFile(localURL: URL, remotePath: String, progress: @Sendable @escaping (Double) -> Void) async throws {
         try await base.uploadFile(localURL: localURL, remotePath: remotePath, progress: progress)
     }
+    func createFile(remotePath: String) async throws {
+        if mode == "creation-permission-denied" {
+            throw NSError(domain: "ApexTerm.QA", code: 13, userInfo: [NSLocalizedDescriptionKey: "touch: cannot touch '\(remotePath)': Permission denied"])
+        }
+        try await base.createFile(remotePath: remotePath)
+    }
+    func createDirectory(remotePath: String) async throws {
+        if mode == "creation-permission-denied" {
+            throw NSError(domain: "ApexTerm.QA", code: 13, userInfo: [NSLocalizedDescriptionKey: "mkdir: cannot create directory '\(remotePath)': Permission denied"])
+        }
+        try await base.createDirectory(remotePath: remotePath)
+    }
     func setOutputHandler(_ handler: @Sendable @escaping (Data) -> Void) { base.setOutputHandler(handler) }
     func setMetricsHandler(_ handler: @Sendable @escaping (ServerMetricsSnapshot) -> Void) { base.setMetricsHandler(handler) }
     func setDirectoryChangeHandler(_ handler: @Sendable @escaping (String) -> Void) { base.setDirectoryChangeHandler(handler) }

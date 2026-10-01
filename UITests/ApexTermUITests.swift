@@ -1,4 +1,5 @@
 import XCTest
+import AppKit
 import Carbon
 import CryptoKit
 
@@ -33,8 +34,10 @@ final class ApexTermUITests: XCTestCase {
                 if close.exists { clickVisibleCenter(close) }
             }
             if !app.sheets.firstMatch.exists {
-                clickVisibleCenter(app.menuBars.menuBarItems["验收操作"])
-                clickVisibleCenter(app.menuItems["断开测试终端"])
+                // The system Pinyin candidate menu can leave XCTest's menu item
+                // geometry unavailable. Invoke the same QA menu action by its shortcut.
+                focusOwnedWindow()
+                app.typeKey("x", modifierFlags: [.command, .option, .shift])
                 XCTAssertTrue(staticText("会话已断开").waitForExistence(timeout: 10),
                               "Disconnect the real PTY before XCTest terminates its host")
             } else {
@@ -81,7 +84,7 @@ final class ApexTermUITests: XCTestCase {
         } else {
             app = XCUIApplication(bundleIdentifier: "com.apexterm.qa.verification")
         }
-        app.launchEnvironment = ["APEX_QA_SCENE": scene, "APEX_QA_DISABLE_TELEMETRY": "1", "APEX_QA_UI_RUN_ID": UUID().uuidString]
+        app.launchEnvironment = ["APEX_QA_SCENE": scene, "APEX_QA_DISABLE_TELEMETRY": "1", "APEX_QA_RAISE_WINDOW": "1", "APEX_QA_UI_RUN_ID": UUID().uuidString]
             .merging(extra) { _, new in new }
         if let socket = ProcessInfo.processInfo.environment["SSH_AUTH_SOCK"] {
             app.launchEnvironment["SSH_AUTH_SOCK"] = socket
@@ -97,6 +100,7 @@ final class ApexTermUITests: XCTestCase {
         app.launchEnvironment = ["APEX_UI_TEST_REOPEN": "1"]
         app.launch()
         XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 10))
+        focusOwnedWindow()
         app.typeKey("w", modifierFlags: .command)
         let closed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in self.app.windows.count == 0 }, object: nil)
         XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 5), .completed)
@@ -245,7 +249,7 @@ final class ApexTermUITests: XCTestCase {
         XCTAssertTrue(staticText("发现新版本可用").waitForExistence(timeout: 5))
         XCTAssertTrue(staticText("新版本: v9.9.9", comparison: "CONTAINS").exists)
         XCTAssertTrue(staticText("UI验收更新说明", comparison: "CONTAINS").exists)
-        XCTAssertTrue(app.windows.buttons["前往下载更新"].firstMatch.isHittable)
+        XCTAssertTrue(app.windows.buttons["立即更新"].firstMatch.isHittable)
         XCTAssertTrue(app.windows.buttons["稍后提醒"].firstMatch.isHittable)
         capture("update-available-version-notes")
         app.typeKey(XCUIKeyboardKey.escape, modifierFlags: [])
@@ -319,6 +323,15 @@ final class ApexTermUITests: XCTestCase {
         let original = path.value as? String
         XCTAssertNotNil(original)
         path.click()
+        path.typeKey("a", modifierFlags: .command)
+        path.typeText("/ui-unsubmitted-draft")
+        let copyPath = app.buttons["复制当前路径"].firstMatch
+        XCTAssertTrue(copyPath.isHittable)
+        copyPath.click()
+        path.click()
+        path.typeKey("a", modifierFlags: .command)
+        path.typeKey("v", modifierFlags: .command)
+        XCTAssertEqual(path.value as? String, original, "Copy the current directory, not an unsubmitted draft")
         path.typeKey("a", modifierFlags: .command)
         path.typeText("/ui-unsubmitted-draft")
         path.typeKey(XCUIKeyboardKey.escape, modifierFlags: [])
@@ -469,6 +482,46 @@ final class ApexTermUITests: XCTestCase {
         XCTAssertTrue(app.windows.buttons["显示导入弹窗"].firstMatch.isHittable)
     }
 
+    func testSFTPCreationPermissionFailureShowsDetailsWithoutOpeningTransfers() {
+        launch("main", extra: ["APEX_QA_FILES": "creation-permission-denied", "APEX_QA_CONNECT": "1"])
+        XCTAssertTrue(staticText("nginx.conf").waitForExistence(timeout: 10))
+        let more = app.menuButtons["ellipsis"].firstMatch
+        more.click()
+        clickVisibleCenter(app.menuItems["新建文件"])
+        let name = app.textFields["文件名 (例如 test.sh)"]
+        XCTAssertTrue(name.waitForExistence(timeout: 5))
+        name.click()
+        name.typeText("ui-denied-file.sh")
+        app.windows.buttons["创建"].firstMatch.click()
+        let notice = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "新建文件失败：当前用户没有目标文件或目录的写入权限")).firstMatch
+        XCTAssertTrue(notice.waitForExistence(timeout: 5))
+        XCTAssertFalse(staticText("ui-denied-file.sh").exists)
+        notice.click()
+        XCTAssertTrue(staticText("创建失败").waitForExistence(timeout: 5))
+        let details = app.staticTexts.matching(NSPredicate(format: "value CONTAINS %@ AND value CONTAINS %@", "Permission denied", "ui-denied-file.sh")).firstMatch
+        XCTAssertTrue(details.exists)
+        XCTAssertFalse(app.buttons["收起传输任务"].exists)
+        capture("sftp-creation-permission-details")
+        app.windows.buttons["好"].firstMatch.click()
+        XCTAssertTrue(staticText("nginx.conf").exists)
+        more.click()
+        clickVisibleCenter(app.menuItems["新建文件夹"])
+        let folderName = app.textFields["文件夹名称"]
+        XCTAssertTrue(folderName.waitForExistence(timeout: 5))
+        folderName.click()
+        folderName.typeText("ui-denied-folder")
+        app.windows.buttons["创建"].firstMatch.click()
+        let folderNotice = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "新建文件夹失败：当前用户没有目标文件或目录的写入权限")).firstMatch
+        XCTAssertTrue(folderNotice.waitForExistence(timeout: 5))
+        XCTAssertFalse(staticText("ui-denied-folder").exists)
+        folderNotice.click()
+        XCTAssertTrue(staticText("创建失败").waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "value CONTAINS %@ AND value CONTAINS %@", "Permission denied", "ui-denied-folder")).firstMatch.exists)
+        XCTAssertFalse(app.buttons["收起传输任务"].exists)
+        capture("sftp-folder-creation-permission-details")
+        app.windows.buttons["好"].firstMatch.click()
+    }
+
     func testSFTPCreateFileCancelAndSuccessfulListing() {
         launch("main", extra: ["APEX_QA_CONNECT": "1"])
         XCTAssertTrue(staticText("nginx.conf").waitForExistence(timeout: 10))
@@ -611,6 +664,121 @@ final class ApexTermUITests: XCTestCase {
         capture("sftp-own-fixture-deleted")
     }
 
+    func testRealSSHVimClipboardArrowsResizeAndSave() throws {
+        let environment = ProcessInfo.processInfo.environment
+        let host = try XCTUnwrap(environment["APEX_UI_TEST_HOST"])
+        let user = try XCTUnwrap(environment["APEX_UI_TEST_USER"])
+        launch("main", extra: ["APEX_QA_REAL_HOST": host, "APEX_QA_REAL_USER": user, "APEX_QA_CONNECT": "1"])
+        XCTAssertTrue(staticText("已连接", comparison: "BEGINSWITH").waitForExistence(timeout: 30))
+        let inputSource = try IMEInputSourceSelection()
+        inputSourceToRestore = inputSource
+        try inputSource.selectEnabled("com.apple.keylayout.US")
+        let clipboard = NSPasteboard.general
+        let previous = (clipboard.pasteboardItems ?? []).map { item in
+            item.types.compactMap { type in item.data(forType: type).map { (type, $0) } }
+        }
+        defer {
+            clipboard.clearContents()
+            let items = previous.map { representations in
+                let item = NSPasteboardItem()
+                for (type, data) in representations { item.setData(data, forType: type) }
+                return item
+            }
+            if !items.isEmpty { clipboard.writeObjects(items) }
+        }
+        let terminal = app.textViews.firstMatch
+        terminal.click()
+        terminal.typeText("printf '\\nAPEX_UI_TMP=%s\\n' \"$(mktemp -d /tmp/apex-ui-XXXXXX)\"\n")
+        let created = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value MATCHES %@", "(?s).*\\nAPEX_UI_TMP=/tmp/apex-ui-[A-Za-z0-9]+\\r?\\n.*"), object: terminal)
+        XCTAssertEqual(XCTWaiter.wait(for: [created], timeout: 15), .completed)
+        let text = terminal.value as? String ?? ""
+        let regex = try NSRegularExpression(pattern: "\\nAPEX_UI_TMP=(/tmp/apex-ui-[A-Za-z0-9]+)\\r?\\n")
+        let match = try XCTUnwrap(regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)))
+        let range = try XCTUnwrap(Range(match.range(at: 1), in: text))
+        let directory = String(text[range])
+        ownedRemoteDirectory = directory
+        terminal.typeText("vim -Nu NONE -n '\(directory)/ui-real-file.txt'\n")
+        // Vim's filename message is transient and disappears on a SIGWINCH redraw.
+        // Empty-buffer tildes plus removed shell history identify its alternate screen.
+        let opened = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@ AND NOT value CONTAINS %@", "\n~\n", "APEX_UI_TMP"), object: terminal)
+        XCTAssertEqual(XCTWaiter.wait(for: [opened], timeout: 15), .completed)
+        terminal.typeText("i")
+        clipboard.clearContents()
+        clipboard.setString("中文\ntwo\nthree", forType: .string)
+        terminal.typeKey("v", modifierFlags: .command)
+        let pasted = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@ AND value CONTAINS %@", "中文", "three"), object: terminal)
+        XCTAssertEqual(XCTWaiter.wait(for: [pasted], timeout: 10), .completed)
+        capture("real-vim-chinese-multiline-paste")
+        terminal.typeKey(.escape, modifierFlags: [])
+        terminal.typeKey(.upArrow, modifierFlags: [])
+        terminal.typeKey(.leftArrow, modifierFlags: [])
+        terminal.typeText("rX")
+        let edited = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "tXo"), object: terminal)
+        XCTAssertEqual(XCTWaiter.wait(for: [edited], timeout: 10), .completed)
+        terminal.typeKey("=", modifierFlags: .command)
+        terminal.typeKey("0", modifierFlags: .command)
+        capture("real-vim-arrows-font-resize")
+        let filePanel = app.checkBoxes["文件面板"].firstMatch
+        XCTAssertTrue(filePanel.waitForExistence(timeout: 5))
+        let remotePathField = app.textFields["远程路径"]
+        if !remotePathField.exists { filePanel.click() }
+        XCTAssertTrue(remotePathField.waitForExistence(timeout: 5))
+        terminal.click()
+        terminal.typeText(":let g:apex_before = &lines\n")
+        filePanel.click()
+        XCTAssertTrue(remotePathField.waitForNonExistence(timeout: 10))
+        terminal.click()
+        terminal.typeText(":echo &lines > g:apex_before ? 'APEX_VIEWPORT_GREW' : 'APEX_VIEWPORT_FAILED'\n")
+        let acknowledged = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value MATCHES %@", "(?s).*\\nAPEX_VIEWPORT_GREW(?:\\n.*|$)"), object: terminal)
+        XCTAssertEqual(XCTWaiter.wait(for: [acknowledged], timeout: 10), .completed)
+        capture("real-vim-remote-viewport-acknowledged")
+        terminal.typeKey(.return, modifierFlags: [])
+        terminal.typeText(":wq\n")
+        let returned = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "APEX_UI_TMP"), object: terminal)
+        XCTAssertEqual(XCTWaiter.wait(for: [returned], timeout: 10), .completed)
+        terminal.typeText("cat '\(directory)/ui-real-file.txt'\n")
+        let shellOutput = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "\n中文\ntXo\nthree\n"), object: terminal)
+        XCTAssertEqual(XCTWaiter.wait(for: [shellOutput], timeout: 15), .completed)
+        terminal.typeKey("a", modifierFlags: .command)
+        terminal.typeKey("c", modifierFlags: .command)
+        XCTAssertTrue(clipboard.string(forType: .string)?.contains("中文\ntXo\nthree") == true)
+        let read = Process()
+        read.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+        read.arguments = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "\(user)@\(host)", "cat '\(directory)/ui-real-file.txt'"]
+        let output = Pipe()
+        read.standardOutput = output
+        read.standardError = FileHandle.nullDevice
+        try read.run()
+        let bytes = output.fileHandleForReading.readDataToEndOfFile()
+        read.waitUntilExit()
+        XCTAssertEqual(read.terminationStatus, 0)
+        XCTAssertEqual(bytes, Data("中文\ntXo\nthree\n".utf8))
+        capture("real-vim-copy-and-saved-bytes-verified")
+    }
+
+    func testTerminalNumberedTabShortcutsKeepOutputSeparate() {
+        launch()
+        var terminal = app.textViews.firstMatch
+        terminal.click()
+        terminal.typeText("printf 'APEX_FIRST_TAB_MARKER\\n'\n")
+        let initial = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "APEX_FIRST_TAB_MARKER"), object: terminal)
+        XCTAssertEqual(XCTWaiter.wait(for: [initial], timeout: 5), .completed)
+        app.toolbars.buttons["复制会话"].firstMatch.click()
+        XCTAssertTrue(staticText("已连接", comparison: "BEGINSWITH").waitForExistence(timeout: 15))
+        terminal = app.textViews.firstMatch
+        terminal.click()
+        terminal.typeText("printf 'APEX_SECOND_TAB_MARKER\\n'\n")
+        let second = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "APEX_SECOND_TAB_MARKER"), object: terminal)
+        XCTAssertEqual(XCTWaiter.wait(for: [second], timeout: 5), .completed)
+        terminal.typeKey("1", modifierFlags: .command)
+        let first = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@ AND NOT value CONTAINS %@", "APEX_FIRST_TAB_MARKER", "APEX_SECOND_TAB_MARKER"), object: app.textViews.firstMatch)
+        XCTAssertEqual(XCTWaiter.wait(for: [first], timeout: 5), .completed)
+        app.textViews.firstMatch.typeKey("2", modifierFlags: .command)
+        let restored = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@ AND NOT value CONTAINS %@", "APEX_SECOND_TAB_MARKER", "APEX_FIRST_TAB_MARKER"), object: app.textViews.firstMatch)
+        XCTAssertEqual(XCTWaiter.wait(for: [restored], timeout: 5), .completed)
+        capture("numbered-tabs-preserve-independent-output")
+    }
+
     func testRealSSHBuiltinPinyinCompositionAndCommit() throws {
         let environment = ProcessInfo.processInfo.environment
         let host = try XCTUnwrap(environment["APEX_UI_TEST_HOST"])
@@ -698,6 +866,7 @@ final class ApexTermUITests: XCTestCase {
         let directoryRange = try XCTUnwrap(Range(match.range(at: 1), in: outputText))
         let directory = String(outputText[directoryRange])
         ownedRemoteDirectory = directory
+        terminal.typeText("cd '\(directory)'\n")
         let fixtureRecord = XCTAttachment(string: "Owned temporary directory: \(directory)\nOwned file: ui-real-file.txt\nNormal success removes the file through SFTP and removes the empty directory through SSH.\nOn failure, SSH cleanup removes only this exact file and then the empty directory; it never recursively removes other paths.")
         fixtureRecord.name = "real-host-owned-fixture"
         fixtureRecord.lifetime = .keepAlways
@@ -746,7 +915,7 @@ final class ApexTermUITests: XCTestCase {
         delete.click()
         XCTAssertTrue(staticText("文件夹为空").waitForExistence(timeout: 15))
         terminal.click()
-        terminal.typeText("rmdir '\(directory)' && printf '\\nAPEX_UI_FIXTURE_CLEAN_OK\\n'\n")
+        terminal.typeText("cd ~; rmdir '\(directory)' && printf '\\nAPEX_UI_FIXTURE_CLEAN_OK\\n'\n")
         let cleaned = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "\nAPEX_UI_FIXTURE_CLEAN_OK\n"), object: terminal)
         XCTAssertEqual(XCTWaiter.wait(for: [cleaned], timeout: 15), .completed)
         ownedRemoteDirectory = nil
@@ -775,7 +944,7 @@ final class ApexTermUITests: XCTestCase {
         let local = FileManager.default.temporaryDirectory.appendingPathComponent("apex-ui-drag-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: local, withIntermediateDirectories: false)
         dragLocalDirectory = local
-        launch("main", extra: ["APEX_QA_REAL_HOST": host, "APEX_QA_REAL_USER": user, "APEX_QA_CONNECT": "1", "APEX_QA_MONITOR": "0"])
+        launch("main", extra: ["APEX_QA_REAL_HOST": host, "APEX_QA_REAL_USER": user, "APEX_QA_CONNECT": "1", "APEX_QA_MONITOR": "0", "APEX_QA_SIDE_BY_SIDE": "1"])
         XCTAssertTrue(staticText("已连接", comparison: "BEGINSWITH").waitForExistence(timeout: 30))
         let terminal = app.textViews.firstMatch
         terminal.click()
@@ -813,20 +982,24 @@ final class ApexTermUITests: XCTestCase {
         else { XCTAssertTrue(staticText("文件夹为空").waitForExistence(timeout: 15)) }
 
         let finder = XCUIApplication(bundleIdentifier: "com.apple.finder")
+        XCTAssertTrue(NSWorkspace.shared.open(local))
         finder.activate()
-        finder.typeKey("n", modifierFlags: .command)
-        finder.typeKey("g", modifierFlags: [.command, .shift])
-        let folderField = finder.textFields.firstMatch
-        XCTAssertTrue(folderField.waitForExistence(timeout: 5))
-        folderField.typeKey("a", modifierFlags: .command)
-        folderField.typeText(local.path)
-        folderField.typeKey(.return, modifierFlags: [])
         let window = finder.windows[local.lastPathComponent]
         XCTAssertTrue(window.waitForExistence(timeout: 10))
         dragFinderWindow = window
-        let chrome = window.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: 120, dy: 8))
-        let frame = window.frame
-        chrome.click(forDuration: 0.5, thenDragTo: chrome.withOffset(CGVector(dx: 20 - frame.minX, dy: 150 - frame.minY)))
+        finder.typeKey(.rightArrow, modifierFlags: [.function, .control])
+        if window.frame.minX + 350 <= app.windows.firstMatch.frame.maxX {
+            let frame = window.frame
+            let chrome = window.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: frame.width - 80, dy: 8))
+            let shift = app.windows.firstMatch.frame.maxX + 30 - frame.minX
+            chrome.click(forDuration: 0.5, thenDragTo: chrome.withOffset(CGVector(dx: shift, dy: 0)))
+        }
+        print("Finder fixture layout app=\(app.windows.firstMatch.frame) finder=\(window.frame)")
+        let tiled = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            let target = CGPoint(x: window.frame.minX + 350, y: window.frame.minY + 200)
+            return window.frame.contains(target) && !self.app.windows.firstMatch.frame.contains(target)
+        }, object: window)
+        XCTAssertEqual(XCTWaiter.wait(for: [tiled], timeout: 10), .completed)
         let fullScreen = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         fullScreen.name = download ? "finder-download-before-drag" : "finder-upload-before-drag"
         fullScreen.lifetime = .keepAlways
@@ -894,7 +1067,7 @@ final class ApexTermUITests: XCTestCase {
                 }
             }
         }
-        if let fixture = dragRemoteFixture {
+        if dragRemoteFixture != nil {
             app.activate()
             if app.sheets.firstMatch.exists {
                 let close = app.windows.buttons["收起传输任务"].firstMatch
@@ -1154,9 +1327,8 @@ final class ApexTermUITests: XCTestCase {
     }
 
     func testMochaSettingsTabsRemainClickable() {
-        launch("settings")
-        clickVisibleCenter(app.menuBars.menuBarItems["验收主题"])
-        clickVisibleCenter(app.menuItems["Catppuccin Mocha"])
+        // Set the actual theme before launch: the QA menu's AX geometry can be unavailable on macOS 27.
+        launch("settings", extra: ["APEX_QA_THEME": "Catppuccin Mocha"])
         for tab in ["SFTP传输", "数据备份", "通用", "终端外观", "操作习惯", "数据备份"] {
             activateSettingsWindow()
             let control = app.tabs[tab]
@@ -1237,6 +1409,7 @@ final class ApexTermUITests: XCTestCase {
                 XCTAssertTrue(summary.label.contains("24.0%"))
             }
             capture("metrics-" + state + "-summary")
+            focusOwnedWindow()
             clickVisibleCenter(summary)
             XCTAssertTrue(app.staticTexts["metrics.detail.title"].waitForExistence(timeout: 3))
             switch state {
@@ -1357,12 +1530,28 @@ final class IMEInputSourceSelection {
     private(set) var restorationEvidence = ""
 
     init() throws {
-        guard let source = TISCopyCurrentKeyboardInputSource() else {
+        // A previous test may have disabled a parent input method. HIToolbox's
+        // process cache can then retain phantom mode IDs, so capture live state.
+        let snapshot = Process()
+        snapshot.executableURL = URL(fileURLWithPath: try XCTUnwrap(ProcessInfo.processInfo.environment["APEX_UI_INPUT_SOURCE_RESTORER"]))
+        snapshot.arguments = ["--snapshot"]
+        let output = Pipe()
+        snapshot.standardOutput = output
+        snapshot.standardError = FileHandle.nullDevice
+        try snapshot.run()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        snapshot.waitUntilExit()
+        XCTAssertEqual(snapshot.terminationStatus, 0)
+        let live = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let id = try XCTUnwrap(live["selected"] as? String)
+        guard let key = kTISPropertyInputSourceID,
+              let list = TISCreateInputSourceList([key: id] as CFDictionary, true),
+              let source = (list.takeRetainedValue() as NSArray).firstObject else {
             throw NSError(domain: "ApexTerm.IMEAcceptance", code: 2,
                           userInfo: [NSLocalizedDescriptionKey: "The UI runner has no current system input source"])
         }
-        original = source.takeRetainedValue()
-        originalEnabledIdentifiers = Self.enabledIdentifiers()
+        original = source as! TISInputSource
+        originalEnabledIdentifiers = Set(try XCTUnwrap(live["enabled"] as? [String]))
     }
 
     static func identifier(_ source: TISInputSource) -> String? {
@@ -1388,9 +1577,9 @@ final class IMEInputSourceSelection {
                               userInfo: [NSLocalizedDescriptionKey: "Unavailable input source: " + id])
             }
             let source = object as! TISInputSource
-            if !Self.enabledIdentifiers().contains(id) {
-                let status = TISEnableInputSource(source)
-                guard status == noErr else { throw NSError(domain: NSOSStatusErrorDomain, code: Int(status)) }
+            let status = TISEnableInputSource(source)
+            guard status == noErr else { throw NSError(domain: NSOSStatusErrorDomain, code: Int(status)) }
+            if !originalEnabledIdentifiers.contains(id), !temporarilyEnabled.contains(where: { Self.identifier($0) == id }) {
                 temporarilyEnabled.append(source)
             }
             return source

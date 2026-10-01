@@ -77,6 +77,12 @@ struct ThemeVerificationApp: App {
             ? NativeSSHSession(session: session)
             : environment["APEX_QA_FILES"].map { QAFileSession(session: session, mode: $0) } ?? MockSSHSession(session: session)
         tab = TerminalTabItem(session: session, sshClient: client)
+        // Keep the controlled retry failure visible until the user requests retry.
+        // Activation and the mock shell's directory notification otherwise refresh it.
+        if environment["APEX_QA_FILES"] == "failure-once" {
+            tab.isDirectoryLinkageEnabled = false
+            tab.currentRemotePath = "/etc"
+        }
         if let remotePath = environment["APEX_QA_REMOTE_PATH"] { tab.currentRemotePath = remotePath }
         _tabs = State(initialValue: [tab])
         _selectedID = State(initialValue: tab.id)

@@ -1,6 +1,8 @@
 import importlib.util
+import contextlib
 import json
 import os
+import plistlib
 from pathlib import Path
 import subprocess
 import signal
@@ -15,6 +17,49 @@ spec.loader.exec_module(runner)
 
 
 class RemoteUIRunnerTests(unittest.TestCase):
+    def permission_script(self):
+        script = self.execute(0)
+        return script.split("# Xcode's macOS UI runner", 1)[1].split('\nPY\n', 1)[0].split('import subprocess, tempfile', 1)[1]
+
+    def test_runner_permissions_preserve_other_entitlements_and_product(self):
+        script = self.permission_script()
+        original = {'com.apple.security.app-sandbox': True, 'com.apple.security.get-task-allow': True,
+                    'com.apple.security.temporary-exception.mach-lookup.local-name': ['com.apple.axserver']}
+        expected = dict(original, **{'com.apple.security.app-sandbox': False})
+        with tempfile.TemporaryDirectory() as directory, contextlib.chdir(directory):
+            root = Path(directory).resolve()
+            (root / 'reports').mkdir()
+            app = root / 'outputs/ui-acceptance/RemoteDerivedData/Build/Products/Debug/ApexTermUITests-Runner.app'
+            app.mkdir(parents=True)
+            product = root / 'Product.app'
+            product.write_bytes(b'unchanged signed product')
+            def sign(arguments, **kwargs):
+                self.assertEqual(arguments[-1], str(app))
+                if '--entitlements' in arguments:
+                    payload = plistlib.loads(Path(arguments[arguments.index('--entitlements') + 1]).read_bytes())
+                    self.assertEqual(payload, expected)
+                return subprocess.CompletedProcess(arguments, 0)
+            with patch('subprocess.check_output', side_effect=[plistlib.dumps(original), plistlib.dumps(expected)]), \
+                 patch('subprocess.run', side_effect=sign) as commands:
+                exec(script, {'pathlib': __import__('pathlib'), 'plistlib': plistlib, 'json': json,
+                              'subprocess': subprocess, 'tempfile': tempfile})
+            self.assertEqual(commands.call_count, 2)
+            self.assertEqual(product.read_bytes(), b'unchanged signed product')
+            self.assertFalse(json.loads((root / 'reports/ui-runner-entitlements.json').read_text())['sandboxed'])
+
+    def test_runner_permissions_refuse_symlink_outside_workspace(self):
+        script = self.permission_script()
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as external, contextlib.chdir(directory):
+            app = Path('outputs/ui-acceptance/RemoteDerivedData/Build/Products/Debug/ApexTermUITests-Runner.app')
+            app.parent.mkdir(parents=True)
+            app.symlink_to(external, target_is_directory=True)
+            with patch('subprocess.check_output') as inspect, patch('subprocess.run') as commands:
+                with self.assertRaises(AssertionError):
+                    exec(script, {'pathlib': __import__('pathlib'), 'plistlib': plistlib, 'json': json,
+                                  'subprocess': subprocess, 'tempfile': tempfile})
+            inspect.assert_not_called()
+            commands.assert_not_called()
+
     def execute(self, exit_code):
         with tempfile.TemporaryDirectory() as directory:
             with patch.dict(os.environ, {'APEX_UI_RUNNER_HOST': '192.0.2.10', 'APEX_UI_RUNNER_USER': 'synthetic'}), \
@@ -30,6 +75,7 @@ class RemoteUIRunnerTests(unittest.TestCase):
                 self.assertIn('-A', command)
                 self.assertIn('test-without-building', execution.call_args.kwargs['input'])
                 self.assertIn('SSH_AUTH_SOCK', execution.call_args.kwargs['input'])
+                self.assertIn("target['EnvironmentVariables']['APEX_UI_AGENT_SOCKET'] = os.environ['SSH_AUTH_SOCK']", execution.call_args.kwargs['input'])
                 collections = [call.args[0] for call in transport.call_args_list if call.args[0][0] == 'scp']
                 self.assertIn('/results.tar.gz', collections[-1][-2])
                 self.assertEqual(collections[-1][-1], str(Path(directory).resolve() / 'remote-results.tar.gz'))

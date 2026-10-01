@@ -411,6 +411,10 @@ public struct SFTPView: View {
 
 
             }
+            // Empty, loading and failure states share the full file-area drop target.
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(ApexStyle.surface)
+            .contentShape(Rectangle())
             .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
                 handleDropUpload(providers: providers)
                 return true

@@ -127,7 +127,24 @@ for target in targets(config):
     target['EnvironmentVariables']['APEX_UI_INPUT_SOURCE_RESTORER'] = str(pathlib.Path('reports/IMEInputSourceRestorer').resolve())
     if os.environ.get('SSH_AUTH_SOCK'):
         target['EnvironmentVariables']['SSH_AUTH_SOCK'] = os.environ['SSH_AUTH_SOCK']
+        target['EnvironmentVariables']['APEX_UI_AGENT_SOCKET'] = os.environ['SSH_AUTH_SOCK']
 destination.write_bytes(plistlib.dumps(config))
+# Xcode's macOS UI runner is sandboxed even for an unsandboxed app.
+# Its SSH verification child needs the forwarded Unix-domain agent socket.
+# Adjust only this disposable test runner; never the product or QA host.
+import subprocess, tempfile
+runner = pathlib.Path('outputs/ui-acceptance/RemoteDerivedData/Build/Products/Debug/ApexTermUITests-Runner.app').resolve()
+assert runner.is_relative_to(pathlib.Path.cwd()) and runner.name == 'ApexTermUITests-Runner.app'
+entitlements = plistlib.loads(subprocess.check_output(['codesign', '-d', '--entitlements', ':-', str(runner)], stderr=subprocess.DEVNULL))
+entitlements['com.apple.security.app-sandbox'] = False
+with tempfile.NamedTemporaryFile(suffix='.plist') as file:
+    file.write(plistlib.dumps(entitlements))
+    file.flush()
+    subprocess.run(['codesign', '--force', '--sign', '-', '--entitlements', file.name, str(runner)], check=True)
+subprocess.run(['codesign', '--verify', '--deep', '--strict', str(runner)], check=True)
+verified = plistlib.loads(subprocess.check_output(['codesign', '-d', '--entitlements', ':-', str(runner)], stderr=subprocess.DEVNULL))
+assert verified.get('com.apple.security.app-sandbox') is False
+pathlib.Path('reports/ui-runner-entitlements.json').write_text(json.dumps({'runner': str(runner), 'sandboxed': False, 'productModified': False}, indent=2))
 PY
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f outputs/macos27/qa/Verification.app
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$(find outputs/ui-acceptance -maxdepth 2 -name ApexTerm-Reopen.app -type d | head -1)"

@@ -61,14 +61,10 @@ def main():
     sshpass = pathlib.Path('/opt/homebrew/bin/sshpass')
     if not sshpass.is_file():
         raise SystemExit('The existing arm64 sshpass helper is required; nothing was installed.')
-    # Debug assertions embed #filePath even after strip. Map the developer home
-    # at compilation, without weakening the same bundle scanner used for release.
-    swift_flags = ['-Xswiftc', '-file-prefix-map', '-Xswiftc', str(pathlib.Path.home()) + '=/build',
-                   '-Xswiftc', '-debug-prefix-map', '-Xswiftc', str(pathlib.Path.home()) + '=/build']
     # Optimized QA matches production compilation, but retains the isolated QA ID,
     # 0.0.0 metadata and ad hoc signing. Formal distribution remains separate.
     for product in ('ApexTerm', 'ApexSSHBridge'):
-        run('swift', 'build', '--configuration', 'release', '--product', product, '--jobs', '2', *swift_flags)
+        run('swift', 'build', '--configuration', 'release', '--product', product, '--jobs', '2')
     binaries = pathlib.Path(subprocess.check_output(
         ['swift', 'build', '--configuration', 'release', '--show-bin-path'], cwd=ROOT, text=True).strip())
     for binary in (binaries / 'ApexTerm', binaries / 'ApexSSHBridge', sshpass):
@@ -106,7 +102,7 @@ def main():
         if helper != expected_helper:
             raise SystemExit('Signed QA helper sandbox entitlements do not match inheritance template.')
     manifest = {
-        'scope': 'Internal debug sandbox QA; not a release, Store-signed build, or uploaded package.',
+        'scope': 'Internal optimized sandbox QA; not a release, Store-signed build, or uploaded package.',
         'sourceCommit': head, 'configuration': 'release', 'signature': 'ad hoc',
         'bundleIdentifier': identifier, 'app': str(app), 'launched': False,
         'binarySHA256': {name: hashlib.sha256((app / 'Contents/MacOS' / name).read_bytes()).hexdigest()

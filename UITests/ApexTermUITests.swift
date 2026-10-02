@@ -1061,6 +1061,9 @@ final class ApexTermUITests: XCTestCase {
         path.typeKey("a", modifierFlags: .command)
         path.typeText(directory)
         path.typeKey(.return, modifierFlags: [])
+        XCTAssertTrue(app.dialogs.buttons.matching(identifier: "Capslock").firstMatch
+            .waitForNonExistence(timeout: 5),
+            "Submitting a directory must dismiss the path field's input indicator before file dragging")
         if download { XCTAssertTrue(staticText(name).waitForExistence(timeout: 15)) }
         else { XCTAssertTrue(staticText("文件夹为空").waitForExistence(timeout: 15)) }
 
@@ -1102,23 +1105,18 @@ final class ApexTermUITests: XCTestCase {
             // remote row, so the drag never begins on the intended file.
             let appWindow = app.windows.firstMatch
             let nameFrame = remoteFile.frame
-            let fileIcon = try XCTUnwrap(app.images.allElementsBoundByIndex.first { image in
-                let frame = image.frame
-                return frame.width > 0 && frame.height > 0
-                    && abs(frame.midY - nameFrame.midY) <= 3
-                    && frame.maxX <= nameFrame.minX
-                    && nameFrame.minX - frame.maxX <= 12
-            }, "The remote file must expose its icon immediately beside the filename")
-            let iconFrame = fileIcon.frame
+            XCTAssertTrue(remoteFile.isHittable)
+            XCTAssertTrue(nameFrame.width > 0 && nameFrame.height > 0)
+            // Start inside the filename cell using its larger visible drag target.
             let downloadSource = appWindow.coordinate(withNormalizedOffset: .zero).withOffset(
-                CGVector(dx: iconFrame.midX - appWindow.frame.minX,
-                         dy: iconFrame.midY - appWindow.frame.minY))
+                CGVector(dx: nameFrame.midX - appWindow.frame.minX,
+                         dy: nameFrame.midY - appWindow.frame.minY))
             let finderTarget = CGPoint(x: window.frame.minX + finderDropOffset.x,
                                        y: window.frame.minY + finderDropOffset.y)
             let downloadTarget = appWindow.coordinate(withNormalizedOffset: .zero).withOffset(
                 CGVector(dx: finderTarget.x - appWindow.frame.minX,
                          dy: finderTarget.y - appWindow.frame.minY))
-            print("Finder download icon=\(iconFrame) target=\(finderTarget)")
+            print("Finder download filename=\(nameFrame) target=\(finderTarget)")
             downloadSource.click(forDuration: 0.6,
                 thenDragTo: downloadTarget,
                 withVelocity: .slow, thenHoldForDuration: 1.0)

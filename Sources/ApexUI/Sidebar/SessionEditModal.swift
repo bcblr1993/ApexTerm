@@ -32,6 +32,13 @@ public struct SessionEditModal: View {
         case privateKey = "指定私钥"
         public var id: String { rawValue }
 
+        public static func availableTypes(for method: SSHAuthMethod?, channel: DistributionChannel) -> [Self] {
+            // Sandbox connections need a user-selected key file and its bookmark.
+            if channel == .appStore { return allCases }
+            if case .privateKey = method { return allCases }
+            return [.password, .agent]
+        }
+
         public func retainedPrivateKey(from method: SSHAuthMethod?) -> SSHAuthMethod? {
             guard self == .privateKey, let method, case .privateKey = method else { return nil }
             return method
@@ -130,6 +137,8 @@ public struct SessionEditModal: View {
                         VStack(alignment: .leading, spacing: 8) {
                             HStack {
                                 TextField("私钥路径 (如 ~/.ssh/id_ed25519)", text: $privateKeyPath)
+                                    .accessibilityLabel("私钥路径")
+                                    .accessibilityIdentifier("session.privateKeyPath")
                                     .font(.system(.body, design: .monospaced))
                                 Button("浏览...") {
                                     let panel = NSOpenPanel()
@@ -137,7 +146,14 @@ public struct SessionEditModal: View {
                                     panel.canChooseDirectories = false
                                     panel.allowsMultipleSelection = false
                                     if panel.runModal() == .OK, let url = panel.url {
-                                        privateKeyPath = url.path
+                                        do {
+                                            if DistributionChannel.current == .appStore {
+                                                try FileAccessStore.shared.remember(url, readOnly: true)
+                                            }
+                                            privateKeyPath = url.path
+                                        } catch {
+                                            saveError = "无法保存私钥文件授权：\(error.localizedDescription)"
+                                        }
                                     }
                                 }
                                 .controlSize(.small)
@@ -217,10 +233,7 @@ public struct SessionEditModal: View {
     }
 
     private var availableAuthTypes: [AuthType] {
-        if case .privateKey = initialSession?.authMethod {
-            return AuthType.allCases
-        }
-        return [.password, .agent]
+        AuthType.availableTypes(for: initialSession?.authMethod, channel: .current)
     }
 
     private func colorName(for hex: String) -> String {

@@ -9,6 +9,12 @@ import Darwin
 /// Real native SSH session implementation using Darwin POSIX PTY, bundled standalone sshpass, and real-time probe
 public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     public let session: Session
+    private let distributionChannel: DistributionChannel
+    private let fileAccessStore: FileAccessStore
+    private var connectionKeyAccess: FileAccessLease?
+    private var connectionGrantRequest: ChildProcessFileGrants?
+    private let bridgeExecutableURL: URL
+    private let sandboxPaths: SandboxSSHPaths
     private let stateLock = NSLock()
     private var storedConnectionState: SSHConnectionState = .disconnected
     public private(set) var connectionState: SSHConnectionState {
@@ -57,6 +63,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         if FileManager.default.isExecutableFile(atPath: inBundle) {
             return inBundle
         }
+        if distributionChannel == .appStore { return nil }
         let candidates = [
             "/opt/homebrew/bin/sshpass",
             "/usr/local/bin/sshpass",
@@ -65,8 +72,15 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
     }
     
-    public init(session: Session) {
+    public init(session: Session, distributionChannel: DistributionChannel = .current,
+                fileAccessStore: FileAccessStore = .shared, bridgeExecutableURL: URL? = nil,
+                sandboxHomeURL: URL? = nil, sandboxTemporaryURL: URL? = nil) {
         self.session = session
+        self.distributionChannel = distributionChannel
+        self.fileAccessStore = fileAccessStore
+        self.bridgeExecutableURL = bridgeExecutableURL ?? URL(fileURLWithPath: Bundle.main.bundlePath + "/Contents/MacOS/ApexSSHBridge")
+        self.sandboxPaths = SandboxSSHPaths(home: sandboxHomeURL ?? URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true),
+            temporary: sandboxTemporaryURL ?? FileManager.default.temporaryDirectory)
     }
     
     public func setOutputHandler(_ handler: @Sendable @escaping (Data) -> Void) {
@@ -95,13 +109,81 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         return path
     }
 
-    public func sshAuthArgs() -> [String] {
+    public func sshAuthArgs(privateKeyURL: URL? = nil) -> [String] {
         var args: [String] = []
         if case .privateKey(let keyPath, _) = session.authMethod, !keyPath.isEmpty {
-            let expanded = Self.expandPath(keyPath)
+            let connectedURL = stateLock.withLock { connectionKeyAccess?.url }
+            let expanded = (privateKeyURL ?? connectedURL)?.path ?? Self.expandPath(keyPath)
             args.append(contentsOf: ["-i", expanded])
         }
         return args
+    }
+
+    /// Every child operation owns its grant independently, including cancellation cleanup.
+    func acquirePrivateKeyAccess() throws -> FileAccessLease? {
+        guard distributionChannel == .appStore,
+              case .privateKey(let path, _) = session.authMethod, !path.isEmpty else { return nil }
+        let access = try fileAccessStore.acquire(URL(fileURLWithPath: Self.expandPath(path)))
+        guard FileManager.default.isReadableFile(atPath: access.url.path) else {
+            access.close()
+            throw NSError(domain: "ApexSSH", code: 1, userInfo: [NSLocalizedDescriptionKey:
+                "无法读取私钥，请在会话设置中通过「浏览」重新授权私钥文件。"])
+        }
+        return access
+    }
+
+    struct PreparedStoreCommand {
+        let binaryPath: String
+        let arguments: [String]
+        let grants: ChildProcessFileGrants
+    }
+
+    func prepareStoreCommand(binaryPath: String, arguments: [String], accesses: [FileAccessLease?], authenticationSecret: String? = nil) throws -> PreparedStoreCommand? {
+        guard distributionChannel == .appStore else { return nil }
+        guard FileManager.default.isExecutableFile(atPath: bridgeExecutableURL.path) else {
+            throw NSError(domain: "ApexSSH", code: 1, userInfo: [NSLocalizedDescriptionKey: "商店版 SSH 文件授权组件缺失，请重新安装应用。"])
+        }
+        var toolPath = binaryPath
+        var toolArguments = arguments
+        let usesPasswordHelper = binaryPath != "/usr/bin/ssh" && binaryPath != "/usr/bin/scp"
+        if usesPasswordHelper {
+            guard binaryPath == sshpassExecutablePath, arguments.count >= 3,
+                  arguments[0] == "-p" else { throw CocoaError(.fileReadCorruptFile) }
+            toolPath = arguments[2]
+            toolArguments = Array(arguments.dropFirst(3))
+        }
+        guard toolPath == "/usr/bin/ssh" || toolPath == "/usr/bin/scp" else { throw CocoaError(.fileReadNoPermission) }
+        let tool = toolPath == "/usr/bin/scp" ? "scp" : "ssh"
+        try sandboxPaths.prepare()
+        toolArguments = try sandboxPaths.arguments(prependingTo: toolArguments, tool: tool)
+        if tool == "scp" { toolArguments = ["-S", bridgeExecutableURL.path] + toolArguments }
+        let authentication: ChildProcessAuthentication?
+        if let secret = usesPasswordHelper ? arguments[1] : authenticationSecret ?? stateLock.withLock({ resolvedPassword }), !secret.isEmpty {
+            let kind: ChildProcessAuthentication.Kind
+            if case .privateKey = session.authMethod { kind = .passphrase } else { kind = .password }
+            authentication = ChildProcessAuthentication(kind: kind, secret: secret)
+        } else { authentication = nil }
+        let grants = try ChildProcessFileGrants(files: accesses.compactMap { try $0?.childProcessGrant() }, authentication: authentication)
+        let bridgeArguments = ["--tool", tool] + toolArguments
+        // OpenSSH invokes this inherited helper for authentication; sshpass's
+        // controlling-terminal ioctl is forbidden by App Sandbox.
+        return PreparedStoreCommand(binaryPath: bridgeExecutableURL.path,
+                                    arguments: bridgeArguments,
+                                    grants: grants)
+    }
+
+    private func configureStoreProcess(_ process: Process, accesses: [FileAccessLease?]) throws -> ChildProcessFileGrants? {
+        guard distributionChannel == .appStore else { return nil }
+        guard let executable = process.executableURL,
+              let command = try prepareStoreCommand(binaryPath: executable.path, arguments: process.arguments ?? [], accesses: accesses) else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        process.executableURL = URL(fileURLWithPath: command.binaryPath)
+        process.arguments = command.arguments
+        var environment = ProcessInfo.processInfo.environment
+        environment[ChildProcessFileGrants.environmentKey] = command.grants.fileURL.path
+        process.environment = environment
+        return command.grants
     }
 
     private var resolvedJumpServer: Session?
@@ -175,24 +257,15 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         self.passwordFeedSent = false
         
         await resolvePasswordIfNeeded()
-        
-        var master: Int32 = 0
-        var slave: Int32 = 0
-        var win = winsize(
-            ws_row: UInt16(currentDimensions.rows),
-            ws_col: UInt16(currentDimensions.columns),
-            ws_xpixel: 0,
-            ws_ypixel: 0
-        )
-        
-        guard openpty(&master, &slave, nil, nil, &win) == 0 else {
-            self.connectionState = .failed("Failed to allocate Darwin PTY")
-            throw NSError(domain: "ApexSSH", code: 1, userInfo: [NSLocalizedDescriptionKey: "openpty failed"])
+        let keyAccess: FileAccessLease?
+        do { keyAccess = try acquirePrivateKeyAccess() }
+        catch {
+            self.connectionState = .failed(error.localizedDescription)
+            throw error
         }
-        
-        stateLock.withLock { self.ptyMasterFd = master }
-        _ = ioctl(master, TIOCSWINSZ, &win)
-        
+        var transferredKeyAccess = false
+        defer { if !transferredKeyAccess { keyAccess?.close() } }
+
         // Setup command & arguments
         var binaryPath = "/usr/bin/ssh"
         var sshArgs = [
@@ -201,7 +274,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             "-o", "ServerAliveCountMax=3",
             "-o", "StrictHostKeyChecking=accept-new"
         ]
-        sshArgs.append(contentsOf: sshAuthArgs())
+        sshArgs.append(contentsOf: sshAuthArgs(privateKeyURL: keyAccess?.url))
         sshArgs.append(contentsOf: jumpServerArgs())
         sshArgs.append(contentsOf: [
             "-p", "\(session.port)",
@@ -213,6 +286,32 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             sshArgs = ["-p", pw, "/usr/bin/ssh"] + sshArgs
         }
         
+        let storeCommand: PreparedStoreCommand?
+        do { storeCommand = try prepareStoreCommand(binaryPath: binaryPath, arguments: sshArgs, accesses: [keyAccess]) }
+        catch {
+            self.connectionState = .failed(error.localizedDescription)
+            throw error
+        }
+        defer { if !transferredKeyAccess { storeCommand?.grants.close() } }
+        if let command = storeCommand { binaryPath = command.binaryPath; sshArgs = command.arguments }
+
+        var master: Int32 = 0
+        var slave: Int32 = 0
+        var win = winsize(
+            ws_row: UInt16(currentDimensions.rows),
+            ws_col: UInt16(currentDimensions.columns),
+            ws_xpixel: 0,
+            ws_ypixel: 0
+        )
+
+        guard openpty(&master, &slave, nil, nil, &win) == 0 else {
+            self.connectionState = .failed("Failed to allocate Darwin PTY")
+            throw NSError(domain: "ApexSSH", code: 1, userInfo: [NSLocalizedDescriptionKey: "openpty failed"])
+        }
+
+        stateLock.withLock { self.ptyMasterFd = master }
+        _ = ioctl(master, TIOCSWINSZ, &win)
+
         var fileActions: posix_spawn_file_actions_t?
         posix_spawn_file_actions_init(&fileActions)
         defer { posix_spawn_file_actions_destroy(&fileActions) }
@@ -241,8 +340,11 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         } else {
             envVars.append("PATH=/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin")
         }
+        if let request = storeCommand?.grants {
+            envVars.append("\(ChildProcessFileGrants.environmentKey)=\(request.fileURL.path)")
+        }
         for (k, v) in currentEnv {
-            if k != "TERM" && k != "COLORTERM" && k != "LANG" && k != "LC_ALL" && k != "PATH" {
+            if k != "TERM" && k != "COLORTERM" && k != "LANG" && k != "LC_ALL" && k != "PATH" && k != ChildProcessFileGrants.environmentKey {
                 envVars.append("\(k)=\(v)")
             }
         }
@@ -279,6 +381,8 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         }
         
         self.childPid = pid
+        stateLock.withLock { connectionKeyAccess = keyAccess; connectionGrantRequest = storeCommand?.grants }
+        transferredKeyAccess = true
         self.connectionState = .connected
         
         // Setup asynchronous kqueue read source
@@ -367,9 +471,13 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         if FileManager.default.fileExists(atPath: socket) {
             let proc = Process()
             proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-            proc.arguments = ["-O", "exit", "-o", "ControlPath=\(socket)", "\(session.username)@\(session.host)"]
-            try? proc.run()
-            proc.waitUntilExit()
+            proc.arguments = ["-O", "exit", "-o", controlSocketOption, "\(session.username)@\(session.host)"]
+            do {
+                let grants = try configureStoreProcess(proc, accesses: [])
+                defer { grants?.close() }
+                try proc.run()
+                proc.waitUntilExit()
+            } catch { /* The control master may already have exited. */ }
             try? FileManager.default.removeItem(atPath: socket)
         }
     }
@@ -377,6 +485,15 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     /// Synchronous exit cleanup: SSH ignores ordinary termination signals while attached to a PTY.
     /// Each spawned connection owns a process group, so this cannot target another session.
     public func terminatePTYProcess() {
+        let access = stateLock.withLock { () -> FileAccessLease? in
+            defer { connectionKeyAccess = nil }
+            return connectionKeyAccess
+        }
+        let grants = stateLock.withLock { () -> ChildProcessFileGrants? in
+            defer { connectionGrantRequest = nil }
+            return connectionGrantRequest
+        }
+        defer { grants?.close(); access?.close() }
         guard childPid > 0 else { return }
         let pid = childPid
         childPid = -1
@@ -444,18 +561,28 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         }
     }
     
-    var controlSocketPath: String { "/tmp/apex_ctrl_\(controlSocketIdentifier)" }
+    var controlSocketPath: String {
+        distributionChannel == .appStore ? sandboxPaths.controlSocket.path : "/tmp/apex_ctrl_\(controlSocketIdentifier)"
+    }
+
+    private var controlSocketOption: String {
+        distributionChannel == .appStore ? sandboxPaths.controlSocketOption : "ControlPath=" + controlSocketPath
+    }
 
     public func probeRemoteHome() async -> String? {
         await resolvePasswordIfNeeded()
+        let keyAccess: FileAccessLease?
+        do { keyAccess = try acquirePrivateKeyAccess() }
+        catch { return nil }
+        defer { keyAccess?.close() }
         let process = Process()
         let cmd = "printf '%s\\n' \"$HOME\""
         let ctrlArgs = [
             "-o", "ControlMaster=auto",
-            "-o", "ControlPath=\(controlSocketPath)",
+            "-o", controlSocketOption,
             "-o", "ControlPersist=60s"
         ]
-        let authArgs = sshAuthArgs()
+        let authArgs = sshAuthArgs(privateKeyURL: keyAccess?.url)
         let jumpArgs = jumpServerArgs()
         if let pw = resolvedPassword, !pw.isEmpty, let sshpass = sshpassExecutablePath {
             process.executableURL = URL(fileURLWithPath: sshpass)
@@ -484,6 +611,8 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         process.standardOutput = pipe
         process.standardError = Pipe()
         do {
+            let grants = try configureStoreProcess(process, accesses: [keyAccess])
+            defer { grants?.close() }
             try process.run()
             let data = (try? pipe.fileHandleForReading.readToEnd()) ?? Data()
             process.waitUntilExit()
@@ -602,11 +731,18 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
                 let sshpass = self.sshpassExecutablePath
                 let ctrlArgs = [
                     "-o", "ControlMaster=auto",
-                    "-o", "ControlPath=\(self.controlSocketPath)",
+                    "-o", self.controlSocketOption,
                     "-o", "ControlPersist=60s"
                 ]
                 
-                let authArgs = self.sshAuthArgs()
+                let keyAccess: FileAccessLease?
+                do { keyAccess = try self.acquirePrivateKeyAccess() }
+                catch {
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    continue
+                }
+                defer { keyAccess?.close() }
+                let authArgs = self.sshAuthArgs(privateKeyURL: keyAccess?.url)
                 let jumpArgs = self.jumpServerArgs()
                 if let pw = self.resolvedPassword, !pw.isEmpty, let passBin = sshpass {
                     process.executableURL = URL(fileURLWithPath: passBin)
@@ -636,6 +772,8 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
                 process.standardError = FileHandle.nullDevice
                 
                 do {
+                    let grants = try self.configureStoreProcess(process, accesses: [keyAccess])
+                    defer { grants?.close() }
                     let outData = try await Self.runProbeProcess(process)
                     
                     if process.terminationStatus == 0, !Task.isCancelled,
@@ -661,6 +799,8 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     // SFTP implementation
     public func listDirectory(path: String) async throws -> [SFTPItem] {
         await resolvePasswordIfNeeded()
+        let keyAccess = try acquirePrivateKeyAccess()
+        defer { keyAccess?.close() }
         var path = path
         if path == "~" || path.hasPrefix("~/") {
             var home = remoteHomeDirectory
@@ -680,11 +820,11 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         let cmd = "LC_ALL=C ls -la --time-style=+%s \(quotedPath) 2>/dev/null || LC_ALL=C ls -la -D '%s' \(quotedPath) 2>/dev/null || LC_ALL=C ls -la \(quotedPath)"
         let ctrlArgs = [
             "-o", "ControlMaster=auto",
-            "-o", "ControlPath=\(controlSocketPath)",
+            "-o", controlSocketOption,
             "-o", "ControlPersist=60s"
         ]
         
-        let authArgs = sshAuthArgs()
+        let authArgs = sshAuthArgs(privateKeyURL: keyAccess?.url)
         let jumpArgs = jumpServerArgs()
         if let pw = resolvedPassword, !pw.isEmpty, let passBin = sshpass {
             process.executableURL = URL(fileURLWithPath: passBin)
@@ -712,6 +852,8 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         let errPipe = Pipe()
         process.standardOutput = pipe
         process.standardError = errPipe
+        let grants = try configureStoreProcess(process, accesses: [keyAccess])
+        defer { grants?.close() }
         try process.run()
         let data = (try? pipe.fileHandleForReading.readToEnd()) ?? Data()
         process.waitUntilExit()
@@ -784,6 +926,11 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
 
     public func downloadFile(remotePath: String, localURL: URL, progress: @Sendable @escaping (Double) -> Void) async throws {
         await resolvePasswordIfNeeded()
+        let keyAccess = try acquirePrivateKeyAccess()
+        defer { keyAccess?.close() }
+        let localAccess = distributionChannel == .appStore ? try fileAccessStore.acquire(localURL) : nil
+        defer { localAccess?.close() }
+        let accessibleURL = localAccess?.url ?? localURL
         let process = Process()
         process.standardInput = FileHandle.nullDevice
         let sshpass = self.sshpassExecutablePath
@@ -795,7 +942,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             "-o", "ServerAliveInterval=15",
             "-o", "ServerAliveCountMax=3"
         ]
-        baseArgs.append(contentsOf: sshAuthArgs())
+        baseArgs.append(contentsOf: sshAuthArgs(privateKeyURL: keyAccess?.url))
         baseArgs.append(contentsOf: jumpServerArgs())
         // Modern scp uses SFTP: the remote path is already one argv operand.
         // Shell quote characters would become part of the filename.
@@ -803,7 +950,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         baseArgs.append(contentsOf: [
             "-P", "\(session.port)",
             Self.scpRemoteSpecifier(username: session.username, host: session.host, path: escapedRemote),
-            localURL.path
+            accessibleURL.path
         ])
         
         if let pw = resolvedPassword, !pw.isEmpty, let passBin = sshpass {
@@ -816,6 +963,8 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         let errPipe = Pipe()
         process.standardOutput = FileHandle.nullDevice
         process.standardError = errPipe
+        let grants = try configureStoreProcess(process, accesses: [keyAccess, localAccess])
+        defer { grants?.close() }
         let errorOutput = try await Self.runSCPProcess(process, standardError: errPipe)
         guard process.terminationStatus == 0 else {
             let errMsg = String(data: errorOutput, encoding: .utf8) ?? "scp download failed"
@@ -826,6 +975,11 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     
     public func uploadFile(localURL: URL, remotePath: String, progress: @Sendable @escaping (Double) -> Void) async throws {
         await resolvePasswordIfNeeded()
+        let keyAccess = try acquirePrivateKeyAccess()
+        defer { keyAccess?.close() }
+        let localAccess = distributionChannel == .appStore ? try fileAccessStore.acquire(localURL) : nil
+        defer { localAccess?.close() }
+        let accessibleURL = localAccess?.url ?? localURL
         let process = Process()
         process.standardInput = FileHandle.nullDevice
         let sshpass = self.sshpassExecutablePath
@@ -837,14 +991,14 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             "-o", "ServerAliveInterval=15",
             "-o", "ServerAliveCountMax=3"
         ]
-        baseArgs.append(contentsOf: sshAuthArgs())
+        baseArgs.append(contentsOf: sshAuthArgs(privateKeyURL: keyAccess?.url))
         baseArgs.append(contentsOf: jumpServerArgs())
         // Modern scp uses SFTP: the remote path is already one argv operand.
         // Shell quote characters would become part of the filename.
         let escapedRemote = remotePath
         baseArgs.append(contentsOf: [
             "-P", "\(session.port)",
-            localURL.path,
+            accessibleURL.path,
             Self.scpRemoteSpecifier(username: session.username, host: session.host, path: escapedRemote)
         ])
         
@@ -858,6 +1012,8 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         let errPipe = Pipe()
         process.standardOutput = FileHandle.nullDevice
         process.standardError = errPipe
+        let grants = try configureStoreProcess(process, accesses: [keyAccess, localAccess])
+        defer { grants?.close() }
         let errorOutput = try await Self.runSCPProcess(process, standardError: errPipe)
         guard process.terminationStatus == 0 else {
             let errMsg = String(data: errorOutput, encoding: .utf8) ?? "scp upload failed"
@@ -958,15 +1114,17 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
 
     private func executeRemoteCommand(_ cmd: String) async throws {
         await resolvePasswordIfNeeded()
+        let keyAccess = try acquirePrivateKeyAccess()
+        defer { keyAccess?.close() }
         let process = Process()
         let sshpass = self.sshpassExecutablePath
         let ctrlArgs = [
             "-o", "ControlMaster=auto",
-            "-o", "ControlPath=\(controlSocketPath)",
+            "-o", controlSocketOption,
             "-o", "ControlPersist=60s"
         ]
         
-        let authArgs = sshAuthArgs()
+        let authArgs = sshAuthArgs(privateKeyURL: keyAccess?.url)
         let jumpArgs = jumpServerArgs()
         if let pw = resolvedPassword, !pw.isEmpty, let passBin = sshpass {
             process.executableURL = URL(fileURLWithPath: passBin)
@@ -992,6 +1150,8 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         
         let errPipe = Pipe()
         process.standardError = errPipe
+        let grants = try configureStoreProcess(process, accesses: [keyAccess])
+        defer { grants?.close() }
         try process.run()
         process.waitUntilExit()
         

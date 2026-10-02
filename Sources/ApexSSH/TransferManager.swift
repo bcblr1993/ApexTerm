@@ -14,7 +14,14 @@ public final class TransferManager: ObservableObject {
     private var lastSpeedSampleTime: [UUID: Date] = [:]
     private var lastSampledBytes: [UUID: Int64] = [:]
     
-    public init() {}
+    private let distributionChannel: DistributionChannel
+    private let fileAccessStore: FileAccessStore
+
+    public init(distributionChannel: DistributionChannel = .current,
+                fileAccessStore: FileAccessStore = .shared) {
+        self.distributionChannel = distributionChannel
+        self.fileAccessStore = fileAccessStore
+    }
     
     public var activeCount: Int {
         tasks.filter { $0.status == .transferring || $0.status == .queued }.count
@@ -44,6 +51,11 @@ public final class TransferManager: ObservableObject {
         onCompleted: (@Sendable () -> Void)? = nil,
         onResult: (@Sendable (Result<String, Error>) -> Void)? = nil
     ) -> UUID {
+        // Acquire while the panel/Finder URL is still live, before scheduling the task.
+        let accessResult = Result<FileAccessLease?, Error> {
+            distributionChannel == .appStore ? try fileAccessStore.acquire(localURL) : nil
+        }
+        let localURL = (try? accessResult.get())?.url ?? localURL
         let fileSize = (try? FileManager.default.attributesOfItem(atPath: localURL.path)[.size] as? Int64) ?? 0
         let taskId = UUID()
         let task = TransferTask(
@@ -59,6 +71,18 @@ public final class TransferManager: ObservableObject {
         
         let runner = Task { [weak self] in
             guard let self = self else { return }
+            let access: FileAccessLease?
+            do { access = try accessResult.get() }
+            catch {
+                if let index = self.tasks.firstIndex(where: { $0.id == taskId }) {
+                    self.tasks[index].status = .failed(error.localizedDescription)
+                    self.tasks[index].completedAt = Date()
+                }
+                onResult?(.failure(error))
+                self.activeTaskHandles.removeValue(forKey: taskId)
+                return
+            }
+            defer { access?.close() }
             await self.executeUpload(taskId: taskId, session: session, localURL: localURL, remotePath: remotePath, onCompleted: onCompleted, onResult: onResult)
         }
         activeTaskHandles[taskId] = runner
@@ -91,6 +115,11 @@ public final class TransferManager: ObservableObject {
         onCompleted: (@Sendable () -> Void)? = nil,
         onResult: (@Sendable (Result<URL, Error>) -> Void)? = nil
     ) -> UUID {
+        // Acquire while the panel/Finder URL is still live, before scheduling the task.
+        let accessResult = Result<FileAccessLease?, Error> {
+            distributionChannel == .appStore ? try fileAccessStore.acquire(localURL) : nil
+        }
+        let localURL = (try? accessResult.get())?.url ?? localURL
         let taskId = UUID()
         let fileName = (remotePath as NSString).lastPathComponent
         let task = TransferTask(
@@ -106,6 +135,18 @@ public final class TransferManager: ObservableObject {
         
         let runner = Task { [weak self] in
             guard let self = self else { return }
+            let access: FileAccessLease?
+            do { access = try accessResult.get() }
+            catch {
+                if let index = self.tasks.firstIndex(where: { $0.id == taskId }) {
+                    self.tasks[index].status = .failed(error.localizedDescription)
+                    self.tasks[index].completedAt = Date()
+                }
+                onResult?(.failure(error))
+                self.activeTaskHandles.removeValue(forKey: taskId)
+                return
+            }
+            defer { access?.close() }
             await self.executeDownload(taskId: taskId, session: session, remotePath: remotePath, localURL: localURL, onCompleted: onCompleted, onResult: onResult)
         }
         activeTaskHandles[taskId] = runner

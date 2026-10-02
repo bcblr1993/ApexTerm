@@ -95,7 +95,7 @@ struct ApexTermApp: App {
             }
             .task {
                 appDelegate.reopenMainWindow = { openWindow(id: "main") }
-                if settings.checkForUpdatesOnLaunch && ProcessInfo.processInfo.environment["APEX_UI_TEST_REOPEN"] != "1" {
+                if updateManager.distributionChannel == .direct && settings.checkForUpdatesOnLaunch && ProcessInfo.processInfo.environment["APEX_UI_TEST_REOPEN"] != "1" {
                     await updateManager.checkForUpdates(manual: false)
                 }
             }
@@ -108,8 +108,12 @@ struct ApexTermApp: App {
                 }
                 
                 Button(L10n.menuCheckUpdates) {
-                    Task {
-                        await updateManager.checkForUpdates(manual: true)
+                    if updateManager.distributionChannel == .appStore {
+                        NSWorkspace.shared.open(DistributionChannel.appStoreURL)
+                    } else {
+                        Task {
+                            await updateManager.checkForUpdates(manual: true)
+                        }
                     }
                 }
             }

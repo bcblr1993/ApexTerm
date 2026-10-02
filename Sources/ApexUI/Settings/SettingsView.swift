@@ -57,7 +57,11 @@ private struct GeneralSettingsTab: View {
     var body: some View {
         Form {
             Section {
-                Toggle(L10n.autoCheckUpdates, isOn: $settings.checkForUpdatesOnLaunch)
+                if updateManager.distributionChannel == .direct {
+                    Toggle(L10n.autoCheckUpdates, isOn: $settings.checkForUpdatesOnLaunch)
+                } else {
+                    Text("更新由 App Store 管理")
+                }
                 
                 HStack {
                     Text("当前版本: v\(updateManager.currentVersion) (Build \(updateManager.currentBuild))")
@@ -67,8 +71,12 @@ private struct GeneralSettingsTab: View {
                     Spacer()
                     
                     Button(L10n.checkUpdatesNow) {
-                        Task {
-                            await updateManager.checkForUpdates(manual: true)
+                        if updateManager.distributionChannel == .appStore {
+                            NSWorkspace.shared.open(DistributionChannel.appStoreURL)
+                        } else {
+                            Task {
+                                await updateManager.checkForUpdates(manual: true)
+                            }
                         }
                     }
                     .disabled(updateManager.isChecking)
@@ -275,7 +283,17 @@ private struct SFTPSettingsTab: View {
         panel.canCreateDirectories = true
         panel.prompt = "选择"
         if panel.runModal() == .OK, let url = panel.url {
-            settings.defaultDownloadDirectory = url.path
+            do {
+                if DistributionChannel.current == .appStore {
+                    try FileAccessStore.shared.remember(url, isDirectory: true)
+                }
+                settings.defaultDownloadDirectory = url.path
+            } catch {
+                let alert = NSAlert()
+                alert.messageText = "无法保存文件夹授权"
+                alert.informativeText = error.localizedDescription
+                alert.runModal()
+            }
         }
     }
 }

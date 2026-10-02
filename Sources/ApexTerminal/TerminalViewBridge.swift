@@ -135,7 +135,7 @@ public final class TerminalFindBarView: NSView, NSTextFieldDelegate {
     }
     
     required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
+        fatalError("init(coder:) has not been implemented", file: #fileID)
     }
     
     public func applyTheme() {
@@ -525,7 +525,7 @@ public final class NativeTerminalScrollView: NSScrollView {
     }
     
     required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
+        fatalError("init(coder:) has not been implemented", file: #fileID)
     }
 }
 
@@ -934,7 +934,7 @@ public final class NativeTerminalView: NSTextView {
     }
     
     required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
+        fatalError("init(coder:) has not been implemented", file: #fileID)
     }
     
     override public var acceptsFirstResponder: Bool { true }

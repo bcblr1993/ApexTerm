@@ -93,3 +93,14 @@ socket修正后完整回归：345项 Swift 用例全部通过，0失败、0跳�
 Debug QA 清除开发目录的链接搜索路径，fatalError 使用 #fileID，避免将开发者绝对路径写入包；扫描规则不放宽。UI 测试入口改为 async，在 Swift Task 中保留原有同步测试步骤与全部断言；用于处理观察到的 XCTest/Swift TaskLocal 运行器崩溃，需重新实跑验证。Swift 上游相关报告：https://github.com/swiftlang/swift/issues/87316 。
 
 当前内部 QA 改用 Release 优化编译以匹配实际产品，仍保持独立 QA 标识、0.0.0 版本与 ad hoc 签名，不是商店正式分发。Debug 编译器的 actor 检查仍嵌入绝对源路径，即使文件前缀映射和 strip 也无法完整消除；已保留失败证据，不放宽安全扫描。
+
+
+## 2026-10-02 首版上传与验收例外
+
+- 用户明确要求“先提交，后面再优化”。本次优先提交审核，完整 UI 门禁和后续性能优化留待后续版本；失败日志继续保留，不将未通过的验收标为通过。
+- 商店构建为 1.6.0（2026100203），产品源提交 `10df7030bfa55c4fcea60e4084b59f044270b3e9`。350 项 Swift 用例及 8 项 Release 性能基准通过，主程序与两个 helper 使用 Mac App Distribution 签名，安装包使用 Mac Installer Distribution 签名。
+- `codesign -dv` 未打印证书 Authority，曾导致审计误报；已改为 `-dvv`，73 项脚本测试通过。签名、嵌入 profile、沙盒继承与零捆绑扫描均通过更正后的审计。
+- 使用 Xcode 现有账号上传成功；Apple 已处理该构建，出口合规问卷已保存，构建已选择到审核版本。上传成功不等同于提交审核或已上架。审核提交状态单独记录。
+- 完整 43 项 UI 最新运行在主题菜单可见区域断言后，XCTest 在失败处理与异步 tearDown 中卡住；用户要求优先提交后停止该测试任务，保留日志、xcresult 和进程采样。此前 43 项全通过记录只代表早期修复阶段。
+- 优化编译的隔离 App Sandbox QA 包 3 项 UI 通过；已提交代码的加密私钥 PTY 与 SFTP 文件一致性验证通过。最终 Mac App Distribution 包在本地 macos27 的启动被 taskgated 拒绝，报告为 Code Signature Invalid；这不计为正式商店 UI 验收通过，也未通过重签名规避。后续应通过 Apple 分发途径验收。
+- 商店截图取自 macos27 中正常应用入口的沙盒 QA 包，使用内置 `192.0.2.10` 演示会话；保留截图来源与哈希，仅添加背景留白以满足 2560×1600 规格，不修改 UI 像素。未使用开发验收菜单或私人服务器信息。

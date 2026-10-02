@@ -55,7 +55,11 @@ final class StoreSandboxUITests: XCTestCase {
         add(screenshot)
     }
 
-    func testSandboxAboutPrivacyLink() throws {
+    func testSandboxAboutPrivacyLink() async throws {
+        try run_testSandboxAboutPrivacyLink()
+    }
+
+    private func run_testSandboxAboutPrivacyLink() throws {
         let application = try launchSandboxQA()
         let appName = try XCTUnwrap(bundle?.object(forInfoDictionaryKey: "CFBundleName") as? String)
         let menu = application.menuBars.menuBarItems[appName]
@@ -72,7 +76,11 @@ final class StoreSandboxUITests: XCTestCase {
         XCTAssertTrue(privacy.waitForNonExistence(timeout: 5))
     }
 
-    func testSandboxNewSessionPrivateKeyPickerCancel() throws {
+    func testSandboxNewSessionPrivateKeyPickerCancel() async throws {
+        try run_testSandboxNewSessionPrivateKeyPickerCancel()
+    }
+
+    private func run_testSandboxNewSessionPrivateKeyPickerCancel() throws {
         let application = try launchSandboxQA()
         let addSession = application.buttons["添加新的 SSH 会话"].firstMatch
         if !addSession.exists || !addSession.isHittable {
@@ -103,7 +111,11 @@ final class StoreSandboxUITests: XCTestCase {
         XCTAssertTrue(path.waitForNonExistence(timeout: 5))
     }
 
-    func testSandboxMainWindowReopens() throws {
+    func testSandboxMainWindowReopens() async throws {
+        try run_testSandboxMainWindowReopens()
+    }
+
+    private func run_testSandboxMainWindowReopens() throws {
         let application = try launchSandboxQA()
         application.typeKey("w", modifierFlags: .command)
         let closed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in application.windows.count == 0 }, object: nil)

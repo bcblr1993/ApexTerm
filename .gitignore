@@ -28,6 +28,11 @@ Package.resolved
 !UITests/ApexTermUITests.xcodeproj/xcshareddata/
 !UITests/ApexTermUITests.xcodeproj/xcshareddata/xcschemes/
 !UITests/ApexTermUITests.xcodeproj/xcshareddata/xcschemes/ApexTermUITests.xcscheme
+!UITests/StoreSandboxUITests.xcodeproj/
+!UITests/StoreSandboxUITests.xcodeproj/project.pbxproj
+!UITests/StoreSandboxUITests.xcodeproj/xcshareddata/
+!UITests/StoreSandboxUITests.xcodeproj/xcshareddata/xcschemes/
+!UITests/StoreSandboxUITests.xcodeproj/xcshareddata/xcschemes/StoreSandboxUITests.xcscheme
 *.xcworkspace
 xcuserdata/
 DerivedData/

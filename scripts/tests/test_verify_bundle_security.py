@@ -29,6 +29,7 @@ class BundleSecurityTests(unittest.TestCase):
             self.assertEqual(self.scan(app).returncode, 0)
             for name, data in [
                 ('secret.key', b'synthetic fixture'),
+                ('debug-path.txt', str(Path.home()).encode() + b'/private-build/source.swift'),
                 ('sessions.json', b'[]'),
                 ('config.txt', b'192.168.1.123'),
                 ('key.txt', b'-----BEGIN OPENSSH PRIVATE KEY-----'),

@@ -107,6 +107,7 @@ public struct SFTPView: View {
                     guard !target.isEmpty else { pathInput = currentPath; return }
                     pathInput = target
                     if target != currentPath { currentPath = target }
+                    isPathFocused = false
                 }
                 .focused($isPathFocused)
                 .onExitCommand { pathInput = currentPath; isPathFocused = false }

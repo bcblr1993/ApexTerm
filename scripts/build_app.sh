@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [ "${APEX_UI_ACCEPTANCE_PREFLIGHT_ONLY:-0}" = "1" ]; then
+    echo 'Release requires full UI acceptance; preflight-only packaging is forbidden.' >&2
+    exit 1
+fi
+
 APP_NAME="ApexTerm.app"
 BUILD_DIR=".build"
 APP_DIR="${BUILD_DIR}/${APP_NAME}"
@@ -37,11 +42,7 @@ echo "✅ [Pre-Release Quality Gate] 100% of quality gate criteria satisfied!"
 echo "⚡ Building ApexTerm Release binary for Apple Silicon (arm64)..."
 swift build -c release --jobs 2
 echo "🧪 Running mandatory window UI acceptance..."
-if [ "${APEX_UI_ACCEPTANCE_PREFLIGHT_ONLY:-0}" = "1" ]; then
-    bash scripts/test_ui_acceptance.sh --preflight-only
-else
-    bash scripts/test_ui_acceptance.sh
-fi
+bash scripts/test_ui_acceptance.sh
 
 echo "📦 Packaging ${APP_NAME} bundle (v${VERSION} Build ${BUILD_NUMBER})..."
 mkdir -p "${MACOS_DIR}" "${RESOURCES_DIR}"
@@ -59,6 +60,8 @@ fi
 
 echo "📋 Using Release binary: ${RELEASE_BIN}"
 cp "${RELEASE_BIN}" "${MACOS_DIR}/ApexTerm"
+# Remove linker debug paths before security scanning and Developer ID signing.
+/usr/bin/strip -S "${MACOS_DIR}/ApexTerm"
 chmod +x "${MACOS_DIR}/ApexTerm"
 
 if [ -f "/opt/homebrew/bin/sshpass" ]; then
@@ -157,7 +160,7 @@ python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["status"] == "A
 xcrun stapler staple "${APP_DIR}"
 xcrun stapler validate "${APP_DIR}"
 spctl --assess --type execute --verbose=2 "${APP_DIR}"
-tar -czf "${DIST_ARCHIVE}" -C "${BUILD_DIR}" "${APP_NAME}"
+tar --uid 0 --gid 0 --uname root --gname wheel -czf "${DIST_ARCHIVE}" -C "${BUILD_DIR}" "${APP_NAME}"
 
 # Create Distribution DMG
 if command -v hdiutil >/dev/null 2>&1; then

@@ -63,11 +63,12 @@ class AuditTests(unittest.TestCase):
                 if args[:4] == ('codesign', '-d', '--entitlements', ':-'):
                     values = app_ent if Path(args[-1]) == app else helper_ent
                     return subprocess.CompletedProcess(args, 0, plistlib.dumps(values), b'')
-                if args[:2] == ('codesign', '-dv'):
+                if args[:2] in (('codesign', '-dv'), ('codesign', '-dvv')):
                     signer = (helper_signers or {}).get(Path(args[-1]).name, {})
                     return subprocess.CompletedProcess(args, 0, b'',
-                        ('Authority=' + signer.get('authority', 'Apple Distribution: QA')
-                         + '\nTeamIdentifier=' + signer.get('team', '5984KQD4D7') + '\n').encode())
+                        ((('Authority=' + signer.get('authority', 'Apple Distribution: QA') + '\n')
+                          if args[1] == '-dvv' else '')
+                         + 'TeamIdentifier=' + signer.get('team', '5984KQD4D7') + '\n').encode())
                 if args[:2] == ('security', 'cms'):
                     return subprocess.CompletedProcess(args, 0, plistlib.dumps(profile), b'')
                 if args[:2] == ('codesign', '-d') and args[2].startswith('--extract-certificates='):

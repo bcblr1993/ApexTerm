@@ -17,9 +17,136 @@ spec.loader.exec_module(runner)
 
 
 class RemoteUIRunnerTests(unittest.TestCase):
+    @staticmethod
+    def transport_result(arguments, **kwargs):
+        if arguments[:2] == ['tart', 'ip']:
+            return subprocess.CompletedProcess(arguments, 0, '192.0.2.10\n')
+        if arguments[-1] == '/usr/sbin/sysctl -n hw.model':
+            return subprocess.CompletedProcess(arguments, 0, 'VirtualMac2,1\n')
+        return subprocess.CompletedProcess(arguments, 0, '/Users/synthetic/apex-ui-run.test\n')
+
+    def test_missing_or_other_vm_stops_before_any_transport(self):
+        for vm in ('', 'macos26', 'another-vm'):
+            with self.subTest(vm=vm), tempfile.TemporaryDirectory() as directory, \
+                 patch.dict(os.environ, {'APEX_UI_TEST_VM': vm, 'APEX_UI_RUNNER_HOST': '192.0.2.10', 'APEX_UI_RUNNER_USER': 'synthetic'}), \
+                 patch.object(runner.sys, 'argv', ['runner', directory]), \
+                 patch.object(runner, 'run') as transport:
+                with self.assertRaisesRegex(ValueError, 'macos27'):
+                    runner.main()
+                transport.assert_not_called()
+                self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_selected_vm_refuses_conflicting_runner_before_transfer(self):
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.dict(os.environ, {'APEX_UI_TEST_VM': 'macos27', 'APEX_UI_RUNNER_HOST': '192.0.2.10', 'APEX_UI_RUNNER_USER': 'synthetic'}), \
+             patch.object(runner.sys, 'argv', ['runner', directory]), \
+             patch.object(runner, 'run', return_value=subprocess.CompletedProcess([], 0, '192.0.2.11\n')) as transport:
+            with self.assertRaisesRegex(ValueError, 'does not match'):
+                runner.main()
+            self.assertEqual(transport.call_count, 1)
+            self.assertEqual(transport.call_args.args[0], ['tart', 'ip', 'macos27'])
+            self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_selected_vm_refuses_physical_host_before_workspace_creation(self):
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.dict(os.environ, {'APEX_UI_TEST_VM': 'macos27', 'APEX_UI_RUNNER_HOST': '', 'APEX_UI_RUNNER_USER': 'synthetic'}), \
+             patch.object(runner.sys, 'argv', ['runner', directory]), \
+             patch.object(runner, 'run', side_effect=[subprocess.CompletedProcess([], 0, '192.0.2.11\n'),
+                                                   subprocess.CompletedProcess([], 0, 'Mac15,12\n')]) as transport:
+            with self.assertRaisesRegex(ValueError, 'not a macOS virtual machine'):
+                runner.main()
+            self.assertEqual(transport.call_count, 2)
+            self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_explicit_real_target_transfers_only_required_values(self):
+        with patch.dict(os.environ, {'APEX_UI_TEST_HOST': '192.0.2.25', 'APEX_UI_TEST_USER': 'synthetic',
+                                    'APEX_PRIVATE_TOKEN': 'must-not-be-transferred'}):
+            with tempfile.TemporaryDirectory() as directory, \
+                 patch.object(runner.sys, 'argv', ['runner', directory]), \
+                 patch.dict(os.environ, {'APEX_UI_TEST_VM': 'macos27', 'APEX_UI_RUNNER_HOST': '192.0.2.10', 'APEX_UI_RUNNER_USER': 'synthetic'}), \
+                 patch.object(runner, 'run', side_effect=self.transport_result), \
+                 patch.object(runner.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)):
+                runner.main()
+                self.assertEqual(json.loads((Path(directory) / 'ui-test-environment.json').read_text()),
+                                 {'APEX_UI_TEST_HOST': '192.0.2.25', 'APEX_UI_TEST_USER': 'synthetic'})
+
+    def test_launch_services_preflight_requires_helper_completion(self):
+        script = self.execute(0).split('# Launch Services makes the signed helper, rather than sshd, responsible for TCC.\n', 1)[1].split('\nPY_KEY_FIXTURE', 1)[0]
+        for outcome in ('success', 'denied', 'missing', 'launch-failed'):
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as directory:
+                destination = Path(directory) / 'PhysicalKeyQA.app'
+                def launch(arguments, **kwargs):
+                    self.assertEqual(arguments[:4], ['/usr/bin/open', '-n', '-g', '-W'])
+                    self.assertEqual(arguments[-4:], ['-a', str(destination), '--args', '--preflight'])
+                    if outcome == 'launch-failed':
+                        raise subprocess.CalledProcessError(1, arguments)
+                    if outcome != 'missing':
+                        Path(arguments[arguments.index('--stdout') + 1]).write_text(
+                            'APEX_PHYSICAL_KEY_OK --preflight\n' if outcome == 'success' else '')
+                        Path(arguments[arguments.index('--stderr') + 1]).write_text(
+                            '' if outcome == 'success' else 'Accessibility denied')
+                    return subprocess.CompletedProcess(arguments, 0)
+                with patch('subprocess.run', side_effect=launch):
+                    context = {'pathlib': __import__('pathlib'), 'subprocess': subprocess, 'destination': destination}
+                    if outcome == 'success':
+                        exec(script, context)
+                    elif outcome == 'launch-failed':
+                        with self.assertRaises(subprocess.CalledProcessError):
+                            exec(script, context)
+                    else:
+                        with self.assertRaises(RuntimeError):
+                            exec(script, context)
+
     def permission_script(self):
         script = self.execute(0)
         return script.split("# Xcode's macOS UI runner", 1)[1].split('\nPY\n', 1)[0].split('import subprocess, tempfile', 1)[1]
+
+    def test_physical_fixture_refuses_foreign_app_before_deleting_it(self):
+        script = self.execute(0).split("python3 - <<'PY_KEY_FIXTURE'\n", 1)[1].split('\nPY_KEY_FIXTURE', 1)[0]
+        with tempfile.TemporaryDirectory() as directory, contextlib.chdir(directory):
+            root = Path(directory).resolve()
+            source = root / 'outputs/ui-acceptance/PhysicalKeyQA.app'
+            (source / 'Contents').mkdir(parents=True)
+            (source / 'Contents/Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier': 'com.apexterm.qa.physicalkeys'}))
+            destination = root / '.apexterm-ui-tools/PhysicalKeyQA.app'
+            (destination / 'Contents').mkdir(parents=True)
+            (destination / 'Contents/Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier': 'user.application'}))
+            note = destination / 'user-data'
+            note.write_bytes(b'preserve existing data')
+            with patch.object(Path, 'home', return_value=root), patch('subprocess.run') as commands:
+                with self.assertRaises(AssertionError):
+                    exec(script, {})
+            self.assertEqual(note.read_bytes(), b'preserve existing data')
+            self.assertEqual(commands.call_count, 1)
+
+    def test_physical_fixture_refuses_source_symlink_before_signature_check(self):
+        script = self.execute(0).split("python3 - <<'PY_KEY_FIXTURE'\n", 1)[1].split('\nPY_KEY_FIXTURE', 1)[0]
+        with tempfile.TemporaryDirectory() as directory, contextlib.chdir(directory):
+            root = Path(directory).resolve()
+            actual = root / 'another-signed-app'
+            actual.mkdir()
+            source = root / 'outputs/ui-acceptance/PhysicalKeyQA.app'
+            source.parent.mkdir(parents=True)
+            source.symlink_to(actual, target_is_directory=True)
+            with patch('subprocess.run') as commands:
+                with self.assertRaises(AssertionError):
+                    exec(script, {})
+            commands.assert_not_called()
+            self.assertFalse((root / '.apexterm-ui-tools').exists())
+
+    def test_physical_fixture_refuses_tools_symlink(self):
+        script = self.execute(0).split("python3 - <<'PY_KEY_FIXTURE'\n", 1)[1].split('\nPY_KEY_FIXTURE', 1)[0]
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as external, contextlib.chdir(directory):
+            root = Path(directory).resolve()
+            source = root / 'outputs/ui-acceptance/PhysicalKeyQA.app'
+            (source / 'Contents').mkdir(parents=True)
+            (source / 'Contents/Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier': 'com.apexterm.qa.physicalkeys'}))
+            (root / '.apexterm-ui-tools').symlink_to(external, target_is_directory=True)
+            with patch.object(Path, 'home', return_value=root), patch('subprocess.run') as commands:
+                with self.assertRaises(AssertionError):
+                    exec(script, {})
+            self.assertEqual(list(Path(external).iterdir()), [])
+            self.assertEqual(commands.call_count, 1)
 
     def test_runner_permissions_preserve_other_entitlements_and_product(self):
         script = self.permission_script()
@@ -62,9 +189,9 @@ class RemoteUIRunnerTests(unittest.TestCase):
 
     def execute(self, exit_code):
         with tempfile.TemporaryDirectory() as directory:
-            with patch.dict(os.environ, {'APEX_UI_RUNNER_HOST': '192.0.2.10', 'APEX_UI_RUNNER_USER': 'synthetic'}), \
+            with patch.dict(os.environ, {'APEX_UI_TEST_VM': 'macos27', 'APEX_UI_RUNNER_HOST': '192.0.2.10', 'APEX_UI_RUNNER_USER': 'synthetic'}), \
                  patch.object(runner.sys, 'argv', ['runner', directory]), \
-                 patch.object(runner, 'run', return_value=subprocess.CompletedProcess([], 0, '/Users/synthetic/apex-ui-run.test\n')) as transport, \
+                 patch.object(runner, 'run', side_effect=self.transport_result) as transport, \
                  patch.object(runner.subprocess, 'run', return_value=subprocess.CompletedProcess([], exit_code)) as execution:
                 if exit_code:
                     with self.assertRaises(subprocess.CalledProcessError):
@@ -146,7 +273,7 @@ class RemoteUIRunnerTests(unittest.TestCase):
         self.execute(65)
 
     def test_invalid_target_stops_before_creating_guest_files(self):
-        with patch.dict(os.environ, {'APEX_UI_RUNNER_HOST': 'invalid;command', 'APEX_UI_RUNNER_USER': 'synthetic'}), \
+        with patch.dict(os.environ, {'APEX_UI_TEST_VM': 'macos27', 'APEX_UI_RUNNER_HOST': 'invalid;command', 'APEX_UI_RUNNER_USER': 'synthetic'}), \
              patch.object(runner.sys, 'argv', ['runner', '/tmp/synthetic']), \
              patch.object(runner, 'run') as transport:
             with self.assertRaises(ValueError):

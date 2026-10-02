@@ -236,6 +236,24 @@ struct ThemeVerificationApp: App {
                     NSApplication.shared.windows.first(where: { $0.isVisible && $0.contentView != nil })?.setContentSize(scene == "shortcuts" ? NSSize(width: 580, height: 590) : NSSize(width: 560, height: 560))
                 }
                 telemetry.start()
+                if let path = ProcessInfo.processInfo.environment["APEX_QA_IME_STATE_PATH"] {
+                    Task { @MainActor in
+                        while !Task.isCancelled {
+                            let terminal = NSApp.keyWindow?.firstResponder as? NativeTerminalView
+                            let state: [String: Any] = [
+                                "focused": terminal != nil,
+                                "marked": terminal?.hasMarkedText() ?? false,
+                                "source": terminal?.inputContext?.selectedKeyboardInputSource ?? "none",
+                                "alternate": terminal?.ringBuffer?.isInAlternateScreen ?? false
+                            ]
+                            if let data = try? JSONSerialization.data(withJSONObject: state) {
+                                try? data.write(to: URL(fileURLWithPath: path), options: .atomic)
+                            }
+                            do { try await Task.sleep(for: .milliseconds(100)) }
+                            catch { return }
+                        }
+                    }
+                }
                 if ProcessInfo.processInfo.environment["APEX_QA_KEY_DIAGNOSTICS"] == "1" {
                     var observedTerminals = Set<ObjectIdentifier>()
                     NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
@@ -243,13 +261,13 @@ struct ThemeVerificationApp: App {
                         if let terminal, observedTerminals.insert(ObjectIdentifier(terminal)).inserted,
                            let originalInput = terminal.onInput {
                             terminal.onInput = { data in
-                                let record = "QA_INPUT bytes=\(data.count) carriageReturns=\(data.filter { $0 == 13 }.count)\n"
-                                FileHandle.standardError.write(Data(record.utf8))
+                                let record = "QA_INPUT bytes=\(data.count) escapeBytes=\(data.filter { $0 == 27 }.count) carriageReturns=\(data.filter { $0 == 13 }.count)\n"
+                                recordQAKeyDiagnostic(record)
                                 originalInput(data)
                             }
                         }
-                        let record = "QA_KEY code=\(event.keyCode) modifiers=\(event.modifierFlags.rawValue) terminal=\(terminal != nil) marked=\(terminal?.hasMarkedText() ?? false) input=\(terminal?.onInput != nil) bufferMatches=\(terminal?.ringBuffer === tab.ringBuffer)\n"
-                        FileHandle.standardError.write(Data(record.utf8))
+                        let record = "QA_KEY code=\(event.keyCode) modifiers=\(event.modifierFlags.rawValue) terminal=\(terminal != nil) marked=\(terminal?.hasMarkedText() ?? false) input=\(terminal?.onInput != nil) bufferMatches=\(terminal?.ringBuffer === tab.ringBuffer) alternate=\(terminal?.ringBuffer?.isInAlternateScreen ?? false) source=\(terminal?.inputContext?.selectedKeyboardInputSource ?? "none")\n"
+                        recordQAKeyDiagnostic(record)
                         if let terminal {
                             Task { @MainActor in
                                 try? await Task.sleep(for: .seconds(1))
@@ -336,6 +354,20 @@ struct ThemeVerificationApp: App {
             }
             if ProcessInfo.processInfo.environment["APEX_QA_UI_RUN_ID"] != nil {
                 CommandMenu("验收操作") {
+                    Button("切换系统拼音") {
+                        @MainActor func terminal(in view: NSView) -> NativeTerminalView? {
+                            if let terminal = view as? NativeTerminalView { return terminal }
+                            for child in view.subviews { if let result = terminal(in: child) { return result } }
+                            return nil
+                        }
+                        if let window = NSApp.windows.first(where: { $0.isVisible && $0.contentView != nil }),
+                           let content = window.contentView, let terminal = terminal(in: content) {
+                            window.makeFirstResponder(terminal)
+                            terminal.inputContext?.activate()
+                            terminal.inputContext?.selectedKeyboardInputSource = "com.apple.inputmethod.SCIM.ITABC"
+                        }
+                    }
+                    .keyboardShortcut("p", modifiers: [.command, .option, .shift])
                     Button("断开测试终端") {
                         Task { @MainActor in
                             // Act on the displayed State-backed tabs, including split panes.
@@ -444,4 +476,16 @@ struct ThemeVerificationApp: App {
         NSApplication.shared.terminate(nil)
     }
 
+}
+
+private func recordQAKeyDiagnostic(_ record: String) {
+    FileHandle.standardError.write(Data(record.utf8))
+    guard let path = ProcessInfo.processInfo.environment["APEX_QA_KEY_TRACE_PATH"] else { return }
+    if !FileManager.default.fileExists(atPath: path) {
+        FileManager.default.createFile(atPath: path, contents: nil)
+    }
+    guard let handle = FileHandle(forWritingAtPath: path) else { return }
+    defer { try? handle.close() }
+    _ = try? handle.seekToEnd()
+    try? handle.write(contentsOf: Data(record.utf8))
 }

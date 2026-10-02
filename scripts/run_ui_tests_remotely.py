@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Run UI tests on a dedicated Mac or one existing, unlocked Tart guest."""
+"""Run UI tests only on the existing, unlocked Tart macos27 guest."""
 import os
+import json
 import re
 from pathlib import Path
 import shlex
@@ -27,12 +28,21 @@ def main():
     if not user or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-' for c in user):
         raise ValueError('Invalid guest SSH user')
     address = os.environ.get('APEX_UI_RUNNER_HOST', '')
-    if not address:
-        address = run(['tart', 'ip', os.environ['APEX_UI_TEST_VM']], capture_output=True, text=True).stdout.strip()
+    vm = os.environ.get('APEX_UI_TEST_VM', '')
+    if vm != 'macos27':
+        raise ValueError('UI tests require APEX_UI_TEST_VM=macos27')
+    if address and any(c not in '0123456789abcdefABCDEF:.' for c in address):
+        raise ValueError('Invalid guest SSH host')
+    vm_address = run(['tart', 'ip', vm], capture_output=True, text=True).stdout.strip()
+    if address and address != vm_address:
+        raise ValueError('The configured runner host does not match the selected Tart VM')
+    address = vm_address
     if not address or any(c not in '0123456789abcdefABCDEF:.' for c in address):
         raise ValueError('Start and unlock the selected Tart VM before testing')
     target = f'{user}@{address}'
     ssh = ['ssh', '-A', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', target]
+    if not run(ssh + ['/usr/sbin/sysctl -n hw.model'], capture_output=True, text=True).stdout.strip().startswith('VirtualMac'):
+        raise ValueError('The selected UI runner is not a macOS virtual machine')
     workspace = run(ssh + ['mktemp -d "$HOME/apex-ui-run.XXXXXX"'],
                     capture_output=True, text=True).stdout.strip()
     if not workspace.startswith('/') or '\n' in workspace:
@@ -44,9 +54,14 @@ def main():
     run(['tar', '-czf', str(archive), 'UITests',
          'outputs/ui-acceptance/DerivedData/Build/Products',
          fixture_for_archive,
-         'outputs/macos27/qa/Verification.app'], cwd=root)
+         'outputs/macos27/qa/Verification.app',
+         'outputs/ui-acceptance/PhysicalKeyQA.app'], cwd=root)
     run(['scp', '-q', '-o', 'BatchMode=yes', str(archive),
          f'{target}:{workspace}/input.tar.gz'])
+    environment_file = report / 'ui-test-environment.json'
+    environment_file.write_text(json.dumps({key: os.environ[key] for key in ['APEX_UI_TEST_HOST', 'APEX_UI_TEST_USER'] if os.environ.get(key)}))
+    run(['scp', '-q', '-o', 'BatchMode=yes', str(environment_file),
+         f'{target}:{workspace}/ui-test-environment.json'])
     script = r'''set -euo pipefail
 cd "$1"
 LOCK_DIR="$HOME/.apexterm-ui-automation.lock"
@@ -102,6 +117,40 @@ PY_CLEANUP
 trap 'cleanup_qa_host; release_desktop_lock' EXIT
 tar -xzf input.tar.gz
 mkdir -p reports
+python3 - <<'PY_KEY_FIXTURE'
+import hashlib, json, pathlib, plistlib, shutil, subprocess
+source_path = pathlib.Path('outputs/ui-acceptance/PhysicalKeyQA.app')
+assert not source_path.is_symlink()
+source = source_path.resolve()
+identifier = 'com.apexterm.qa.physicalkeys'
+assert source.is_relative_to(pathlib.Path.cwd().resolve())
+assert plistlib.loads((source / 'Contents/Info.plist').read_bytes())['CFBundleIdentifier'] == identifier
+requirement = '=identifier "com.apexterm.qa.physicalkeys" and anchor apple generic and certificate leaf[subject.OU] = "5984KQD4D7"'
+subprocess.run(['codesign', '--verify', '--deep', '--strict', '-R', requirement, str(source)], check=True)
+tools = pathlib.Path.home() / '.apexterm-ui-tools'
+assert not tools.is_symlink()
+tools.mkdir(exist_ok=True)
+destination = tools / 'PhysicalKeyQA.app'
+assert not destination.is_symlink()
+if destination.exists():
+    assert plistlib.loads((destination / 'Contents/Info.plist').read_bytes())['CFBundleIdentifier'] == identifier
+    subprocess.run(['codesign', '--verify', '--deep', '--strict', '-R', requirement, str(destination)], check=True)
+    shutil.rmtree(destination)
+shutil.copytree(source, destination)
+helper = destination / 'Contents/MacOS/PhysicalKeyPoster'
+subprocess.run(['codesign', '--verify', '--deep', '--strict', str(destination)], check=True)
+pathlib.Path('reports/physical-key-fixture.json').write_text(json.dumps({'bundleIdentifier': identifier, 'executableSHA256': hashlib.sha256(helper.read_bytes()).hexdigest()}))
+# Launch Services makes the signed helper, rather than sshd, responsible for TCC.
+# open can exit zero even when its application exits 77: require fresh helper proof.
+import tempfile
+with tempfile.TemporaryDirectory(prefix='apex-key-preflight-') as directory:
+    output = pathlib.Path(directory) / 'stdout'
+    error = pathlib.Path(directory) / 'stderr'
+    subprocess.run(['/usr/bin/open', '-n', '-g', '-W', '--stdout', str(output), '--stderr', str(error),
+                    '-a', str(destination), '--args', '--preflight'], check=True, timeout=15)
+    if not output.exists() or output.read_text() != 'APEX_PHYSICAL_KEY_OK --preflight\n':
+        raise RuntimeError('Physical key preflight did not succeed: ' + (error.read_text() if error.exists() else 'missing helper result'))
+PY_KEY_FIXTURE
 xcrun swiftc -swift-version 6 -target arm64-apple-macos14.0 UITests/Fixtures/IMEInputSourceRestorer.swift -o reports/IMEInputSourceRestorer
 xcodebuild build-for-testing -project UITests/ApexTermUITests.xcodeproj -scheme ApexTermUITests -destination 'platform=macOS,arch=arm64' -derivedDataPath outputs/ui-acceptance/RemoteDerivedData -jobs 2 ONLY_ACTIVE_ARCH=YES 2>&1 | tee reports/remote-build.log
 python3 - <<'PY'
@@ -119,12 +168,17 @@ def targets(config):
 source, = pathlib.Path('outputs/ui-acceptance/DerivedData/Build/Products').glob('*.xctestrun')
 destination, = pathlib.Path('outputs/ui-acceptance/RemoteDerivedData/Build/Products').glob('*.xctestrun')
 environment = targets(plistlib.loads(source.read_bytes()))[0].get('EnvironmentVariables', {})
+environment.update(json.loads(pathlib.Path('ui-test-environment.json').read_text()))
+if not all(environment.get(key) for key in ['APEX_UI_TEST_HOST', 'APEX_UI_TEST_USER']):
+    raise ValueError('Missing real SSH target configuration for UI acceptance')
 config = plistlib.loads(destination.read_bytes())
 for target in targets(config):
     target.setdefault('EnvironmentVariables', {}).update({key: environment[key] for key in ['APEX_UI_TEST_HOST', 'APEX_UI_TEST_USER']})
     target['EnvironmentVariables']['APEX_UI_APP_PATH'] = str(app)
     target['EnvironmentVariables']['APEX_UI_PRODUCT_APP_PATH'] = str(next(pathlib.Path('outputs/ui-acceptance').glob('*/ApexTerm-Reopen.app')).resolve())
     target['EnvironmentVariables']['APEX_UI_INPUT_SOURCE_RESTORER'] = str(pathlib.Path('reports/IMEInputSourceRestorer').resolve())
+    target['EnvironmentVariables']['APEX_UI_PHYSICAL_KEY_HELPER'] = str(pathlib.Path.home() / '.apexterm-ui-tools/PhysicalKeyQA.app/Contents/MacOS/PhysicalKeyPoster')
+    target['EnvironmentVariables']['APEX_UI_PHYSICAL_KEY_TARGET'] = info['CFBundleIdentifier']
     if os.environ.get('SSH_AUTH_SOCK'):
         target['EnvironmentVariables']['SSH_AUTH_SOCK'] = os.environ['SSH_AUTH_SOCK']
         target['EnvironmentVariables']['APEX_UI_AGENT_SOCKET'] = os.environ['SSH_AUTH_SOCK']

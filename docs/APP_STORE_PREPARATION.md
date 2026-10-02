@@ -91,3 +91,5 @@ socket修正后完整回归：345项 Swift 用例全部通过，0失败、0跳�
 正式商店候选包使用 `scripts/prepare_app_store_candidate.py <version> <build> --profile <profile> --certificate-sha1 <sha1>`。只允许干净主干并执行真实 VM/Swift/性能门禁，核对 profile 与分发证书后组装 Release 应用，分别签署主程序与继承沙盒的 helper，执行严格安全扫描和商店审计。输出候选 manifest，不安装、上传或自动提交审核；精确候选仍需 macos27 实机沙盒验收后才可生成安装包上传。
 
 Debug QA 清除开发目录的链接搜索路径，fatalError 使用 #fileID，避免将开发者绝对路径写入包；扫描规则不放宽。UI 测试入口改为 async，在 Swift Task 中保留原有同步测试步骤与全部断言；用于处理观察到的 XCTest/Swift TaskLocal 运行器崩溃，需重新实跑验证。Swift 上游相关报告：https://github.com/swiftlang/swift/issues/87316 。
+
+当前内部 QA 改用 Release 优化编译以匹配实际产品，仍保持独立 QA 标识、0.0.0 版本与 ad hoc 签名，不是商店正式分发。Debug 编译器的 actor 检查仍嵌入绝对源路径，即使文件前缀映射和 strip 也无法完整消除；已保留失败证据，不放宽安全扫描。

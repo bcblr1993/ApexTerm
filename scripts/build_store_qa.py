@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare an isolated debug App Sandbox bundle for macos27; never release/install it."""
+"""Prepare an isolated optimized App Sandbox bundle for macos27; never release/install it."""
 import hashlib
 import json
 import pathlib
@@ -65,11 +65,12 @@ def main():
     # at compilation, without weakening the same bundle scanner used for release.
     swift_flags = ['-Xswiftc', '-file-prefix-map', '-Xswiftc', str(pathlib.Path.home()) + '=/build',
                    '-Xswiftc', '-debug-prefix-map', '-Xswiftc', str(pathlib.Path.home()) + '=/build']
-    # Debug only. Formal release and its mandatory gates remain separate.
+    # Optimized QA matches production compilation, but retains the isolated QA ID,
+    # 0.0.0 metadata and ad hoc signing. Formal distribution remains separate.
     for product in ('ApexTerm', 'ApexSSHBridge'):
-        run('swift', 'build', '--configuration', 'debug', '--product', product, '--jobs', '2', *swift_flags)
+        run('swift', 'build', '--configuration', 'release', '--product', product, '--jobs', '2', *swift_flags)
     binaries = pathlib.Path(subprocess.check_output(
-        ['swift', 'build', '--configuration', 'debug', '--show-bin-path'], cwd=ROOT, text=True).strip())
+        ['swift', 'build', '--configuration', 'release', '--show-bin-path'], cwd=ROOT, text=True).strip())
     for binary in (binaries / 'ApexTerm', binaries / 'ApexSSHBridge', sshpass):
         run('lipo', '-verify_arch', 'arm64', str(binary))
     nonce = uuid.uuid4().hex
@@ -106,7 +107,7 @@ def main():
             raise SystemExit('Signed QA helper sandbox entitlements do not match inheritance template.')
     manifest = {
         'scope': 'Internal debug sandbox QA; not a release, Store-signed build, or uploaded package.',
-        'sourceCommit': head, 'configuration': 'debug', 'signature': 'ad hoc',
+        'sourceCommit': head, 'configuration': 'release', 'signature': 'ad hoc',
         'bundleIdentifier': identifier, 'app': str(app), 'launched': False,
         'binarySHA256': {name: hashlib.sha256((app / 'Contents/MacOS' / name).read_bytes()).hexdigest()
                          for name in ('ApexTerm', 'ApexSSHBridge', 'sshpass')},

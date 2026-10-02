@@ -81,7 +81,7 @@ else:
           {'bookmarksAppScope': app_entitlements.get('com.apple.security.files.bookmarks.app-scope')})
     code, _, stderr = run('codesign', '--verify', '--deep', '--strict', str(bundle))
     check('signature-verifies', code == 0, {'exitCode': code})
-    code, _, metadata = run('codesign', '-dv', str(bundle))
+    code, _, metadata = run('codesign', '-dvv', str(bundle))
     authorities = [line.partition('=')[2] for line in metadata.decode(errors='replace').splitlines() if line.startswith('Authority=')]
     check('store-distribution-signature', code == 0 and any(a.startswith(('Apple Distribution:', '3rd Party Mac Developer Application:')) for a in authorities), authorities)
     team_lines = [line.partition('=')[2] for line in metadata.decode(errors='replace').splitlines() if line.startswith('TeamIdentifier=')]
@@ -141,7 +141,7 @@ else:
             check(helper_name + '-inherits-sandbox', helper_ent.get('com.apple.security.app-sandbox') is True and helper_ent.get('com.apple.security.inherit') is True and enabled_keys == inheritance_keys and not allows_debugging(helper_ent),
                   {'appSandbox': helper_ent.get('com.apple.security.app-sandbox'), 'inherit': helper_ent.get('com.apple.security.inherit'), 'unexpectedEntitlementCount': len(enabled_keys - inheritance_keys)})
             check(helper_name + '-signature-verifies', run('codesign', '--verify', '--strict', str(helper))[0] == 0, 'Helper signature verified independently.')
-            code, _, metadata = run('codesign', '-dv', str(helper))
+            code, _, metadata = run('codesign', '-dvv', str(helper))
             helper_authorities = [line.partition('=')[2] for line in metadata.decode(errors='replace').splitlines() if line.startswith('Authority=')]
             helper_teams = [line.partition('=')[2] for line in metadata.decode(errors='replace').splitlines() if line.startswith('TeamIdentifier=')]
             check(helper_name + '-store-distribution-signature', code == 0

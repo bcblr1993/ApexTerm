@@ -9,6 +9,14 @@ struct SandboxSSHPaths: Sendable {
     let knownHosts: URL
     let controlSocket: URL
 
+    // OpenSSH first binds path + "." + 16 random ASCII characters, then links
+    // the listener into place. Darwin's 104-byte sun_path also includes NUL.
+    var canUseControlSocket: Bool { controlSocket.path.utf8.count + 17 < 104 }
+
+    var controlSocketOption: String {
+        canUseControlSocket ? "ControlPath=" + Self.quotedPath(controlSocket.path) : "ControlPath=none"
+    }
+
     init(home: URL = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true),
          temporary: URL = FileManager.default.temporaryDirectory, identifier: String = UUID().uuidString) {
         directory = home.appendingPathComponent("Library/Application Support/ApexTerm/SSH", isDirectory: true)
@@ -17,10 +25,8 @@ struct SandboxSSHPaths: Sendable {
     }
 
     func prepare() throws {
-        // Darwin sockaddr_un.sun_path is 104 bytes, including the terminating NUL.
-        guard controlSocket.path.utf8.count < 104 else {
-            throw NSError(domain: "ApexSSH", code: 1, userInfo: [NSLocalizedDescriptionKey: "SSH 临时目录路径过长，无法创建控制连接。"])
-        }
+        // Long sandbox temporary paths can still authenticate and transfer files
+        // without multiplexing; never fall back to a shared non-container socket.
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
         let attributes = try FileManager.default.attributesOfItem(atPath: directory.path)

@@ -75,3 +75,9 @@ SSH agent能力探针在macos27有效ad hoc沙盒中观察到：独立测试目�
 2026-10-02 实际 Debug 沙盒 UI 首轮验证：关于隐私入口和关闭后重开主窗口均通过；私钥用例发现测试聚焦点落在侧边栏按钮，以及表单输入框缺少明确无障碍标识。已改用标题文字区域置前、恢复实际侧边栏状态，并为私钥输入框添加标签与稳定标识。源码更新后的343项真实目标 Swift 用例通过，0失败、0跳过、0警告；更新后的完整3项沙盒UI仍需独立验证。
 
 最新 macos27 实际 Debug 沙盒 UI 验证：3项全部通过，0失败、0跳过。关于隐私入口、关闭最后窗口后重新打开、真实NSOpenPanel取消且私钥路径不变均通过。测试按NSOpenPanel的固定标识定位，避免把按钮标题误当成AXLabel。启动前后深度验签及三个二进制SHA256一致，主程序保持App Sandbox，helper保持继承权限；仅测试Runner解除其沙盒限制。证据保留在调用聊天的 `outputs/store-sandbox-ui/20261002-101640`。仍未验证真实私钥/agent认证、SSH/SFTP全流程或最终商店签名包，也未上传/提交审核。
+
+真实沙盒 CLI 验证发现 OpenSSH 建立复用监听时会追加 `.` 与16个随机字符；仅检查最终 socket 路径是否小于104字节会漏掉临时路径超长。现为临时后缀和NUL预留长度；容器临时路径过长时使用 `ControlPath=none`，保持正常认证与传输，不使用容器外共享 socket。这会使该路径下的命令分别建立连接。依据：[OpenSSH mux.c](https://github.com/openssh/openssh-portable/blob/master/mux.c) 和 [ControlPath 文档](https://man.openbsd.org/ssh_config.5#ControlPath)。
+
+独立的 ad hoc 沙盒 CLI 探针随后验证：实际容器隔离、未授权文件拒绝、生产 `NativeSSHSession` 的 `.appStore` 调用链与继承权限 helper、真实 PTY 输出、Unicode 文件上传/目录查询/下载字节一致，以及远端夹具删除均通过。身份来自本次 SSH 连接转发到该独立容器内的临时 agent 代理，不复制私钥，不修改远端认证配置；代理已停止。此结果不证明系统外部 agent socket、实际私钥选择/口令、商店产品UI或最终分发签名包通过。证据在调用聊天 `outputs/release-v1.6.0/store-live-sandbox-probe-current/`。
+
+socket修正后完整回归：345项 Swift 用例全部通过，0失败、0跳过、0 Swift编译警告，含10项实际macos27 VM和4项实际Mac服务器集成；8项优化性能基准全部通过。新增回归覆盖OpenSSH临时后缀的86/87字节边界、Unicode路径及系统SSH接受禁用复用。既有3项沙盒UI在该修正前通过，仍需对新的完整QA应用重新运行。

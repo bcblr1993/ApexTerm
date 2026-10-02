@@ -37,10 +37,43 @@ final class SandboxSSHPathsTests: XCTestCase {
         XCTAssertThrowsError(try paths.prepare())
     }
 
-    func testOverlongUTF8SocketPathIsRejectedBeforeWriting() throws {
+    func testOverlongUTF8SocketPathDisablesSharingAndPreservesTrustStorage() throws {
         let paths = SandboxSSHPaths(home: home, temporary: URL(fileURLWithPath: "/" + String(repeating: "中", count: 32)))
-        XCTAssertThrowsError(try paths.prepare())
-        XCTAssertFalse(FileManager.default.fileExists(atPath: home.path))
+        XCTAssertFalse(paths.canUseControlSocket)
+        XCTAssertEqual(paths.controlSocketOption, "ControlPath=none")
+        try paths.prepare()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.knownHosts.path))
+    }
+
+    func testControlSocketReservesOpenSSHAtomicListenerSuffixAndNUL() {
+        let fitting = SandboxSSHPaths(home: home,
+            temporary: URL(fileURLWithPath: "/" + String(repeating: "a", count: 79)), identifier: "a")
+        let overflowing = SandboxSSHPaths(home: home,
+            temporary: URL(fileURLWithPath: "/" + String(repeating: "a", count: 80)), identifier: "a")
+        XCTAssertEqual(fitting.controlSocket.path.utf8.count, 86)
+        XCTAssertEqual(overflowing.controlSocket.path.utf8.count, 87)
+        XCTAssertTrue(fitting.canUseControlSocket)
+        XCTAssertLessThan(overflowing.controlSocket.path.utf8.count, 104)
+        XCTAssertFalse(overflowing.canUseControlSocket, "The nominal path fits but OpenSSH's temporary listener does not")
+        XCTAssertEqual(overflowing.controlSocketOption, "ControlPath=none")
+    }
+
+    func testOpenSSHAcceptsDisabledSharingForLongSandboxPath() throws {
+        let paths = SandboxSSHPaths(home: home,
+            temporary: URL(fileURLWithPath: "/" + String(repeating: "中", count: 32)))
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+        process.arguments = try paths.arguments(prependingTo:
+            ["-o", "ControlMaster=auto", "-o", paths.controlSocketOption, "-G", "example.test"], tool: "ssh")
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        let data = try XCTUnwrap(output.fileHandleForReading.readToEnd())
+        process.waitUntilExit()
+        XCTAssertEqual(process.terminationStatus, 0)
+        let lines = String(decoding: data, as: UTF8.self).split(separator: "\n")
+        XCTAssertFalse(lines.contains { $0.hasPrefix("controlpath ") })
     }
 
     func testRemoteCommandCannotSuppressDefaultConfigIsolation() throws {

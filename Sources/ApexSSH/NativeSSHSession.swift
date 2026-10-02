@@ -558,7 +558,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     }
 
     private var controlSocketOption: String {
-        "ControlPath=" + (distributionChannel == .appStore ? SandboxSSHPaths.quotedPath(controlSocketPath) : controlSocketPath)
+        distributionChannel == .appStore ? sandboxPaths.controlSocketOption : "ControlPath=" + controlSocketPath
     }
 
     public func probeRemoteHome() async -> String? {

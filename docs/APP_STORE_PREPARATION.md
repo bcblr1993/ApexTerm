@@ -57,3 +57,7 @@ python3 scripts/audit_app_store_bundle.py /path/to/ApexTerm.app --output /path/t
 2026-10-02 Debug 沙盒 QA 包实际构建、私密信息扫描、arm64检查及深度验签通过，已放入macos27独立测试目录；VM侧签名校验及三个可执行文件的SHA256均与原构建一致，尚未启动UI。脚本全量51项通过，含6项QA隔离与拒绝覆盖回归。
 
 SSH agent能力探针在macos27有效ad hoc沙盒中观察到：独立测试目录中的空agent Unix socket连接返回EPERM；给该目录传入书签后，目录文件已可读，但socket仍返回EPERM；同一应用容器内的空agent socket可连接并完成空密钥列表协议。每组测试同时确认容器home和未授权文件拒绝，测试agent及容器/目录均已清理。这仅验证上述测试路径的IPC能力，未覆盖系统launchd agent、真实密钥认证或产品UI；不能把书签文件授权当作外部agent连接授权，也不能据此宣称商店agent功能已完成。
+
+商店签名审计进一步要求两个捆绑 helper 使用本团队的商店分发证书，并核对各自实际签名叶证书是否位于应用 profile 的许可列表。签名校验返回零仍可能是 ad hoc、开发或 Developer ID 签名，不能直接作为本项目商店包的签名门禁通过。新增回归对每个 helper 单独覆盖错误团队、非商店证书、profile 未许可证书，并允许 profile 中不同的有效分发证书；旧实现会错误接受负面夹具，新实现拒绝。当前审计19项、全量脚本55项通过。这些是签名审计的合成回归，正式包签名、VM UI 验收和上传仍未完成。
+
+嵌套代码签名说明：https://developer.apple.com/library/archive/technotes/tn2206/

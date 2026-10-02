@@ -17,7 +17,7 @@ SCRIPT = Path(__file__).parents[1] / 'audit_app_store_bundle.py'
 class AuditTests(unittest.TestCase):
     def inspect(self, app_change=None, profile_change=None, helper_change=None,
                 leaf=b'permitted-leaf', extraction_status=0, missing_leaf=False,
-                profile_metadata=None):
+                profile_metadata=None, helper_signers=None):
         app_ent = {
             'com.apple.security.app-sandbox': True,
             'com.apple.security.network.client': True,
@@ -61,14 +61,17 @@ class AuditTests(unittest.TestCase):
                     values = app_ent if Path(args[-1]) == app else helper_ent
                     return subprocess.CompletedProcess(args, 0, plistlib.dumps(values), b'')
                 if args[:2] == ('codesign', '-dv'):
+                    signer = (helper_signers or {}).get(Path(args[-1]).name, {})
                     return subprocess.CompletedProcess(args, 0, b'',
-                        b'Authority=Apple Distribution: QA\nTeamIdentifier=5984KQD4D7\n')
+                        ('Authority=' + signer.get('authority', 'Apple Distribution: QA')
+                         + '\nTeamIdentifier=' + signer.get('team', '5984KQD4D7') + '\n').encode())
                 if args[:2] == ('security', 'cms'):
                     return subprocess.CompletedProcess(args, 0, plistlib.dumps(profile), b'')
                 if args[:2] == ('codesign', '-d') and args[2].startswith('--extract-certificates='):
                     certificate = Path(args[2].split('=', 1)[1] + '0')
                     if not missing_leaf:
-                        certificate.write_bytes(leaf)
+                        signer = (helper_signers or {}).get(Path(args[-1]).name, {})
+                        certificate.write_bytes(signer.get('leaf', leaf))
                     return subprocess.CompletedProcess(args, extraction_status, b'', b'')
                 if args[:2] == ('codesign', '--verify'):
                     return subprocess.CompletedProcess(args, 0, b'', b'')
@@ -112,6 +115,31 @@ class AuditTests(unittest.TestCase):
         self.assertTrue(self.inspect(helper_change={
             'com.apple.application-identifier': '5984KQD4D7.com.apexterm.helper',
             'com.apple.developer.team-identifier': '5984KQD4D7'})['technicalRequirementsMet'])
+
+    def test_each_helper_foreign_team_blocks(self):
+        for helper in ('ApexSSHBridge', 'sshpass'):
+            with self.subTest(helper=helper):
+                report = self.inspect(helper_signers={helper: {'team': 'OTHERTEAM'}})
+                self.assertFalse(report['technicalRequirementsMet'])
+                self.assertFalse(next(c['passed'] for c in report['checks'] if c['name'] == helper + '-store-distribution-signature'))
+
+    def test_each_helper_non_store_identity_blocks(self):
+        for helper in ('ApexSSHBridge', 'sshpass'):
+            for authority in ('adhoc', 'Developer ID Application: QA', 'Apple Development: QA'):
+                with self.subTest(helper=helper, authority=authority):
+                    self.assertFalse(self.inspect(helper_signers={helper: {'authority': authority}})['technicalRequirementsMet'])
+
+    def test_each_helper_certificate_outside_profile_blocks(self):
+        for helper in ('ApexSSHBridge', 'sshpass'):
+            with self.subTest(helper=helper):
+                report = self.inspect(helper_signers={helper: {'leaf': b'foreign-helper-leaf'}})
+                self.assertFalse(report['technicalRequirementsMet'])
+                self.assertFalse(next(c['passed'] for c in report['checks'] if c['name'] == helper + '-signer-authorized-by-profile'))
+
+    def test_permitted_alternative_helper_distribution_certificate_passes(self):
+        self.assertTrue(self.inspect(helper_signers={
+            'ApexSSHBridge': {'authority': '3rd Party Mac Developer Application: QA', 'leaf': b'other-leaf'},
+            'sshpass': {'leaf': b'permitted-leaf'}})['technicalRequirementsMet'])
 
     def test_extra_helper_sandbox_capability_blocks(self):
         self.assertFalse(self.inspect(helper_change={

@@ -138,6 +138,15 @@ else:
             check(helper_name + '-inherits-sandbox', helper_ent.get('com.apple.security.app-sandbox') is True and helper_ent.get('com.apple.security.inherit') is True and enabled_keys == inheritance_keys and not allows_debugging(helper_ent),
                   {'appSandbox': helper_ent.get('com.apple.security.app-sandbox'), 'inherit': helper_ent.get('com.apple.security.inherit'), 'unexpectedEntitlementCount': len(enabled_keys - inheritance_keys)})
             check(helper_name + '-signature-verifies', run('codesign', '--verify', '--strict', str(helper))[0] == 0, 'Helper signature verified independently.')
+            code, _, metadata = run('codesign', '-dv', str(helper))
+            helper_authorities = [line.partition('=')[2] for line in metadata.decode(errors='replace').splitlines() if line.startswith('Authority=')]
+            helper_teams = [line.partition('=')[2] for line in metadata.decode(errors='replace').splitlines() if line.startswith('TeamIdentifier=')]
+            check(helper_name + '-store-distribution-signature', code == 0
+                  and any(a.startswith(('Apple Distribution:', '3rd Party Mac Developer Application:')) for a in helper_authorities)
+                  and helper_teams == ['5984KQD4D7'],
+                  {'authorities': helper_authorities, 'matchingTeam': helper_teams == ['5984KQD4D7']})
+            check(helper_name + '-signer-authorized-by-profile', signer_matches_profile(helper, profile_data),
+                  'Bundled helpers must use a distribution certificate authorized by the application profile.')
     check('file-metadata-reason-declared', 'NSPrivacyAccessedAPICategoryFileTimestamp' in categories,
           {'declared': 'NSPrivacyAccessedAPICategoryFileTimestamp' in categories, 'scopeNote': 'Source uses fstat and user-selected transfer file metadata; final helper API audit remains required.'}, gate=False)
     check('plist-stable-during-audit', hashlib.sha256(info_path.read_bytes()).digest() == hashlib.sha256(original).digest(),

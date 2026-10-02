@@ -118,4 +118,34 @@ final class AppStoreSSHBridgeTests: XCTestCase {
         process.waitUntilExit()
         XCTAssertEqual(process.terminationStatus, 1)
     }
+    func testStorePasswordCommandUsesAskpassWithoutSecretArguments() throws {
+        let client = NativeSSHSession(session: Session(name: "fixture", host: "example.test", username: "qa", authMethod: .password(keychainRef: "fixture")),
+            distributionChannel: .appStore, bridgeExecutableURL: bridge, sandboxHomeURL: sandboxHome)
+        let secret = "non-credential fixture"
+        let command = try XCTUnwrap(client.prepareStoreCommand(binaryPath: "/usr/bin/ssh", arguments: ["example.test"], accesses: [], authenticationSecret: secret))
+        defer { command.grants.close() }
+        XCTAssertEqual(command.binaryPath, bridge.path)
+        XCTAssertFalse(command.arguments.contains(secret))
+        XCTAssertEqual(try ChildProcessFileGrants.read(from: command.grants.fileURL).authentication?.kind, .password)
+    }
+
+    func testAskpassBridgeRejectsWrongAuthenticationPromptWithoutSecretOutput() throws {
+        let request = try ChildProcessFileGrants(files: [], authentication: .init(kind: .passphrase, secret: "non-credential fixture"))
+        defer { request.close() }
+        for (prompt, expectedStatus) in [("Enter passphrase for key '/fixture': ", Int32(0)), ("qa@example.test's password: ", Int32(1)), ("Are you sure?", Int32(1))] {
+            let process = Process()
+            process.executableURL = bridge
+            process.arguments = [prompt]
+            process.environment = ProcessInfo.processInfo.environment.merging([
+                ChildProcessFileGrants.environmentKey: request.fileURL.path, "SSH_ASKPASS": bridge.path, "SSH_ASKPASS_REQUIRE": "force"
+            ]) { _, new in new }
+            let output = Pipe(); process.standardOutput = output
+            process.standardError = FileHandle.nullDevice
+            try process.run()
+            let data = try output.fileHandleForReading.readToEnd() ?? Data(); process.waitUntilExit()
+            XCTAssertEqual(process.terminationStatus, expectedStatus)
+            XCTAssertEqual(data.isEmpty, expectedStatus != 0)
+        }
+    }
+
 }

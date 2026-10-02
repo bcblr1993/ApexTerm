@@ -7,10 +7,34 @@ public struct ChildProcessFileGrant: Codable, Sendable {
     public init(path: String, bookmark: Data) { self.path = path; self.bookmark = bookmark }
 }
 
+public struct ChildProcessAuthentication: Codable, Sendable {
+    public enum Kind: String, Codable, Sendable { case password, passphrase }
+    public let kind: Kind
+    public let secret: String
+    public init(kind: Kind, secret: String) { self.kind = kind; self.secret = secret }
+    public func validate() throws {
+        guard !secret.isEmpty, secret.utf8.count <= 16_384,
+              !secret.contains("\n"), !secret.contains("\r"), !secret.contains("\0") else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+    }
+    public func accepts(prompt: String, hint: String?) -> Bool {
+        guard hint != "confirm" else { return false }
+        let prompt = prompt.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        switch kind {
+        case .passphrase: return prompt.hasPrefix("enter passphrase for key ") && prompt.hasSuffix(":")
+        case .password: return prompt.hasSuffix("password:") && !prompt.contains("passphrase")
+        }
+    }
+}
+
 public struct ChildProcessGrantPayload: Codable, Sendable {
     public let version: Int
     public let files: [ChildProcessFileGrant]
-    public init(files: [ChildProcessFileGrant]) { self.version = 1; self.files = files }
+    public let authentication: ChildProcessAuthentication?
+    public init(files: [ChildProcessFileGrant], authentication: ChildProcessAuthentication? = nil) {
+        self.version = 1; self.files = files; self.authentication = authentication
+    }
 
     /// Resolve implicit grants in the process which will exec the system SSH tool.
     public func resolve() throws -> [(originalPath: String, url: URL)] {
@@ -71,7 +95,8 @@ public final class ChildProcessFileGrants: @unchecked Sendable {
     private let lock = NSLock()
     private var closed = false
 
-    public init(files: [ChildProcessFileGrant]) throws {
+    public init(files: [ChildProcessFileGrant], authentication: ChildProcessAuthentication? = nil) throws {
+        try authentication?.validate()
         guard files.count <= 32 else { throw CocoaError(.fileWriteUnknown) }
         let directory = Self.directory
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
@@ -85,7 +110,7 @@ public final class ChildProcessFileGrants: @unchecked Sendable {
         fileURL = directory.appendingPathComponent("grant-" + UUID().uuidString + ".json")
         var created = false
         do {
-            let data = try JSONEncoder().encode(ChildProcessGrantPayload(files: files))
+            let data = try JSONEncoder().encode(ChildProcessGrantPayload(files: files, authentication: authentication))
             guard data.count <= 1_048_576 else { throw CocoaError(.fileWriteUnknown) }
             let fd = open(fileURL.path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0o600)
             guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
@@ -122,6 +147,7 @@ public final class ChildProcessFileGrants: @unchecked Sendable {
         guard data.count <= 1_048_576 else { throw CocoaError(.fileReadCorruptFile) }
         let payload = try JSONDecoder().decode(ChildProcessGrantPayload.self, from: data)
         guard payload.version == 1, payload.files.count <= 32 else { throw CocoaError(.fileReadCorruptFile) }
+        try payload.authentication?.validate()
         return payload
     }
 

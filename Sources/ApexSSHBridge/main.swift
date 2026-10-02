@@ -17,6 +17,20 @@ do {
         throw CocoaError(.fileReadNoPermission)
     }
     let payload = try ChildProcessFileGrants.read(from: URL(fileURLWithPath: path))
+    let environment = ProcessInfo.processInfo.environment
+    if arguments.count == 1, environment["SSH_ASKPASS"] == CommandLine.arguments[0],
+       environment["SSH_ASKPASS_REQUIRE"] == "force" {
+        guard let authentication = payload.authentication,
+              authentication.accepts(prompt: arguments[0], hint: environment["SSH_ASKPASS_PROMPT"]) else {
+            throw CocoaError(.fileReadNoPermission)
+        }
+        FileHandle.standardOutput.write(Data((authentication.secret + "\n").utf8))
+        exit(0)
+    }
+    if payload.authentication != nil {
+        setenv("SSH_ASKPASS", CommandLine.arguments[0], 1)
+        setenv("SSH_ASKPASS_REQUIRE", "force", 1)
+    }
     let grants = try payload.resolve()
     var started: [URL] = []
     for grant in grants where grant.url.startAccessingSecurityScopedResource() { started.append(grant.url) }

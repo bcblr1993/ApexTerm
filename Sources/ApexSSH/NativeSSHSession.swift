@@ -138,7 +138,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         let grants: ChildProcessFileGrants
     }
 
-    func prepareStoreCommand(binaryPath: String, arguments: [String], accesses: [FileAccessLease?]) throws -> PreparedStoreCommand? {
+    func prepareStoreCommand(binaryPath: String, arguments: [String], accesses: [FileAccessLease?], authenticationSecret: String? = nil) throws -> PreparedStoreCommand? {
         guard distributionChannel == .appStore else { return nil }
         guard FileManager.default.isExecutableFile(atPath: bridgeExecutableURL.path) else {
             throw NSError(domain: "ApexSSH", code: 1, userInfo: [NSLocalizedDescriptionKey: "商店版 SSH 文件授权组件缺失，请重新安装应用。"])
@@ -157,10 +157,18 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         try sandboxPaths.prepare()
         toolArguments = try sandboxPaths.arguments(prependingTo: toolArguments, tool: tool)
         if tool == "scp" { toolArguments = ["-S", bridgeExecutableURL.path] + toolArguments }
-        let grants = try ChildProcessFileGrants(files: accesses.compactMap { try $0?.childProcessGrant() })
+        let authentication: ChildProcessAuthentication?
+        if let secret = usesPasswordHelper ? arguments[1] : authenticationSecret ?? stateLock.withLock({ resolvedPassword }), !secret.isEmpty {
+            let kind: ChildProcessAuthentication.Kind
+            if case .privateKey = session.authMethod { kind = .passphrase } else { kind = .password }
+            authentication = ChildProcessAuthentication(kind: kind, secret: secret)
+        } else { authentication = nil }
+        let grants = try ChildProcessFileGrants(files: accesses.compactMap { try $0?.childProcessGrant() }, authentication: authentication)
         let bridgeArguments = ["--tool", tool] + toolArguments
-        return PreparedStoreCommand(binaryPath: usesPasswordHelper ? binaryPath : bridgeExecutableURL.path,
-                                    arguments: usesPasswordHelper ? Array(arguments.prefix(2)) + [bridgeExecutableURL.path] + bridgeArguments : bridgeArguments,
+        // OpenSSH invokes this inherited helper for authentication; sshpass's
+        // controlling-terminal ioctl is forbidden by App Sandbox.
+        return PreparedStoreCommand(binaryPath: bridgeExecutableURL.path,
+                                    arguments: bridgeArguments,
                                     grants: grants)
     }
 

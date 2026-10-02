@@ -1,4 +1,5 @@
 import XCTest
+import Foundation
 @testable import ApexCore
 
 final class ChildProcessFileGrantsTests: XCTestCase {
@@ -96,4 +97,35 @@ final class ChildProcessFileGrantsTests: XCTestCase {
         try Data(repeating: 32, count: 1_048_577).write(to: request.fileURL)
         XCTAssertThrowsError(try ChildProcessFileGrants.read(from: request.fileURL))
     }
+    func testAuthenticationSecretIsPrivateAndRemovedWithRequest() throws {
+        let authentication = ChildProcessAuthentication(kind: .passphrase, secret: "non-credential fixture")
+        let request = try ChildProcessFileGrants(files: [], authentication: authentication)
+        defer { request.close() }
+        XCTAssertEqual(try ChildProcessFileGrants.read(from: request.fileURL).authentication?.kind, .passphrase)
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: request.fileURL.path)[.posixPermissions] as? Int, 0o600)
+        request.close()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: request.fileURL.path))
+    }
+
+    func testAskpassDoesNotSendKeyPassphraseToPasswordOrHostConfirmation() {
+        let authentication = ChildProcessAuthentication(kind: .passphrase, secret: "fixture")
+        XCTAssertTrue(authentication.accepts(prompt: "Enter passphrase for key '/fixture': ", hint: nil))
+        XCTAssertFalse(authentication.accepts(prompt: "qa@example.test's password: ", hint: nil))
+        XCTAssertFalse(authentication.accepts(prompt: "Enter passphrase for key '/fixture': ", hint: "confirm"))
+        XCTAssertFalse(authentication.accepts(prompt: "Are you sure you want to continue connecting (yes/no)?", hint: nil))
+        let password = ChildProcessAuthentication(kind: .password, secret: "fixture")
+        XCTAssertTrue(password.accepts(prompt: "qa@example.test's password: ", hint: nil))
+        XCTAssertFalse(password.accepts(prompt: "Enter passphrase for key '/fixture': ", hint: nil))
+    }
+
+    func testInvalidAuthenticationSecretCannotCreateOrDecodeRequest() throws {
+        for secret in ["", "line\nsecond", "nul\0byte", String(repeating: "a", count: 16_385)] {
+            XCTAssertThrowsError(try ChildProcessFileGrants(files: [], authentication: .init(kind: .password, secret: secret)))
+        }
+        let request = try ChildProcessFileGrants(files: [])
+        defer { request.close() }
+        try JSONEncoder().encode(ChildProcessGrantPayload(files: [], authentication: .init(kind: .password, secret: "line\nsecond"))).write(to: request.fileURL)
+        XCTAssertThrowsError(try ChildProcessFileGrants.read(from: request.fileURL))
+    }
+
 }

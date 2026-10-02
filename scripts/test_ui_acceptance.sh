@@ -23,7 +23,8 @@ trap finish_report EXIT
 git rev-parse HEAD > "$REPORT_DIR/source-commit.txt"
 cp UITests/ApexTermUITests.swift "$REPORT_DIR/ApexTermUITests.swift"
 cp UITests/Fixtures/IMEInputSourceRestorer.swift "$REPORT_DIR/IMEInputSourceRestorer.swift"
-shasum -a 256 UITests/ApexTermUITests.swift UITests/Fixtures/IMEInputSourceRestorer.swift > "$REPORT_DIR/test-source-sha256.txt"
+cp UITests/Fixtures/PhysicalKeyPoster.swift "$REPORT_DIR/PhysicalKeyPoster.swift"
+shasum -a 256 UITests/ApexTermUITests.swift UITests/Fixtures/IMEInputSourceRestorer.swift UITests/Fixtures/PhysicalKeyPoster.swift > "$REPORT_DIR/test-source-sha256.txt"
 # Requires an unlocked macOS desktop and Xcode UI-testing permissions.
 # Failure, missing tools or denied permissions stop the release; no silent fallback.
 command -v xcodebuild >/dev/null
@@ -37,15 +38,18 @@ if [[ -z "${APEX_UI_TEST_USER:-}" ]]; then
     echo 'Set APEX_UI_TEST_USER to the dedicated SSH test user' >&2
     exit 1
 fi
-automationmodetool help > "$REPORT_DIR/automation-mode.txt" 2>&1
-if ! grep -qi 'Automation Mode is enabled' "$REPORT_DIR/automation-mode.txt"; then
-    echo "Automation Mode is currently disabled; Xcode must obtain authenticated activation when UI tests start."
+if [[ "${APEX_UI_TEST_VM:-}" != "macos27" ]]; then
+    echo 'Set APEX_UI_TEST_VM=macos27; UI acceptance must run in that Tart VM.' >&2
+    exit 1
 fi
+echo 'XCTest may require authenticated activation in the macos27 VM when UI tests start.'
 if [[ "${1:-}" == "--preflight-only" ]]; then
     STAGE=prerequisites-passed
     echo "UI tools and host configuration checked; authenticated full UI execution is still required before packaging."
     exit 0
 fi
+STAGE=physical-key-fixture
+bash scripts/build_ui_key_fixture.sh 2>&1 | tee "$REPORT_DIR/physical-key-fixture-build.log"
 STAGE=product-build
 swift build -c release --jobs 2 2>&1 | tee "$REPORT_DIR/product-build.log"
 STAGE=product-reopen-fixture
@@ -97,23 +101,16 @@ for target in targets:
 source.write_bytes(plistlib.dumps(config))
 (reports / 'xctestrun-path.txt').write_text(str(source.resolve()))
 PY
-TEST_RUN_FILE="$(cat "$REPORT_DIR/xctestrun-path.txt")"
 STAGE=ui-test-execution
-if [[ -n "${APEX_UI_TEST_VM:-}${APEX_UI_RUNNER_HOST:-}" ]]; then
-    python3 scripts/run_ui_tests_remotely.py "$REPORT_DIR" 2>&1 | tee "$REPORT_DIR/remote-execution.log"
-else
-xcodebuild test-without-building -xctestrun "$TEST_RUN_FILE" \
-    -destination 'platform=macOS,arch=arm64' -jobs 2 -parallel-testing-enabled NO \
-    -resultBundlePath "$REPORT_DIR/UI.xcresult" \
-    2>&1 | tee "$REPORT_DIR/ui-tests.log"
-fi
+python3 scripts/run_ui_tests_remotely.py "$REPORT_DIR" 2>&1 | tee "$REPORT_DIR/remote-execution.log"
 STAGE=ui-result-verification
 xcrun xcresulttool get test-results summary --path "$REPORT_DIR/UI.xcresult" --compact \
     > "$REPORT_DIR/summary.json"
 xcrun xcresulttool get test-results tests --path "$REPORT_DIR/UI.xcresult" --compact \
     > "$REPORT_DIR/test-cases.json"
 if ! cmp -s UITests/ApexTermUITests.swift "$REPORT_DIR/ApexTermUITests.swift" ||
-   ! cmp -s UITests/Fixtures/IMEInputSourceRestorer.swift "$REPORT_DIR/IMEInputSourceRestorer.swift"; then
+   ! cmp -s UITests/Fixtures/IMEInputSourceRestorer.swift "$REPORT_DIR/IMEInputSourceRestorer.swift" ||
+   ! cmp -s UITests/Fixtures/PhysicalKeyPoster.swift "$REPORT_DIR/PhysicalKeyPoster.swift"; then
     echo 'UI test source changed during acceptance; rerun before packaging.' >&2
     exit 1
 fi

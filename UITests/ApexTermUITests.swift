@@ -9,6 +9,7 @@ final class ApexTermUITests: XCTestCase {
     private var app: XCUIApplication!
     private var ownedRemoteDirectory: String?
     private var inputSourceToRestore: IMEInputSourceSelection?
+    private var imeTraceFiles: [URL] = []
 
     nonisolated override func setUpWithError() throws {
         continueAfterFailure = false
@@ -45,6 +46,16 @@ final class ApexTermUITests: XCTestCase {
             }
         }
         app?.terminate()
+        for file in imeTraceFiles {
+            if let text = try? String(contentsOf: file, encoding: .utf8) {
+                let attachment = XCTAttachment(string: text)
+                attachment.name = file.pathExtension == "json" ? "real-system-pinyin-final-context" : "real-system-pinyin-key-events"
+                attachment.lifetime = .keepAlways
+                add(attachment)
+            }
+            try? FileManager.default.removeItem(at: file)
+        }
+        imeTraceFiles.removeAll()
         if let inputSourceToRestore {
             do {
                 try inputSourceToRestore.restore()
@@ -794,7 +805,10 @@ final class ApexTermUITests: XCTestCase {
         let environment = ProcessInfo.processInfo.environment
         let host = try XCTUnwrap(environment["APEX_UI_TEST_HOST"])
         let user = try XCTUnwrap(environment["APEX_UI_TEST_USER"])
-        launch("main", extra: ["APEX_QA_REAL_HOST": host, "APEX_QA_REAL_USER": user, "APEX_QA_CONNECT": "1"])
+        let trace = FileManager.default.temporaryDirectory.appendingPathComponent("apex-ime-key-trace-" + UUID().uuidString + ".log")
+        let inputState = trace.appendingPathExtension("json")
+        imeTraceFiles = [trace, inputState]
+        launch("main", extra: ["APEX_QA_REAL_HOST": host, "APEX_QA_REAL_USER": user, "APEX_QA_CONNECT": "1", "APEX_QA_KEY_DIAGNOSTICS": "1", "APEX_QA_KEY_TRACE_PATH": trace.path, "APEX_QA_IME_STATE_PATH": inputState.path])
         XCTAssertTrue(staticText("已连接", comparison: "BEGINSWITH").waitForExistence(timeout: 30))
         let terminal = app.textViews.firstMatch
         XCTAssertTrue(terminal.waitForExistence(timeout: 10))
@@ -805,13 +819,58 @@ final class ApexTermUITests: XCTestCase {
         app.activate()
         app.textFields.firstMatch.click()
         terminal.click()
-        app.typeText("read -r apex_ui_ime; printf '\\nAPEX_UI_IME:%s\\n' \"$apex_ui_ime\"\n")
-        try inputSource.selectEnabled("com.apple.inputmethod.SCIM.ITABC")
+        app.typeText("printf '\\nAPEX_UI_IME_READY\\n'; read -r apex_ui_ime; printf '\\nAPEX_UI_IME:%s\\n' \"$apex_ui_ime\"\n")
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "\nAPEX_UI_IME_READY\n"), object: terminal)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 15), .completed)
         app.textFields.firstMatch.click()
         terminal.click()
+        try inputSource.selectEnabled("com.apple.inputmethod.SCIM.ITABC")
+        // Select the real system IME in the focused client's context, not only
+        // in the background runner's process-local input source cache.
+        app.typeKey("p", modifierFlags: [.command, .option, .shift])
+        func waitForInputState(marked: Bool) {
+            let state = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                guard let data = try? Data(contentsOf: inputState),
+                      let record = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+                return record["focused"] as? Bool == true
+                    && record["source"] as? String == "com.apple.inputmethod.SCIM.ITABC"
+                    && record["marked"] as? Bool == marked
+                    && record["alternate"] as? Bool == false
+            }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [state], timeout: 5), .completed,
+                           "The actual terminal input context must have the expected system Pinyin composition state")
+        }
+        waitForInputState(marked: false)
         XCTAssertEqual(IMEInputSourceSelection.currentIdentifier(), "com.apple.inputmethod.SCIM.ITABC")
+        func postPhysicalKey(_ name: String) throws {
+            // Launch Services attributes TCC to the signed helper. A direct
+            // Process inherits the runner/SSH responsible process instead.
+            let executable = URL(fileURLWithPath: try XCTUnwrap(environment["APEX_UI_PHYSICAL_KEY_HELPER"]))
+            let bundle = executable.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            XCTAssertEqual(Bundle(url: bundle)?.bundleIdentifier, "com.apexterm.qa.physicalkeys")
+            let target = try XCTUnwrap(environment["APEX_UI_PHYSICAL_KEY_TARGET"])
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("apex-key-" + UUID().uuidString)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let output = directory.appendingPathComponent("stdout")
+            let helperError = directory.appendingPathComponent("stderr")
+            let helper = Process()
+            helper.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+            helper.arguments = ["-n", "-g", "-W", "--stdout", output.path, "--stderr", helperError.path,
+                                "--env", "APEX_UI_PHYSICAL_KEY_TARGET=" + target, "-a", bundle.path, "--args", name]
+            let error = Pipe()
+            helper.standardError = error
+            try helper.run()
+            helper.waitUntilExit()
+            XCTAssertEqual(helper.terminationStatus, 0, String(decoding: error.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self))
+            let diagnostic = (try? String(contentsOf: helperError, encoding: .utf8)) ?? ""
+            XCTAssertEqual(try String(contentsOf: output, encoding: .utf8), "APEX_PHYSICAL_KEY_OK \(name)\n",
+                           "The helper must confirm completion; open's exit status does not report helper failures. " + diagnostic)
+        }
+        try postPhysicalKey("--preflight")
         let outputBeforeComposition = terminal.value as? String
-        app.typeText("zhongwen")
+        try postPhysicalKey("pinyin")
+        waitForInputState(marked: true)
         let composition = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         composition.name = "real-system-pinyin-composition-and-candidates"
         composition.lifetime = .keepAlways
@@ -819,7 +878,19 @@ final class ApexTermUITests: XCTestCase {
         XCTAssertEqual(terminal.value as? String, outputBeforeComposition,
                        "No partial Pinyin preedit may enter the remote shell before candidate commit")
         // Verify cancellation: Escape discards the preedit without sending input or ESC to the remote shell
-        app.typeKey(.escape, modifierFlags: [])
+        // Post a real hardware Escape without XCTest switching keyboard sources
+        // or committing preedit before the event reaches the application.
+        try postPhysicalKey("escape")
+        waitForInputState(marked: false)
+        let keys = try String(contentsOf: trace, encoding: .utf8)
+        XCTAssertTrue(keys.split(separator: "\n").contains { line in
+            line.contains("QA_KEY code=53 ") && line.contains("terminal=true")
+                && line.contains("marked=true") && line.contains("alternate=false")
+                && line.contains("source=com.apple.inputmethod.SCIM.ITABC")
+        }, "A real Escape key must reach the terminal while system Pinyin preedit is active")
+        let leaked = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value != %@", try XCTUnwrap(outputBeforeComposition)), object: terminal)
+        leaked.isInverted = true
+        XCTAssertEqual(XCTWaiter.wait(for: [leaked], timeout: 0.5), .completed, "Cancelled preedit must remain absent after remote echo settles")
         XCTAssertEqual(terminal.value as? String, outputBeforeComposition,
                        "Cancelling Pinyin composition with Escape must not send preedit or control codes to remote shell")
         let cancelled = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
@@ -828,11 +899,12 @@ final class ApexTermUITests: XCTestCase {
         add(cancelled)
 
         // Type again and commit Chinese via Space candidate selection
-        app.typeText("zhongwen")
+        try postPhysicalKey("pinyin")
+        waitForInputState(marked: true)
         XCTAssertEqual(terminal.value as? String, outputBeforeComposition,
                        "Pinyin preedit must remain isolated from remote shell")
-        app.typeKey(" ", modifierFlags: [])
-        app.typeKey(.return, modifierFlags: [])
+        try postPhysicalKey("space")
+        try postPhysicalKey("return")
         let committed = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "value CONTAINS %@", "\nAPEX_UI_IME:中文\n"), object: terminal)
         XCTAssertEqual(XCTWaiter.wait(for: [committed], timeout: 15), .completed,
@@ -989,6 +1061,9 @@ final class ApexTermUITests: XCTestCase {
         path.typeKey("a", modifierFlags: .command)
         path.typeText(directory)
         path.typeKey(.return, modifierFlags: [])
+        XCTAssertTrue(app.dialogs.buttons.matching(identifier: "Capslock").firstMatch
+            .waitForNonExistence(timeout: 5),
+            "Submitting a directory must dismiss the path field's input indicator before file dragging")
         if download { XCTAssertTrue(staticText(name).waitForExistence(timeout: 15)) }
         else { XCTAssertTrue(staticText("文件夹为空").waitForExistence(timeout: 15)) }
 
@@ -1015,7 +1090,9 @@ final class ApexTermUITests: XCTestCase {
         fullScreen.lifetime = .keepAlways
         add(fullScreen)
         if download {
-            app.activate()
+            // macOS 27 can keep another app in front after activate(). Raise
+            // our owned window by its visible title strip before dragging.
+            focusOwnedWindow()
             let remoteFile = staticText(name)
             remoteFile.click()
             capture("finder-download-selected-remote-row")
@@ -1023,13 +1100,48 @@ final class ApexTermUITests: XCTestCase {
             geometry.name = "finder-download-drag-geometry"
             geometry.lifetime = .keepAlways
             add(geometry)
-            remoteFile.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click(forDuration: 0.6,
-                thenDragTo: window.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: finderDropOffset.x, dy: finderDropOffset.y)),
+            // Keep both coordinates owned by the source application. A Finder-
+            // owned endpoint can raise Finder before the gesture and cover the
+            // remote row, so the drag never begins on the intended file.
+            let appWindow = app.windows.firstMatch
+            let nameFrame = remoteFile.frame
+            XCTAssertTrue(remoteFile.isHittable)
+            XCTAssertTrue(nameFrame.width > 0 && nameFrame.height > 0)
+            // Start inside the filename cell using its larger visible drag target.
+            let downloadSource = appWindow.coordinate(withNormalizedOffset: .zero).withOffset(
+                CGVector(dx: nameFrame.midX - appWindow.frame.minX,
+                         dy: nameFrame.midY - appWindow.frame.minY))
+            let finderTarget = CGPoint(x: window.frame.minX + finderDropOffset.x,
+                                       y: window.frame.minY + finderDropOffset.y)
+            let downloadTarget = appWindow.coordinate(withNormalizedOffset: .zero).withOffset(
+                CGVector(dx: finderTarget.x - appWindow.frame.minX,
+                         dy: finderTarget.y - appWindow.frame.minY))
+            print("Finder download filename=\(nameFrame) target=\(finderTarget)")
+            downloadSource.click(forDuration: 0.6,
+                thenDragTo: downloadTarget,
                 withVelocity: .slow, thenHoldForDuration: 1.0)
             let landed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
                 FileManager.default.fileExists(atPath: file.path)
             }, object: nil)
-            XCTAssertEqual(XCTWaiter.wait(for: [landed], timeout: large ? 120 : 30), .completed)
+            let landingResult = XCTWaiter.wait(for: [landed], timeout: large ? 120 : 30)
+            if landingResult != .completed {
+                let files = (try? FileManager.default.contentsOfDirectory(atPath: local.path)) ?? []
+                let diagnostic = XCTAttachment(string: "expected=\(name)\nreceived=\(files)\n")
+                diagnostic.name = "finder-download-destination-contents"
+                diagnostic.lifetime = .keepAlways
+                add(diagnostic)
+                print("Finder download expected=\(name) received=\(files)")
+                let records = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "传输记录")).firstMatch
+                if records.exists {
+                    clickVisibleCenter(records)
+                    capture("finder-download-timeout-transfer-records")
+                    let recordTree = XCTAttachment(string: app.debugDescription)
+                    recordTree.name = "finder-download-timeout-transfer-record-tree"
+                    recordTree.lifetime = .keepAlways
+                    add(recordTree)
+                }
+            }
+            XCTAssertEqual(landingResult, .completed)
             XCTAssertEqual(try Data(contentsOf: file), payload)
         } else {
             let source = window.descendants(matching: .any).matching(NSPredicate(format: "label == %@ OR value == %@", name, name)).firstMatch

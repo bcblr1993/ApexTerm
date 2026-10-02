@@ -67,6 +67,9 @@ else:
     report['build'] = info.get('CFBundleVersion')
     check('registered-bundle-id', info.get('CFBundleIdentifier') == 'com.apexterm.app', info.get('CFBundleIdentifier'))
     check('store-update-channel', info.get('ApexDistributionChannel') == 'appStore', info.get('ApexDistributionChannel'))
+    copyright_notice = info.get('NSHumanReadableCopyright')
+    valid_copyright = isinstance(copyright_notice, str) and bool(copyright_notice.strip())
+    check('copyright-metadata', valid_copyright, {'presentNonblankString': valid_copyright})
     app_entitlements = entitlements(bundle)
     check('app-sandbox', app_entitlements.get('com.apple.security.app-sandbox') is True,
           {'appSandbox': app_entitlements.get('com.apple.security.app-sandbox')})

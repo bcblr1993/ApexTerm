@@ -17,7 +17,7 @@ SCRIPT = Path(__file__).parents[1] / 'audit_app_store_bundle.py'
 class AuditTests(unittest.TestCase):
     def inspect(self, app_change=None, profile_change=None, helper_change=None,
                 leaf=b'permitted-leaf', extraction_status=0, missing_leaf=False,
-                profile_metadata=None, helper_signers=None):
+                profile_metadata=None, helper_signers=None, copyright='Copyright 2026 QA fixture'):
         app_ent = {
             'com.apple.security.app-sandbox': True,
             'com.apple.security.network.client': True,
@@ -48,9 +48,12 @@ class AuditTests(unittest.TestCase):
             macos = app / 'Contents/MacOS'
             macos.mkdir(parents=True)
             (app / 'Contents/Resources').mkdir()
-            (app / 'Contents/Info.plist').write_bytes(plistlib.dumps({
+            info = {
                 'CFBundleIdentifier': 'com.apexterm.app', 'ApexDistributionChannel': 'appStore',
-                'CFBundleShortVersionString': '1.6.0', 'CFBundleVersion': '2026100201'}))
+                'CFBundleShortVersionString': '1.6.0', 'CFBundleVersion': '2026100201'}
+            if copyright is not None:
+                info['NSHumanReadableCopyright'] = copyright
+            (app / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
             (app / 'Contents/embedded.provisionprofile').write_bytes(b'synthetic-profile')
             for helper in ('ApexSSHBridge', 'sshpass'):
                 (macos / helper).write_bytes(b'synthetic-helper')
@@ -87,6 +90,14 @@ class AuditTests(unittest.TestCase):
 
     def test_valid_fixture_matches_any_profile_certificate(self):
         self.assertTrue(self.inspect()['technicalRequirementsMet'])
+
+    def test_missing_blank_or_invalid_copyright_blocks(self):
+        for copyright in [None, '', ' \n\t', 0, False, []]:
+            with self.subTest(copyright=copyright):
+                report = self.inspect(copyright=copyright)
+                self.assertFalse(report['technicalRequirementsMet'])
+                check = next(c for c in report['checks'] if c['name'] == 'copyright-metadata')
+                self.assertFalse(check['passed'])
 
     def test_both_app_debugging_keys_block(self):
         for key in ('get-task-allow', 'com.apple.security.get-task-allow'):

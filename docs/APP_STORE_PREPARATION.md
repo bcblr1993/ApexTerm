@@ -61,3 +61,7 @@ SSH agent能力探针在macos27有效ad hoc沙盒中观察到：独立测试目�
 商店签名审计进一步要求两个捆绑 helper 使用本团队的商店分发证书，并核对各自实际签名叶证书是否位于应用 profile 的许可列表。签名校验返回零仍可能是 ad hoc、开发或 Developer ID 签名，不能直接作为本项目商店包的签名门禁通过。新增回归对每个 helper 单独覆盖错误团队、非商店证书、profile 未许可证书，并允许 profile 中不同的有效分发证书；旧实现会错误接受负面夹具，新实现拒绝。当前审计19项、全量脚本55项通过。这些是签名审计的合成回归，正式包签名、VM UI 验收和上传仍未完成。
 
 嵌套代码签名说明：https://developer.apple.com/library/archive/technotes/tn2206/
+
+上传元数据审计要求 `NSHumanReadableCopyright` 是非空字符串；缺失、空白或错误类型均阻断技术就绪检查。版权主体应依据应用实际权利归属填写，审计不会自动填入开发者账号姓名或虚构版权。Apple 对 macOS 上传的要求见 https://developer.apple.com/documentation/xcode/preparing-your-app-for-distribution 。新增负面回归后，审计20项、全量脚本56项通过；不代表构建已经上传或通过审核。
+
+最新真实目标验证：本分支342项 Swift用例全部通过，0跳过、0失败，包含10项macos27 VM集成及4项真实Mac服务器集成，0 Swift编译警告。测试由主机CLI发起，不包含最终沙盒包的UI验收或Linux服务器验收；该结果不能替代商店签名包的独立门禁。

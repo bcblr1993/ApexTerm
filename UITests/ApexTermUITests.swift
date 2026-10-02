@@ -107,7 +107,11 @@ final class ApexTermUITests: XCTestCase {
         focusOwnedWindow()
     }
 
-    func testProductReopensMainWindowAfterLastWindowCloses() throws {
+    func testProductReopensMainWindowAfterLastWindowCloses() async throws {
+        try run_testProductReopensMainWindowAfterLastWindowCloses()
+    }
+
+    private func run_testProductReopensMainWindowAfterLastWindowCloses() throws {
         let path = try XCTUnwrap(ProcessInfo.processInfo.environment["APEX_UI_PRODUCT_APP_PATH"])
         app = XCUIApplication(url: URL(fileURLWithPath: path))
         app.launchEnvironment = ["APEX_UI_TEST_REOPEN": "1"]
@@ -169,7 +173,11 @@ final class ApexTermUITests: XCTestCase {
         focusOwnedWindow()
     }
 
-    func testSearchEmptyAndRecovery() {
+    func testSearchEmptyAndRecovery() async {
+        run_testSearchEmptyAndRecovery()
+    }
+
+    private func run_testSearchEmptyAndRecovery() {
         launch()
         let search = app.textFields.matching(NSPredicate(format: "label CONTAINS %@", "搜索会话")).firstMatch
         XCTAssertTrue(search.waitForExistence(timeout: 5))
@@ -183,7 +191,11 @@ final class ApexTermUITests: XCTestCase {
         capture("search-restored")
     }
 
-    func testSessionEmptyInvalidPortAndCancel() {
+    func testSessionEmptyInvalidPortAndCancel() async {
+        run_testSessionEmptyInvalidPortAndCancel()
+    }
+
+    private func run_testSessionEmptyInvalidPortAndCancel() {
         launch()
         app.windows.buttons.matching(NSPredicate(format: "label CONTAINS %@", "添加新的 SSH 会话")).firstMatch.click()
         let save = app.windows.buttons["保存"].firstMatch
@@ -204,7 +216,11 @@ final class ApexTermUITests: XCTestCase {
         XCTAssertTrue(staticText("1 台主机", comparison: "CONTAINS").exists)
     }
 
-    func testSessionValidPortRecoveryAndSave() {
+    func testSessionValidPortRecoveryAndSave() async {
+        run_testSessionValidPortRecoveryAndSave()
+    }
+
+    private func run_testSessionValidPortRecoveryAndSave() {
         launch()
         app.windows.buttons.matching(NSPredicate(format: "label CONTAINS %@", "添加新的 SSH 会话")).firstMatch.click()
         let name = app.textFields["会话名称"]
@@ -233,7 +249,11 @@ final class ApexTermUITests: XCTestCase {
         capture("session-saved-and-searchable")
     }
 
-    func testUpdateFailureCloseAndReopen() {
+    func testUpdateFailureCloseAndReopen() async {
+        run_testUpdateFailureCloseAndReopen()
+    }
+
+    private func run_testUpdateFailureCloseAndReopen() {
         launch("update", extra: ["APEX_QA_UPDATE_STATE": "failed"])
         XCTAssertTrue(app.windows.buttons["重试"].firstMatch.waitForExistence(timeout: 5))
         XCTAssertTrue(app.windows.buttons["关闭"].firstMatch.isHittable)
@@ -246,7 +266,11 @@ final class ApexTermUITests: XCTestCase {
         XCTAssertTrue(app.sheets.firstMatch.waitForNonExistence(timeout: 5))
     }
 
-    func testUpdateLoadingAndSuccess() {
+    func testUpdateLoadingAndSuccess() async {
+        run_testUpdateLoadingAndSuccess()
+    }
+
+    private func run_testUpdateLoadingAndSuccess() {
         launch("update", extra: ["APEX_QA_UPDATE_STATE": "checking"])
         XCTAssertTrue(app.activityIndicators.firstMatch.waitForExistence(timeout: 5))
         capture("update-loading")
@@ -257,7 +281,11 @@ final class ApexTermUITests: XCTestCase {
         XCTAssertTrue(app.sheets.firstMatch.waitForNonExistence(timeout: 5))
     }
 
-    func testUpdateAvailableVersionNotesAndEscape() {
+    func testUpdateAvailableVersionNotesAndEscape() async {
+        run_testUpdateAvailableVersionNotesAndEscape()
+    }
+
+    private func run_testUpdateAvailableVersionNotesAndEscape() {
         launch("update", extra: ["APEX_QA_UPDATE_STATE": "available"])
         XCTAssertTrue(staticText("发现新版本可用").waitForExistence(timeout: 5))
         XCTAssertTrue(staticText("新版本: v9.9.9", comparison: "CONTAINS").exists)
@@ -270,7 +298,11 @@ final class ApexTermUITests: XCTestCase {
         XCTAssertTrue(app.windows.buttons["显示更新弹窗"].firstMatch.isHittable)
     }
 
-    func testSFTPEmptyLoadingAndFailureStates() {
+    func testSFTPEmptyLoadingAndFailureStates() async {
+        run_testSFTPEmptyLoadingAndFailureStates()
+    }
+
+    private func run_testSFTPEmptyLoadingAndFailureStates() {
         for mode in ["empty", "loading", "failure"] {
             launch("main", extra: ["APEX_QA_FILES": mode, "APEX_QA_CONNECT": "1"])
             switch mode {
@@ -286,7 +318,11 @@ final class ApexTermUITests: XCTestCase {
         }
     }
 
-    func testSFTPFilterEmptyClearAndEscape() {
+    func testSFTPFilterEmptyClearAndEscape() async {
+        run_testSFTPFilterEmptyClearAndEscape()
+    }
+
+    private func run_testSFTPFilterEmptyClearAndEscape() {
         launch("main", extra: ["APEX_QA_FILES": "normal", "APEX_QA_CONNECT": "1"])
         let file = staticText("nginx.conf")
         XCTAssertTrue(file.waitForExistence(timeout: 10))
@@ -313,7 +349,11 @@ final class ApexTermUITests: XCTestCase {
         capture("sftp-filter-escape-restored")
     }
 
-    func testSFTPDirectoryFailureRetryRecovers() {
+    func testSFTPDirectoryFailureRetryRecovers() async {
+        run_testSFTPDirectoryFailureRetryRecovers()
+    }
+
+    private func run_testSFTPDirectoryFailureRetryRecovers() {
         launch("main", extra: ["APEX_QA_FILES": "failure-once", "APEX_QA_CONNECT": "1"])
         let failure = staticText("无法读取远程文件")
         XCTAssertTrue(failure.waitForExistence(timeout: 10))
@@ -328,7 +368,11 @@ final class ApexTermUITests: XCTestCase {
         capture("sftp-retry-restored")
     }
 
-    func testSFTPPathDraftCancelEmptyAndSubmit() {
+    func testSFTPPathDraftCancelEmptyAndSubmit() async {
+        run_testSFTPPathDraftCancelEmptyAndSubmit()
+    }
+
+    private func run_testSFTPPathDraftCancelEmptyAndSubmit() {
         launch("main", extra: ["APEX_QA_FILES": "normal", "APEX_QA_CONNECT": "1"])
         XCTAssertTrue(staticText("nginx.conf").waitForExistence(timeout: 10))
         let path = app.textFields["远程路径"]
@@ -365,7 +409,11 @@ final class ApexTermUITests: XCTestCase {
         capture("sftp-path-submitted")
     }
 
-    func testTerminalSplitOrientationAndClose() {
+    func testTerminalSplitOrientationAndClose() async {
+        run_testTerminalSplitOrientationAndClose()
+    }
+
+    private func run_testTerminalSplitOrientationAndClose() {
         launch("main", extra: ["APEX_QA_CONNECT": "1"])
         XCTAssertTrue(app.textViews.firstMatch.waitForExistence(timeout: 10))
         // Keep our toolbar clear of unrelated, persistent menu-bar popovers.
@@ -408,7 +456,11 @@ final class ApexTermUITests: XCTestCase {
         capture("terminal-split-closed")
     }
 
-    func testTerminalDisconnectedReconnectRestoresInput() {
+    func testTerminalDisconnectedReconnectRestoresInput() async {
+        run_testTerminalDisconnectedReconnectRestoresInput()
+    }
+
+    private func run_testTerminalDisconnectedReconnectRestoresInput() {
         launch("main", extra: ["APEX_QA_CONNECT": "1"])
         XCTAssertTrue(staticText("已连接", comparison: "BEGINSWITH").waitForExistence(timeout: 10))
         clickVisibleCenter(app.menuBars.menuBarItems["验收操作"])
@@ -429,7 +481,11 @@ final class ApexTermUITests: XCTestCase {
         capture("terminal-reconnected-input")
     }
 
-    func testSSHConfigImportSelectionAndDuplicateRecovery() {
+    func testSSHConfigImportSelectionAndDuplicateRecovery() async {
+        run_testSSHConfigImportSelectionAndDuplicateRecovery()
+    }
+
+    private func run_testSSHConfigImportSelectionAndDuplicateRecovery() {
         launch("import-sheet")
         let selected = app.windows.buttons["导入选中的 1 台主机"].firstMatch
         XCTAssertTrue(selected.waitForExistence(timeout: 5))
@@ -462,7 +518,11 @@ final class ApexTermUITests: XCTestCase {
         capture("ssh-config-import-deduplicated")
     }
 
-    func testSSHConfigImportSheetCancelDoesNotImport() {
+    func testSSHConfigImportSheetCancelDoesNotImport() async {
+        run_testSSHConfigImportSheetCancelDoesNotImport()
+    }
+
+    private func run_testSSHConfigImportSheetCancelDoesNotImport() {
         launch("import-sheet")
         XCTAssertTrue(app.sheets.firstMatch.waitForExistence(timeout: 5))
         XCTAssertTrue(app.windows.buttons["导入选中的 1 台主机"].firstMatch.isEnabled)
@@ -482,7 +542,11 @@ final class ApexTermUITests: XCTestCase {
         capture("ssh-config-cancel-no-import")
     }
 
-    func testSSHConfigEmptyImportDisabledAndCancel() {
+    func testSSHConfigEmptyImportDisabledAndCancel() async {
+        run_testSSHConfigEmptyImportDisabledAndCancel()
+    }
+
+    private func run_testSSHConfigEmptyImportDisabledAndCancel() {
         launch("import-sheet", extra: ["APEX_QA_IMPORT_CONFIG": "empty"])
         XCTAssertTrue(staticText("没有找到主机配置").waitForExistence(timeout: 5))
         let importButton = app.windows.buttons["导入选中的 0 台主机"].firstMatch
@@ -495,7 +559,11 @@ final class ApexTermUITests: XCTestCase {
         XCTAssertTrue(app.windows.buttons["显示导入弹窗"].firstMatch.isHittable)
     }
 
-    func testSFTPCreationPermissionFailureShowsDetailsWithoutOpeningTransfers() {
+    func testSFTPCreationPermissionFailureShowsDetailsWithoutOpeningTransfers() async {
+        run_testSFTPCreationPermissionFailureShowsDetailsWithoutOpeningTransfers()
+    }
+
+    private func run_testSFTPCreationPermissionFailureShowsDetailsWithoutOpeningTransfers() {
         launch("main", extra: ["APEX_QA_FILES": "creation-permission-denied", "APEX_QA_CONNECT": "1"])
         XCTAssertTrue(staticText("nginx.conf").waitForExistence(timeout: 10))
         let more = app.menuButtons["ellipsis"].firstMatch
@@ -535,7 +603,11 @@ final class ApexTermUITests: XCTestCase {
         app.windows.buttons["好"].firstMatch.click()
     }
 
-    func testSFTPCreateFileCancelAndSuccessfulListing() {
+    func testSFTPCreateFileCancelAndSuccessfulListing() async {
+        run_testSFTPCreateFileCancelAndSuccessfulListing()
+    }
+
+    private func run_testSFTPCreateFileCancelAndSuccessfulListing() {
         launch("main", extra: ["APEX_QA_CONNECT": "1"])
         XCTAssertTrue(staticText("nginx.conf").waitForExistence(timeout: 10))
         let more = app.menuButtons["ellipsis"].firstMatch
@@ -560,7 +632,11 @@ final class ApexTermUITests: XCTestCase {
         capture("sftp-create-file-listed")
     }
 
-    func testSFTPRenameCancelAndSuccessfulListing() {
+    func testSFTPRenameCancelAndSuccessfulListing() async {
+        run_testSFTPRenameCancelAndSuccessfulListing()
+    }
+
+    private func run_testSFTPRenameCancelAndSuccessfulListing() {
         launch("main", extra: ["APEX_QA_CONNECT": "1"])
         let original = staticText("nginx.conf")
         XCTAssertTrue(original.waitForExistence(timeout: 10))
@@ -589,7 +665,11 @@ final class ApexTermUITests: XCTestCase {
         capture("sftp-renamed-file-listed")
     }
 
-    func testSFTPCreateFolderCancelAndSuccessfulListing() {
+    func testSFTPCreateFolderCancelAndSuccessfulListing() async {
+        run_testSFTPCreateFolderCancelAndSuccessfulListing()
+    }
+
+    private func run_testSFTPCreateFolderCancelAndSuccessfulListing() {
         launch("main", extra: ["APEX_QA_CONNECT": "1"])
         XCTAssertTrue(staticText("nginx.conf").waitForExistence(timeout: 10))
         let more = app.menuButtons["ellipsis"].firstMatch
@@ -626,7 +706,11 @@ final class ApexTermUITests: XCTestCase {
         capture("sftp-created-folder-entered")
     }
 
-    func testSFTPHiddenFilesToggleAndKeyboardRecovery() {
+    func testSFTPHiddenFilesToggleAndKeyboardRecovery() async {
+        run_testSFTPHiddenFilesToggleAndKeyboardRecovery()
+    }
+
+    private func run_testSFTPHiddenFilesToggleAndKeyboardRecovery() {
         launch("main", extra: ["APEX_QA_CONNECT": "1"])
         let ordinary = staticText("nginx.conf")
         XCTAssertTrue(ordinary.waitForExistence(timeout: 10))
@@ -645,7 +729,11 @@ final class ApexTermUITests: XCTestCase {
         capture("sftp-hidden-files-keyboard-hidden")
     }
 
-    func testSFTPDeleteConfirmationCancelAndRemoveOwnFixture() {
+    func testSFTPDeleteConfirmationCancelAndRemoveOwnFixture() async {
+        run_testSFTPDeleteConfirmationCancelAndRemoveOwnFixture()
+    }
+
+    private func run_testSFTPDeleteConfirmationCancelAndRemoveOwnFixture() {
         launch("main", extra: ["APEX_QA_CONNECT": "1"])
         XCTAssertTrue(staticText("nginx.conf").waitForExistence(timeout: 10))
         app.menuButtons["ellipsis"].firstMatch.click()
@@ -677,7 +765,11 @@ final class ApexTermUITests: XCTestCase {
         capture("sftp-own-fixture-deleted")
     }
 
-    func testRealSSHVimClipboardArrowsResizeAndSave() throws {
+    func testRealSSHVimClipboardArrowsResizeAndSave() async throws {
+        try run_testRealSSHVimClipboardArrowsResizeAndSave()
+    }
+
+    private func run_testRealSSHVimClipboardArrowsResizeAndSave() throws {
         let environment = ProcessInfo.processInfo.environment
         let host = try XCTUnwrap(environment["APEX_UI_TEST_HOST"])
         let user = try XCTUnwrap(environment["APEX_UI_TEST_USER"])
@@ -778,7 +870,11 @@ final class ApexTermUITests: XCTestCase {
         capture("real-vim-copy-and-saved-bytes-verified")
     }
 
-    func testTerminalNumberedTabShortcutsKeepOutputSeparate() {
+    func testTerminalNumberedTabShortcutsKeepOutputSeparate() async {
+        run_testTerminalNumberedTabShortcutsKeepOutputSeparate()
+    }
+
+    private func run_testTerminalNumberedTabShortcutsKeepOutputSeparate() {
         launch()
         var terminal = app.textViews.firstMatch
         terminal.click()
@@ -801,7 +897,11 @@ final class ApexTermUITests: XCTestCase {
         capture("numbered-tabs-preserve-independent-output")
     }
 
-    func testRealSSHBuiltinPinyinCompositionAndCommit() throws {
+    func testRealSSHBuiltinPinyinCompositionAndCommit() async throws {
+        try run_testRealSSHBuiltinPinyinCompositionAndCommit()
+    }
+
+    private func run_testRealSSHBuiltinPinyinCompositionAndCommit() throws {
         let environment = ProcessInfo.processInfo.environment
         let host = try XCTUnwrap(environment["APEX_UI_TEST_HOST"])
         let user = try XCTUnwrap(environment["APEX_UI_TEST_USER"])
@@ -912,7 +1012,11 @@ final class ApexTermUITests: XCTestCase {
         capture("real-system-pinyin-ssh-echo")
     }
 
-    func testRealSSHConfiguredHostIsMandatory() throws {
+    func testRealSSHConfiguredHostIsMandatory() async throws {
+        try run_testRealSSHConfiguredHostIsMandatory()
+    }
+
+    private func run_testRealSSHConfiguredHostIsMandatory() throws {
         let environment = ProcessInfo.processInfo.environment
         guard let host = environment["APEX_UI_TEST_HOST"], !host.isEmpty,
               let user = environment["APEX_UI_TEST_USER"], !user.isEmpty else {
@@ -1007,15 +1111,27 @@ final class ApexTermUITests: XCTestCase {
     private var dragLocalDirectory: URL?
     private var dragRemoteFixture: (destination: String, directory: String, fileName: String)?
     private var dragFinderWindow: XCUIElement?
-    func testRealFinderDragUploadAndRecord() throws {
+    func testRealFinderDragUploadAndRecord() async throws {
+        try run_testRealFinderDragUploadAndRecord()
+    }
+
+    private func run_testRealFinderDragUploadAndRecord() throws {
         try exerciseFinderDrag(download: false)
     }
 
-    func testRealFinderDragDownloadAndRecord() throws {
+    func testRealFinderDragDownloadAndRecord() async throws {
+        try run_testRealFinderDragDownloadAndRecord()
+    }
+
+    private func run_testRealFinderDragDownloadAndRecord() throws {
         try exerciseFinderDrag(download: true)
     }
 
-    func testRealFinderDragLargeDownloadAndRecord() throws {
+    func testRealFinderDragLargeDownloadAndRecord() async throws {
+        try run_testRealFinderDragLargeDownloadAndRecord()
+    }
+
+    private func run_testRealFinderDragLargeDownloadAndRecord() throws {
         try exerciseFinderDrag(download: true, large: true)
     }
 
@@ -1267,7 +1383,11 @@ final class ApexTermUITests: XCTestCase {
         }
     }
 
-    func testRealSSHTerminalScrollSystemMetrics() throws {
+    func testRealSSHTerminalScrollSystemMetrics() async throws {
+        try run_testRealSSHTerminalScrollSystemMetrics()
+    }
+
+    private func run_testRealSSHTerminalScrollSystemMetrics() throws {
         guard #available(macOS 26.0, *) else {
             XCTFail("Application hitch acceptance requires macOS 26 or later")
             return
@@ -1297,7 +1417,11 @@ final class ApexTermUITests: XCTestCase {
         capture("real-terminal-scroll-metrics-after")
     }
 
-    func testTransferRecordFiltersAndClearCompleted() {
+    func testTransferRecordFiltersAndClearCompleted() async {
+        run_testTransferRecordFiltersAndClearCompleted()
+    }
+
+    private func run_testTransferRecordFiltersAndClearCompleted() {
         launch("transfers", extra: ["APEX_QA_TRANSFER_RECORDS": "1"])
         let upload = staticText("ui-upload.txt")
         let download = staticText("ui-download.txt")
@@ -1320,7 +1444,11 @@ final class ApexTermUITests: XCTestCase {
         capture("transfer-clear-preserves-failure")
     }
 
-    func testTransferCancelAndClearPreservesActiveTask() {
+    func testTransferCancelAndClearPreservesActiveTask() async {
+        run_testTransferCancelAndClearPreservesActiveTask()
+    }
+
+    private func run_testTransferCancelAndClearPreservesActiveTask() {
         launch("transfers", extra: ["APEX_QA_TRANSFER_RECORDS": "active"])
         let cancel = app.windows.buttons["取消传输 ui-cancel.txt"].firstMatch
         XCTAssertTrue(cancel.waitForExistence(timeout: 5))
@@ -1338,7 +1466,11 @@ final class ApexTermUITests: XCTestCase {
         capture("transfer-clear-preserves-active")
     }
 
-    func testEditorUnsavedCancelSaveAndClose() {
+    func testEditorUnsavedCancelSaveAndClose() async {
+        run_testEditorUnsavedCancelSaveAndClose()
+    }
+
+    private func run_testEditorUnsavedCancelSaveAndClose() {
         launch("editor-sheet")
         let editor = app.textViews.firstMatch
         XCTAssertTrue(editor.waitForExistence(timeout: 5))
@@ -1360,7 +1492,11 @@ final class ApexTermUITests: XCTestCase {
         XCTAssertTrue(app.sheets.firstMatch.waitForNonExistence(timeout: 5))
     }
 
-    func testEditorSaveFailureKeepsChanges() {
+    func testEditorSaveFailureKeepsChanges() async {
+        run_testEditorSaveFailureKeepsChanges()
+    }
+
+    private func run_testEditorSaveFailureKeepsChanges() {
         launch("editor-sheet", extra: ["APEX_QA_EDITOR_SAVE": "failure"])
         let editor = app.textViews.firstMatch
         XCTAssertTrue(editor.waitForExistence(timeout: 5))
@@ -1376,7 +1512,11 @@ final class ApexTermUITests: XCTestCase {
         app.windows.buttons["继续编辑"].firstMatch.click()
     }
 
-    func testEditorSaveFailureRetryRecovers() {
+    func testEditorSaveFailureRetryRecovers() async {
+        run_testEditorSaveFailureRetryRecovers()
+    }
+
+    private func run_testEditorSaveFailureRetryRecovers() {
         launch("editor-sheet", extra: ["APEX_QA_EDITOR_SAVE": "failure-once"])
         let editor = app.textViews["文件内容"]
         XCTAssertTrue(editor.waitForExistence(timeout: 5))
@@ -1398,7 +1538,11 @@ final class ApexTermUITests: XCTestCase {
         XCTAssertFalse(app.windows.buttons["继续编辑"].firstMatch.exists)
     }
 
-    func testEditorReloadFailureRetryPreservesContent() {
+    func testEditorReloadFailureRetryPreservesContent() async {
+        run_testEditorReloadFailureRetryPreservesContent()
+    }
+
+    private func run_testEditorReloadFailureRetryPreservesContent() {
         launch("editor-sheet", extra: ["APEX_QA_EDITOR_RELOAD": "failure-once"])
         let editor = app.textViews["文件内容"]
         XCTAssertTrue(editor.waitForExistence(timeout: 5))
@@ -1420,7 +1564,11 @@ final class ApexTermUITests: XCTestCase {
         XCTAssertTrue(app.sheets.firstMatch.waitForNonExistence(timeout: 5))
     }
 
-    func testEditorChangesDuringSaveRemainUnsaved() {
+    func testEditorChangesDuringSaveRemainUnsaved() async {
+        run_testEditorChangesDuringSaveRemainUnsaved()
+    }
+
+    private func run_testEditorChangesDuringSaveRemainUnsaved() {
         launch("editor-sheet", extra: ["APEX_QA_EDITOR_SAVE_DELAY": "8"])
         let editor = app.textViews.firstMatch
         XCTAssertTrue(editor.waitForExistence(timeout: 5))
@@ -1445,7 +1593,11 @@ final class ApexTermUITests: XCTestCase {
         XCTAssertTrue(app.sheets.firstMatch.waitForNonExistence(timeout: 5))
     }
 
-    func testEditorKeyboardFindUndoAndSave() {
+    func testEditorKeyboardFindUndoAndSave() async {
+        run_testEditorKeyboardFindUndoAndSave()
+    }
+
+    private func run_testEditorKeyboardFindUndoAndSave() {
         launch("editor-sheet")
         let editor = app.textViews["文件内容"]
         XCTAssertTrue(editor.waitForExistence(timeout: 5))
@@ -1474,7 +1626,11 @@ final class ApexTermUITests: XCTestCase {
         XCTAssertTrue(app.sheets.firstMatch.waitForNonExistence(timeout: 5))
     }
 
-    func testEditorReloadCancelAndDiscard() {
+    func testEditorReloadCancelAndDiscard() async {
+        run_testEditorReloadCancelAndDiscard()
+    }
+
+    private func run_testEditorReloadCancelAndDiscard() {
         launch("editor-sheet")
         let editor = app.textViews.firstMatch
         XCTAssertTrue(editor.waitForExistence(timeout: 5))
@@ -1496,7 +1652,11 @@ final class ApexTermUITests: XCTestCase {
         XCTAssertTrue(app.sheets.firstMatch.waitForNonExistence(timeout: 5))
     }
 
-    func testMochaSettingsTabsRemainClickable() {
+    func testMochaSettingsTabsRemainClickable() async {
+        run_testMochaSettingsTabsRemainClickable()
+    }
+
+    private func run_testMochaSettingsTabsRemainClickable() {
         // Set the actual theme before launch: the QA menu's AX geometry can be unavailable on macOS 27.
         launch("settings", extra: ["APEX_QA_THEME": "Catppuccin Mocha"])
         for tab in ["SFTP传输", "数据备份", "通用", "终端外观", "操作习惯", "数据备份"] {
@@ -1512,7 +1672,11 @@ final class ApexTermUITests: XCTestCase {
         }
     }
 
-    func testRealSSHMonitoringDisconnectAndReconnect() throws {
+    func testRealSSHMonitoringDisconnectAndReconnect() async throws {
+        try run_testRealSSHMonitoringDisconnectAndReconnect()
+    }
+
+    private func run_testRealSSHMonitoringDisconnectAndReconnect() throws {
         let environment = ProcessInfo.processInfo.environment
         let host = try XCTUnwrap(environment["APEX_UI_TEST_HOST"])
         let user = try XCTUnwrap(environment["APEX_UI_TEST_USER"])
@@ -1558,7 +1722,11 @@ final class ApexTermUITests: XCTestCase {
         capture("real-monitor-reconnected")
     }
 
-    func testMonitoringStatesAreExplicit() {
+    func testMonitoringStatesAreExplicit() async {
+        run_testMonitoringStatesAreExplicit()
+    }
+
+    private func run_testMonitoringStatesAreExplicit() {
         for state in ["live", "stale", "waiting", "disabled", "disabled-history", "disconnected-history", "connecting", "connecting-history"] {
             launch("metrics", extra: ["APEX_QA_METRICS_STATE": state])
             // AppKit exposes the connecting-state ProgressView as an activity
@@ -1609,7 +1777,11 @@ final class ApexTermUITests: XCTestCase {
         }
     }
 
-    func testAllThemesAndPagesRender() {
+    func testAllThemesAndPagesRender() async {
+        run_testAllThemesAndPagesRender()
+    }
+
+    private func run_testAllThemesAndPagesRender() {
         launch()
         let themes = ["经典白色（默认）", "VS Code Dark Modern", "Tokyo Night", "Catppuccin Mocha", "Catppuccin Latte", "Nord", "Dracula", "One Dark Pro", "Gruvbox Dark", "Everforest", "Rosé Pine", "Solarized Light"]
         let pages = ["main", "editor", "settings", "session", "about", "shortcuts", "transfers", "metrics", "import"]

@@ -60,9 +60,13 @@ def main():
     sshpass = pathlib.Path('/opt/homebrew/bin/sshpass')
     if not sshpass.is_file():
         raise SystemExit('The existing arm64 sshpass helper is required; nothing was installed.')
+    # Debug assertions embed #filePath even after strip. Map the developer home
+    # at compilation, without weakening the same bundle scanner used for release.
+    swift_flags = ['-Xswiftc', '-file-prefix-map', '-Xswiftc', str(pathlib.Path.home()) + '=/build',
+                   '-Xswiftc', '-debug-prefix-map', '-Xswiftc', str(pathlib.Path.home()) + '=/build']
     # Debug only. Formal release and its mandatory gates remain separate.
     for product in ('ApexTerm', 'ApexSSHBridge'):
-        run('swift', 'build', '--configuration', 'debug', '--product', product, '--jobs', '2')
+        run('swift', 'build', '--configuration', 'debug', '--product', product, '--jobs', '2', *swift_flags)
     binaries = pathlib.Path(subprocess.check_output(
         ['swift', 'build', '--configuration', 'debug', '--show-bin-path'], cwd=ROOT, text=True).strip())
     for binary in (binaries / 'ApexTerm', binaries / 'ApexSSHBridge', sshpass):
@@ -72,6 +76,7 @@ def main():
     destination = ROOT / 'outputs/store-qa' / (head[:12] + '-' + nonce[:8])
     app = assemble(destination, binaries, sshpass, identifier)
     for name in ('ApexTerm', 'ApexSSHBridge', 'sshpass'):
+        run('codesign', '--remove-signature', str(app / 'Contents/MacOS' / name))
         run('/usr/bin/strip', '-S', str(app / 'Contents/MacOS' / name))
     for name in ('ApexSSHBridge', 'sshpass'):
         run('codesign', '--force', '--sign', '-', '--identifier', identifier + '.' + name,

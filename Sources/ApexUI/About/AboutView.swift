@@ -189,6 +189,11 @@ public struct AboutView: View {
                 
                 // Footer: Copyright
                 VStack(spacing: 4) {
+                    if let privacyURL = URL(string: "https://www.aethernative.com/apps/apexterm/privacy/") {
+                        Link(L10n.privacyPolicy, destination: privacyURL)
+                            .font(.system(size: 11))
+                            .accessibilityIdentifier("about.privacy")
+                    }
                     Text(L10n.copyright)
                         .font(.system(size: 11))
                         .foregroundColor(ApexStyle.secondary)

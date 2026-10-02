@@ -6,6 +6,21 @@ import ApexSSH
 
 @MainActor
 final class ProductFeatureTests: XCTestCase {
+
+    func testAppStoreNewAndEditedSessionsAllowUserSelectedPrivateKey() {
+        let methods: [SSHAuthMethod?] = [nil, .agent, .password(keychainRef: "synthetic-password"),
+                                       .privateKey(keychainRef: "/synthetic/key", passphraseRef: nil)]
+        for method in methods {
+            XCTAssertEqual(SessionEditModal.AuthType.availableTypes(for: method, channel: .appStore),
+                           [.password, .agent, .privateKey])
+        }
+        for method in methods.dropLast() {
+            XCTAssertEqual(SessionEditModal.AuthType.availableTypes(for: method, channel: .direct),
+                           [.password, .agent])
+        }
+        XCTAssertEqual(SessionEditModal.AuthType.availableTypes(for: methods.last!, channel: .direct),
+                       [.password, .agent, .privateKey])
+    }
     
     func testEditingPrivateKeyAuthenticationRetainsBothReferences() {
         for passphrase in [nil, "synthetic-passphrase-reference"] as [String?] {
@@ -177,4 +192,3 @@ final class ProductFeatureTests: XCTestCase {
         XCTAssertTrue(formatted.contains("最新稳定版本"))
     }
 }
-

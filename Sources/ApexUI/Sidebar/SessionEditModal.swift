@@ -32,6 +32,13 @@ public struct SessionEditModal: View {
         case privateKey = "指定私钥"
         public var id: String { rawValue }
 
+        public static func availableTypes(for method: SSHAuthMethod?, channel: DistributionChannel) -> [Self] {
+            // Sandbox connections need a user-selected key file and its bookmark.
+            if channel == .appStore { return allCases }
+            if case .privateKey = method { return allCases }
+            return [.password, .agent]
+        }
+
         public func retainedPrivateKey(from method: SSHAuthMethod?) -> SSHAuthMethod? {
             guard self == .privateKey, let method, case .privateKey = method else { return nil }
             return method
@@ -224,10 +231,7 @@ public struct SessionEditModal: View {
     }
 
     private var availableAuthTypes: [AuthType] {
-        if case .privateKey = initialSession?.authMethod {
-            return AuthType.allCases
-        }
-        return [.password, .agent]
+        AuthType.availableTypes(for: initialSession?.authMethod, channel: .current)
     }
 
     private func colorName(for hex: String) -> String {

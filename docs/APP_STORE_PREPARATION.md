@@ -2,6 +2,8 @@
 
 本分支用于独立开发商店分发能力，不能把这里的局部测试结果当作正式商店包验收。
 
+关于窗口提供可访问的「隐私政策」链接，指向官网 ApexTerm 专属政策页面。现有官网页面仍需按实际行为修正：指定私钥保留在用户选择的本地文件中，钥匙串保存密码与私钥口令；官网下载渠道会访问 GitHub 检查更新，商店渠道使用 App Store。上传前必须核对政策正文及 App Store Connect 的隐私信息，不能仅凭链接存在宣称这些检查已完成。
+
 商店包的 `Info.plist` 必须设置 `ApexDistributionChannel=appStore`。该渠道的启动过程不会请求 GitHub 更新，设置及菜单的更新入口打开 App Store；更新管理器也会阻止显式官网包下载和已暂存应用替换。普通分发默认仍为 `direct`。
 
 `Resources/AppStore/ApexTerm.entitlements` 是主程序的基础沙盒权限；独立 SSH helper 使用 `SSHHelper.entitlements` 继承主程序沙盒。商店签名时，应用标识、Team 与钥匙串 access group 必须按匹配且有效的 provisioning profile 写入，不能用权限模板冒充签名身份或有效 profile。
@@ -65,3 +67,7 @@ SSH agent能力探针在macos27有效ad hoc沙盒中观察到：独立测试目�
 上传元数据审计要求 `NSHumanReadableCopyright` 是非空字符串；缺失、空白或错误类型均阻断技术就绪检查。版权主体应依据应用实际权利归属填写，审计不会自动填入开发者账号姓名或虚构版权。Apple 对 macOS 上传的要求见 https://developer.apple.com/documentation/xcode/preparing-your-app-for-distribution 。新增负面回归后，审计20项、全量脚本56项通过；不代表构建已经上传或通过审核。
 
 最新真实目标验证：本分支342项 Swift用例全部通过，0跳过、0失败，包含10项macos27 VM集成及4项真实Mac服务器集成，0 Swift编译警告。测试由主机CLI发起，不包含最终沙盒包的UI验收或Linux服务器验收；该结果不能替代商店签名包的独立门禁。
+
+商店渠道的新建及已有会话现在允许选择「指定私钥」，使文件选择器和系统书签授权入口可达。官网渠道的新建认证选项及已有指定私钥编辑保持原有行为。新增回归后，真实目标全量 Swift 用例343项全部通过，0跳过、0失败、0 Swift编译警告；其中10项VM与4项Mac服务器集成。该结果仍不包含最终沙盒产品UI。
+
+独立的 `UITests/StoreSandboxUITests.xcodeproj` 提供3项沙盒产品UI测试：关于窗口隐私入口、真实私钥选择器取消、关闭最后窗口后重新打开。该目标与完整43项官网渠道UI目标分离，已通过Swift 6构建，尚未运行。只能在macos27中对全新 `com.apexterm.qa.store.*` 沙盒QA应用运行，并在启动前验证实际沙盒签名；测试源码也拒绝非VirtualMac和非QA/非商店渠道应用。需持有同一个VM桌面互斥锁，不能与其他UI验收重叠。这3项即使通过，也不代表SSH/SFTP、真实密钥、agent或最终商店分发包验收完成。

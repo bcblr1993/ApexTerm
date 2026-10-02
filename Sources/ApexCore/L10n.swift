@@ -165,6 +165,7 @@ public enum L10n {
     public static let copyright = "Copyright © 2026 ApexTerm Team. 保留所有权利。"
     public static let visitWebsite = "访问官方主页"
     public static let openGitHub = "查看开源仓库"
+    public static let privacyPolicy = "隐私政策"
     public static let updateAvailableTitle = "发现新版本可用"
     public static let upToDateTitle = "已是最新版本"
     public static let upToDateDesc = "您当前运行的 ApexTerm %@ 已经是最新稳定版本。"
@@ -183,4 +184,3 @@ public enum L10n {
     public static let packageSizeLabel = "更新包大小："
     public static let retry = "重试"
 }
-

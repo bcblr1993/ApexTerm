@@ -5,6 +5,7 @@ import json
 import pathlib
 import platform
 import plistlib
+import re
 import shutil
 import subprocess
 import uuid
@@ -76,8 +77,15 @@ def main():
     destination = ROOT / 'outputs/store-qa' / (head[:12] + '-' + nonce[:8])
     app = assemble(destination, binaries, sshpass, identifier)
     for name in ('ApexTerm', 'ApexSSHBridge', 'sshpass'):
-        run('codesign', '--remove-signature', str(app / 'Contents/MacOS' / name))
-        run('/usr/bin/strip', '-S', str(app / 'Contents/MacOS' / name))
+        executable = app / 'Contents/MacOS' / name
+        run('codesign', '--remove-signature', str(executable))
+        # SwiftPM's Debug framework search directory is developer-local. All
+        # bundled dependencies are statically linked; keep system rpaths only.
+        load_commands = subprocess.check_output(['otool', '-l', str(executable)], text=True)
+        for path in re.findall(r'cmd LC_RPATH\s+cmdsize \d+\s+path (.*?) \(offset', load_commands):
+            if path.startswith(str(ROOT) + '/'):
+                run('install_name_tool', '-delete_rpath', path, str(executable))
+        run('/usr/bin/strip', '-S', str(executable))
     for name in ('ApexSSHBridge', 'sshpass'):
         run('codesign', '--force', '--sign', '-', '--identifier', identifier + '.' + name,
             '--entitlements', str(ROOT / 'Resources/AppStore/SSHHelper.entitlements'), str(app / 'Contents/MacOS' / name))

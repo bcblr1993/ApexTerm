@@ -87,3 +87,7 @@ socket修正后完整回归：345项 Swift 用例全部通过，0失败、0跳�
 修复原型已在 macos27 的实际 ad hoc 沙盒中使用自行生成的加密私钥，完成真实 PTY 输出、Unicode 文件上传/目录查询/下载字节校验及夹具删除；未读取用户既有私钥或修改认证配置。新增5项回归覆盖认证请求权限和清理、非法口令、拒绝错误提示及启动参数不含口令；串行全量350项 Swift 用例通过，0失败、0跳过、0编译警告；56项脚本回归通过。首次并行运行出现1项性能阈值失败，保留失败日志，后续按原阈值串行复测通过。
 
 独立的非交互钥匙串探针使用新建随机账号、禁止弹窗，创建返回 `errSecInteractionNotAllowed`（-25308）；没有创建凭据，也没有读取既有条目。因此加密私钥通过证据不包含真实钥匙串口令读取，且仍不是最终商店签名包、完整产品UI或上传验收。
+
+正式商店候选包使用 `scripts/prepare_app_store_candidate.py <version> <build> --profile <profile> --certificate-sha1 <sha1>`。只允许干净主干并执行真实 VM/Swift/性能门禁，核对 profile 与分发证书后组装 Release 应用，分别签署主程序与继承沙盒的 helper，执行严格安全扫描和商店审计。输出候选 manifest，不安装、上传或自动提交审核；精确候选仍需 macos27 实机沙盒验收后才可生成安装包上传。
+
+Debug QA 清除开发目录的链接搜索路径，fatalError 使用 #fileID，避免将开发者绝对路径写入包；扫描规则不放宽。UI 测试入口改为 async，在 Swift Task 中保留原有同步测试步骤与全部断言；用于处理观察到的 XCTest/Swift TaskLocal 运行器崩溃，需重新实跑验证。Swift 上游相关报告：https://github.com/swiftlang/swift/issues/87316 。

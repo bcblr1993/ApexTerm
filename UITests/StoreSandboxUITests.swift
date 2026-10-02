@@ -91,11 +91,12 @@ final class StoreSandboxUITests: XCTestCase {
         XCTAssertTrue(path.waitForExistence(timeout: 5))
         let initial = path.value as? String
         application.buttons["浏览..."].firstMatch.click()
-        let open = application.buttons.matching(NSPredicate(format: "label == '打开' OR label == 'Open'")).firstMatch
-        XCTAssertTrue(open.waitForExistence(timeout: 5), "Use the real macOS file picker inside App Sandbox")
+        let picker = application.dialogs["open-panel"].firstMatch
+        XCTAssertTrue(picker.waitForExistence(timeout: 5), "Use the real macOS file picker inside App Sandbox")
+        XCTAssertTrue(picker.buttons["OKButton"].exists)
         capture("store-sandbox-private-key-picker")
-        application.typeKey(.escape, modifierFlags: [])
-        XCTAssertTrue(open.waitForNonExistence(timeout: 5))
+        picker.buttons["CancelButton"].click()
+        XCTAssertTrue(picker.waitForNonExistence(timeout: 5))
         XCTAssertTrue(path.exists)
         XCTAssertEqual(path.value as? String, initial, "Cancel must not change the key path or save a file grant")
         application.buttons["取消"].firstMatch.click()

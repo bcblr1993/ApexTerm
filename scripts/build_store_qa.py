@@ -71,6 +71,8 @@ def main():
     identifier = 'com.apexterm.qa.store.' + nonce
     destination = ROOT / 'outputs/store-qa' / (head[:12] + '-' + nonce[:8])
     app = assemble(destination, binaries, sshpass, identifier)
+    for name in ('ApexTerm', 'ApexSSHBridge', 'sshpass'):
+        run('/usr/bin/strip', '-S', str(app / 'Contents/MacOS' / name))
     for name in ('ApexSSHBridge', 'sshpass'):
         run('codesign', '--force', '--sign', '-', '--identifier', identifier + '.' + name,
             '--entitlements', str(ROOT / 'Resources/AppStore/SSHHelper.entitlements'), str(app / 'Contents/MacOS' / name))

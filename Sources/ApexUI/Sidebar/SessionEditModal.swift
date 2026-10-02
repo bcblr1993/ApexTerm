@@ -137,6 +137,8 @@ public struct SessionEditModal: View {
                         VStack(alignment: .leading, spacing: 8) {
                             HStack {
                                 TextField("私钥路径 (如 ~/.ssh/id_ed25519)", text: $privateKeyPath)
+                                    .accessibilityLabel("私钥路径")
+                                    .accessibilityIdentifier("session.privateKeyPath")
                                     .font(.system(.body, design: .monospaced))
                                 Button("浏览...") {
                                     let panel = NSOpenPanel()

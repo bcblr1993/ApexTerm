@@ -44,7 +44,7 @@ final class StoreSandboxUITests: XCTestCase {
         XCTAssertTrue(application.windows.firstMatch.waitForExistence(timeout: 10))
         application.activate()
         application.windows.firstMatch.coordinate(withNormalizedOffset: .zero)
-            .withOffset(CGVector(dx: 82, dy: 8)).click()
+            .withOffset(CGVector(dx: 180, dy: 8)).click()
         return application
     }
 
@@ -74,11 +74,20 @@ final class StoreSandboxUITests: XCTestCase {
 
     func testSandboxNewSessionPrivateKeyPickerCancel() throws {
         let application = try launchSandboxQA()
-        application.buttons["添加新的 SSH 会话"].firstMatch.click()
+        let addSession = application.buttons["添加新的 SSH 会话"].firstMatch
+        if !addSession.exists || !addSession.isHittable {
+            let sidebar = application.buttons.matching(NSPredicate(
+                format: "label == 'Show Sidebar' OR label == '显示边栏' OR label == '显示侧边栏'")).firstMatch
+            XCTAssertTrue(sidebar.waitForExistence(timeout: 5))
+            sidebar.click()
+        }
+        XCTAssertTrue(addSession.waitForExistence(timeout: 5))
+        XCTAssertTrue(addSession.isHittable)
+        addSession.click()
         let keyOption = application.radioButtons["指定私钥"].firstMatch
         XCTAssertTrue(keyOption.waitForExistence(timeout: 5), "A new Store session must allow user-selected key files")
         keyOption.click()
-        let path = application.textFields["私钥路径 (如 ~/.ssh/id_ed25519)"].firstMatch
+        let path = application.textFields["session.privateKeyPath"].firstMatch
         XCTAssertTrue(path.waitForExistence(timeout: 5))
         let initial = path.value as? String
         application.buttons["浏览..."].firstMatch.click()

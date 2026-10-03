@@ -541,6 +541,8 @@ public final class NativeTerminalView: NSTextView {
                 lastReportedDimensions = nil
                 lastCommittedIndex = 0
                 activeLineStartLocation = 0
+                renderedScreenRows = nil
+                renderedScreenLines = nil
                 textStorage?.setAttributedString(NSAttributedString())
                 scheduleRefresh()
             }
@@ -554,6 +556,7 @@ public final class NativeTerminalView: NSTextView {
     
     private var lastReportedDimensions: (cols: Int, rows: Int)? = nil
     private var renderedScreenRows: [NSAttributedString]?
+    private var renderedScreenLines: [String]?
     private var resizeDebounceTask: Task<Void, Never>? = nil
     private var pendingDimensions: (cols: Int, rows: Int)?
     
@@ -1665,129 +1668,21 @@ public final class NativeTerminalView: NSTextView {
             return
         }
         
-        // Option/Alt navigation (Meta key behavior for bash/zsh/fish)
-        if event.modifierFlags.contains(.option) && !event.modifierFlags.contains(.command) && !event.modifierFlags.contains(.control) {
-            switch event.keyCode {
-            case 123: // Option + Left arrow -> Meta-b (word backward)
-                onInput?("\u{1B}b".data(using: .utf8)!)
-                return
-            case 124: // Option + Right arrow -> Meta-f (word forward)
-                onInput?("\u{1B}f".data(using: .utf8)!)
-                return
-            case 126: // Option + Up arrow
-                onInput?("\u{1B}[1;3A".data(using: .utf8)!)
-                return
-            case 125: // Option + Down arrow
-                onInput?("\u{1B}[1;3B".data(using: .utf8)!)
-                return
-            case 51: // Option + Backspace -> Meta-DEL (delete word backward)
-                onInput?("\u{1B}\u{7F}".data(using: .utf8)!)
-                return
-            case 117: // Option + Forward Delete -> Meta-d (delete word forward)
-                onInput?("\u{1B}d".data(using: .utf8)!)
-                return
-            default:
-                if let chars = event.charactersIgnoringModifiers?.lowercased(), let first = chars.first, first.isASCII {
-                    onInput?("\u{1B}\(first)".data(using: .utf8)!)
-                    return
-                }
-            }
+        // Navigation belongs to the input method while composing. Otherwise encode
+        // every modifier together, including Vim's application cursor-key mode.
+        if !hasMarkedText(), let sequence = specialKeySequence(for: event) {
+            onInput?(Data(sequence.utf8))
+            return
         }
 
-        // Handle Special keys by key code when not composing marked IME text
-        if !hasMarkedText() {
-            let isAppCursor = ringBuffer?.isApplicationCursorKeys == true
-            switch event.keyCode {
-            case 36, 76: // Return / Enter / Numpad Enter
-                onInput?("\r".data(using: .utf8)!)
-                return
-            case 51: // Backspace / Delete
-                onInput?("\u{7F}".data(using: .utf8)!)
-                return
-            case 117: // Forward Delete
-                onInput?("\u{1B}[3~".data(using: .utf8)!)
-                return
-            case 48: // Tab
-                if event.modifierFlags.contains(.shift) {
-                    onInput?("\u{1B}[Z".data(using: .utf8)!) // Back-tab
-                } else {
-                    onInput?("\t".data(using: .utf8)!)
-                }
-                return
-            case 126: // Up arrow
-                if event.modifierFlags.contains(.shift) { onInput?("\u{1B}[1;2A".data(using: .utf8)!); return }
-                if event.modifierFlags.contains(.control) { onInput?("\u{1B}[1;5A".data(using: .utf8)!); return }
-                onInput?((isAppCursor ? "\u{1B}OA" : "\u{1B}[A").data(using: .utf8)!)
-                return
-            case 125: // Down arrow
-                if event.modifierFlags.contains(.shift) { onInput?("\u{1B}[1;2B".data(using: .utf8)!); return }
-                if event.modifierFlags.contains(.control) { onInput?("\u{1B}[1;5B".data(using: .utf8)!); return }
-                onInput?((isAppCursor ? "\u{1B}OB" : "\u{1B}[B").data(using: .utf8)!)
-                return
-            case 124: // Right arrow
-                if event.modifierFlags.contains(.shift) { onInput?("\u{1B}[1;2C".data(using: .utf8)!); return }
-                if event.modifierFlags.contains(.control) { onInput?("\u{1B}[1;5C".data(using: .utf8)!); return }
-                onInput?((isAppCursor ? "\u{1B}OC" : "\u{1B}[C").data(using: .utf8)!)
-                return
-            case 123: // Left arrow
-                if event.modifierFlags.contains(.shift) { onInput?("\u{1B}[1;2D".data(using: .utf8)!); return }
-                if event.modifierFlags.contains(.control) { onInput?("\u{1B}[1;5D".data(using: .utf8)!); return }
-                onInput?((isAppCursor ? "\u{1B}OD" : "\u{1B}[D").data(using: .utf8)!)
-                return
-            case 115: // Home
-                onInput?((isAppCursor ? "\u{1B}OH" : "\u{1B}[H").data(using: .utf8)!)
-                return
-            case 119: // End
-                onInput?((isAppCursor ? "\u{1B}OF" : "\u{1B}[F").data(using: .utf8)!)
-                return
-            case 116: // Page Up
-                onInput?("\u{1B}[5~".data(using: .utf8)!)
-                return
-            case 121: // Page Down
-                onInput?("\u{1B}[6~".data(using: .utf8)!)
-                return
-            // Function Keys F1 - F12
-            case 122: // F1
-                onInput?("\u{1B}OP".data(using: .utf8)!)
-                return
-            case 120: // F2
-                onInput?("\u{1B}OQ".data(using: .utf8)!)
-                return
-            case 99: // F3
-                onInput?("\u{1B}OR".data(using: .utf8)!)
-                return
-            case 118: // F4
-                onInput?("\u{1B}OS".data(using: .utf8)!)
-                return
-            case 96: // F5
-                onInput?("\u{1B}[15~".data(using: .utf8)!)
-                return
-            case 97: // F6
-                onInput?("\u{1B}[17~".data(using: .utf8)!)
-                return
-            case 98: // F7
-                onInput?("\u{1B}[18~".data(using: .utf8)!)
-                return
-            case 100: // F8
-                onInput?("\u{1B}[19~".data(using: .utf8)!)
-                return
-            case 101: // F9
-                onInput?("\u{1B}[20~".data(using: .utf8)!)
-                return
-            case 109: // F10
-                onInput?("\u{1B}[21~".data(using: .utf8)!)
-                return
-            case 103: // F11
-                onInput?("\u{1B}[23~".data(using: .utf8)!)
-                return
-            case 111: // F12
-                onInput?("\u{1B}[24~".data(using: .utf8)!)
-                return
-            default:
-                break
-            }
+        // Preserve Option-as-Meta for ordinary shell character shortcuts.
+        if event.modifierFlags.contains(.option) && !event.modifierFlags.contains(.control),
+           let chars = event.charactersIgnoringModifiers?.lowercased(),
+           let first = chars.first, first.isASCII {
+            onInput?(Data("\u{1B}\(first)".utf8))
+            return
         }
-        
+
         // 3. If macOS IME (e.g. Chinese Pinyin) is active and handles the event
         if let inputContext = self.inputContext, inputContext.handleEvent(event) {
             return
@@ -1805,6 +1700,59 @@ public final class NativeTerminalView: NSTextView {
         self.interpretKeyEvents([event])
     }
     
+    private func specialKeySequence(for event: NSEvent) -> String? {
+        let flags = event.modifierFlags.intersection([.shift, .option, .control])
+        let modifier = 1 + (flags.contains(.shift) ? 1 : 0)
+            + (flags.contains(.option) ? 2 : 0) + (flags.contains(.control) ? 4 : 0)
+        let alternateScreen = ringBuffer?.isInAlternateScreen == true
+        // macOS shell word shortcuts remain available outside full-screen editors.
+        if flags == [.option], !alternateScreen {
+            switch event.keyCode {
+            case 123: return "\u{1B}b"
+            case 124: return "\u{1B}f"
+            case 117: return "\u{1B}d"
+            default: break
+            }
+        }
+        func cursor(_ suffix: String) -> String {
+            if modifier > 1 { return "\u{1B}[1;\(modifier)\(suffix)" }
+            return (ringBuffer?.isApplicationCursorKeys == true ? "\u{1B}O" : "\u{1B}[") + suffix
+        }
+        func editing(_ number: Int) -> String {
+            modifier > 1 ? "\u{1B}[\(number);\(modifier)~" : "\u{1B}[\(number)~"
+        }
+        func function(_ suffix: String) -> String {
+            modifier > 1 ? "\u{1B}[1;\(modifier)\(suffix)" : "\u{1B}O\(suffix)"
+        }
+        switch event.keyCode {
+        case 36, 76: return "\r"
+        case 51: return flags.contains(.option) ? "\u{1B}\u{7F}" : "\u{7F}"
+        case 48: return flags.contains(.shift) ? "\u{1B}[Z" : "\t"
+        case 126: return cursor("A")
+        case 125: return cursor("B")
+        case 124: return cursor("C")
+        case 123: return cursor("D")
+        case 115: return cursor("H")
+        case 119: return cursor("F")
+        case 117: return editing(3)
+        case 116: return editing(5)
+        case 121: return editing(6)
+        case 122: return function("P")
+        case 120: return function("Q")
+        case 99: return function("R")
+        case 118: return function("S")
+        case 96: return editing(15)
+        case 97: return editing(17)
+        case 98: return editing(18)
+        case 100: return editing(19)
+        case 101: return editing(20)
+        case 109: return editing(21)
+        case 103: return editing(23)
+        case 111: return editing(24)
+        default: return nil
+        }
+    }
+
     // Paste support (Cmd+V and Right-Click direct paste, with Bracketed Paste Mode support)
     @discardableResult
     public func pasteFromClipboard() -> Bool {
@@ -2208,7 +2156,13 @@ public final class NativeTerminalView: NSTextView {
             let paragraph = NSMutableParagraphStyle()
             paragraph.minimumLineHeight = lineHeight
             paragraph.maximumLineHeight = lineHeight
+            let reusableRows = renderedScreenRows?.count == screenLines.count
+                && renderedScreenLines?.count == screenLines.count
             let rows = screenLines.enumerated().map { index, line -> NSAttributedString in
+                if reusableRows, renderedScreenLines?[index] == line,
+                   let previous = renderedScreenRows?[index] {
+                    return previous
+                }
                 let row = NSMutableAttributedString(attributedString: formatANSI(line))
                 if index < screenLines.count - 1 { row.append(formatANSI("\n")) }
                 row.addAttribute(.paragraphStyle, value: paragraph, range: NSRange(location: 0, length: row.length))
@@ -2232,6 +2186,7 @@ public final class NativeTerminalView: NSTextView {
                 }
                 storage.endEditing()
                 renderedScreenRows = rows
+                renderedScreenLines = screenLines
             }
             activeLineStartLocation = self.textStorage?.length ?? 0
             lastCommittedIndex = buffer.totalCommittedCount
@@ -2250,6 +2205,7 @@ public final class NativeTerminalView: NSTextView {
         }
         
         renderedScreenRows = nil
+        renderedScreenLines = nil
         let currentTotal = buffer.totalCommittedCount
         let isCleared = buffer.consumeClearFlag() || (currentTotal < lastCommittedIndex)
         let active = buffer.currentActiveLine

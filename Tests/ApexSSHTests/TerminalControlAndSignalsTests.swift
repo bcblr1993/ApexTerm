@@ -187,6 +187,112 @@ final class TerminalControlAndSignalsTests: XCTestCase {
         }
     }
 
+    @MainActor
+    func testModifiedCursorKeysPreserveAllModifiersInBothCursorModes() throws {
+        let view = NativeTerminalView()
+        let buffer = TerminalRingBuffer()
+        view.ringBuffer = buffer
+        var received: [Data] = []
+        view.onInput = { received.append($0) }
+        let modifiers: [(NSEvent.ModifierFlags, Int)] = [
+            ([.shift], 2), ([.option], 3), ([.shift, .option], 4),
+            ([.control], 5), ([.shift, .control], 6),
+            ([.option, .control], 7), ([.shift, .option, .control], 8)
+        ]
+        let keys: [(UInt16, String)] = [
+            (126, "A"), (125, "B"), (124, "C"), (123, "D"), (115, "H"), (119, "F")
+        ]
+        buffer.appendStream("\u{1B}[?1049h")
+        for applicationMode in [false, true] {
+            buffer.appendStream(applicationMode ? "\u{1B}[?1h" : "\u{1B}[?1l")
+            for (flags, parameter) in modifiers {
+                for (code, suffix) in keys {
+                    received.removeAll()
+                    view.keyDown(with: try navigationEvent(code, modifiers: flags))
+                    XCTAssertEqual(received, [Data("\u{1B}[1;\(parameter)\(suffix)".utf8)],
+                                   "key=\(code), modifiers=\(flags), applicationMode=\(applicationMode)")
+                }
+            }
+        }
+    }
+
+    @MainActor
+    func testModifiedEditingAndFunctionKeysPreserveAllModifiers() throws {
+        let view = NativeTerminalView()
+        let buffer = TerminalRingBuffer()
+        buffer.appendStream("\u{1B}[?1049h")
+        view.ringBuffer = buffer
+        var received: [Data] = []
+        view.onInput = { received.append($0) }
+        let modifiers: [(NSEvent.ModifierFlags, Int)] = [
+            ([.shift], 2), ([.option], 3), ([.shift, .option], 4),
+            ([.control], 5), ([.shift, .control], 6),
+            ([.option, .control], 7), ([.shift, .option, .control], 8)
+        ]
+        let keys: [(UInt16, String)] = [
+            (117, "3"), (116, "5"), (121, "6"), (96, "15"), (97, "17"),
+            (98, "18"), (100, "19"), (101, "20"), (109, "21"), (103, "23"), (111, "24")
+        ]
+        for (flags, parameter) in modifiers {
+            for (code, number) in keys {
+                received.removeAll()
+                view.keyDown(with: try navigationEvent(code, modifiers: flags))
+                XCTAssertEqual(received, [Data("\u{1B}[\(number);\(parameter)~".utf8)],
+                               "key=\(code), modifiers=\(flags)")
+            }
+            for (code, suffix) in [(UInt16(122), "P"), (120, "Q"), (99, "R"), (118, "S")] {
+                received.removeAll()
+                view.keyDown(with: try navigationEvent(code, modifiers: flags))
+                XCTAssertEqual(received, [Data("\u{1B}[1;\(parameter)\(suffix)".utf8)])
+            }
+        }
+    }
+
+    @MainActor
+    func testShiftOptionArrowsDoNotBecomeShellWordNavigation() throws {
+        let view = NativeTerminalView()
+        var received: [Data] = []
+        view.onInput = { received.append($0) }
+        view.keyDown(with: try navigationEvent(123, modifiers: [.shift, .option]))
+        view.keyDown(with: try navigationEvent(124, modifiers: [.shift, .option]))
+        XCTAssertEqual(received, [Data("\u{1B}[1;4D".utf8), Data("\u{1B}[1;4C".utf8)])
+    }
+
+    @MainActor
+    func testOptionBackspaceKeepsMetaDeleteInsideAndOutsideVim() throws {
+        let view = NativeTerminalView()
+        let buffer = TerminalRingBuffer()
+        view.ringBuffer = buffer
+        var received: [Data] = []
+        view.onInput = { received.append($0) }
+        let modifiers: [NSEvent.ModifierFlags] = [[.option], [.option, .shift]]
+        for alternateScreen in [false, true] {
+            if alternateScreen { buffer.appendStream("\u{1B}[?1049h") }
+            for flags in modifiers {
+                received.removeAll()
+                view.keyDown(with: try navigationEvent(51, modifiers: flags))
+                XCTAssertEqual(received, [Data("\u{1B}\u{7F}".utf8)])
+            }
+        }
+    }
+
+    @MainActor
+    private func navigationEvent(_ code: UInt16, modifiers: NSEvent.ModifierFlags) throws -> NSEvent {
+        // Real function-key events carry a private-use character, rather than an empty string.
+        let scalar: UInt32 = [
+            126: 0xF700, 125: 0xF701, 123: 0xF702, 124: 0xF703,
+            122: 0xF704, 120: 0xF705, 99: 0xF706, 118: 0xF707,
+            96: 0xF708, 97: 0xF709, 98: 0xF70A, 100: 0xF70B,
+            101: 0xF70C, 109: 0xF70D, 103: 0xF70E, 111: 0xF70F,
+            117: 0xF728, 115: 0xF729, 119: 0xF72B, 116: 0xF72C, 121: 0xF72D,
+            51: 0x7F
+        ][code] ?? 0xF700
+        let characters = String(try XCTUnwrap(UnicodeScalar(scalar)))
+        return try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers,
+            timestamp: 0, windowNumber: 0, context: nil, characters: characters,
+            charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code))
+    }
+
     func testRingBufferLineAndScreenErasure() {
         let buffer = TerminalRingBuffer(maxLines: 100)
         

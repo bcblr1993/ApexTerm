@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import signal
 import tempfile
+import tarfile
 import unittest
 from unittest.mock import patch
 
@@ -24,6 +25,32 @@ class RemoteUIRunnerTests(unittest.TestCase):
         if arguments[-1] == '/usr/sbin/sysctl -n hw.model':
             return subprocess.CompletedProcess(arguments, 0, 'VirtualMac2,1\n')
         return subprocess.CompletedProcess(arguments, 0, '/Users/synthetic/apex-ui-run.test\n')
+
+    def test_external_report_fixture_survives_archive_round_trip(self):
+        actual_run = subprocess.run
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root, report, guest = base / 'repo', base / 'external-reports', base / 'guest'
+            for name in ['UITests', 'outputs/ui-acceptance/DerivedData/Build/Products',
+                         'outputs/macos27/qa/Verification.app', 'outputs/ui-acceptance/PhysicalKeyQA.app']:
+                (root / name).mkdir(parents=True)
+            executable = report / 'ApexTerm-Reopen.app/Contents/MacOS/ApexTerm'
+            executable.parent.mkdir(parents=True)
+            executable.write_bytes(b'isolated reopen fixture')
+            guest.mkdir()
+            def transport(arguments, **kwargs):
+                if arguments[0] == 'tar' and '-czf' in arguments:
+                    return actual_run(arguments, **kwargs)
+                return self.transport_result(arguments, **kwargs)
+            with patch.dict(os.environ, {'APEX_UI_TEST_VM': 'macos27', 'APEX_UI_RUNNER_HOST': '192.0.2.10', 'APEX_UI_RUNNER_USER': 'synthetic'}), \
+                 patch.object(runner, '__file__', str(root / 'scripts/run_ui_tests_remotely.py')), \
+                 patch.object(runner.sys, 'argv', ['runner', str(report)]), \
+                 patch.object(runner, 'run', side_effect=transport), \
+                 patch.object(runner.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)):
+                runner.main()
+            with tarfile.open(report / 'vm-input.tar.gz') as archive:
+                archive.extractall(guest, filter='data')
+            self.assertEqual((guest / 'ApexTerm-Reopen.app/Contents/MacOS/ApexTerm').read_bytes(), executable.read_bytes())
 
     def test_missing_or_other_vm_stops_before_any_transport(self):
         for vm in ('', 'macos26', 'another-vm'):

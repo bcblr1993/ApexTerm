@@ -26,6 +26,32 @@ final class ThemeSupportTests: XCTestCase {
     }
 
     @MainActor
+    func testThemeSwitchRecolorsCachedAlternateScreenRows() throws {
+        let settings = AppSettings.shared
+        let previous = settings.themePreset
+        defer { settings.themePreset = previous }
+        let scroll = NativeTerminalScrollView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        let view = scroll.terminalView
+        let buffer = TerminalRingBuffer()
+        view.ringBuffer = buffer
+        view.applyAppSettings()
+        buffer.appendStream("\u{1B}[?1049hplain \u{1B}[31mred \u{1B}[38;2;1;2;3mtrue")
+        view.refresh()
+        let text = view.string
+        let storage = try XCTUnwrap(view.textStorage)
+        for theme in TerminalThemePreset.selectablePresets {
+            settings.themePreset = theme
+            view.applyAppSettings()
+            buffer.appendStream("\u{1B}[2;3H")
+            view.refresh()
+            XCTAssertEqual(view.string, text)
+            XCTAssertEqual(storage.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor, NSColor(hex: theme.foregroundColorHex))
+            XCTAssertEqual(storage.attribute(.foregroundColor, at: 6, effectiveRange: nil) as? NSColor, NSColor(hex: theme.palette.terminalColor(at: 1)))
+            XCTAssertEqual(storage.attribute(.foregroundColor, at: 10, effectiveRange: nil) as? NSColor, NSColor(hex: "#010203"))
+        }
+    }
+
+    @MainActor
     func testSwitchRecolorsExistingOutputAndPreservesTrueColor() {
         let settings = AppSettings.shared
         let previous = settings.themePreset

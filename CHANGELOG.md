@@ -2,6 +2,18 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [Unreleased]
+
+### ⚡️ 体验优化 (Improvements)
+- Vim 等备用屏幕应用复用未变化行的 ANSI 渲染结果，降低移动光标和局部更新的开销；主题、字体、视口与会话变化仍重新渲染。
+
+### 🐞 问题修复 (Bug Fixes)
+- 修复方向键、Home／End、翻页、Delete 和 F1…F12 丢失 Shift／Option／Control 组合修饰键的问题；备用屏幕中的 Option＋左右键使用编辑器按键序列，普通 shell 保留按词移动快捷键。
+- 修复 UI 验收使用自定义报告目录时找不到重启测试应用的问题，传输包统一使用固定的工作目录内路径。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- 增加组合键、备用屏幕缓存、主题切换及外部报告目录传输回归；本轮验证范围与尚未完成的 VM UI 门禁见 `docs/TERMINAL_FOLLOWUP_2026-10-03.md`。
+
 ## [v1.6.0] - 2026-10-02
 
 ### ✨ 新增特性 (Features)

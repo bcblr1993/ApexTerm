@@ -214,6 +214,51 @@ with tempfile.TemporaryDirectory(prefix='apex-vim-') as directory:
         terminal.refresh()
         XCTAssertEqual(recorder.edits, 0)
     }
+
+    @MainActor
+    func testStyledScreenRefreshKeepsSelectionAndUpdatesOnlyChangedRows() throws {
+        let terminal = NativeTerminalView()
+        let buffer = TerminalRingBuffer()
+        buffer.setDimensions(columns: 80, rows: 24)
+        terminal.ringBuffer = buffer
+        buffer.appendStream("\u{1B}[?1049h\u{1B}[31mred\u{1B}[0m\r\nsecond\r\nthird")
+        terminal.refresh()
+        let storage = try XCTUnwrap(terminal.textStorage)
+        let firstRow = storage.attributedSubstring(from: NSRange(location: 0, length: 4))
+        terminal.setSelectedRange(NSRange(location: 0, length: 3))
+        buffer.appendStream("\u{1B}[2;1HSECOND")
+        terminal.refresh()
+        XCTAssertEqual(terminal.selectedRange(), NSRange(location: 0, length: 3))
+        XCTAssertTrue(storage.attributedSubstring(from: NSRange(location: 0, length: 4)).isEqual(to: firstRow))
+        XCTAssertTrue(storage.string.contains("SECOND"))
+        buffer.setDimensions(columns: 40, rows: 12)
+        terminal.refresh()
+        XCTAssertEqual(storage.string.components(separatedBy: "\n").count, 12)
+        XCTAssertTrue(storage.string.contains("SECOND"))
+        buffer.appendStream("\u{1B}[?1049l\u{1B}[?1049hnew screen")
+        terminal.refresh()
+        XCTAssertTrue(storage.string.hasPrefix("new screen"))
+        XCTAssertFalse(storage.string.contains("SECOND"))
+    }
+
+    @MainActor
+    func testCursorRefreshPerformanceOnStyledVimScreen() {
+        let terminal = NativeTerminalView()
+        let buffer = TerminalRingBuffer()
+        buffer.setDimensions(columns: 120, rows: 40)
+        terminal.ringBuffer = buffer
+        buffer.appendStream("\u{1B}[?1049h")
+        for row in 1...40 {
+            buffer.appendStream("\u{1B}[\(row);1H\u{1B}[\(31 + row % 6)m" + String(repeating: "styled text ", count: 9))
+        }
+        terminal.refresh()
+        measure {
+            for column in 1...100 {
+                buffer.appendStream("\u{1B}[20;\(column)H")
+                terminal.refresh()
+            }
+        }
+    }
 }
 
 @MainActor

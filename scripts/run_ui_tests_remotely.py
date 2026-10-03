@@ -50,12 +50,13 @@ def main():
     (report / 'guest-workspace.txt').write_text(workspace + '\n')
     archive = report / 'vm-input.tar.gz'
     fixture = report / 'ApexTerm-Reopen.app'
-    fixture_for_archive = str(fixture.relative_to(root)) if fixture.is_relative_to(root) else str(fixture)
-    run(['tar', '-czf', str(archive), 'UITests',
+    # Reports may live anywhere, including outside outputs/ui-acceptance.
+    # Give the transferred fixture a stable workspace-relative archive path.
+    run(['tar', '-czf', str(archive), '-C', str(root), 'UITests',
          'outputs/ui-acceptance/DerivedData/Build/Products',
-         fixture_for_archive,
          'outputs/macos27/qa/Verification.app',
-         'outputs/ui-acceptance/PhysicalKeyQA.app'], cwd=root)
+         'outputs/ui-acceptance/PhysicalKeyQA.app',
+         '-C', str(fixture.parent), fixture.name], cwd=root)
     run(['scp', '-q', '-o', 'BatchMode=yes', str(archive),
          f'{target}:{workspace}/input.tar.gz'])
     environment_file = report / 'ui-test-environment.json'
@@ -175,7 +176,7 @@ config = plistlib.loads(destination.read_bytes())
 for target in targets(config):
     target.setdefault('EnvironmentVariables', {}).update({key: environment[key] for key in ['APEX_UI_TEST_HOST', 'APEX_UI_TEST_USER']})
     target['EnvironmentVariables']['APEX_UI_APP_PATH'] = str(app)
-    target['EnvironmentVariables']['APEX_UI_PRODUCT_APP_PATH'] = str(next(pathlib.Path('outputs/ui-acceptance').glob('*/ApexTerm-Reopen.app')).resolve())
+    target['EnvironmentVariables']['APEX_UI_PRODUCT_APP_PATH'] = str(pathlib.Path('ApexTerm-Reopen.app').resolve())
     target['EnvironmentVariables']['APEX_UI_INPUT_SOURCE_RESTORER'] = str(pathlib.Path('reports/IMEInputSourceRestorer').resolve())
     target['EnvironmentVariables']['APEX_UI_PHYSICAL_KEY_HELPER'] = str(pathlib.Path.home() / '.apexterm-ui-tools/PhysicalKeyQA.app/Contents/MacOS/PhysicalKeyPoster')
     target['EnvironmentVariables']['APEX_UI_PHYSICAL_KEY_TARGET'] = info['CFBundleIdentifier']
@@ -201,7 +202,7 @@ assert verified.get('com.apple.security.app-sandbox') is False
 pathlib.Path('reports/ui-runner-entitlements.json').write_text(json.dumps({'runner': str(runner), 'sandboxed': False, 'productModified': False}, indent=2))
 PY
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f outputs/macos27/qa/Verification.app
-/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$(find outputs/ui-acceptance -maxdepth 2 -name ApexTerm-Reopen.app -type d | head -1)"
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f ApexTerm-Reopen.app
 files=(outputs/ui-acceptance/RemoteDerivedData/Build/Products/*.xctestrun)
 [[ ${#files[@]} == 1 ]]
 xcodebuild test-without-building -xctestrun "${files[0]}" -destination 'platform=macOS,arch=arm64' -jobs 2 -parallel-testing-enabled NO -resultBundlePath reports/UI.xcresult "${@:2}" 2>&1 | tee reports/ui-tests.log

@@ -44,6 +44,7 @@ public struct SFTPView: View {
     @State private var displayItems: [SFTPItem] = []
     @State private var isFilterVisible = false
     @State private var pathInput = ""
+    @State private var toolbarWidth: CGFloat = 0
     @State private var windowReference = WindowReference()
     @FocusState private var isPathFocused: Bool
     @FocusState private var isFilterFocused: Bool
@@ -85,125 +86,150 @@ public struct SFTPView: View {
         self.session = session
     }
 
+    private var pathControls: some View {
+        HStack(spacing: 8) {
+            // Folder icon & Path breadcrumbs
+            Button {
+                pathInput = currentPath
+                isPathFocused = true
+            } label: {
+                Label("前往文件夹", systemImage: "folder.fill")
+            }
+            .labelStyle(.iconOnly)
+            .buttonStyle(.borderless)
+            .keyboardShortcut("l", modifiers: .command)
+            .help("前往文件夹 (⌘L)")
+
+            TextField(L10n.remotePath, text: $pathInput)
+            .onSubmit {
+                let target = pathInput.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !target.isEmpty else { pathInput = currentPath; return }
+                pathInput = target
+                if target != currentPath { currentPath = target }
+                isPathFocused = false
+            }
+            .focused($isPathFocused)
+            .onExitCommand { pathInput = currentPath; isPathFocused = false }
+            .autocorrectionDisabled()
+            .textFieldStyle(.roundedBorder)
+            .font(.system(size: 12, design: .monospaced))
+            .frame(minWidth: 240)
+
+            Button("复制当前路径", systemImage: "doc.on.doc") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(currentPath, forType: .string)
+            }
+            .labelStyle(.iconOnly)
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .help("复制当前浏览目录的路径")
+            .disabled(currentPath.isEmpty)
+        }
+    }
+
+    private func fileActions(compact: Bool) -> some View {
+        HStack(spacing: compact ? 6 : 10) {
+            Toggle(isOn: $isLinkageEnabled) {
+                Label(isLinkageEnabled ? L10n.linkageOn : L10n.linkageOff,
+                      systemImage: isLinkageEnabled ? "link" : "link.slash")
+            }
+            .toggleStyle(.button)
+            .controlSize(.small)
+            .labelStyle(SFTPToolbarLabelStyle(compact: compact))
+            .accessibilityLabel(isLinkageEnabled ? L10n.linkageOn : L10n.linkageOff)
+            .help(isLinkageEnabled ? L10n.linkageHelpOn : L10n.linkageHelpOff)
+
+
+            Divider().frame(height: 16)
+
+            // Actions
+            Button(action: navigateUp) {
+                Label(L10n.parentDirectory, systemImage: "arrow.up")
+            }
+            .labelStyle(.iconOnly)
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .help(L10n.parentDirectory)
+
+            Button(action: {
+                loadDirectory(path: currentPath)
+            }) {
+                if isLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                        .scaleEffect(0.7)
+                        .frame(width: 14, height: 14)
+                } else {
+                    Label(L10n.refreshDirectory, systemImage: "arrow.clockwise")
+                        .labelStyle(.iconOnly)
+                }
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .help(L10n.refreshDirectory)
+
+            Button(action: {
+                uploadAction()
+            }) {
+                Label(L10n.uploadFile, systemImage: "arrow.up.doc")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .labelStyle(SFTPToolbarLabelStyle(compact: compact))
+            .accessibilityLabel(L10n.uploadFile)
+            .help(L10n.uploadFile)
+
+            Menu {
+                Button("新建文件夹", systemImage: "folder.badge.plus") {
+                    newFolderName = ""
+                    isShowingNewFolderAlert = true
+                }
+                Button("新建文件", systemImage: "doc.badge.plus") {
+                    newFileName = ""
+                    isShowingNewFileAlert = true
+                }
+                Toggle("显示隐藏文件", isOn: $showHiddenFiles)
+            } label: {
+                Label("更多文件操作", systemImage: "ellipsis")
+            }
+            .labelStyle(.iconOnly)
+            .help("新建文件、文件夹及隐藏文件")
+
+            Toggle(isOn: $isFilterVisible) {
+                Label("筛选文件", systemImage: "line.3.horizontal.decrease")
+            }
+            .toggleStyle(.button)
+            .labelStyle(.iconOnly)
+            .help("筛选当前文件夹")
+
+            // Transfer records drawer toggle button
+            TransferToolbarButton(isExpanded: $isTransferDrawerExpanded, compact: compact)
+        }
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
     private var fileBrowser: some View {
         VStack(spacing: 0) {
-            // Path and action toolbar
-            HStack(spacing: 10) {
-                // Folder icon & Path breadcrumbs
-                Button {
-                    pathInput = currentPath
-                    isPathFocused = true
-                } label: {
-                    Label("前往文件夹", systemImage: "folder.fill")
-                }
-                .labelStyle(.iconOnly)
-                .buttonStyle(.borderless)
-                .keyboardShortcut("l", modifiers: .command)
-                .help("前往文件夹 (⌘L)")
-
-                TextField(L10n.remotePath, text: $pathInput)
-                .onSubmit {
-                    let target = pathInput.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !target.isEmpty else { pathInput = currentPath; return }
-                    pathInput = target
-                    if target != currentPath { currentPath = target }
-                    isPathFocused = false
-                }
-                .focused($isPathFocused)
-                .onExitCommand { pathInput = currentPath; isPathFocused = false }
-                .autocorrectionDisabled()
-                .textFieldStyle(.roundedBorder)
-                .font(.system(size: 12, design: .monospaced))
-
-                Button("复制当前路径", systemImage: "doc.on.doc") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(currentPath, forType: .string)
-                }
-                .labelStyle(.iconOnly)
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .help("复制当前浏览目录的路径")
-                .disabled(currentPath.isEmpty)
-
-                Toggle(isOn: $isLinkageEnabled) {
-                    Label(isLinkageEnabled ? L10n.linkageOn : L10n.linkageOff,
-                          systemImage: isLinkageEnabled ? "link" : "link.slash")
-                }
-                .toggleStyle(.button)
-                .controlSize(.small)
-                .help(isLinkageEnabled ? L10n.linkageHelpOn : L10n.linkageHelpOff)
-
-
-                Divider().frame(height: 16)
-
-                // Actions
-                Button(action: navigateUp) {
-                    Label(L10n.parentDirectory, systemImage: "arrow.up")
-                }
-                .labelStyle(.iconOnly)
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .help(L10n.parentDirectory)
-
-                Button(action: {
-                    loadDirectory(path: currentPath)
-                }) {
-                    if isLoading {
-                        ProgressView()
-                            .controlSize(.small)
-                            .scaleEffect(0.7)
-                            .frame(width: 14, height: 14)
-                    } else {
-                        Label(L10n.refreshDirectory, systemImage: "arrow.clockwise")
-                            .labelStyle(.iconOnly)
-                    }
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .help(L10n.refreshDirectory)
-
-                Button(action: {
-                    uploadAction()
-                }) {
-                    Label(L10n.uploadFile, systemImage: "arrow.up.doc")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-
-                Menu {
-                    Button("新建文件夹", systemImage: "folder.badge.plus") {
-                        newFolderName = ""
-                        isShowingNewFolderAlert = true
-                    }
-                    Button("新建文件", systemImage: "doc.badge.plus") {
-                        newFileName = ""
-                        isShowingNewFileAlert = true
-                    }
-                    Toggle("显示隐藏文件", isOn: $showHiddenFiles)
-                } label: {
-                    Label("更多文件操作", systemImage: "ellipsis")
-                }
-                .labelStyle(.iconOnly)
-                .help("新建文件、文件夹及隐藏文件")
-
-                Toggle(isOn: $isFilterVisible) {
-                    Label("筛选文件", systemImage: "line.3.horizontal.decrease")
-                }
-                .toggleStyle(.button)
-                .labelStyle(.iconOnly)
-                .help("筛选当前文件夹")
-
+            // AnyLayout preserves the editable path control and its focus as
+            // the window crosses the single-row / two-row boundary.
+            let layout = toolbarWidth < 680
+                ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+                : AnyLayout(HStackLayout(spacing: 8))
+            layout {
+                pathControls
+                fileActions(compact: toolbarWidth < 880)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(ApexStyle.surface)
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { toolbarWidth = $0 }
+            .background {
                 Button("") { showHiddenFiles.toggle() }
                     .keyboardShortcut(".", modifiers: [.command, .shift])
                     .frame(width: 0, height: 0)
                     .opacity(0)
-
-                // Transfer records drawer toggle button
-                TransferToolbarButton(isExpanded: $isTransferDrawerExpanded)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(ApexStyle.surface)
 
             Divider()
 
@@ -1411,9 +1437,27 @@ private actor SFTPExportDownload {
 }
 
 // MARK: - Isolated Transfer Toolbar Button
+private struct SFTPToolbarLabelStyle: LabelStyle {
+    let compact: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 4) {
+            configuration.icon
+            if !compact { configuration.title }
+        }
+    }
+}
+
 struct TransferToolbarButton: View {
     @ObservedObject private var transferManager = TransferManager.shared
     @Binding var isExpanded: Bool
+    var compact = false
+
+    private var title: String {
+        if transferManager.activeCount > 0 { return "传输中 (\(transferManager.activeCount))" }
+        if !transferManager.tasks.isEmpty { return "传输记录 (\(transferManager.tasks.count))" }
+        return "传输记录"
+    }
 
     var body: some View {
         Button(action: {
@@ -1426,21 +1470,16 @@ struct TransferToolbarButton: View {
                                        inactiveSystemName: "arrow.up.arrow.down.circle")
                     .foregroundColor(transferManager.activeCount > 0 ? ApexStyle.accent : ApexStyle.primary)
                 
-                if transferManager.activeCount > 0 {
-                    Text("传输中 (\(transferManager.activeCount))")
-                        .foregroundColor(ApexStyle.accent)
-                        .font(.system(size: 11, weight: .semibold))
-                } else if !transferManager.tasks.isEmpty {
-                    Text("传输记录 (\(transferManager.tasks.count))")
-                        .font(.system(size: 11))
-                } else {
-                    Text("传输记录")
-                        .font(.system(size: 11))
+                if !compact {
+                    Text(title)
+                        .foregroundColor(transferManager.activeCount > 0 ? ApexStyle.accent : ApexStyle.primary)
+                        .font(.system(size: 11, weight: transferManager.activeCount > 0 ? .semibold : .regular))
                 }
             }
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
+        .accessibilityLabel(title)
         .help("查看上传与下载记录 (快捷切换)")
     }
 }

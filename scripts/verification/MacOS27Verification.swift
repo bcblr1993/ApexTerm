@@ -235,6 +235,18 @@ struct ThemeVerificationApp: App {
                     try? await Task.sleep(for: .milliseconds(100))
                     NSApplication.shared.windows.first(where: { $0.isVisible && $0.contentView != nil })?.setContentSize(scene == "shortcuts" ? NSSize(width: 580, height: 590) : NSSize(width: 560, height: 560))
                 }
+                // A controlled starting width allows VM rendering checks without
+                // substituting a fixture for the separate resize interaction tests.
+                if scene == "main",
+                   let width = ProcessInfo.processInfo.environment["APEX_QA_INITIAL_WINDOW_WIDTH"].flatMap(Double.init),
+                   width.isFinite,
+                   let window = NSApplication.shared.windows.first(where: { $0.isVisible && $0.contentView != nil }),
+                   let screen = window.screen {
+                    window.setContentSize(NSSize(width: min(max(960, width), screen.visibleFrame.width),
+                                                 height: window.contentView?.bounds.height ?? 680))
+                    window.setFrameOrigin(NSPoint(x: screen.visibleFrame.midX - window.frame.width / 2,
+                                                  y: screen.visibleFrame.midY - window.frame.height / 2))
+                }
                 telemetry.start()
                 if let path = ProcessInfo.processInfo.environment["APEX_QA_IME_STATE_PATH"] {
                     Task { @MainActor in

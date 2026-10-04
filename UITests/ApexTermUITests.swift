@@ -409,6 +409,74 @@ final class ApexTermUITests: XCTestCase {
         capture("sftp-path-submitted")
     }
 
+    func testSFTPToolbarResizeKeepsPathDraftAndKeyboardFocus() async {
+        run_testSFTPToolbarResizeKeepsPathDraftAndKeyboardFocus()
+    }
+
+    private func run_testSFTPToolbarResizeKeepsPathDraftAndKeyboardFocus() {
+        launch("main", extra: ["APEX_QA_FILES": "normal", "APEX_QA_CONNECT": "1",
+                               "APEX_QA_INITIAL_WINDOW_WIDTH": "1300"])
+        XCTAssertTrue(staticText("nginx.conf").waitForExistence(timeout: 10))
+        let window = app.windows.firstMatch
+        let path = app.textFields["远程路径"]
+        let upload = app.buttons["上传文件"].firstMatch
+        let copyPath = app.buttons["复制当前路径"].firstMatch
+        XCTAssertTrue(path.isHittable)
+        XCTAssertTrue(upload.isHittable)
+        XCTAssertTrue(copyPath.isHittable)
+        XCTAssertEqual(app.textFields.matching(identifier: "远程路径").count, 1)
+        XCTAssertGreaterThanOrEqual(path.frame.width, 240)
+        let originalPath = path.value as? String
+        XCTAssertNotNil(originalPath)
+        let wideUploadWidth = upload.frame.width
+
+        path.click()
+        path.typeKey("a", modifierFlags: .command)
+        path.typeText("/ui-resize-draft")
+        capture("sftp-toolbar-wide-draft")
+
+        func resizeWidth(to width: CGFloat) {
+            let frame = window.frame
+            XCTAssertTrue(frame.origin.x.isFinite && frame.origin.y.isFinite
+                          && frame.width.isFinite && frame.height.isFinite)
+            // Drag the real window edge; a QA state setter would not exercise
+            // the editor's focus while AppKit tracks a live resize gesture.
+            let edge = window.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 1))
+                .withOffset(CGVector(dx: -2, dy: -2))
+            let destination = edge.withOffset(CGVector(dx: width - frame.width, dy: 0))
+            edge.press(forDuration: 0.2, thenDragTo: destination)
+            let resized = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                abs(window.frame.width - width) <= 4
+            }, object: window)
+            XCTAssertEqual(XCTWaiter.wait(for: [resized], timeout: 5), .completed,
+                           "Actual window width must change to \(width), got \(window.frame.width)")
+        }
+
+        resizeWidth(to: 960)
+        XCTAssertEqual(path.value as? String, "/ui-resize-draft")
+        XCTAssertEqual(app.textFields.matching(identifier: "远程路径").count, 1)
+        XCTAssertGreaterThanOrEqual(path.frame.width, 240)
+        XCTAssertTrue(copyPath.isHittable)
+        XCTAssertTrue(upload.isHittable)
+        XCTAssertLessThan(upload.frame.width, wideUploadWidth - 12,
+                          "The narrow toolbar must free space by compacting its action labels")
+        // Send through the app rather than path.typeText, which could silently
+        // refocus the field and conceal a focus loss during resizing.
+        app.typeText("-compact")
+        XCTAssertEqual(path.value as? String, "/ui-resize-draft-compact")
+        capture("sftp-toolbar-compact-draft-and-focus")
+
+        resizeWidth(to: 1300)
+        app.typeText("-wide")
+        XCTAssertEqual(path.value as? String, "/ui-resize-draft-compact-wide")
+        XCTAssertGreaterThan(upload.frame.width, wideUploadWidth - 4)
+        XCTAssertGreaterThanOrEqual(path.frame.width, 240)
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertEqual(path.value as? String, originalPath)
+        XCTAssertTrue(staticText("nginx.conf").exists)
+        capture("sftp-toolbar-resize-cancel-restores-path")
+    }
+
     func testTerminalSplitOrientationAndClose() async {
         run_testTerminalSplitOrientationAndClose()
     }

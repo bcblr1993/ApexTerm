@@ -124,6 +124,40 @@ class RemoteUIRunnerTests(unittest.TestCase):
                         with self.assertRaises(RuntimeError):
                             exec(script, context)
 
+    def test_ssh_preflight_rejects_missing_identity_and_failed_authentication(self):
+        script = self.execute(0).split("python3 - <<'PY_SSH_PREFLIGHT'\n", 1)[1].split('\nPY_SSH_PREFLIGHT', 1)[0]
+        for outcome in ('missing-socket', 'empty-agent', 'agent-timeout', 'denied', 'target-timeout', 'wrong-proof', 'success'):
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as directory, contextlib.chdir(directory):
+                Path('reports').mkdir()
+                Path('ui-test-environment.json').write_text(json.dumps({
+                    'APEX_UI_TEST_HOST': '192.0.2.25', 'APEX_UI_TEST_USER': 'synthetic',
+                    'APEX_PRIVATE_TOKEN': 'must-not-be-reported'}))
+                def command(arguments, **kwargs):
+                    self.assertTrue(kwargs['capture_output'])
+                    if arguments == ['ssh-add', '-l']:
+                        if outcome == 'agent-timeout':
+                            raise subprocess.TimeoutExpired(arguments, kwargs['timeout'])
+                        return subprocess.CompletedProcess(arguments, 1 if outcome == 'empty-agent' else 0)
+                    self.assertEqual(arguments[-2:], ['synthetic@192.0.2.25', 'printf APEX_UI_REAL_TARGET_OK'])
+                    self.assertIn('BatchMode=yes', arguments)
+                    self.assertIn('IdentityAgent=/synthetic/agent.sock', arguments)
+                    if outcome == 'target-timeout':
+                        raise subprocess.TimeoutExpired(arguments, kwargs['timeout'])
+                    return subprocess.CompletedProcess(arguments, 255 if outcome == 'denied' else 0,
+                        b'APEX_UI_REAL_TARGET_OK' if outcome == 'success' else b'')
+                environment = {} if outcome == 'missing-socket' else {'SSH_AUTH_SOCK': '/synthetic/agent.sock'}
+                with patch.dict(os.environ, environment, clear=True), patch('subprocess.run', side_effect=command) as commands:
+                    if outcome == 'success':
+                        exec(script, {})
+                    else:
+                        with self.assertRaises(RuntimeError):
+                            exec(script, {})
+                report = json.loads(Path('reports/ssh-preflight.json').read_text())
+                self.assertEqual(report['targetAuthenticated'], outcome == 'success')
+                self.assertEqual(commands.call_count, 0 if outcome == 'missing-socket' else
+                    1 if outcome in ('empty-agent', 'agent-timeout') else 2)
+                self.assertEqual(set(report), {'agentAvailable', 'targetAuthenticated'})
+
     def permission_script(self):
         script = self.execute(0)
         return script.split("# Xcode's macOS UI runner", 1)[1].split('\nPY\n', 1)[0].split('import subprocess, tempfile', 1)[1]

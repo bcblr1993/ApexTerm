@@ -118,6 +118,37 @@ PY_CLEANUP
 trap 'cleanup_qa_host; release_desktop_lock' EXIT
 tar -xzf input.tar.gz
 mkdir -p reports
+python3 - <<'PY_SSH_PREFLIGHT'
+import json, os, pathlib, subprocess
+configuration = json.loads(pathlib.Path('ui-test-environment.json').read_text())
+host, user = (configuration.get(key) for key in ('APEX_UI_TEST_HOST', 'APEX_UI_TEST_USER'))
+record = {'agentAvailable': False, 'targetAuthenticated': False}
+def stop(message):
+    pathlib.Path('reports/ssh-preflight.json').write_text(json.dumps(record, indent=2))
+    raise RuntimeError(message) from None
+if not host or not user:
+    stop('Missing the dedicated SSH target configuration')
+socket = os.environ.get('SSH_AUTH_SOCK')
+if not socket:
+    stop('The UI runner has no forwarded SSH agent')
+try:
+    agent = subprocess.run(['ssh-add', '-l'], capture_output=True, timeout=10)
+except subprocess.TimeoutExpired:
+    stop('The forwarded SSH agent did not respond')
+record['agentAvailable'] = agent.returncode == 0
+if not record['agentAvailable']:
+    stop('Load the existing test identity into the SSH agent before UI acceptance')
+try:
+    target = subprocess.run(['ssh', '-F', '/dev/null', '-o', 'BatchMode=yes',
+        '-o', 'IdentitiesOnly=no', '-o', 'ConnectTimeout=5', '-o', 'IdentityAgent=' + socket,
+        user + '@' + host, 'printf APEX_UI_REAL_TARGET_OK'], capture_output=True, timeout=15)
+except subprocess.TimeoutExpired:
+    stop('The dedicated SSH target did not respond')
+record['targetAuthenticated'] = target.returncode == 0 and target.stdout == b'APEX_UI_REAL_TARGET_OK'
+if not record['targetAuthenticated']:
+    stop('The forwarded SSH agent cannot authenticate the dedicated test target')
+pathlib.Path('reports/ssh-preflight.json').write_text(json.dumps(record, indent=2))
+PY_SSH_PREFLIGHT
 python3 - <<'PY_KEY_FIXTURE'
 import hashlib, json, pathlib, plistlib, shutil, subprocess
 source_path = pathlib.Path('outputs/ui-acceptance/PhysicalKeyQA.app')

@@ -52,11 +52,24 @@
 
 完整 UI 仍必须在 Tart `macos27` 执行。本轮自定义报告目录错误已解决，后续运行 `outputs/terminal-ui-followup/fixed/20261003-204302-14407/UI.xcresult` 因系统“Enable UI Automation”验证未完成而启动超时，运行器报告 `Timed out while enabling automation mode.`，43 项产品 UI 用例尚未执行。
 
-已通过测试不能替代完整 UI 验收。上一轮主题菜单有限坐标断言与 XCTest 失败处理停滞，以及真实系统拼音、Finder 双向拖拽和窗口截图矩阵，仍待完成系统验证后复测。
+已通过测试不能替代完整 UI 验收。此前主题菜单有限坐标断言与 XCTest 失败处理停滞，以及真实系统拼音、Finder 双向拖拽和窗口截图矩阵，仍需完整复测。系统身份验证在下面的 2026-10-04 复测前已完成。
 
-2026-10-04 用户准备完成系统验证后，基于 `830fefc` 再次启动全量 UI 验收。实际出现 XCTest 密码弹窗，但约 60 秒内未完成验证；Runner 初始化失败，退出 65，43 项产品用例仍未执行。证据为 `outputs/terminal-ui-followup-resumed/20261004-082535-8595/UI.xcresult`、`summary.json` 和 `resume-status.json`。本次弹窗在 Runner 退出后仍显示，保留其独立 VM 工作目录，避免在人工验证期间删除应用；本地传输归档和目标配置副本已清理。待验证完成后再清理该目录并重新运行。
+2026-10-04 用户准备完成系统验证后，基于 `830fefc` 再次启动全量 UI 验收。实际出现 XCTest 密码弹窗，但约 60 秒内未完成验证；Runner 初始化失败，退出 65，43 项产品用例仍未执行。证据为 `outputs/terminal-ui-followup-resumed/20261004-082535-8595/UI.xcresult`、`summary.json` 和 `resume-status.json`。本次弹窗在 Runner 退出后仍显示，保留其独立 VM 工作目录，避免在人工验证期间删除应用；本地传输归档和目标配置副本已清理。系统验证完成后，该独立 VM 目录及本地临时应用已清理，日志、源码和 xcresult 保留（`guest-cleanup-after-verification.json`、`local-transient-cleanup-after-verification.json`）。
 
-随后新增 `testSFTPToolbarResizeKeepsPathDraftAndKeyboardFocus`，完整 UI 清单增至 44 项。它从受控的 1300 点初始窗口开始，实际拖动窗口边缘缩至 960 点、再恢复 1300 点，检查路径框最小宽度、唯一输入框、按钮可点击性、紧凑动作宽度、草稿保留和 Escape 恢复。缩放后通过应用发送键盘输入，不主动重新聚焦路径框，避免掩盖焦点丢失。`xcodebuild build-for-testing` 已通过；此结果只证明测试编译，尚未执行该交互，也未覆盖低于 680 点的两行切换。
+随后新增 `testSFTPToolbarResizeKeepsPathDraftAndKeyboardFocus`，完整 UI 清单增至 44 项。最初的 `xcodebuild build-for-testing` 只证明编译。实际执行发现按压拖动没有改变窗口尺寸；保留尺寸断言，改用 macOS 鼠标点击拖动后，真实缩放交互才通过。
+
+### 2026-10-04 验证完成后的复测
+
+`outputs/terminal-ui-followup-verified/20261004-084034-15632` 已实际启动产品 UI 测试，证明系统验证已完成。主题矩阵完成前五种主题后，在 Nord 的“操作习惯”标签有限坐标检查失败；运行器随后停在失败清理。采样堆栈显示同步失败处理在等待主 actor 的异步清理。仅停止这次拥有的 Runner 和控制器并保留证据；Xcode 取消过程中产生内部错误，原始 xcresult 未完成 `Info.plist`，不能用它宣称完整用例通过。原始包、日志、堆栈及失败画面保留，`runtime-audit.json` 记录该限制。
+
+44 项 UI 操作本身均为同步 API，现改为同步 XCTest 入口和同步清理；清理入口断言处于主线程，再进入主 actor。`@unchecked Sendable` 仅用于 XCTest 同步清理的桥接，测试状态仍由主 actor 隔离；显式非隔离析构不访问这些状态。有限坐标断言保留，先检查控件存在再读取几何信息。诊断结果依次为：
+
+- `synchronous-diagnostic-1`：故意失败用例正常完成截图、清理并退出，约 17 秒，下一用例正常执行。3 项中路径复制与草稿取消通过，故意失败和窗口尺寸未变化共 2 项失败；这是诊断，不能记为产品验收通过。故意失败源码仅保留在报告，已从当前 44 项清单移除。
+- `resize-diagnostic-2`：Mocha 设置标签通过；按压手势仍未改变宽度，尺寸回归失败并正常退出。未降低或删除尺寸断言。
+- `resize-diagnostic-3`：使用右侧直边上的[鼠标点击拖动 API](https://developer.apple.com/documentation/xcuiautomation/xcuicoordinate/click%28forduration%3Athendragto%3Awithvelocity%3Athenholdforduration%3A%29)，实际完成 1300 → 960 → 1300 点缩放，路径草稿、继续键入及 Escape 恢复均通过。
+- `resize-diagnostic-4-two-rows`：同一回归分别在默认侧栏及受控 370 点侧栏下执行。QA 侧栏宽度限定在产品原有 260…370 点范围，实际窗口仍由鼠标拖动。分别断言单行和两行的控件位置、唯一输入框、至少 240 点路径宽度、按钮可点击性、草稿与键盘焦点，以及展开后回到同一行。两种交互均通过。此结果不表示用户已经实际拖动侧栏分隔线。
+
+当前生产模块源码未因上述测试修复改变；完整 44 项产品 UI 门禁仍需基于最终测试源码重跑，不可用专项通过替代。
 
 ## SFTP 工具栏的 VM 渲染检查
 
@@ -65,7 +78,7 @@
 - 960 点宽、VS Code Dark Modern：完整示例路径可见，工具栏为紧凑图标；证据 `outputs/terminal-ui-followup-manual/20261003-211227/compact-dark-render-final.png`。
 - 1300 点宽、经典白色：路径与按钮文字均可见；证据同目录的 `wide-light-render-final.png`。
 
-QA 辅助程序新增可选 `APEX_QA_INITIAL_WINDOW_WIDTH`，在启动时设置有限、受屏幕范围限制的宽度。主题也由原有初始主题选项设置。这些截图只证明指定初始尺寸和主题的真实渲染，不能替代拖动缩放、跨布局焦点保持、主题菜单选择或复制粘贴的交互验收。低于 680 点的两行布局也尚未通过真实窗口操作验收。通过 Tart 输入通道进行的菜单选择及复制检查没有获得可靠结果，不计为通过。
+QA 辅助程序新增可选 `APEX_QA_INITIAL_WINDOW_WIDTH`，在启动时设置有限、受屏幕范围限制的宽度。主题也由原有初始主题选项设置。这些截图只证明指定初始尺寸和主题的真实渲染，不能替代拖动缩放、跨布局焦点保持、主题菜单选择或复制粘贴的交互验收。这些初始渲染检查当时没有覆盖两行布局；其真实窗口操作已在上面的 2026-10-04 专项复测中补充。通过 Tart 输入通道进行的菜单选择及复制检查当时没有获得可靠结果，不计为通过；后续 XCTest 的路径复制回归已实际通过。
 
 同目录 `run.json` 保存最后两次渲染所用源码、传输归档及截图的 SHA-256，归档在 VM 解包前校验一致；`final-source.patch` 保存对应源码差异。QA 应用在 VM 中使用独立标识重新临时签名，不能据此声称签名后的整个二进制与传输前哈希相同，也不能替代正式分发包验证。
 

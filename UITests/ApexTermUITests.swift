@@ -5,7 +5,10 @@ import CryptoKit
 
 /// Drives an isolated QA host linked to the same product modules as the release.
 @MainActor
-final class ApexTermUITests: XCTestCase {
+final class ApexTermUITests: XCTestCase, @unchecked Sendable {
+    // XCTest constructs and releases cases outside a Swift concurrency task.
+    nonisolated deinit {}
+
     private var app: XCUIApplication!
     private var ownedRemoteDirectory: String?
     private var inputSourceToRestore: IMEInputSourceSelection?
@@ -15,7 +18,16 @@ final class ApexTermUITests: XCTestCase {
         continueAfterFailure = false
     }
 
-    override func tearDown() async throws {
+    nonisolated override func tearDownWithError() throws {
+        // A synchronous XCTest failure cannot wait for an actor-isolated async
+        // teardown while the interrupted test still occupies that actor.
+        // UI state is main-actor isolated. The Sendable bridge is restricted to
+        // XCTest's synchronous teardown, which must execute on the UI thread.
+        precondition(Thread.isMainThread, "UI teardown must run on the main thread")
+        try MainActor.assumeIsolated { try run_tearDown() }
+    }
+
+    private func run_tearDown() throws {
         // Cleanup must finish even when an earlier cleanup assertion fails.
         continueAfterFailure = true
         if (testRun?.failureCount ?? 0) > 0, let app, app.state == .runningForeground {
@@ -107,7 +119,7 @@ final class ApexTermUITests: XCTestCase {
         focusOwnedWindow()
     }
 
-    func testProductReopensMainWindowAfterLastWindowCloses() async throws {
+    func testProductReopensMainWindowAfterLastWindowCloses() throws {
         try run_testProductReopensMainWindowAfterLastWindowCloses()
     }
 
@@ -144,8 +156,9 @@ final class ApexTermUITests: XCTestCase {
 
     private func clickVisibleCenter(_ item: XCUIElement) {
         let visible = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            guard item.exists else { return false }
             let rect = item.frame
-            return item.exists && rect.origin.x.isFinite && rect.origin.y.isFinite
+            return rect.origin.x.isFinite && rect.origin.y.isFinite
                 && rect.width.isFinite && rect.height.isFinite && rect.width > 0 && rect.height > 0
         }, object: item)
         XCTAssertEqual(XCTWaiter.wait(for: [visible], timeout: 5), .completed,
@@ -173,7 +186,7 @@ final class ApexTermUITests: XCTestCase {
         focusOwnedWindow()
     }
 
-    func testSearchEmptyAndRecovery() async {
+    func testSearchEmptyAndRecovery() {
         run_testSearchEmptyAndRecovery()
     }
 
@@ -191,7 +204,7 @@ final class ApexTermUITests: XCTestCase {
         capture("search-restored")
     }
 
-    func testSessionEmptyInvalidPortAndCancel() async {
+    func testSessionEmptyInvalidPortAndCancel() {
         run_testSessionEmptyInvalidPortAndCancel()
     }
 
@@ -216,7 +229,7 @@ final class ApexTermUITests: XCTestCase {
         XCTAssertTrue(staticText("1 台主机", comparison: "CONTAINS").exists)
     }
 
-    func testSessionValidPortRecoveryAndSave() async {
+    func testSessionValidPortRecoveryAndSave() {
         run_testSessionValidPortRecoveryAndSave()
     }
 
@@ -249,7 +262,7 @@ final class ApexTermUITests: XCTestCase {
         capture("session-saved-and-searchable")
     }
 
-    func testUpdateFailureCloseAndReopen() async {
+    func testUpdateFailureCloseAndReopen() {
         run_testUpdateFailureCloseAndReopen()
     }
 
@@ -266,7 +279,7 @@ final class ApexTermUITests: XCTestCase {
         XCTAssertTrue(app.sheets.firstMatch.waitForNonExistence(timeout: 5))
     }
 
-    func testUpdateLoadingAndSuccess() async {
+    func testUpdateLoadingAndSuccess() {
         run_testUpdateLoadingAndSuccess()
     }
 
@@ -281,7 +294,7 @@ final class ApexTermUITests: XCTestCase {
         XCTAssertTrue(app.sheets.firstMatch.waitForNonExistence(timeout: 5))
     }
 
-    func testUpdateAvailableVersionNotesAndEscape() async {
+    func testUpdateAvailableVersionNotesAndEscape() {
         run_testUpdateAvailableVersionNotesAndEscape()
     }
 
@@ -298,7 +311,7 @@ final class ApexTermUITests: XCTestCase {
         XCTAssertTrue(app.windows.buttons["显示更新弹窗"].firstMatch.isHittable)
     }
 
-    func testSFTPEmptyLoadingAndFailureStates() async {
+    func testSFTPEmptyLoadingAndFailureStates() {
         run_testSFTPEmptyLoadingAndFailureStates()
     }
 
@@ -318,7 +331,7 @@ final class ApexTermUITests: XCTestCase {
         }
     }
 
-    func testSFTPFilterEmptyClearAndEscape() async {
+    func testSFTPFilterEmptyClearAndEscape() {
         run_testSFTPFilterEmptyClearAndEscape()
     }
 
@@ -349,7 +362,7 @@ final class ApexTermUITests: XCTestCase {
         capture("sftp-filter-escape-restored")
     }
 
-    func testSFTPDirectoryFailureRetryRecovers() async {
+    func testSFTPDirectoryFailureRetryRecovers() {
         run_testSFTPDirectoryFailureRetryRecovers()
     }
 
@@ -368,7 +381,7 @@ final class ApexTermUITests: XCTestCase {
         capture("sftp-retry-restored")
     }
 
-    func testSFTPPathDraftCancelEmptyAndSubmit() async {
+    func testSFTPPathDraftCancelEmptyAndSubmit() {
         run_testSFTPPathDraftCancelEmptyAndSubmit()
     }
 
@@ -409,13 +422,22 @@ final class ApexTermUITests: XCTestCase {
         capture("sftp-path-submitted")
     }
 
-    func testSFTPToolbarResizeKeepsPathDraftAndKeyboardFocus() async {
+    func testSFTPToolbarResizeKeepsPathDraftAndKeyboardFocus() {
         run_testSFTPToolbarResizeKeepsPathDraftAndKeyboardFocus()
     }
 
     private func run_testSFTPToolbarResizeKeepsPathDraftAndKeyboardFocus() {
-        launch("main", extra: ["APEX_QA_FILES": "normal", "APEX_QA_CONNECT": "1",
-                               "APEX_QA_INITIAL_WINDOW_WIDTH": "1300"])
+        verifySFTPToolbarResize(twoRows: false)
+        app.terminate()
+        verifySFTPToolbarResize(twoRows: true)
+    }
+
+    private func verifySFTPToolbarResize(twoRows: Bool) {
+        var environment = ["APEX_QA_FILES": "normal", "APEX_QA_CONNECT": "1",
+                           "APEX_QA_INITIAL_WINDOW_WIDTH": "1300"]
+        if twoRows { environment["APEX_QA_INITIAL_SIDEBAR_WIDTH"] = "370" }
+        let prefix = twoRows ? "sftp-toolbar-two-rows" : "sftp-toolbar"
+        launch("main", extra: environment)
         XCTAssertTrue(staticText("nginx.conf").waitForExistence(timeout: 10))
         let window = app.windows.firstMatch
         let path = app.textFields["远程路径"]
@@ -433,7 +455,7 @@ final class ApexTermUITests: XCTestCase {
         path.click()
         path.typeKey("a", modifierFlags: .command)
         path.typeText("/ui-resize-draft")
-        capture("sftp-toolbar-wide-draft")
+        capture(prefix + "-wide-draft")
 
         func resizeWidth(to width: CGFloat) {
             let frame = window.frame
@@ -441,10 +463,13 @@ final class ApexTermUITests: XCTestCase {
                           && frame.width.isFinite && frame.height.isFinite)
             // Drag the real window edge; a QA state setter would not exercise
             // the editor's focus while AppKit tracks a live resize gesture.
-            let edge = window.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 1))
-                .withOffset(CGVector(dx: -2, dy: -2))
+            // The rounded bottom corner can lie outside the actual window hit
+            // region. Use the straight right border for horizontal resizing.
+            let edge = window.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 0.5))
+                .withOffset(CGVector(dx: -1, dy: 0))
             let destination = edge.withOffset(CGVector(dx: width - frame.width, dy: 0))
-            edge.press(forDuration: 0.2, thenDragTo: destination)
+            edge.click(forDuration: 0.2, thenDragTo: destination,
+                       withVelocity: .slow, thenHoldForDuration: 0.1)
             let resized = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
                 abs(window.frame.width - width) <= 4
             }, object: window)
@@ -458,26 +483,35 @@ final class ApexTermUITests: XCTestCase {
         XCTAssertGreaterThanOrEqual(path.frame.width, 240)
         XCTAssertTrue(copyPath.isHittable)
         XCTAssertTrue(upload.isHittable)
+        if twoRows {
+            XCTAssertGreaterThan(upload.frame.minY, path.frame.maxY,
+                                 "The constrained file panel must place actions below the path")
+        } else {
+            XCTAssertLessThan(abs(upload.frame.midY - path.frame.midY), 8,
+                              "The default narrow toolbar should remain on one row")
+        }
         XCTAssertLessThan(upload.frame.width, wideUploadWidth - 12,
                           "The narrow toolbar must free space by compacting its action labels")
         // Send through the app rather than path.typeText, which could silently
         // refocus the field and conceal a focus loss during resizing.
         app.typeText("-compact")
         XCTAssertEqual(path.value as? String, "/ui-resize-draft-compact")
-        capture("sftp-toolbar-compact-draft-and-focus")
+        capture(prefix + "-compact-draft-and-focus")
 
         resizeWidth(to: 1300)
         app.typeText("-wide")
         XCTAssertEqual(path.value as? String, "/ui-resize-draft-compact-wide")
         XCTAssertGreaterThan(upload.frame.width, wideUploadWidth - 4)
         XCTAssertGreaterThanOrEqual(path.frame.width, 240)
+        XCTAssertLessThan(abs(upload.frame.midY - path.frame.midY), 8,
+                          "Expanding the window must return the actions to the path row")
         app.typeKey(.escape, modifierFlags: [])
         XCTAssertEqual(path.value as? String, originalPath)
         XCTAssertTrue(staticText("nginx.conf").exists)
-        capture("sftp-toolbar-resize-cancel-restores-path")
+        capture(prefix + "-resize-cancel-restores-path")
     }
 
-    func testTerminalSplitOrientationAndClose() async {
+    func testTerminalSplitOrientationAndClose() {
         run_testTerminalSplitOrientationAndClose()
     }
 
@@ -524,7 +558,7 @@ final class ApexTermUITests: XCTestCase {
         capture("terminal-split-closed")
     }
 
-    func testTerminalDisconnectedReconnectRestoresInput() async {
+    func testTerminalDisconnectedReconnectRestoresInput() {
         run_testTerminalDisconnectedReconnectRestoresInput()
     }
 
@@ -549,7 +583,7 @@ final class ApexTermUITests: XCTestCase {
         capture("terminal-reconnected-input")
     }
 
-    func testSSHConfigImportSelectionAndDuplicateRecovery() async {
+    func testSSHConfigImportSelectionAndDuplicateRecovery() {
         run_testSSHConfigImportSelectionAndDuplicateRecovery()
     }
 
@@ -586,7 +620,7 @@ final class ApexTermUITests: XCTestCase {
         capture("ssh-config-import-deduplicated")
     }
 
-    func testSSHConfigImportSheetCancelDoesNotImport() async {
+    func testSSHConfigImportSheetCancelDoesNotImport() {
         run_testSSHConfigImportSheetCancelDoesNotImport()
     }
 
@@ -610,7 +644,7 @@ final class ApexTermUITests: XCTestCase {
         capture("ssh-config-cancel-no-import")
     }
 
-    func testSSHConfigEmptyImportDisabledAndCancel() async {
+    func testSSHConfigEmptyImportDisabledAndCancel() {
         run_testSSHConfigEmptyImportDisabledAndCancel()
     }
 
@@ -627,7 +661,7 @@ final class ApexTermUITests: XCTestCase {
         XCTAssertTrue(app.windows.buttons["显示导入弹窗"].firstMatch.isHittable)
     }
 
-    func testSFTPCreationPermissionFailureShowsDetailsWithoutOpeningTransfers() async {
+    func testSFTPCreationPermissionFailureShowsDetailsWithoutOpeningTransfers() {
         run_testSFTPCreationPermissionFailureShowsDetailsWithoutOpeningTransfers()
     }
 
@@ -671,7 +705,7 @@ final class ApexTermUITests: XCTestCase {
         app.windows.buttons["好"].firstMatch.click()
     }
 
-    func testSFTPCreateFileCancelAndSuccessfulListing() async {
+    func testSFTPCreateFileCancelAndSuccessfulListing() {
         run_testSFTPCreateFileCancelAndSuccessfulListing()
     }
 
@@ -700,7 +734,7 @@ final class ApexTermUITests: XCTestCase {
         capture("sftp-create-file-listed")
     }
 
-    func testSFTPRenameCancelAndSuccessfulListing() async {
+    func testSFTPRenameCancelAndSuccessfulListing() {
         run_testSFTPRenameCancelAndSuccessfulListing()
     }
 
@@ -733,7 +767,7 @@ final class ApexTermUITests: XCTestCase {
         capture("sftp-renamed-file-listed")
     }
 
-    func testSFTPCreateFolderCancelAndSuccessfulListing() async {
+    func testSFTPCreateFolderCancelAndSuccessfulListing() {
         run_testSFTPCreateFolderCancelAndSuccessfulListing()
     }
 
@@ -774,7 +808,7 @@ final class ApexTermUITests: XCTestCase {
         capture("sftp-created-folder-entered")
     }
 
-    func testSFTPHiddenFilesToggleAndKeyboardRecovery() async {
+    func testSFTPHiddenFilesToggleAndKeyboardRecovery() {
         run_testSFTPHiddenFilesToggleAndKeyboardRecovery()
     }
 
@@ -797,7 +831,7 @@ final class ApexTermUITests: XCTestCase {
         capture("sftp-hidden-files-keyboard-hidden")
     }
 
-    func testSFTPDeleteConfirmationCancelAndRemoveOwnFixture() async {
+    func testSFTPDeleteConfirmationCancelAndRemoveOwnFixture() {
         run_testSFTPDeleteConfirmationCancelAndRemoveOwnFixture()
     }
 
@@ -833,7 +867,7 @@ final class ApexTermUITests: XCTestCase {
         capture("sftp-own-fixture-deleted")
     }
 
-    func testRealSSHVimClipboardArrowsResizeAndSave() async throws {
+    func testRealSSHVimClipboardArrowsResizeAndSave() throws {
         try run_testRealSSHVimClipboardArrowsResizeAndSave()
     }
 
@@ -938,7 +972,7 @@ final class ApexTermUITests: XCTestCase {
         capture("real-vim-copy-and-saved-bytes-verified")
     }
 
-    func testTerminalNumberedTabShortcutsKeepOutputSeparate() async {
+    func testTerminalNumberedTabShortcutsKeepOutputSeparate() {
         run_testTerminalNumberedTabShortcutsKeepOutputSeparate()
     }
 
@@ -965,7 +999,7 @@ final class ApexTermUITests: XCTestCase {
         capture("numbered-tabs-preserve-independent-output")
     }
 
-    func testRealSSHBuiltinPinyinCompositionAndCommit() async throws {
+    func testRealSSHBuiltinPinyinCompositionAndCommit() throws {
         try run_testRealSSHBuiltinPinyinCompositionAndCommit()
     }
 
@@ -1080,7 +1114,7 @@ final class ApexTermUITests: XCTestCase {
         capture("real-system-pinyin-ssh-echo")
     }
 
-    func testRealSSHConfiguredHostIsMandatory() async throws {
+    func testRealSSHConfiguredHostIsMandatory() throws {
         try run_testRealSSHConfiguredHostIsMandatory()
     }
 
@@ -1179,7 +1213,7 @@ final class ApexTermUITests: XCTestCase {
     private var dragLocalDirectory: URL?
     private var dragRemoteFixture: (destination: String, directory: String, fileName: String)?
     private var dragFinderWindow: XCUIElement?
-    func testRealFinderDragUploadAndRecord() async throws {
+    func testRealFinderDragUploadAndRecord() throws {
         try run_testRealFinderDragUploadAndRecord()
     }
 
@@ -1187,7 +1221,7 @@ final class ApexTermUITests: XCTestCase {
         try exerciseFinderDrag(download: false)
     }
 
-    func testRealFinderDragDownloadAndRecord() async throws {
+    func testRealFinderDragDownloadAndRecord() throws {
         try run_testRealFinderDragDownloadAndRecord()
     }
 
@@ -1195,7 +1229,7 @@ final class ApexTermUITests: XCTestCase {
         try exerciseFinderDrag(download: true)
     }
 
-    func testRealFinderDragLargeDownloadAndRecord() async throws {
+    func testRealFinderDragLargeDownloadAndRecord() throws {
         try run_testRealFinderDragLargeDownloadAndRecord()
     }
 
@@ -1451,7 +1485,7 @@ final class ApexTermUITests: XCTestCase {
         }
     }
 
-    func testRealSSHTerminalScrollSystemMetrics() async throws {
+    func testRealSSHTerminalScrollSystemMetrics() throws {
         try run_testRealSSHTerminalScrollSystemMetrics()
     }
 
@@ -1485,7 +1519,7 @@ final class ApexTermUITests: XCTestCase {
         capture("real-terminal-scroll-metrics-after")
     }
 
-    func testTransferRecordFiltersAndClearCompleted() async {
+    func testTransferRecordFiltersAndClearCompleted() {
         run_testTransferRecordFiltersAndClearCompleted()
     }
 
@@ -1512,7 +1546,7 @@ final class ApexTermUITests: XCTestCase {
         capture("transfer-clear-preserves-failure")
     }
 
-    func testTransferCancelAndClearPreservesActiveTask() async {
+    func testTransferCancelAndClearPreservesActiveTask() {
         run_testTransferCancelAndClearPreservesActiveTask()
     }
 
@@ -1534,7 +1568,7 @@ final class ApexTermUITests: XCTestCase {
         capture("transfer-clear-preserves-active")
     }
 
-    func testEditorUnsavedCancelSaveAndClose() async {
+    func testEditorUnsavedCancelSaveAndClose() {
         run_testEditorUnsavedCancelSaveAndClose()
     }
 
@@ -1560,7 +1594,7 @@ final class ApexTermUITests: XCTestCase {
         XCTAssertTrue(app.sheets.firstMatch.waitForNonExistence(timeout: 5))
     }
 
-    func testEditorSaveFailureKeepsChanges() async {
+    func testEditorSaveFailureKeepsChanges() {
         run_testEditorSaveFailureKeepsChanges()
     }
 
@@ -1580,7 +1614,7 @@ final class ApexTermUITests: XCTestCase {
         app.windows.buttons["继续编辑"].firstMatch.click()
     }
 
-    func testEditorSaveFailureRetryRecovers() async {
+    func testEditorSaveFailureRetryRecovers() {
         run_testEditorSaveFailureRetryRecovers()
     }
 
@@ -1606,7 +1640,7 @@ final class ApexTermUITests: XCTestCase {
         XCTAssertFalse(app.windows.buttons["继续编辑"].firstMatch.exists)
     }
 
-    func testEditorReloadFailureRetryPreservesContent() async {
+    func testEditorReloadFailureRetryPreservesContent() {
         run_testEditorReloadFailureRetryPreservesContent()
     }
 
@@ -1632,7 +1666,7 @@ final class ApexTermUITests: XCTestCase {
         XCTAssertTrue(app.sheets.firstMatch.waitForNonExistence(timeout: 5))
     }
 
-    func testEditorChangesDuringSaveRemainUnsaved() async {
+    func testEditorChangesDuringSaveRemainUnsaved() {
         run_testEditorChangesDuringSaveRemainUnsaved()
     }
 
@@ -1661,7 +1695,7 @@ final class ApexTermUITests: XCTestCase {
         XCTAssertTrue(app.sheets.firstMatch.waitForNonExistence(timeout: 5))
     }
 
-    func testEditorKeyboardFindUndoAndSave() async {
+    func testEditorKeyboardFindUndoAndSave() {
         run_testEditorKeyboardFindUndoAndSave()
     }
 
@@ -1694,7 +1728,7 @@ final class ApexTermUITests: XCTestCase {
         XCTAssertTrue(app.sheets.firstMatch.waitForNonExistence(timeout: 5))
     }
 
-    func testEditorReloadCancelAndDiscard() async {
+    func testEditorReloadCancelAndDiscard() {
         run_testEditorReloadCancelAndDiscard()
     }
 
@@ -1720,7 +1754,7 @@ final class ApexTermUITests: XCTestCase {
         XCTAssertTrue(app.sheets.firstMatch.waitForNonExistence(timeout: 5))
     }
 
-    func testMochaSettingsTabsRemainClickable() async {
+    func testMochaSettingsTabsRemainClickable() {
         run_testMochaSettingsTabsRemainClickable()
     }
 
@@ -1740,7 +1774,7 @@ final class ApexTermUITests: XCTestCase {
         }
     }
 
-    func testRealSSHMonitoringDisconnectAndReconnect() async throws {
+    func testRealSSHMonitoringDisconnectAndReconnect() throws {
         try run_testRealSSHMonitoringDisconnectAndReconnect()
     }
 
@@ -1790,7 +1824,7 @@ final class ApexTermUITests: XCTestCase {
         capture("real-monitor-reconnected")
     }
 
-    func testMonitoringStatesAreExplicit() async {
+    func testMonitoringStatesAreExplicit() {
         run_testMonitoringStatesAreExplicit()
     }
 
@@ -1845,7 +1879,7 @@ final class ApexTermUITests: XCTestCase {
         }
     }
 
-    func testAllThemesAndPagesRender() async {
+    func testAllThemesAndPagesRender() {
         run_testAllThemesAndPagesRender()
     }
 

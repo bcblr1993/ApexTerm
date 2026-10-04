@@ -19,6 +19,14 @@ struct ThemeVerificationApp: App {
     @State private var selectedID: UUID?
     @State private var selectedSession: Session?
     @State private var scene = ProcessInfo.processInfo.environment["APEX_QA_SCENE"] ?? "main"
+
+    // Exercise the file toolbar at both ends of the production sidebar range.
+    // This controls only the starting QA geometry; tests still resize by mouse.
+    private var fixedSidebarWidth: CGFloat? {
+        guard let width = ProcessInfo.processInfo.environment["APEX_QA_INITIAL_SIDEBAR_WIDTH"].flatMap(Double.init),
+              width.isFinite, (260...370).contains(width) else { return nil }
+        return CGFloat(width)
+    }
     @State private var editorContent = "# 示例配置\nserver=demo\nport=22\n"
     @State private var updatePresented = true
     @State private var editorPresented = true
@@ -181,7 +189,9 @@ struct ThemeVerificationApp: App {
             } else {
             NavigationSplitView {
                 SidebarView(store: store, selectedSession: $selectedSession, onConnect: { _ in }, onRunSnippet: { _ in })
-                    .frame(minWidth: 260, idealWidth: 290, maxWidth: 370)
+                    .frame(minWidth: fixedSidebarWidth ?? 260,
+                           idealWidth: fixedSidebarWidth ?? 290,
+                           maxWidth: fixedSidebarWidth ?? 370)
             } detail: {
                 WorkspaceView(store: store, activeTabs: $tabs, selectedTabId: $selectedID)
             }

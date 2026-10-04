@@ -107,3 +107,11 @@ QA 辅助程序新增可选 `APEX_QA_INITIAL_WINDOW_WIDTH`，在启动时设置�
 最终完整运行在远端创建的 5 个确切目录均独立通过 SSH 确认不存在，3 个 VM 本地拖拽目录也不存在；独立 QA 工作目录及唯一标识对应的偏好、缓存和保存状态已清理。主机生成的 xctestrun 中 5 项一次性运行配置已移除，原有验收配置保留。证据为最终报告中的 `remote-owned-cleanup-verification.json`、`guest-cleanup.json`、`local-transient-cleanup.json` 和 `host-test-configuration-cleanup.json`。
 
 改动位于 `bcblr/fix-terminal-ui-followup`，更新日志记为 Unreleased。本报告不改变已提交 Apple 审核的构建及此前发布结论。
+
+## v1.6.1 发布复测的菜单与确认框定位
+
+2026-10-04 基于 `bf45170` 的发布 UI 复测完整执行 44 项，41 项通过、3 项失败、0 跳过。真实 SFTP 删除、监控断开和取消后再次删除分别遇到菜单无效坐标或确认按钮点击后没有关闭的问题；原始结果位于 `outputs/ui-acceptance/20261004-124644-61871`，未进入签名打包。
+
+macOS 27 的多个 SwiftUI 菜单项共享 `menuAction:` 标识，菜单的 AXTitle 与 AXLabel 也不同。测试现按 `title`（兼容 `label`）持续查询并绑定结果索引，将已验证的有限屏幕坐标锚定到当前窗口后执行真实鼠标点击；删除确认按钮使用精确标签查询和相同坐标检查。原有删除、取消、重连及远程保存字节断言保留，新增点击位置与控件中心一致的断言。生产模块未改动。
+
+第一次专项诊断因只查询 `label`/`identifier`，5 项中仅系统拼音通过；失败结果保留在 `outputs/release-v1.6.1/menu-diagnostic-20261004-133356-69073`。核对 Xcode SDK 的 `title` 接口并修正后，`menu-diagnostic-20261004-133633-69771` 的系统拼音、真实 SFTP 文件操作、监控重连、取消后再次删除和分屏全部通过（5/5，0 失败、0 跳过、0 预期失败）。脚本 75 项再次通过。专项结果用于定位，不代替随后的完整 44 项发布门禁。

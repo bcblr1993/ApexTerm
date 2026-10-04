@@ -154,18 +154,38 @@ final class ApexTermUITests: XCTestCase, @unchecked Sendable {
         add(attachment)
     }
 
+    private func menuItem(_ title: String) -> XCUIElement {
+        // AppKit gives several SwiftUI menu items the same "menuAction:" ID.
+        // macOS exposes AXTitle separately from AXLabel. Keep the title query
+        // instead of binding to that shared AX identity.
+        app.menuItems.matching(NSPredicate(format: "title == %@ OR label == %@", title, title))
+            .element(boundBy: 0)
+    }
+
     private func clickVisibleCenter(_ item: XCUIElement) {
+        var visibleFrame: CGRect?
         let visible = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             guard item.exists else { return false }
             let rect = item.frame
-            return rect.origin.x.isFinite && rect.origin.y.isFinite
+            let valid = rect.origin.x.isFinite && rect.origin.y.isFinite
                 && rect.width.isFinite && rect.height.isFinite && rect.width > 0 && rect.height > 0
+            if valid { visibleFrame = rect }
+            return valid
         }, object: item)
         XCTAssertEqual(XCTWaiter.wait(for: [visible], timeout: 5), .completed,
                        "Control must have a visible, finite screen rectangle")
-        // XCTest's menu click hover path can resolve an infinite point on macOS 27.
-        // Click the actual visible center without invoking that hover path.
-        item.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
+        guard let rect = visibleFrame else { return }
+        // macOS 27 can rebind a menu/alert coordinate to a stale AX element at
+        // event synthesis. Anchor the verified screen point to our stable window.
+        let window = app.windows.element(boundBy: 0)
+        let origin = window.frame.origin
+        XCTAssertTrue(origin.x.isFinite && origin.y.isFinite)
+        guard origin.x.isFinite && origin.y.isFinite else { return }
+        let point = window.coordinate(withNormalizedOffset: .zero)
+            .withOffset(CGVector(dx: rect.midX - origin.x, dy: rect.midY - origin.y))
+        XCTAssertEqual(point.screenPoint.x, rect.midX, accuracy: 0.5)
+        XCTAssertEqual(point.screenPoint.y, rect.midY, accuracy: 0.5)
+        point.click()
     }
 
     private func focusOwnedWindow() {
@@ -525,7 +545,7 @@ final class ApexTermUITests: XCTestCase, @unchecked Sendable {
         let split = app.menuButtons["rectangle.split.2x1"].firstMatch
         XCTAssertTrue(split.isHittable)
         split.click()
-        clickVisibleCenter(app.menuItems["垂直分屏"])
+        clickVisibleCenter(menuItem("垂直分屏"))
         let twoPanes = XCTNSPredicateExpectation(predicate: NSPredicate { [app] _, _ in
             app?.textViews.count == 2
         }, object: nil)
@@ -536,7 +556,7 @@ final class ApexTermUITests: XCTestCase, @unchecked Sendable {
         XCTAssertLessThan(abs(left.midY - right.midY), 30)
         capture("terminal-split-vertical")
         split.click()
-        clickVisibleCenter(app.menuItems["水平分屏"])
+        clickVisibleCenter(menuItem("水平分屏"))
         let horizontalLayout = XCTNSPredicateExpectation(predicate: NSPredicate { [app] _, _ in
             guard let app, app.textViews.count == 2 else { return false }
             let first = app.textViews.element(boundBy: 0).frame
@@ -566,7 +586,7 @@ final class ApexTermUITests: XCTestCase, @unchecked Sendable {
         launch("main", extra: ["APEX_QA_CONNECT": "1"])
         XCTAssertTrue(staticText("已连接", comparison: "BEGINSWITH").waitForExistence(timeout: 10))
         clickVisibleCenter(app.menuBars.menuBarItems["验收操作"])
-        clickVisibleCenter(app.menuItems["断开测试终端"])
+        clickVisibleCenter(menuItem("断开测试终端"))
         XCTAssertTrue(staticText("会话已断开").waitForExistence(timeout: 5))
         let reconnect = app.windows.buttons["重新连接 (⌘R)"].firstMatch
         XCTAssertTrue(reconnect.isHittable)
@@ -601,17 +621,17 @@ final class ApexTermUITests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(XCTWaiter.wait(for: [sheetClosed], timeout: 5), .completed)
         capture("ssh-config-import-success")
         clickVisibleCenter(app.menuBars.menuBarItems["验收页面"])
-        clickVisibleCenter(app.menuItems["main"])
+        clickVisibleCenter(menuItem("main"))
         let twoHosts = staticText("2 台主机", comparison: "CONTAINS")
         XCTAssertTrue(twoHosts.waitForExistence(timeout: 5))
         clickVisibleCenter(app.menuBars.menuBarItems["验收页面"])
-        clickVisibleCenter(app.menuItems["import-sheet"])
+        clickVisibleCenter(menuItem("import-sheet"))
         XCTAssertTrue(selected.waitForExistence(timeout: 5))
         selected.click()
         let secondSheetClosed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.sheets.firstMatch)
         XCTAssertEqual(XCTWaiter.wait(for: [secondSheetClosed], timeout: 5), .completed)
         clickVisibleCenter(app.menuBars.menuBarItems["验收页面"])
-        clickVisibleCenter(app.menuItems["main"])
+        clickVisibleCenter(menuItem("main"))
         XCTAssertTrue(twoHosts.waitForExistence(timeout: 5), "Reimport must update the existing session rather than duplicate it")
         let search = app.textFields.matching(NSPredicate(format: "label CONTAINS %@", "搜索会话")).firstMatch
         search.click()
@@ -635,7 +655,7 @@ final class ApexTermUITests: XCTestCase, @unchecked Sendable {
         app.windows.buttons["取消"].firstMatch.click()
         XCTAssertTrue(app.sheets.firstMatch.waitForNonExistence(timeout: 5))
         clickVisibleCenter(app.menuBars.menuBarItems["验收页面"])
-        clickVisibleCenter(app.menuItems["main"])
+        clickVisibleCenter(menuItem("main"))
         XCTAssertTrue(staticText("1 台主机", comparison: "CONTAINS").waitForExistence(timeout: 5))
         let search = app.textFields.matching(NSPredicate(format: "label CONTAINS %@", "搜索会话")).firstMatch
         search.click()
@@ -670,7 +690,7 @@ final class ApexTermUITests: XCTestCase, @unchecked Sendable {
         XCTAssertTrue(staticText("nginx.conf").waitForExistence(timeout: 10))
         let more = app.menuButtons["ellipsis"].firstMatch
         more.click()
-        clickVisibleCenter(app.menuItems["新建文件"])
+        clickVisibleCenter(menuItem("新建文件"))
         let name = app.textFields["文件名 (例如 test.sh)"]
         XCTAssertTrue(name.waitForExistence(timeout: 5))
         name.click()
@@ -688,7 +708,7 @@ final class ApexTermUITests: XCTestCase, @unchecked Sendable {
         app.windows.buttons["好"].firstMatch.click()
         XCTAssertTrue(staticText("nginx.conf").exists)
         more.click()
-        clickVisibleCenter(app.menuItems["新建文件夹"])
+        clickVisibleCenter(menuItem("新建文件夹"))
         let folderName = app.textFields["文件夹名称"]
         XCTAssertTrue(folderName.waitForExistence(timeout: 5))
         folderName.click()
@@ -715,7 +735,7 @@ final class ApexTermUITests: XCTestCase, @unchecked Sendable {
         let more = app.menuButtons["ellipsis"].firstMatch
         XCTAssertTrue(more.isHittable)
         more.click()
-        clickVisibleCenter(app.menuItems["新建文件"])
+        clickVisibleCenter(menuItem("新建文件"))
         let name = app.textFields["文件名 (例如 test.sh)"]
         XCTAssertTrue(name.waitForExistence(timeout: 5))
         name.click()
@@ -723,7 +743,7 @@ final class ApexTermUITests: XCTestCase, @unchecked Sendable {
         app.windows.buttons["取消"].firstMatch.click()
         XCTAssertFalse(staticText("ui-canceled-file.txt").exists)
         more.click()
-        clickVisibleCenter(app.menuItems["新建文件"])
+        clickVisibleCenter(menuItem("新建文件"))
         XCTAssertTrue(name.waitForExistence(timeout: 5))
         name.click()
         name.typeText("ui-created-file.txt")
@@ -744,7 +764,7 @@ final class ApexTermUITests: XCTestCase, @unchecked Sendable {
         XCTAssertTrue(original.waitForExistence(timeout: 10))
         original.click()
         original.rightClick()
-        clickVisibleCenter(app.menuItems["重命名..."])
+        clickVisibleCenter(menuItem("重命名..."))
         let name = app.textFields["新名称"]
         XCTAssertTrue(name.waitForExistence(timeout: 5))
         name.click()
@@ -755,7 +775,7 @@ final class ApexTermUITests: XCTestCase, @unchecked Sendable {
         XCTAssertFalse(staticText("ui-canceled-name.conf").exists)
         original.click()
         original.rightClick()
-        clickVisibleCenter(app.menuItems["重命名..."])
+        clickVisibleCenter(menuItem("重命名..."))
         XCTAssertTrue(name.waitForExistence(timeout: 5))
         name.click()
         name.typeKey("a", modifierFlags: .command)
@@ -776,7 +796,7 @@ final class ApexTermUITests: XCTestCase, @unchecked Sendable {
         XCTAssertTrue(staticText("nginx.conf").waitForExistence(timeout: 10))
         let more = app.menuButtons["ellipsis"].firstMatch
         more.click()
-        clickVisibleCenter(app.menuItems["新建文件夹"])
+        clickVisibleCenter(menuItem("新建文件夹"))
         let name = app.textFields["文件夹名称"]
         XCTAssertTrue(name.waitForExistence(timeout: 5))
         name.click()
@@ -784,7 +804,7 @@ final class ApexTermUITests: XCTestCase, @unchecked Sendable {
         app.windows.buttons["取消"].firstMatch.click()
         XCTAssertFalse(staticText("ui-canceled-folder").exists)
         more.click()
-        clickVisibleCenter(app.menuItems["新建文件夹"])
+        clickVisibleCenter(menuItem("新建文件夹"))
         XCTAssertTrue(name.waitForExistence(timeout: 5))
         name.click()
         name.typeText(" ui-created-folder ")
@@ -819,7 +839,7 @@ final class ApexTermUITests: XCTestCase, @unchecked Sendable {
         let hidden = staticText(".bashrc")
         XCTAssertFalse(hidden.exists)
         app.menuButtons["ellipsis"].firstMatch.click()
-        clickVisibleCenter(app.menuItems["显示隐藏文件"])
+        clickVisibleCenter(menuItem("显示隐藏文件"))
         XCTAssertTrue(hidden.waitForExistence(timeout: 5))
         XCTAssertTrue(ordinary.exists)
         capture("sftp-hidden-files-visible")
@@ -839,7 +859,7 @@ final class ApexTermUITests: XCTestCase, @unchecked Sendable {
         launch("main", extra: ["APEX_QA_CONNECT": "1"])
         XCTAssertTrue(staticText("nginx.conf").waitForExistence(timeout: 10))
         app.menuButtons["ellipsis"].firstMatch.click()
-        clickVisibleCenter(app.menuItems["新建文件"])
+        clickVisibleCenter(menuItem("新建文件"))
         let name = app.textFields["文件名 (例如 test.sh)"]
         XCTAssertTrue(name.waitForExistence(timeout: 5))
         name.click()
@@ -849,8 +869,8 @@ final class ApexTermUITests: XCTestCase, @unchecked Sendable {
         XCTAssertTrue(fixture.waitForExistence(timeout: 10))
         fixture.click()
         fixture.rightClick()
-        clickVisibleCenter(app.menuItems["删除"])
-        let confirm = app.windows.buttons["永久删除「ui-own-delete-fixture.txt」"].firstMatch
+        clickVisibleCenter(menuItem("删除"))
+        let confirm = app.windows.buttons.matching(NSPredicate(format: "label == %@", "永久删除「ui-own-delete-fixture.txt」")).element(boundBy: 0)
         XCTAssertTrue(confirm.waitForExistence(timeout: 5))
         capture("sftp-delete-confirmation")
         app.windows.buttons["取消"].firstMatch.click()
@@ -858,9 +878,9 @@ final class ApexTermUITests: XCTestCase, @unchecked Sendable {
         XCTAssertFalse(confirm.exists)
         fixture.click()
         fixture.rightClick()
-        clickVisibleCenter(app.menuItems["删除"])
+        clickVisibleCenter(menuItem("删除"))
         XCTAssertTrue(confirm.waitForExistence(timeout: 5))
-        confirm.click()
+        clickVisibleCenter(confirm)
         let removed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: fixture)
         XCTAssertEqual(XCTWaiter.wait(for: [removed], timeout: 10), .completed)
         XCTAssertTrue(staticText("nginx.conf").exists)
@@ -1136,7 +1156,7 @@ final class ApexTermUITests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(XCTWaiter.wait(for: [echo], timeout: 15), .completed)
         capture("real-ssh-pty")
         clickVisibleCenter(app.menuBars.menuBarItems["验收操作"])
-        clickVisibleCenter(app.menuItems["断开测试终端"])
+        clickVisibleCenter(menuItem("断开测试终端"))
         XCTAssertTrue(staticText("会话已断开").waitForExistence(timeout: 10))
         app.windows.buttons["重新连接 (⌘R)"].firstMatch.click()
         XCTAssertTrue(staticText("已连接", comparison: "BEGINSWITH").waitForExistence(timeout: 30))
@@ -1167,7 +1187,7 @@ final class ApexTermUITests: XCTestCase, @unchecked Sendable {
         path.typeKey(XCUIKeyboardKey.return, modifierFlags: [])
         XCTAssertTrue(staticText("文件夹为空").waitForExistence(timeout: 15))
         app.menuButtons["ellipsis"].firstMatch.click()
-        clickVisibleCenter(app.menuItems["新建文件"])
+        clickVisibleCenter(menuItem("新建文件"))
         let fileName = app.textFields["文件名 (例如 test.sh)"]
         XCTAssertTrue(fileName.waitForExistence(timeout: 5))
         fileName.click()
@@ -1182,7 +1202,7 @@ final class ApexTermUITests: XCTestCase, @unchecked Sendable {
         capture("real-sftp-created-file-verified")
         realFile.click()
         realFile.rightClick()
-        clickVisibleCenter(app.menuItems["快速查看 / 编辑"])
+        clickVisibleCenter(menuItem("快速查看 / 编辑"))
         let remoteEditor = app.textViews["文件内容"]
         XCTAssertTrue(remoteEditor.waitForExistence(timeout: 15))
         remoteEditor.click()
@@ -1198,10 +1218,10 @@ final class ApexTermUITests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(XCTWaiter.wait(for: [savedRemotely], timeout: 15), .completed)
         realFile.click()
         realFile.rightClick()
-        clickVisibleCenter(app.menuItems["删除"])
-        let delete = app.windows.buttons["永久删除「ui-real-file.txt」"].firstMatch
+        clickVisibleCenter(menuItem("删除"))
+        let delete = app.windows.buttons.matching(NSPredicate(format: "label == %@", "永久删除「ui-real-file.txt」")).element(boundBy: 0)
         XCTAssertTrue(delete.waitForExistence(timeout: 5))
-        delete.click()
+        clickVisibleCenter(delete)
         XCTAssertTrue(staticText("文件夹为空").waitForExistence(timeout: 15))
         terminal.click()
         terminal.typeText("cd ~; rmdir '\(directory)' && printf '\\nAPEX_UI_FIXTURE_CLEAN_OK\\n'\n")
@@ -1796,7 +1816,7 @@ final class ApexTermUITests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: sampled, object: summary)], timeout: 30), .completed)
         capture("real-monitor-connected")
         clickVisibleCenter(app.menuBars.menuBarItems["验收操作"])
-        clickVisibleCenter(app.menuItems["断开测试终端"])
+        clickVisibleCenter(menuItem("断开测试终端"))
         XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "label CONTAINS %@", "监控连接已中断"), object: summary)], timeout: 5), .completed)
         clickVisibleCenter(summary)
@@ -1889,12 +1909,12 @@ final class ApexTermUITests: XCTestCase, @unchecked Sendable {
         let pages = ["main", "editor", "settings", "session", "about", "shortcuts", "transfers", "metrics", "import"]
         for theme in themes {
             clickVisibleCenter(app.menuBars.menuBarItems["验收主题"])
-            let item = app.menuItems[theme]
+            let item = menuItem(theme)
             XCTAssertTrue(item.waitForExistence(timeout: 3), "Missing theme: \(theme)")
             clickVisibleCenter(item)
             for page in pages {
                 clickVisibleCenter(app.menuBars.menuBarItems["验收页面"])
-                clickVisibleCenter(app.menuItems[page])
+                clickVisibleCenter(menuItem(page))
                 XCTAssertTrue(app.windows.firstMatch.exists)
                 XCTAssertGreaterThan(app.windows.firstMatch.frame.width, 300)
                 switch page {

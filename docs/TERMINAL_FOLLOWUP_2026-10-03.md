@@ -24,7 +24,7 @@
 ## 已验证
 
 - 终端专项：45 项通过，随后补充了备用屏幕主题切换与 Option 退格行为回归。
-- 脚本：74 项通过，包含自定义报告目录应用传输的真实归档往返。
+- 脚本：75 项通过，包含自定义报告目录应用传输的真实归档往返，以及转发 SSH agent 缺失身份、认证失败和超时的启动前检查。
 - 最终代码的全量 Swift 测试：291 项 ApexSSHTests + 66 项 ApexCoreTests，共 357 项通过，0 失败、0 跳过；包含 10 项 VM 集成及 4 项真实服务器测试。
 - 10 项 VM 集成覆盖真实 SSH PTY、Vim 编辑、保存与多次尺寸回传，SFTP 字节校验、特殊文件名、监控和进程清理。
 - 最终 Release 测试二进制在 Tart `macos27` 执行 8 项优化基准，0 失败，全部发布阈值通过；传输前后的 SHA-256 一致，机型验证为 VirtualMac。Swift 编译无警告。
@@ -46,13 +46,15 @@
 
 开发机初次 `test_vm_acceptance.sh` 在全部 357 项功能测试通过后，因 4 项性能阈值未达标而退出 1，不能记为该次入口完整通过：监控解析 3,013 次/秒、SSH 主机解析 68,555 hosts/秒、SFTP 调度 694 tasks/秒、Mock 输入 15.86 微秒。随后同一二进制在 VM 中全数达标，支持环境负载影响测量的判断；未降低门槛，也未修改发布入口以绕开失败。
 
-2026-10-03 21:29，包含最终 SFTP 布局修复的代码再次通过完整 `test_vm_acceptance.sh`，退出码 0：357 项 Swift 测试、8 项优化性能基准全部通过，9 个性能阈值均达标，0 失败、0 跳过、0 编译警告。RingBuffer 为 1,611,084 行/秒、162.86 MB/秒；ANSI 为 366,522 spans/秒；峰值 RSS 为 106.80 MB；并发写入为 1,891,363 次/秒；监控解析为 13,239 次/秒；SSH 解析为 133,407 hosts/秒；SFTP 调度为 1,087 tasks/秒；Mock 输入为 7.74 微秒。证据：`outputs/terminal-ui-followup-toolbar-stable-focus-final-gate.log`。此入口通过不包含下面尚未完成的 XCTest 产品 UI 验收。
+2026-10-03 21:29，包含最终 SFTP 布局修复的代码再次通过完整 `test_vm_acceptance.sh`，退出码 0：357 项 Swift 测试、8 项优化性能基准全部通过，9 个性能阈值均达标，0 失败、0 跳过、0 编译警告。RingBuffer 为 1,611,084 行/秒、162.86 MB/秒；ANSI 为 366,522 spans/秒；峰值 RSS 为 106.80 MB；并发写入为 1,891,363 次/秒；监控解析为 13,239 次/秒；SSH 解析为 133,407 hosts/秒；SFTP 调度为 1,087 tasks/秒；Mock 输入为 7.74 微秒。证据：`outputs/terminal-ui-followup-toolbar-stable-focus-final-gate.log`。产品 UI 由下面的独立 XCTest 门禁验证；此后生产模块、功能测试和 Package 配置均未改变。
 
-## 尚未完成的 UI 验收
+## UI 验收过程与最终结果
+
+2026-10-04 最终完整门禁已通过：44/44 项，0 失败、0 跳过、0 预期失败，入口退出 0。报告为 `outputs/terminal-ui-followup-complete-44/20261004-100815-37773`；以下保留前期失败与修复过程，完整结果见本节末尾。报告相对路径以主工作区为基准。
 
 完整 UI 仍必须在 Tart `macos27` 执行。本轮自定义报告目录错误已解决，后续运行 `outputs/terminal-ui-followup/fixed/20261003-204302-14407/UI.xcresult` 因系统“Enable UI Automation”验证未完成而启动超时，运行器报告 `Timed out while enabling automation mode.`，43 项产品 UI 用例尚未执行。
 
-已通过测试不能替代完整 UI 验收。此前主题菜单有限坐标断言与 XCTest 失败处理停滞，以及真实系统拼音、Finder 双向拖拽和窗口截图矩阵，仍需完整复测。系统身份验证在下面的 2026-10-04 复测前已完成。
+这些早期通过的测试不能替代完整 UI 验收。当时主题菜单有限坐标断言与 XCTest 失败处理停滞，以及真实系统拼音、Finder 双向拖拽和窗口截图矩阵，仍待复测。系统身份验证在下面的 2026-10-04 复测前已完成。
 
 2026-10-04 用户准备完成系统验证后，基于 `830fefc` 再次启动全量 UI 验收。实际出现 XCTest 密码弹窗，但约 60 秒内未完成验证；Runner 初始化失败，退出 65，43 项产品用例仍未执行。证据为 `outputs/terminal-ui-followup-resumed/20261004-082535-8595/UI.xcresult`、`summary.json` 和 `resume-status.json`。本次弹窗在 Runner 退出后仍显示，保留其独立 VM 工作目录，避免在人工验证期间删除应用；本地传输归档和目标配置副本已清理。系统验证完成后，该独立 VM 目录及本地临时应用已清理，日志、源码和 xcresult 保留（`guest-cleanup-after-verification.json`、`local-transient-cleanup-after-verification.json`）。
 
@@ -69,9 +71,19 @@
 - `resize-diagnostic-3`：使用右侧直边上的[鼠标点击拖动 API](https://developer.apple.com/documentation/xcuiautomation/xcuicoordinate/click%28forduration%3Athendragto%3Awithvelocity%3Athenholdforduration%3A%29)，实际完成 1300 → 960 → 1300 点缩放，路径草稿、继续键入及 Escape 恢复均通过。
 - `resize-diagnostic-4-two-rows`：同一回归分别在默认侧栏及受控 370 点侧栏下执行。QA 侧栏宽度限定在产品原有 260…370 点范围，实际窗口仍由鼠标拖动。分别断言单行和两行的控件位置、唯一输入框、至少 240 点路径宽度、按钮可点击性、草稿与键盘焦点，以及展开后回到同一行。两种交互均通过。此结果不表示用户已经实际拖动侧栏分隔线。
 
-当前生产模块源码未因上述测试修复改变；完整 44 项产品 UI 门禁仍需基于最终测试源码重跑，不可用专项通过替代。
+上述专项验证结束时，生产模块源码未因测试修复改变；当时完整 44 项产品 UI 门禁仍待基于最终测试源码重跑。
 
-`outputs/terminal-ui-followup-final-44/20261004-091911-75678` 完整执行 44 项，39 项通过、5 项失败、0 跳过、0 预期失败，退出 1。失败的 Finder 三项、系统拼音和真实 SFTP 均停在连接建立断言；诊断证明 VM 转发的 agent 存在但没有身份，目标拒绝认证。已使用现有 `id_rsa` 恢复认证；其后真实 Vim 编辑与独立保存字节核对、监控重连、路径复制及两种窗口布局交互通过。该运行整体仍为失败，原始结果保留。新增启动前的 agent 与专用目标认证检查，对缺失身份、认证失败、证据不符和超时停止；脚本 75 项通过，真实操作及完整 UI 继续复测。
+`outputs/terminal-ui-followup-final-44/20261004-091911-75678` 完整执行 44 项，39 项通过、5 项失败、0 跳过、0 预期失败，退出 1。失败的 Finder 三项、系统拼音和真实 SFTP 均停在连接建立断言；诊断证明 VM 转发的 agent 存在但没有身份，目标拒绝认证。已使用现有 `id_rsa` 恢复认证；其后真实 Vim 编辑与独立保存字节核对、监控重连、路径复制及两种窗口布局交互通过。该运行整体仍为失败，原始结果保留。新增启动前的 agent 与专用目标认证检查，对缺失身份、认证失败、证据不符和超时停止；脚本 75 项通过，随后分别复测真实操作和完整 UI。
+
+### 2026-10-04 最终完整通过
+
+- `outputs/terminal-ui-followup-verified/real-auth-recovery-five`：此前因认证失败的 5 项真实操作全部通过，0 失败、0 跳过、0 预期失败；测试、QA 与远端运行器源码 SHA-256 一致。此专项结果之后仍执行完整门禁。
+- `outputs/terminal-ui-followup-complete-44/20261004-100815-37773`：基于干净提交 `dcd4987` 执行 `test_ui_acceptance.sh`，入口退出 0。44 项完整清单全部 Passed，0 失败、0 跳过、0 预期失败；冻结的测试和输入法辅助程序源码与最终文件一致。结果为 `UI.xcresult`、`summary.json`、`test-cases.json`、`verified.json` 和 `run-status.txt`。
+- 12 种主题的完整页面矩阵、编辑器状态、监控状态及重连、主窗口重开、SFTP 权限详情与恢复、路径复制、实际窗口缩放、SSH 导入、终端分屏和标签快捷键、传输记录及更新页面均通过。
+- 真实 SSH Vim 覆盖中文多行粘贴、方向键编辑、字号调整与远端视口确认、保存退出、复制以及独立 SSH 读取的精确字节核对。实际系统拼音覆盖候选窗口、预编辑隔离、Escape 取消、中文提交与原输入法配置恢复。Finder 双向拖拽及 64 MiB 下载核对内容和 SHA-256，完成记录可见。
+- 编译日志无 Swift 警告，启动前报告确认 agent 可用且专用目标已认证。人工复核最终 Vim 光标、中文首行及两行 SFTP 工具栏截图；原始画面与附件清单保留在 `attachments`。
+
+完整门禁通过后仅更新本报告与 CHANGELOG；生产模块及测试源码保持通过时的内容。此批修复仍记为 Unreleased。
 
 ## SFTP 工具栏的 VM 渲染检查
 
@@ -89,5 +101,9 @@ QA 辅助程序新增可选 `APEX_QA_INITIAL_WINDOW_WIDTH`，在启动时设置�
 本轮两次失败 UI 运行及独立性能运行的确切 VM 工作目录均已验证无相关进程或工作目录引用后删除；共享的物理按键工具保留。本地对应的传输归档、临时应用、编译辅助程序和一次性目标配置已清理，日志、源码快照、xcresult 及诊断报告保留。清理只覆盖这三次运行有所有权记录的残留。
 
 后续工具栏渲染使用的独立 QA 进程已停止，确认无进程或工作目录引用后删除其 VM 工作目录 `apex-manual-run.BfoJ3z`、唯一 QA 标识对应的偏好设置及自有桌面互斥锁；本地三份传输归档已删除。日志和截图保留，清理记录为 `outputs/terminal-ui-followup-manual/20261003-211227/cleanup.json`。本次渲染使用受控 Mock 会话，没有在远端服务器新建文件。
+
+2026-10-04 的初始化失败、同步失败诊断、后三次窗口尺寸诊断，以及认证缺失和恢复后的运行，均保留失败或通过的原始报告。各自 VM 工作目录在确认没有进程或工作目录引用后删除，记录为报告内的 `guest-cleanup.json` 或对应验证后的清理记录；共享签名物理按键工具保留。临时应用、辅助可执行文件、传输归档和目标配置副本已清理，日志、源码、截图和 xcresult 保留。
+
+最终完整运行在远端创建的 5 个确切目录均独立通过 SSH 确认不存在，3 个 VM 本地拖拽目录也不存在；独立 QA 工作目录及唯一标识对应的偏好、缓存和保存状态已清理。主机生成的 xctestrun 中 5 项一次性运行配置已移除，原有验收配置保留。证据为最终报告中的 `remote-owned-cleanup-verification.json`、`guest-cleanup.json`、`local-transient-cleanup.json` 和 `host-test-configuration-cleanup.json`。
 
 改动位于 `bcblr/fix-terminal-ui-followup`，更新日志记为 Unreleased。本报告不改变已提交 Apple 审核的构建及此前发布结论。

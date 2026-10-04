@@ -2,7 +2,10 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
-## [Unreleased]
+## [v1.6.1] - 2026-10-04
+
+### ✨ 新增特性 (Features)
+- 本次为终端交互与窗口布局维护更新。
 
 ### ⚡️ 体验优化 (Improvements)
 - Vim 等备用屏幕应用复用未变化行的 ANSI 渲染结果，降低移动光标和局部更新的开销；主题、字体、视口与会话变化仍重新渲染。

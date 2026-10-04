@@ -30,8 +30,15 @@ final class ApexTermUITests: XCTestCase, @unchecked Sendable {
     private func run_tearDown() throws {
         // Cleanup must finish even when an earlier cleanup assertion fails.
         continueAfterFailure = true
-        if (testRun?.failureCount ?? 0) > 0, let app, app.state == .runningForeground {
-            capture("failure-" + name)
+        if (testRun?.failureCount ?? 0) > 0, let app, app.state != .notRunning {
+            let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+            screenshot.name = "failure-" + name
+            screenshot.lifetime = .keepAlways
+            add(screenshot)
+            let foreground = XCTAttachment(string: "Foreground bundle: " + (NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "none"))
+            foreground.name = "failure-foreground-application"
+            foreground.lifetime = .keepAlways
+            add(foreground)
             let hierarchy = XCTAttachment(string: app.debugDescription)
             hierarchy.name = "failure-accessibility-tree"
             hierarchy.lifetime = .keepAlways
@@ -160,6 +167,16 @@ final class ApexTermUITests: XCTestCase, @unchecked Sendable {
         // instead of binding to that shared AX identity.
         app.menuItems.matching(NSPredicate(format: "title == %@ OR label == %@", title, title))
             .element(boundBy: 0)
+    }
+
+    private func clickMenuBarItem(_ title: String) {
+        // Scene changes recreate AppKit's menu bar items. Resolve the current
+        // title by index after restoring our window's keyboard focus.
+        focusOwnedWindow()
+        let item = app.menuBars.menuBarItems
+            .matching(NSPredicate(format: "title == %@ OR label == %@", title, title))
+            .element(boundBy: 0)
+        clickVisibleCenter(item)
     }
 
     private func clickVisibleCenter(_ item: XCUIElement) {
@@ -585,7 +602,7 @@ final class ApexTermUITests: XCTestCase, @unchecked Sendable {
     private func run_testTerminalDisconnectedReconnectRestoresInput() {
         launch("main", extra: ["APEX_QA_CONNECT": "1"])
         XCTAssertTrue(staticText("已连接", comparison: "BEGINSWITH").waitForExistence(timeout: 10))
-        clickVisibleCenter(app.menuBars.menuBarItems["验收操作"])
+        clickMenuBarItem("验收操作")
         clickVisibleCenter(menuItem("断开测试终端"))
         XCTAssertTrue(staticText("会话已断开").waitForExistence(timeout: 5))
         let reconnect = app.windows.buttons["重新连接 (⌘R)"].firstMatch
@@ -620,17 +637,17 @@ final class ApexTermUITests: XCTestCase, @unchecked Sendable {
         let sheetClosed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.sheets.firstMatch)
         XCTAssertEqual(XCTWaiter.wait(for: [sheetClosed], timeout: 5), .completed)
         capture("ssh-config-import-success")
-        clickVisibleCenter(app.menuBars.menuBarItems["验收页面"])
+        clickMenuBarItem("验收页面")
         clickVisibleCenter(menuItem("main"))
         let twoHosts = staticText("2 台主机", comparison: "CONTAINS")
         XCTAssertTrue(twoHosts.waitForExistence(timeout: 5))
-        clickVisibleCenter(app.menuBars.menuBarItems["验收页面"])
+        clickMenuBarItem("验收页面")
         clickVisibleCenter(menuItem("import-sheet"))
         XCTAssertTrue(selected.waitForExistence(timeout: 5))
         selected.click()
         let secondSheetClosed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.sheets.firstMatch)
         XCTAssertEqual(XCTWaiter.wait(for: [secondSheetClosed], timeout: 5), .completed)
-        clickVisibleCenter(app.menuBars.menuBarItems["验收页面"])
+        clickMenuBarItem("验收页面")
         clickVisibleCenter(menuItem("main"))
         XCTAssertTrue(twoHosts.waitForExistence(timeout: 5), "Reimport must update the existing session rather than duplicate it")
         let search = app.textFields.matching(NSPredicate(format: "label CONTAINS %@", "搜索会话")).firstMatch
@@ -654,7 +671,7 @@ final class ApexTermUITests: XCTestCase, @unchecked Sendable {
         XCTAssertTrue(app.sheets.firstMatch.waitForExistence(timeout: 5))
         app.windows.buttons["取消"].firstMatch.click()
         XCTAssertTrue(app.sheets.firstMatch.waitForNonExistence(timeout: 5))
-        clickVisibleCenter(app.menuBars.menuBarItems["验收页面"])
+        clickMenuBarItem("验收页面")
         clickVisibleCenter(menuItem("main"))
         XCTAssertTrue(staticText("1 台主机", comparison: "CONTAINS").waitForExistence(timeout: 5))
         let search = app.textFields.matching(NSPredicate(format: "label CONTAINS %@", "搜索会话")).firstMatch
@@ -1071,6 +1088,14 @@ final class ApexTermUITests: XCTestCase, @unchecked Sendable {
             let bundle = executable.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
             XCTAssertEqual(Bundle(url: bundle)?.bundleIdentifier, "com.apexterm.qa.physicalkeys")
             let target = try XCTUnwrap(environment["APEX_UI_PHYSICAL_KEY_TARGET"])
+            // AX screenshots can leave the runner in front. Reactivate without
+            // clicking the terminal, which would commit the Pinyin preedit.
+            app.activate()
+            let foreground = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                NSWorkspace.shared.frontmostApplication?.bundleIdentifier == target
+            }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [foreground], timeout: 5), .completed,
+                           "Physical keys must start with the isolated QA app in front")
             let directory = FileManager.default.temporaryDirectory.appendingPathComponent("apex-key-" + UUID().uuidString)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
             defer { try? FileManager.default.removeItem(at: directory) }
@@ -1155,7 +1180,7 @@ final class ApexTermUITests: XCTestCase, @unchecked Sendable {
         let echo = XCTNSPredicateExpectation(predicate: output, object: terminal)
         XCTAssertEqual(XCTWaiter.wait(for: [echo], timeout: 15), .completed)
         capture("real-ssh-pty")
-        clickVisibleCenter(app.menuBars.menuBarItems["验收操作"])
+        clickMenuBarItem("验收操作")
         clickVisibleCenter(menuItem("断开测试终端"))
         XCTAssertTrue(staticText("会话已断开").waitForExistence(timeout: 10))
         app.windows.buttons["重新连接 (⌘R)"].firstMatch.click()
@@ -1815,7 +1840,7 @@ final class ApexTermUITests: XCTestCase, @unchecked Sendable {
         let sampled = NSPredicate(format: "label CONTAINS %@", "%")
         XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: sampled, object: summary)], timeout: 30), .completed)
         capture("real-monitor-connected")
-        clickVisibleCenter(app.menuBars.menuBarItems["验收操作"])
+        clickMenuBarItem("验收操作")
         clickVisibleCenter(menuItem("断开测试终端"))
         XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "label CONTAINS %@", "监控连接已中断"), object: summary)], timeout: 5), .completed)
@@ -1908,12 +1933,12 @@ final class ApexTermUITests: XCTestCase, @unchecked Sendable {
         let themes = ["经典白色（默认）", "VS Code Dark Modern", "Tokyo Night", "Catppuccin Mocha", "Catppuccin Latte", "Nord", "Dracula", "One Dark Pro", "Gruvbox Dark", "Everforest", "Rosé Pine", "Solarized Light"]
         let pages = ["main", "editor", "settings", "session", "about", "shortcuts", "transfers", "metrics", "import"]
         for theme in themes {
-            clickVisibleCenter(app.menuBars.menuBarItems["验收主题"])
+            clickMenuBarItem("验收主题")
             let item = menuItem(theme)
             XCTAssertTrue(item.waitForExistence(timeout: 3), "Missing theme: \(theme)")
             clickVisibleCenter(item)
             for page in pages {
-                clickVisibleCenter(app.menuBars.menuBarItems["验收页面"])
+                clickMenuBarItem("验收页面")
                 clickVisibleCenter(menuItem(page))
                 XCTAssertTrue(app.windows.firstMatch.exists)
                 XCTAssertGreaterThan(app.windows.firstMatch.frame.width, 300)

@@ -162,7 +162,7 @@ public enum L10n {
     public static let architecture = "原生架构"
     public static let metalSupport = "Metal 120Hz 硬件加速"
     public static let buildNumber = "内部版本"
-    public static let copyright = "Copyright © 2026 AetherTerm Team. 保留所有权利。"
+    public static let copyright = "Copyright © 2026 Aether Native. 保留所有权利。"
     public static let visitWebsite = "访问官方主页"
     public static let openGitHub = "查看开源仓库"
     public static let privacyPolicy = "隐私政策"

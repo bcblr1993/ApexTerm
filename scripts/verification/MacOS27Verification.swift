@@ -107,7 +107,26 @@ struct ThemeVerificationApp: App {
         if let lines = ProcessInfo.processInfo.environment["APEX_QA_LINES"].flatMap(Int.init), lines > 0 {
             _editorContent = State(initialValue: (0..<lines).map { "配置行 \($0) = 示例内容" }.joined(separator: "\n"))
         }
+        if environment["APEX_QA_WEBSITE_CAPTURE"] != nil {
+            tab.ringBuffer.appendStream("""
+            demo@web-01:~$ systemctl status nginx
+            ● nginx.service — A high performance web server
+               Loaded: loaded (/lib/systemd/system/nginx.service; enabled)
+               Active: \u{1B}[32mactive (running)\u{1B}[0m
+            demo@web-01:~$ tail -n 4 /var/log/app.log
+            \u{1B}[32mINFO\u{1B}[0m  HTTP server listening on :8080
+            \u{1B}[32mINFO\u{1B}[0m  Health check passed · 12 ms
+            \u{1B}[33mWARN\u{1B}[0m  Retry scheduled for background task
+            \u{1B}[32mINFO\u{1B}[0m  Deployment complete · all services healthy
+            demo@web-01:~$ ls -lh
+            drwxr-xr-x  4 demo demo 4.0K Oct  8 09:00 config
+            drwxr-xr-x  6 demo demo 4.0K Oct  8 09:00 logs
+            -rw-r--r--  1 demo demo  128 Oct  8 09:00 README.md
+            demo@web-01:~$
+            """)
+        } else {
         tab.ringBuffer.appendStream("demo@host $ ls\n\u{1B}[31mERROR demo\u{1B}[0m\n\u{1B}[32mOK demo\u{1B}[0m\n\u{1B}[33mWARN demo\u{1B}[0m\n")
+        }
     }
     var body: some Scene {
         WindowGroup("ApexTerm 主题验收 · " + (Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "Verification")) {
@@ -256,6 +275,10 @@ struct ThemeVerificationApp: App {
                                                  height: window.contentView?.bounds.height ?? 680))
                     window.setFrameOrigin(NSPoint(x: screen.visibleFrame.midX - window.frame.width / 2,
                                                   y: screen.visibleFrame.midY - window.frame.height / 2))
+                }
+                if let capturePath = ProcessInfo.processInfo.environment["APEX_QA_WEBSITE_CAPTURE"] {
+                    await captureWebsiteScreens(to: URL(fileURLWithPath: capturePath))
+                    return
                 }
                 telemetry.start()
                 if let path = ProcessInfo.processInfo.environment["APEX_QA_IME_STATE_PATH"] {
@@ -408,6 +431,49 @@ struct ThemeVerificationApp: App {
             }
         }
     }
+    @MainActor
+    private func captureWebsiteScreens(to directory: URL) async {
+        guard Bundle.main.bundleIdentifier?.hasPrefix("com.apexterm.qa.") == true else { return }
+        let themes: [(String, TerminalThemePreset)] = [
+            ("classic", .nativeLight), ("modern", .modern), ("tokyo", .tokyo),
+            ("mocha", .mocha), ("nord", .nord), ("dracula", .dracula),
+            ("latte", .latte), ("onedark", .onedark), ("gruvbox", .gruvbox),
+            ("everforest", .everforest), ("rosepine", .rosepine), ("solarized", .solarized),
+        ]
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            UserDefaults.standard.set(true, forKey: "workspace.filesVisible")
+            for (id, theme) in themes {
+                settings.themePreset = theme
+                for page in ["main", "editor", "settings", "about"] {
+                    scene = page
+                    editorPresented = true
+                    try await Task.sleep(for: .milliseconds(800))
+                    guard let window = NSApplication.shared.windows.first(where: { $0.isVisible && $0.contentView != nil }) else {
+                        throw NSError(domain: "WebsiteCapture", code: 1)
+                    }
+                    let captureWindow = page == "editor" ? (window.attachedSheet ?? window) : window
+                    window.title = "AetherTerm"
+                    window.center()
+                    window.makeKeyAndOrderFront(nil)
+                    NSApplication.shared.activate(ignoringOtherApps: true)
+                    window.displayIfNeeded()
+                    try await Task.sleep(for: .milliseconds(400))
+                    let capture = Process()
+                    capture.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+                    capture.arguments = ["-x", "-o", "-l", String(captureWindow.windowNumber), directory.appendingPathComponent("\(id)-\(page).png").path]
+                    try capture.run()
+                    capture.waitUntilExit()
+                    guard capture.terminationStatus == 0 else { throw NSError(domain: "WebsiteCapture", code: 2) }
+                }
+            }
+            try "48 screenshots captured from native views using demo data.\n".write(to: directory.appendingPathComponent("capture-complete.txt"), atomically: true, encoding: .utf8)
+        } catch {
+            try? String(describing: error).write(to: directory.appendingPathComponent("capture-error.txt"), atomically: true, encoding: .utf8)
+        }
+        NSApplication.shared.terminate(nil)
+    }
+
     @MainActor
     private func runSoak() async {
         let realSSH = ProcessInfo.processInfo.environment["APEX_QA_REAL_HOST"] != nil

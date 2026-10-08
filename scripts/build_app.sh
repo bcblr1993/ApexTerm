@@ -6,7 +6,7 @@ if [ "${APEX_UI_ACCEPTANCE_PREFLIGHT_ONLY:-0}" = "1" ]; then
     exit 1
 fi
 
-APP_NAME="ApexTerm.app"
+APP_NAME="AetherTerm.app"
 BUILD_DIR=".build"
 APP_DIR="${BUILD_DIR}/${APP_NAME}"
 CONTENTS_DIR="${APP_DIR}/Contents"
@@ -16,8 +16,8 @@ RESOURCES_DIR="${CONTENTS_DIR}/Resources"
 VERSION="${1:-1.2.0}"
 DATE_PREFIX=$(date +%Y%m%d)
 BUILD_NUMBER="${2:-${DATE_PREFIX}01}"
-DIST_ARCHIVE="${BUILD_DIR}/ApexTerm-v${VERSION}-macos-arm64.tar.gz"
-DIST_DMG="${BUILD_DIR}/ApexTerm-v${VERSION}-macos-arm64.dmg"
+DIST_ARCHIVE="${BUILD_DIR}/AetherTerm-v${VERSION}-macos-arm64.tar.gz"
+DIST_DMG="${BUILD_DIR}/AetherTerm-v${VERSION}-macos-arm64.dmg"
 SHA_FILE="${BUILD_DIR}/SHA256SUMS.txt"
 
 if [ -n "$(git status --porcelain)" ]; then
@@ -39,7 +39,7 @@ if ! ./scripts/test_vm_acceptance.sh; then
 fi
 echo "✅ [Pre-Release Quality Gate] 100% of quality gate criteria satisfied!"
 
-echo "⚡ Building ApexTerm Release binary for Apple Silicon (arm64)..."
+echo "⚡ Building AetherTerm Release binary for Apple Silicon (arm64)..."
 swift build -c release --jobs 2
 echo "🧪 Running mandatory window UI acceptance..."
 bash scripts/test_ui_acceptance.sh
@@ -81,9 +81,9 @@ cat << EOF > "${CONTENTS_DIR}/Info.plist"
     <key>CFBundleIdentifier</key>
     <string>com.apexterm.app</string>
     <key>CFBundleName</key>
-    <string>ApexTerm</string>
+    <string>AetherTerm</string>
     <key>CFBundleDisplayName</key>
-    <string>ApexTerm</string>
+    <string>AetherTerm</string>
     <key>CFBundleIconFile</key>
     <string>ApexTerm</string>
     <key>CFBundlePackageType</key>
@@ -160,7 +160,12 @@ python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["status"] == "A
 xcrun stapler staple "${APP_DIR}"
 xcrun stapler validate "${APP_DIR}"
 spctl --assess --type execute --verbose=2 "${APP_DIR}"
-tar --uid 0 --gid 0 --uname root --gname wheel -czf "${DIST_ARCHIVE}" -C "${BUILD_DIR}" "${APP_NAME}"
+# Old releases prefer tar archives and require ApexTerm.app inside them.
+# Retain that internal path for upgrade compatibility; the DMG uses AetherTerm.app.
+LEGACY_ARCHIVE_DIR=$(mktemp -d /tmp/aetherterm_update.XXXXXX)
+cp -R "${APP_DIR}" "${LEGACY_ARCHIVE_DIR}/ApexTerm.app"
+tar --uid 0 --gid 0 --uname root --gname wheel -czf "${DIST_ARCHIVE}" -C "${LEGACY_ARCHIVE_DIR}" "ApexTerm.app"
+rm -rf "${LEGACY_ARCHIVE_DIR}"
 
 # Create Distribution DMG
 if command -v hdiutil >/dev/null 2>&1; then
@@ -168,7 +173,7 @@ if command -v hdiutil >/dev/null 2>&1; then
     TMP_DMG_DIR=$(mktemp -d /tmp/apexterm_dmg.XXXXXX)
     cp -R "${APP_DIR}" "${TMP_DMG_DIR}/"
     ln -s /Applications "${TMP_DMG_DIR}/Applications"
-    hdiutil create -volname "ApexTerm" -fs HFS+ -srcfolder "${TMP_DMG_DIR}" -ov -format UDZO "${DIST_DMG}" -quiet
+    hdiutil create -volname "AetherTerm" -fs HFS+ -srcfolder "${TMP_DMG_DIR}" -ov -format UDZO "${DIST_DMG}" -quiet
     rm -rf "${TMP_DMG_DIR}"
 fi
 
@@ -184,19 +189,19 @@ echo "🔐 Generating SHA256 distribution checksums..."
 cat "${SHA_FILE}"
 
 if [ -z "${APEX_SKIP_LOCAL_INSTALL:-}" ] && [ -d "/Applications" ]; then
-    echo "📲 Updating local /Applications/ApexTerm.app..."
-    if [ -d "/Applications/ApexTerm.app" ]; then
+    echo "📲 Updating local /Applications/AetherTerm.app..."
+    if [ -d "/Applications/AetherTerm.app" ]; then
         BACKUP_DIR="${BUILD_DIR}/installed-backup-$(date +%Y%m%d%H%M%S)"
         mkdir -p "${BACKUP_DIR}"
-        mv "/Applications/ApexTerm.app" "${BACKUP_DIR}/ApexTerm.app"
+        mv "/Applications/AetherTerm.app" "${BACKUP_DIR}/ApexTerm.app"
         # The previous installed app is retained once for rollback, without keeping older generations.
         python3 scripts/prune_build_artifacts.py --installed-backups-only
     fi
-    cp -R "${APP_DIR}" "/Applications/ApexTerm.app"
+    cp -R "${APP_DIR}" "/Applications/AetherTerm.app"
 fi
 
 echo "✅ Build & Signed Packaging complete!"
-echo "📍 Application: ${APP_DIR} (and /Applications/ApexTerm.app)"
+echo "📍 Application: ${APP_DIR} (and /Applications/AetherTerm.app)"
 echo "📍 Tarball:     ${DIST_ARCHIVE}"
 if [ -f "${DIST_DMG}" ]; then
     echo "📍 Disk Image:  ${DIST_DMG}"

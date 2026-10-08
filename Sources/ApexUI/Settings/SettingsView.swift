@@ -167,7 +167,7 @@ private struct AppearanceSettingsTab: View {
                         .foregroundColor(ApexStyle.secondary)
                     
                     HStack(spacing: 4) {
-                        Text("user@apexterm:~$")
+                        Text("user@aetherterm:~$")
                             .foregroundColor(Color(hex: settings.themePreset.foregroundColorHex) ?? .white)
                         Text("uname -a")
                             .foregroundColor(Color(hex: settings.themePreset.palette.success) ?? .primary)
@@ -350,7 +350,7 @@ private struct BackupSettingsTab: View {
     private func exportSessions() {
         let savePanel = NSSavePanel()
         savePanel.allowedContentTypes = [.json]
-        savePanel.nameFieldStringValue = "apexterm-sessions-backup.json"
+        savePanel.nameFieldStringValue = "aetherterm-sessions-backup.json"
         savePanel.prompt = "导出"
         
         if savePanel.runModal() == .OK, let url = savePanel.url {

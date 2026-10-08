@@ -22,7 +22,7 @@ jobs:
     steps:
       - name: 通知 aethernative.com
         env:
-          APP_ID: apexterm
+          APP_ID: aetherterm
           TAG: ${{ github.event.release.tag_name || inputs.tag }}
           GH_TOKEN: ${{ secrets.AETHERNATIVE_SITE_TOKEN }}
         run: |

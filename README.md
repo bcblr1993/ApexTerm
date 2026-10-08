@@ -1,4 +1,8 @@
-# ⚡ ApexTerm
+# ⚡ AetherTerm
+
+Aether Native 系列的原生 SSH 终端与 SFTP 工作台，原名 ApexTerm。官网：[AetherTerm](https://aethernative.com/apps/aetherterm/)。
+
+现有公开版本仍使用历史名称；本次改名将在下一次通过完整发布门禁的版本中交付。源码仓库、Swift 模块名与数据标识保留兼容。
 
 <div align="center">
 
@@ -16,14 +20,14 @@
 
 ---
 
-## 🌟 为什么做 ApexTerm？
+## 🌟 为什么做 AetherTerm？
 
 在 macOS 上进行远程服务器管理和日常开发，开发者长期忍受着工具链的“不可能三角”：
 - **electerm**：工作流和界面布局（终端+SFTP联动）最为顺手，但 **Electron 架构沉重、高延迟、内存飙升、大日志易假死**；
 - **FinalShell**：**实时查看服务器 CPU、内存、网络波形**极其方便，但 **Java Swing 内存黑洞（动辄 1G+）**，高分屏字体渲染微撕裂；
 - **SecureCRT**：稳健可靠、会话管理强大，但 **UI 停留在几十年前**，在现代化 macOS 上格格不入。
 
-**ApexTerm 将三者之长融为一体，并以 100% 纯原生（Swift 6 + Metal 3 + SwiftUI + SwiftNIO）彻底消灭它们的缺陷！**
+**AetherTerm 将三者之长融为一体，并以 100% 纯原生（Swift 6 + Metal 3 + SwiftUI + SwiftNIO）彻底消灭它们的缺陷！**
 
 ---
 
@@ -59,7 +63,7 @@
 
 ## 📊 核心竞品全维度对比
 
-| 对比维度 | **ApexTerm (本项目)** | **electerm** | **FinalShell** | **SecureCRT** |
+| 对比维度 | **AetherTerm (本项目)** | **electerm** | **FinalShell** | **SecureCRT** |
 | :--- | :--- | :--- | :--- | :--- |
 | **底层技术栈** | **Swift 6 + Metal + SwiftUI** | Electron + Node.js | Java 17 + Swing / AWT | C++ / WxWidgets (旧版移植) |
 | **适配平台** | **macOS 26+ (Apple Silicon 专属优化)** | 跨平台 (Win/Mac/Linux) | 跨平台 (Win/Mac/Linux) | 跨平台 |
@@ -132,7 +136,7 @@ swift build -c release
 
 ## 🧪 质量与测试规范 (Release Gate)
 
-为保证产品在面对生产高并发、极端网络与超大日志冲刷时的绝对稳定性，ApexTerm 参考 **electerm** 与 **FinalShell** 制定了严格的发布验收标准：
+为保证产品在面对生产高并发、极端网络与超大日志冲刷时的绝对稳定性，AetherTerm 参考 **electerm** 与 **FinalShell** 制定了严格的发布验收标准：
 - 完整测试场景与发布门禁矩阵详见：[TEST_SCENARIOS.md](TEST_SCENARIOS.md)
 - 包含 **SSH 多模态认证、VT 终端引擎渲染、SFTP 双向联动、性能极限压测、macOS 原生适配** 等 8 大维度 86 个测试用例。每次版本发布前必须 100% 验收通过。
 

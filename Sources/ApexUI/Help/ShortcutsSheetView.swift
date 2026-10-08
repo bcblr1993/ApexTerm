@@ -71,7 +71,7 @@ public struct ShortcutsSheetView: View {
             items: [
                 ShortcutItem(keys: ["⌘", ","], description: "打开偏好设置 (外观/字体/SFTP/备份)"),
                 ShortcutItem(keys: ["⌘", "/"], description: "打开此快捷键速查表"),
-                ShortcutItem(keys: ["⌘", "Q"], description: "退出 ApexTerm")
+                ShortcutItem(keys: ["⌘", "Q"], description: "退出 AetherTerm")
             ]
         )
     ]

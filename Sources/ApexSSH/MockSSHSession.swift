@@ -390,7 +390,7 @@ public final class MockSSHSession: SSHSessionProtocol, @unchecked Sendable {
             try await Task.sleep(nanoseconds: 10_000_000)
             progress(Double(step) / 5.0)
         }
-        let sample = "# ApexTerm 模拟会话示例文件\n# 路径：\(remotePath)\n"
+        let sample = "# AetherTerm 模拟会话示例文件\n# 路径：\(remotePath)\n"
         let data = getMockFile(at: remotePath, fallback: Data(sample.utf8))
         try data.write(to: localURL, options: .atomic)
     }

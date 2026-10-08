@@ -166,7 +166,7 @@ public final class UpdateManager: ObservableObject {
             var request = URLRequest(url: url)
             request.timeoutInterval = 8.0
             request.setValue("application/vnd.github.v3+json", forHTTPHeaderField: "Accept")
-            request.setValue("ApexTerm-Updater", forHTTPHeaderField: "User-Agent")
+            request.setValue("AetherTerm-Updater", forHTTPHeaderField: "User-Agent")
             
             let (data, response) = try await fetch(request)
             
@@ -296,7 +296,7 @@ public final class UpdateManager: ObservableObject {
         if bundle.pathExtension == "app" && !bundle.path.contains("/.build/") && !bundle.path.contains("/DerivedData/") {
             return bundle
         }
-        return URL(fileURLWithPath: "/Applications/ApexTerm.app")
+        return URL(fileURLWithPath: "/Applications/AetherTerm.app")
     }
     
     /// Executes detached update replacement script and restarts the application
@@ -418,11 +418,8 @@ public final class UpdateManager: ObservableObject {
                 detach.waitUntilExit()
             }
             
-            let sourceApp = mountPoint.appendingPathComponent("ApexTerm.app")
-            let destApp = stagingDir.appendingPathComponent("ApexTerm.app")
-            guard fileManager.fileExists(atPath: sourceApp.path) else {
-                throw NSError(domain: "UpdateManager", code: 103, userInfo: [NSLocalizedDescriptionKey: "DMG 中未发现 ApexTerm.app"])
-            }
+            let sourceApp = try Self.bundledUpdateApp(in: mountPoint)
+            let destApp = stagingDir.appendingPathComponent(sourceApp.lastPathComponent)
             try fileManager.copyItem(at: sourceApp, to: destApp)
         } else {
             // Attempt tar extraction as fallback
@@ -436,10 +433,7 @@ public final class UpdateManager: ObservableObject {
             }
         }
         
-        let appURL = stagingDir.appendingPathComponent("ApexTerm.app")
-        guard fileManager.fileExists(atPath: appURL.path) else {
-            throw NSError(domain: "UpdateManager", code: 105, userInfo: [NSLocalizedDescriptionKey: "更新包中未包含 ApexTerm.app"])
-        }
+        let appURL = try Self.bundledUpdateApp(in: stagingDir)
         
         // Validate Info.plist
         let infoPlistURL = appURL.appendingPathComponent("Contents/Info.plist")
@@ -450,7 +444,7 @@ public final class UpdateManager: ObservableObject {
         }
         
         guard plist["CFBundleIdentifier"] as? String == "com.apexterm.app" else {
-            throw NSError(domain: "UpdateManager", code: 107, userInfo: [NSLocalizedDescriptionKey: "安装包应用标识不符 (非官方 ApexTerm)"])
+            throw NSError(domain: "UpdateManager", code: 107, userInfo: [NSLocalizedDescriptionKey: "安装包应用标识不符 (非官方 AetherTerm)"])
         }
         
         // Validate executable file
@@ -460,6 +454,18 @@ public final class UpdateManager: ObservableObject {
         }
         
         return appURL
+    }
+
+    // Keep reading old release archives while new disk images use the public name.
+    nonisolated static func bundledUpdateApp(in directory: URL) throws -> URL {
+        for name in ["AetherTerm.app", "ApexTerm.app"] {
+            let app = directory.appendingPathComponent(name, isDirectory: true)
+            var isDirectory: ObjCBool = false
+            if FileManager.default.fileExists(atPath: app.path, isDirectory: &isDirectory), isDirectory.boolValue {
+                return app
+            }
+        }
+        throw NSError(domain: "UpdateManager", code: 105, userInfo: [NSLocalizedDescriptionKey: "更新包中未包含 AetherTerm.app"])
     }
 
     private func performDownload(
@@ -512,7 +518,7 @@ public final class UpdateManager: ObservableObject {
         let components = core.split(separator: ".", omittingEmptySubsequences: false)
         guard components.count == 3,
               components.allSatisfy({ !$0.isEmpty && $0.allSatisfy(\.isNumber) && Int($0) != nil }) else { return nil }
-        let title = gh.name ?? "ApexTerm \(gh.tag_name)"
+        let title = gh.name ?? "AetherTerm \(gh.tag_name)"
         let notes = gh.body ?? "包含稳定性增强与性能优化。"
         let date = gh.published_at?.prefix(10).description ?? ""
         

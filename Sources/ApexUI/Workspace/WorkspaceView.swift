@@ -406,7 +406,7 @@ public struct WorkspaceView: View {
                 .background(ApexStyle.surface)
             }
         }
-        .navigationTitle(currentTab?.displayTitle ?? "ApexTerm")
+        .navigationTitle(currentTab?.displayTitle ?? L10n.appName)
         .navigationSubtitle(currentTab.map { "\($0.session.username)@\($0.session.host)" } ?? "SSH 与文件工作台")
         .toolbar { workspaceToolbar }
         .onChange(of: activeTabs.count) { _, count in

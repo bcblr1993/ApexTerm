@@ -55,5 +55,5 @@ if result.returncode:
     print(result.stderr)
     raise SystemExit(result.returncode)
 with (app / 'Contents/Info.plist').open('wb') as f:
-    plistlib.dump({'CFBundleIdentifier': 'com.apexterm.qa.' + args.name.lower(), 'CFBundleExecutable': 'Verification', 'CFBundleName': 'ApexTerm ' + args.name + ' QA', 'CFBundlePackageType': 'APPL', 'NSHighResolutionCapable': True, 'NSLocalNetworkUsageDescription': '连接你选择的验收服务器，验证 SSH、SFTP 文件传输和系统监控。'}, f)
+    plistlib.dump({'CFBundleIdentifier': 'com.apexterm.qa.' + args.name.lower(), 'CFBundleExecutable': 'Verification', 'CFBundleName': 'AetherTerm ' + args.name + ' QA', 'CFBundlePackageType': 'APPL', 'NSHighResolutionCapable': True, 'NSLocalNetworkUsageDescription': '连接你选择的验收服务器，验证 SSH、SFTP 文件传输和系统监控。'}, f)
 print(app)

@@ -1,6 +1,6 @@
-# ApexTerm macOS - Engineering, Verification & Release Standards (SOP)
+# AetherTerm macOS - Engineering, Verification & Release Standards (SOP)
 
-本文档参考并对齐行业顶级开源项目（AetherRoute）工程规范，定义 ApexTerm 项目从日常开发、代码提交、自动化测试、质量门禁到正式签发构建的全生命周期标准作业程序（SOP）。AI 助手及所有参与开发者**必须无条件严格遵守**。
+本文档参考并对齐行业顶级开源项目（AetherRoute）工程规范，定义 AetherTerm 项目从日常开发、代码提交、自动化测试、质量门禁到正式签发构建的全生命周期标准作业程序（SOP）。AI 助手及所有参与开发者**必须无条件严格遵守**。
 
 ---
 
@@ -89,7 +89,7 @@ swift test
    - 必须为所有附带独立工具（如 `sshpass`）及主应用执行完整的深层递归签名；
    - 签名校验断言：
      ```bash
-     codesign --verify --deep --strict --verbose=2 /path/to/ApexTerm.app
+     codesign --verify --deep --strict --verbose=2 /path/to/AetherTerm.app
      ```
      必须输出 `valid on disk` 且 `satisfies its Designated Requirement`。
 3. **安全分发校验**：
@@ -118,3 +118,7 @@ swift test
 5. 脚本自动完成：清理缓存 -> 测试门禁 -> Release 编译 -> 捆绑与 Info.plist 对齐 -> Developer ID 签名 -> 深度验签 -> 产出 DMG 与 SHA256SUMS -> 本地安装验证；
 6. 提交 Git 变更：`git commit -m "chore(release): 发布 v<VERSION> 正式版"`；
 7. 打带注释的 Git Tag：`git tag -a "v<VERSION>" -m "Release v<VERSION>"`。
+
+## 产品名称兼容
+
+产品展示名为 AetherTerm，官网 id 为 aetherterm。源码仓库、Swift 模块、主可执行文件、Bundle ID、会话目录和钥匙串标识保留历史兼容值，详见 docs/branding.md。正式 DMG 使用 AetherTerm.app；tar 更新包保留旧更新器要求的 ApexTerm.app 内部目录。

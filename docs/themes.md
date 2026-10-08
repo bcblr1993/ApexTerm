@@ -1,4 +1,4 @@
-# ApexTerm 主题
+# AetherTerm 主题
 
 设置 → 终端 → 全局主题。经典白色为首次使用和恢复默认时的主题；升级首次启用全局主题时也使用经典白色，旧终端配色的存储键保留；旧预设的名称和色板继续兼容。
 
@@ -10,7 +10,7 @@ UI 文字及状态色在实际主题表面上至少保持 4.5:1 对比度。不�
 
 ## 配色来源
 
-界面层级为 ApexTerm 适配；核心色板参考以下项目（未捆绑这些工具）：
+界面层级为 AetherTerm 适配；核心色板参考以下项目（未捆绑这些工具）：
 
 - [VS Code / Microsoft](https://github.com/microsoft/vscode/tree/main/extensions/theme-defaults/themes)
 - [Tokyo Night / Folke Lemaitre](https://github.com/folke/tokyonight.nvim)

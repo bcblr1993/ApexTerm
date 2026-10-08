@@ -3,6 +3,52 @@ import XCTest
 
 @MainActor
 final class UpdateCheckTests: XCTestCase {
+    func testRenamedAndLegacyUpdateBundlesAreAccepted() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let legacy = root.appendingPathComponent("ApexTerm.app", isDirectory: true)
+        let renamed = root.appendingPathComponent("AetherTerm.app", isDirectory: true)
+        try FileManager.default.createDirectory(at: legacy, withIntermediateDirectories: true)
+        XCTAssertEqual(try UpdateManager.bundledUpdateApp(in: root), legacy)
+        try FileManager.default.createDirectory(at: renamed, withIntermediateDirectories: true)
+        XCTAssertEqual(try UpdateManager.bundledUpdateApp(in: root), renamed)
+        try FileManager.default.removeItem(at: legacy)
+        try FileManager.default.removeItem(at: renamed)
+        // A file with the expected name must not be mistaken for an application.
+        try Data().write(to: renamed)
+        XCTAssertThrowsError(try UpdateManager.bundledUpdateApp(in: root))
+    }
+
+    func testExtractsRenamedAndLegacyArchivesWithExistingIdentity() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        for name in ["AetherTerm.app", "ApexTerm.app"] {
+            let source = root.appendingPathComponent(name)
+            let contents = source.appendingPathComponent("Contents")
+            let executable = contents.appendingPathComponent("MacOS/ApexTerm")
+            try FileManager.default.createDirectory(at: executable.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let bytes = Data("synthetic executable".utf8)
+            try bytes.write(to: executable)
+            let info = try PropertyListSerialization.data(fromPropertyList: [
+                "CFBundleIdentifier": "com.apexterm.app", "CFBundleName": "AetherTerm",
+                "CFBundleExecutable": "ApexTerm",
+            ], format: .xml, options: 0)
+            try info.write(to: contents.appendingPathComponent("Info.plist"))
+            let archive = root.appendingPathComponent("update.tar.gz")
+            let tar = Process()
+            tar.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
+            tar.arguments = ["-czf", archive.path, "-C", root.path, name]
+            try tar.run()
+            tar.waitUntilExit()
+            XCTAssertEqual(tar.terminationStatus, 0)
+            let staged = try UpdateManager.defaultExtractPackage(archiveURL: archive, version: "1.6.1")
+            defer { try? FileManager.default.removeItem(at: staged.deletingLastPathComponent()) }
+            XCTAssertEqual(staged.lastPathComponent, name)
+            XCTAssertEqual(try Data(contentsOf: staged.appendingPathComponent("Contents/MacOS/ApexTerm")), bytes)
+            try FileManager.default.removeItem(at: source)
+        }
+    }
+
     func testManualHTTPErrorIsFailure() async {
         let manager = UpdateManager { request in
             (Data(), HTTPURLResponse(url: request.url!, statusCode: 503, httpVersion: nil, headerFields: nil)!)

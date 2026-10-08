@@ -3,6 +3,8 @@
 import argparse
 import json
 import pathlib
+import plistlib
+import re
 import shlex
 import subprocess
 import uuid
@@ -29,6 +31,14 @@ def main():
     address = run(['tart', 'ip', 'macos27'], capture_output=True, text=True).stdout.strip()
     if not address:
         parser.error('Start and unlock the macos27 VM first.')
+    metadata = APP / 'Contents/Info.plist'
+    info = plistlib.loads(metadata.read_bytes())
+    if info.get('CFBundleIdentifier') != 'com.apexterm.qa.aethertermwebsite':
+        parser.error('Only the isolated website QA bundle may be captured.')
+    version = re.search(r'## \[v(\d+\.\d+\.\d+)\]', (ROOT / 'CHANGELOG.md').read_text()).group(1)
+    info['CFBundleShortVersionString'] = version
+    info['CFBundleVersion'] = 'development-preview'
+    metadata.write_bytes(plistlib.dumps(info))
     target = args.user + '@' + address
     ssh = ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', target]
     model = run(ssh + ['/usr/sbin/sysctl -n hw.model'], capture_output=True, text=True).stdout.strip()

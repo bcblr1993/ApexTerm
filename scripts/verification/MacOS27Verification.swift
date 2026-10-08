@@ -449,9 +449,10 @@ struct ThemeVerificationApp: App {
                     scene = page
                     editorPresented = true
                     try await Task.sleep(for: .milliseconds(800))
-                    guard let window = NSApplication.shared.windows.first(where: { $0.isVisible && $0.contentView != nil }) else {
+                    guard let window = NSApplication.shared.windows.first(where: { $0.isVisible && $0.contentView != nil && $0.sheetParent == nil && $0.level == .normal }) else {
                         throw NSError(domain: "WebsiteCapture", code: 1)
                     }
+                    if page == "main" { window.setContentSize(NSSize(width: 1100, height: 760)) }
                     let captureWindow = page == "editor" ? (window.attachedSheet ?? window) : window
                     window.title = "AetherTerm"
                     window.center()

@@ -41,12 +41,12 @@ def main():
     output = ROOT / 'outputs/macos27/website'
     output.mkdir(parents=True, exist_ok=True)
     archive = output / 'qa-input.tar.gz'
-    run(['tar', '-czf', str(archive), '-C', str(APP.parent), APP.name])
+    run(['tar', '-czf', str(archive), '-C', str(ROOT), str(APP.relative_to(ROOT))])
     run(['scp', '-q', str(archive), target + ':' + workspace + '/qa-input.tar.gz'])
     command = 'cd ' + shlex.quote(workspace) + ' && tar -xzf qa-input.tar.gz && mkdir -p captures && '
     command += 'APEX_QA_UI_RUN_ID=' + shlex.quote(str(uuid.uuid4())) + ' APEX_QA_MONITOR=0 '
     command += 'APEX_QA_WEBSITE_CAPTURE=' + shlex.quote(workspace + '/captures') + ' '
-    command += shlex.quote(workspace + '/AetherTermWebsite.app/Contents/MacOS/Verification')
+    command += shlex.quote(workspace + '/outputs/macos27/qa/AetherTermWebsite.app/Contents/MacOS/Verification')
     run(ssh + [command])
     run(['scp', '-q', '-r', target + ':' + workspace + '/captures', str(output)])
     capture = output / 'captures'

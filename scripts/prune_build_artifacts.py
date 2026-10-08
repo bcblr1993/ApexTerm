@@ -6,9 +6,9 @@ import shutil
 import subprocess
 from pathlib import Path
 
-PACKAGE = re.compile(r'ApexTerm-v\d+\.\d+\.\d+-macos-arm64\.(dmg|tar\.gz)$')
+PACKAGE = re.compile(r'(?:ApexTerm|AetherTerm)-v\d+\.\d+\.\d+-macos-arm64\.(dmg|tar\.gz)$')
 PREVIOUS_APP = re.compile(r'ApexTerm-previous-\d+\.app$')
-FIXED = {'ApexTerm.app', 'ApexTerm-notarization.zip', 'SHA256SUMS.txt',
+FIXED = {'AetherTerm.app', 'ApexTerm.app', 'ApexTerm-notarization.zip', 'SHA256SUMS.txt',
          'notarization-app.json', 'notarization-dmg.json'}
 
 

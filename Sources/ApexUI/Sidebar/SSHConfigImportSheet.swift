@@ -34,7 +34,7 @@ public struct SSHConfigImportSheet: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("从 ~/.ssh/config 导入主机")
                         .font(.headline)
-                    Text(DistributionChannel.current == .appStore ? "选择 SSH 配置文件，预览并导入主机" : "自动扫描系统已知配置与密钥，一键导入 ApexTerm 会话库")
+                    Text(DistributionChannel.current == .appStore ? "选择 SSH 配置文件，预览并导入主机" : "自动扫描系统已知配置与密钥，一键导入 AetherTerm 会话库")
                         .font(.subheadline)
                         .foregroundColor(ApexStyle.secondary)
                 }

@@ -44,6 +44,6 @@ do {
     guard result == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
 } catch {
     // Do not print arguments, bookmark bytes, passwords or private file paths.
-    FileHandle.standardError.write(Data("ApexTerm SSH file authorization failed.\n".utf8))
+    FileHandle.standardError.write(Data("AetherTerm SSH file authorization failed.\n".utf8))
     exit(1)
 }

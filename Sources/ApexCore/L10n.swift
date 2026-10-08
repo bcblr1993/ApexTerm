@@ -3,7 +3,7 @@ import Foundation
 /// 集中式中文国际化文案管理
 public enum L10n {
     // 侧边栏与导航
-    public static let appName = "ApexTerm"
+    public static let appName = "AetherTerm"
     public static let sessionsHeader = "会话列表"
     public static let quickCommandsHeader = "快捷命令"
     public static let searchPlaceholder = "搜索会话、标签或主机..."
@@ -105,7 +105,7 @@ public enum L10n {
     public static let menuDisconnect = "断开当前连接"
     public static let menuClearScrollback = "清空终端回滚记录"
     public static let menuPreferences = "偏好设置..."
-    public static let menuAbout = "关于 ApexTerm"
+    public static let menuAbout = "关于 AetherTerm"
     public static let menuCheckUpdates = "检查更新..."
     public static let menuShortcuts = "键盘快捷键帮助"
     public static let menuExportSessions = "导出服务器会话 (JSON)..."
@@ -162,13 +162,13 @@ public enum L10n {
     public static let architecture = "原生架构"
     public static let metalSupport = "Metal 120Hz 硬件加速"
     public static let buildNumber = "内部版本"
-    public static let copyright = "Copyright © 2026 ApexTerm Team. 保留所有权利。"
+    public static let copyright = "Copyright © 2026 Aether Native. 保留所有权利。"
     public static let visitWebsite = "访问官方主页"
     public static let openGitHub = "查看开源仓库"
     public static let privacyPolicy = "隐私政策"
     public static let updateAvailableTitle = "发现新版本可用"
     public static let upToDateTitle = "已是最新版本"
-    public static let upToDateDesc = "您当前运行的 ApexTerm %@ 已经是最新稳定版本。"
+    public static let upToDateDesc = "您当前运行的 AetherTerm %@ 已经是最新稳定版本。"
     public static let updateNow = "立即更新"
     public static let remindLater = "稍后提醒"
     public static let checkingForUpdates = "正在检查更新..."

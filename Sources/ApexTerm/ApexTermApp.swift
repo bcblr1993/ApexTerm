@@ -250,7 +250,7 @@ struct ApexTermApp: App {
     private func exportSessions() {
         let savePanel = NSSavePanel()
         savePanel.allowedContentTypes = [.json]
-        savePanel.nameFieldStringValue = "apexterm-sessions-backup.json"
+        savePanel.nameFieldStringValue = "aetherterm-sessions-backup.json"
         savePanel.prompt = "导出"
         if savePanel.runModal() == .OK, let url = savePanel.url {
             if let data = try? sessionStore.exportSessionsJSON() {

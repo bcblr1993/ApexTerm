@@ -69,7 +69,7 @@ def main():
         run('codesign', '--force', '--sign', IDENTITY, '--options', 'runtime', '--timestamp', str(APP / 'Contents/MacOS/sshpass'))
     with (APP / 'Contents/Info.plist').open('wb') as file:
         plistlib.dump({'CFBundleExecutable': 'ApexTerm', 'CFBundleIdentifier': 'com.apexterm.candidate',
-                      'CFBundleName': 'ApexTerm Candidate', 'CFBundleDisplayName': 'ApexTerm Candidate',
+                      'CFBundleName': 'AetherTerm Candidate', 'CFBundleDisplayName': 'AetherTerm Candidate',
                       'CFBundleIconFile': 'ApexTerm', 'CFBundlePackageType': 'APPL',
                       'CFBundleShortVersionString': version, 'CFBundleVersion': str(build),
                       'NSLocalNetworkUsageDescription': '连接你选择的局域网 SSH 服务器，并进行 SFTP 文件传输和系统监控。',

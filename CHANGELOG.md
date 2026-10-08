@@ -1,6 +1,18 @@
-# ApexTerm 更新日志 (Changelog)
+# AetherTerm 更新日志 (Changelog)
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
+
+## [Unreleased]
+
+### ⚡️ 体验优化 (Improvements)
+- 产品名称统一为 AetherTerm，与 Aether Native 产品系列一致；应用文案、官网隐私链接及分发包命名同步更新。
+
+### 🐞 问题修复 (Bug Fixes)
+- 更新器兼容 AetherTerm.app 与历史 ApexTerm.app 包名，保留应用标识、会话目录、钥匙串服务和用户偏好。
+- tar 更新包保留旧版更新器要求的内部目录；DMG 使用 AetherTerm.app 和 AetherTerm 卷名。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- 增加新旧更新包发现与真实 tar 解压回归测试；真实 VM 与正式发布门禁在版本签发前执行。
 
 ## [v1.6.1] - 2026-10-04
 

@@ -64,7 +64,7 @@ def main():
     for product in ('ApexTerm', 'ApexSSHBridge'):
         run('swift', 'build', '-c', 'release', '--product', product, '--jobs', '2')
     binaries = pathlib.Path(subprocess.check_output(['swift', 'build', '-c', 'release', '--show-bin-path'], cwd=ROOT, text=True).strip())
-    app = destination / 'ApexTerm.app'
+    app = destination / 'AetherTerm.app'
     macos = app / 'Contents/MacOS'
     resources = app / 'Contents/Resources'
     macos.mkdir(parents=True)
@@ -82,7 +82,7 @@ def main():
         shutil.copyfile(ROOT / source, resources / name)
     info = {
         'CFBundleExecutable': 'ApexTerm', 'CFBundleIdentifier': 'com.apexterm.app',
-        'CFBundleName': 'ApexTerm', 'CFBundleDisplayName': 'ApexTerm',
+        'CFBundleName': 'AetherTerm', 'CFBundleDisplayName': 'AetherTerm',
         'CFBundleIconFile': 'ApexTerm', 'CFBundlePackageType': 'APPL',
         'CFBundleShortVersionString': args.version, 'CFBundleVersion': args.build,
         'CFBundleSupportedPlatforms': ['MacOSX'], 'LSMinimumSystemVersion': '14.0',

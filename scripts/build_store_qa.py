@@ -22,7 +22,7 @@ def metadata(identifier):
         raise ValueError('Sandbox QA must use a separate QA bundle identifier.')
     return {
         'CFBundleExecutable': 'ApexTerm', 'CFBundleIdentifier': identifier,
-        'CFBundleName': 'ApexTerm Store QA', 'CFBundleDisplayName': 'ApexTerm Store QA',
+        'CFBundleName': 'AetherTerm Store QA', 'CFBundleDisplayName': 'AetherTerm Store QA',
         'CFBundleIconFile': 'ApexTerm', 'CFBundlePackageType': 'APPL',
         'CFBundleShortVersionString': '0.0.0', 'CFBundleVersion': '1',
         'LSMinimumSystemVersion': '14.0', 'NSHighResolutionCapable': True,

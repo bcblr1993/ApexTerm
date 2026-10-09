@@ -78,7 +78,7 @@ final class StoreSandboxUITests: XCTestCase, @unchecked Sendable {
         return application
     }
 
-    private func paste(_ text: String, into field: XCUIElement) {
+    private func paste(_ text: String, into field: XCUIElement, focusedApplication: XCUIApplication? = nil) {
         let board = NSPasteboard.general
         let previous = (board.pasteboardItems ?? []).map { item in
             item.types.compactMap { type in item.data(forType: type).map { (type, $0) } }
@@ -93,9 +93,14 @@ final class StoreSandboxUITests: XCTestCase, @unchecked Sendable {
         }
         board.clearContents()
         board.setString(text, forType: .string)
-        field.click()
-        field.typeKey("a", modifierFlags: .command)
-        field.typeKey("v", modifierFlags: .command)
+        if let focusedApplication {
+            focusedApplication.typeKey("a", modifierFlags: .command)
+            focusedApplication.typeKey("v", modifierFlags: .command)
+        } else {
+            field.click()
+            field.typeKey("a", modifierFlags: .command)
+            field.typeKey("v", modifierFlags: .command)
+        }
     }
 
     func testSandboxDownloadSavePanelCancel() throws {
@@ -109,7 +114,9 @@ final class StoreSandboxUITests: XCTestCase, @unchecked Sendable {
         XCTAssertTrue(panel.waitForNonExistence(timeout: 5))
         XCTAssertFalse(application.staticTexts["下载完成: nginx.conf"].exists)
 
+        application.checkBoxes["筛选文件"].firstMatch.click()
         let filter = application.textFields["筛选当前目录文件..."].firstMatch
+        XCTAssertTrue(filter.waitForExistence(timeout: 5))
         paste("bin", into: filter)
         let folder = application.staticTexts["bin"].firstMatch
         XCTAssertTrue(folder.waitForExistence(timeout: 5))
@@ -132,9 +139,9 @@ final class StoreSandboxUITests: XCTestCase, @unchecked Sendable {
         let panel = application.dialogs["save-panel"].firstMatch
         XCTAssertTrue(panel.waitForExistence(timeout: 5))
         application.typeKey("g", modifierFlags: [.command, .shift])
-        let path = application.sheets.textFields.firstMatch
+        let path = application.textFields["PathTextField"].firstMatch
         XCTAssertTrue(path.waitForExistence(timeout: 5))
-        paste(destination.path, into: path)
+        paste(destination.path, into: path, focusedApplication: application)
         application.typeKey(.return, modifierFlags: [])
         panel.buttons["OKButton"].click()
         let saved = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in

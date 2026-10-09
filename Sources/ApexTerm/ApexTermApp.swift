@@ -255,7 +255,7 @@ struct ApexTermApp: App {
     }
 
     private func showMainWindow() {
-        if let window = NSApp.windows.first(where: { $0.identifier?.rawValue == "ApexTerm.MainWorkspace" }) {
+        if let window = NSApp.windows.first(where: { $0.frameAutosaveName == "ApexTerm.MainWorkspace" }) {
             window.deminiaturize(nil)
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)

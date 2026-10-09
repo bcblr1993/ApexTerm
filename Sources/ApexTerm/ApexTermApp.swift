@@ -47,7 +47,7 @@ struct ApexTermApp: App {
     @State private var isNewSessionPresented = false
     
     var body: some Scene {
-        Window("AetherTerm", id: "main") {
+        WindowGroup(id: "main") {
             NavigationSplitView {
                 SidebarView(
                     store: sessionStore,
@@ -94,7 +94,7 @@ struct ApexTermApp: App {
                 UpdateSheetView().apexTheme()
             }
             .task {
-                appDelegate.reopenMainWindow = { openWindow(id: "main") }
+                appDelegate.reopenMainWindow = { showMainWindow() }
                 if updateManager.distributionChannel == .direct && settings.checkForUpdatesOnLaunch && ProcessInfo.processInfo.environment["APEX_UI_TEST_REOPEN"] != "1" {
                     await updateManager.checkForUpdates(manual: false)
                 }
@@ -104,7 +104,7 @@ struct ApexTermApp: App {
         .commands {
             CommandGroup(after: .windowArrangement) {
                 Button("显示主窗口") {
-                    openWindow(id: "main")
+                    showMainWindow()
                 }
                 .keyboardShortcut("0", modifiers: [.command, .shift])
             }
@@ -251,6 +251,16 @@ struct ApexTermApp: App {
         Settings {
             SettingsView().apexTheme()
                 .focusedSceneValue(\.isWorkspaceWindow, false)
+        }
+    }
+
+    private func showMainWindow() {
+        if let window = NSApp.windows.first(where: { $0.identifier?.rawValue == "ApexTerm.MainWorkspace" }) {
+            window.deminiaturize(nil)
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        } else {
+            openWindow(id: "main")
         }
     }
     

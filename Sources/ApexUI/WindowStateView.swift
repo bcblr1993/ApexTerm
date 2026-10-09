@@ -14,6 +14,7 @@ private final class WindowStateAnchor: NSView {
         super.viewDidMoveToWindow()
         guard let window, configuredWindow !== window else { return }
         configuredWindow = window
+        window.identifier = NSUserInterfaceItemIdentifier("ApexTerm.MainWorkspace")
         // A second workspace keeps its own frame; the main workspace restores the last one.
         if NSApplication.shared.windows.contains(where: { $0 !== window && $0.frameAutosaveName == "ApexTerm.MainWorkspace" }) {
             return

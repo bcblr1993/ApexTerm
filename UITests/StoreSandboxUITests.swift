@@ -66,11 +66,9 @@ final class StoreSandboxUITests: XCTestCase, @unchecked Sendable {
         application.buttons["添加新的 SSH 会话"].firstMatch.click()
         let name = application.textFields["会话名称"].firstMatch
         XCTAssertTrue(name.waitForExistence(timeout: 5))
-        name.click()
-        name.typeText("Save Panel Demo")
+        paste("Save Panel Demo", into: name)
         let host = application.textFields["主机地址 / IP"].firstMatch
-        host.click()
-        host.typeText("192.0.2.10")
+        paste("192.0.2.10", into: host)
         application.radioButtons["SSH 密钥 / Agent"].firstMatch.click()
         application.buttons["保存"].firstMatch.click()
         let connect = application.buttons["连接到 Save Panel Demo"].firstMatch
@@ -78,6 +76,26 @@ final class StoreSandboxUITests: XCTestCase, @unchecked Sendable {
         connect.click()
         XCTAssertTrue(application.staticTexts["nginx.conf"].firstMatch.waitForExistence(timeout: 10))
         return application
+    }
+
+    private func paste(_ text: String, into field: XCUIElement) {
+        let board = NSPasteboard.general
+        let previous = (board.pasteboardItems ?? []).map { item in
+            item.types.compactMap { type in item.data(forType: type).map { (type, $0) } }
+        }
+        defer {
+            board.clearContents()
+            board.writeObjects(previous.map { values in
+                let item = NSPasteboardItem()
+                for (type, data) in values { item.setData(data, forType: type) }
+                return item
+            })
+        }
+        board.clearContents()
+        board.setString(text, forType: .string)
+        field.click()
+        field.typeKey("a", modifierFlags: .command)
+        field.typeKey("v", modifierFlags: .command)
     }
 
     func testSandboxDownloadSavePanelCancel() throws {
@@ -111,7 +129,7 @@ final class StoreSandboxUITests: XCTestCase, @unchecked Sendable {
         application.typeKey("g", modifierFlags: [.command, .shift])
         let path = application.sheets.textFields.firstMatch
         XCTAssertTrue(path.waitForExistence(timeout: 5))
-        path.typeText(destination.path)
+        paste(destination.path, into: path)
         application.typeKey(.return, modifierFlags: [])
         panel.buttons["OKButton"].click()
         let saved = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
@@ -188,6 +206,8 @@ final class StoreSandboxUITests: XCTestCase, @unchecked Sendable {
         application.typeKey("w", modifierFlags: .command)
         let closed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in application.windows.count == 0 }, object: nil)
         XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 5), .completed)
+        XCTAssertNotEqual(application.state, .notRunning)
+        application.activate()
         let windowMenu = application.menuBars.menuBarItems.matching(NSPredicate(
             format: "title == 'Window' OR title == '窗口' OR label == 'Window' OR label == '窗口'")).firstMatch
         XCTAssertTrue(windowMenu.exists)
@@ -197,6 +217,9 @@ final class StoreSandboxUITests: XCTestCase, @unchecked Sendable {
         XCTAssertTrue(showMain.isEnabled, "The main-window menu must remain enabled after the last window closes")
         showMain.click()
         XCTAssertTrue(application.windows.firstMatch.waitForExistence(timeout: 10))
+        windowMenu.click()
+        application.menuItems["显示主窗口"].firstMatch.click()
+        XCTAssertEqual(application.windows.count, 1, "Showing the main window must not create duplicate workspaces")
         application.typeKey("0", modifierFlags: [.command, .shift])
         XCTAssertEqual(application.windows.count, 1, "Showing the main window must not create duplicate workspaces")
         capture("store-sandbox-main-window-reopened")

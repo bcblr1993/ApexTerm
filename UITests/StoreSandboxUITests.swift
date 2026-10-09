@@ -109,7 +109,12 @@ final class StoreSandboxUITests: XCTestCase, @unchecked Sendable {
         XCTAssertTrue(panel.waitForNonExistence(timeout: 5))
         XCTAssertFalse(application.staticTexts["下载完成: nginx.conf"].exists)
 
-        application.staticTexts["bin"].firstMatch.rightClick()
+        let filter = application.textFields["筛选当前目录文件..."].firstMatch
+        paste("bin", into: filter)
+        let folder = application.staticTexts["bin"].firstMatch
+        XCTAssertTrue(folder.waitForExistence(timeout: 5))
+        XCTAssertTrue(folder.isHittable)
+        folder.rightClick()
         application.menuItems["下载并保存…"].firstMatch.click()
         let directory = application.dialogs["open-panel"].firstMatch
         XCTAssertTrue(directory.waitForExistence(timeout: 5), "Directory downloads must also request a user-selected destination")

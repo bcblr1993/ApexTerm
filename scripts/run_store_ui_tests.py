@@ -69,7 +69,7 @@ ent=plistlib.loads(subprocess.check_output(['codesign','-d','--entitlements',':-
 assert ent.get('com.apple.security.app-sandbox') is True
 pathlib.Path('reports/product-before.json').write_text(json.dumps({p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in (app/'Contents/MacOS').iterdir()},indent=2))
 PY_VERIFY
-xcodebuild build-for-testing -project UITests/StoreSandboxUITests.xcodeproj -scheme StoreSandboxUITests -destination 'platform=macOS,arch=arm64' -derivedDataPath DerivedData -jobs 2 > reports/build.log 2>&1
+xcodebuild build-for-testing -project UITests/StoreSandboxUITests.xcodeproj -scheme StoreSandboxUITests -destination 'platform=macOS,arch=arm64' -derivedDataPath DerivedData -jobs 2 ONLY_ACTIVE_ARCH=YES > reports/build.log 2>&1
 python3 - "$2" <<'PY_CONFIG'
 import pathlib,plistlib,subprocess,sys,tempfile
 source,=pathlib.Path('DerivedData/Build/Products').glob('*.xctestrun')

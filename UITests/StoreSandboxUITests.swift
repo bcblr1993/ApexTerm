@@ -4,7 +4,8 @@ import Darwin
 
 /// Runs only against an isolated, signed App Sandbox QA bundle in macos27.
 @MainActor
-final class StoreSandboxUITests: XCTestCase {
+final class StoreSandboxUITests: XCTestCase, @unchecked Sendable {
+    nonisolated deinit {}
     private var app: XCUIApplication?
     private var bundle: Bundle?
     private var appURL: URL?
@@ -13,7 +14,12 @@ final class StoreSandboxUITests: XCTestCase {
         continueAfterFailure = false
     }
 
-    override func tearDown() async throws {
+    nonisolated override func tearDownWithError() throws {
+        precondition(Thread.isMainThread)
+        MainActor.assumeIsolated { runTearDown() }
+    }
+
+    private func runTearDown() {
         if let app, (testRun?.failureCount ?? 0) > 0 {
             let tree = XCTAttachment(string: app.debugDescription)
             tree.name = "store-sandbox-failure-tree"
@@ -55,7 +61,69 @@ final class StoreSandboxUITests: XCTestCase {
         add(screenshot)
     }
 
-    func testSandboxAboutPrivacyLink() async throws {
+    private func launchDownloadDemo() throws -> XCUIApplication {
+        let application = try launchSandboxQA()
+        application.buttons["添加新的 SSH 会话"].firstMatch.click()
+        let name = application.textFields["会话名称"].firstMatch
+        XCTAssertTrue(name.waitForExistence(timeout: 5))
+        name.click()
+        name.typeText("Save Panel Demo")
+        let host = application.textFields["主机地址 / IP"].firstMatch
+        host.click()
+        host.typeText("192.0.2.10")
+        application.radioButtons["SSH 密钥 / Agent"].firstMatch.click()
+        application.buttons["保存"].firstMatch.click()
+        let connect = application.buttons["连接到 Save Panel Demo"].firstMatch
+        XCTAssertTrue(connect.waitForExistence(timeout: 5))
+        connect.click()
+        XCTAssertTrue(application.staticTexts["nginx.conf"].firstMatch.waitForExistence(timeout: 10))
+        return application
+    }
+
+    func testSandboxDownloadSavePanelCancel() throws {
+        let application = try launchDownloadDemo()
+        application.staticTexts["nginx.conf"].firstMatch.rightClick()
+        application.menuItems["下载并保存…"].firstMatch.click()
+        let panel = application.dialogs["save-panel"].firstMatch
+        XCTAssertTrue(panel.waitForExistence(timeout: 5))
+        capture("store-sandbox-download-save-panel")
+        panel.buttons["CancelButton"].click()
+        XCTAssertTrue(panel.waitForNonExistence(timeout: 5))
+        XCTAssertFalse(application.staticTexts["下载完成: nginx.conf"].exists)
+
+        application.staticTexts["bin"].firstMatch.rightClick()
+        application.menuItems["下载并保存…"].firstMatch.click()
+        let directory = application.dialogs["open-panel"].firstMatch
+        XCTAssertTrue(directory.waitForExistence(timeout: 5), "Directory downloads must also request a user-selected destination")
+        directory.buttons["CancelButton"].click()
+        XCTAssertTrue(directory.waitForNonExistence(timeout: 5))
+    }
+
+    func testSandboxDownloadSavesToUserSelectedFile() throws {
+        let application = try launchDownloadDemo()
+        let downloads = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads", isDirectory: true)
+        let destination = downloads.appendingPathComponent("aetherterm-save-test-\(UUID().uuidString).txt")
+        defer { try? FileManager.default.removeItem(at: destination) }
+        application.staticTexts["nginx.conf"].firstMatch.rightClick()
+        application.menuItems["下载并保存…"].firstMatch.click()
+        let panel = application.dialogs["save-panel"].firstMatch
+        XCTAssertTrue(panel.waitForExistence(timeout: 5))
+        application.typeKey("g", modifierFlags: [.command, .shift])
+        let path = application.sheets.textFields.firstMatch
+        XCTAssertTrue(path.waitForExistence(timeout: 5))
+        path.typeText(destination.path)
+        application.typeKey(.return, modifierFlags: [])
+        panel.buttons["OKButton"].click()
+        let saved = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            guard let data = try? Data(contentsOf: destination) else { return false }
+            return String(decoding: data, as: UTF8.self).contains("nginx.conf")
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [saved], timeout: 15), .completed)
+        XCTAssertTrue(application.staticTexts["下载完成: nginx.conf"].firstMatch.waitForExistence(timeout: 5))
+        capture("store-sandbox-download-saved-outside-container")
+    }
+
+    func testSandboxAboutPrivacyLink() throws {
         try run_testSandboxAboutPrivacyLink()
     }
 
@@ -65,7 +133,7 @@ final class StoreSandboxUITests: XCTestCase {
         let menu = application.menuBars.menuBarItems[appName]
         XCTAssertTrue(menu.exists)
         menu.click()
-        let about = application.menuItems["关于 ApexTerm"].firstMatch
+        let about = application.menuItems["关于 AetherTerm"].firstMatch
         XCTAssertTrue(about.waitForExistence(timeout: 5))
         about.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
         let privacy = application.descendants(matching: .any).matching(identifier: "about.privacy").firstMatch
@@ -76,7 +144,7 @@ final class StoreSandboxUITests: XCTestCase {
         XCTAssertTrue(privacy.waitForNonExistence(timeout: 5))
     }
 
-    func testSandboxNewSessionPrivateKeyPickerCancel() async throws {
+    func testSandboxNewSessionPrivateKeyPickerCancel() throws {
         try run_testSandboxNewSessionPrivateKeyPickerCancel()
     }
 
@@ -111,7 +179,7 @@ final class StoreSandboxUITests: XCTestCase {
         XCTAssertTrue(path.waitForNonExistence(timeout: 5))
     }
 
-    func testSandboxMainWindowReopens() async throws {
+    func testSandboxMainWindowReopens() throws {
         try run_testSandboxMainWindowReopens()
     }
 
@@ -120,13 +188,17 @@ final class StoreSandboxUITests: XCTestCase {
         application.typeKey("w", modifierFlags: .command)
         let closed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in application.windows.count == 0 }, object: nil)
         XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 5), .completed)
-        let reopen = Process()
-        reopen.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        reopen.arguments = ["-a", try XCTUnwrap(appURL).path]
-        try reopen.run()
-        reopen.waitUntilExit()
-        XCTAssertEqual(reopen.terminationStatus, 0)
+        let windowMenu = application.menuBars.menuBarItems.matching(NSPredicate(
+            format: "title == 'Window' OR title == '窗口' OR label == 'Window' OR label == '窗口'")).firstMatch
+        XCTAssertTrue(windowMenu.exists)
+        windowMenu.click()
+        let showMain = application.menuItems["显示主窗口"].firstMatch
+        XCTAssertTrue(showMain.waitForExistence(timeout: 5))
+        XCTAssertTrue(showMain.isEnabled, "The main-window menu must remain enabled after the last window closes")
+        showMain.click()
         XCTAssertTrue(application.windows.firstMatch.waitForExistence(timeout: 10))
+        application.typeKey("0", modifierFlags: [.command, .shift])
+        XCTAssertEqual(application.windows.count, 1, "Showing the main window must not create duplicate workspaces")
         capture("store-sandbox-main-window-reopened")
     }
 }

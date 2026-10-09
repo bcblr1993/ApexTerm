@@ -2,6 +2,55 @@ import XCTest
 @testable import ApexCore
 
 final class FileAccessStoreTests: XCTestCase {
+    func testSelectedSaveCreatesBookmarkableFileWithoutTruncatingExistingContent() throws {
+        try withDefaults { defaults in
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let file = directory.appendingPathComponent("new.txt")
+            let store = FileAccessStore(defaults: defaults)
+            let lease = try store.prepareSelectedSave(file)
+            defer { lease.close() }
+            XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
+            XCTAssertEqual(try lease.childProcessGrant().path, file.path)
+            let content = Data("Existing user document".utf8)
+            try content.write(to: file)
+            let second = try store.prepareSelectedSave(file)
+            second.close()
+            XCTAssertEqual(try Data(contentsOf: file), content)
+        }
+    }
+
+    func testSelectedSaveRejectsSymlinksWithoutChangingTarget() throws {
+        try withDefaults { defaults in
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let target = directory.appendingPathComponent("original.txt")
+            let content = Data("Do not modify".utf8)
+            try content.write(to: target)
+            let link = directory.appendingPathComponent("link.txt")
+            try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+            XCTAssertThrowsError(try FileAccessStore(defaults: defaults).prepareSelectedSave(link))
+            XCTAssertEqual(try Data(contentsOf: target), content)
+        }
+    }
+
+    func testPanelSelectionDoesNotFollowMovedBookmarkAlias() throws {
+        try withDefaults { defaults in
+            let probe = BookmarkProbe()
+            let store = FileAccessStore(defaults: defaults, backend: probe.backend)
+            let selected = URL(fileURLWithPath: "/tmp/selected-save.txt")
+            try store.remember(selected)
+            probe.movedURL = URL(fileURLWithPath: "/tmp/moved-save.txt")
+            probe.reset()
+            let lease = try store.acquireSelected(selected)
+            defer { lease.close() }
+            XCTAssertEqual(lease.url, selected)
+            XCTAssertEqual(probe.resolutions, 0)
+        }
+    }
+
     private func withDefaults(_ body: (UserDefaults) throws -> Void) throws {
         let suite = "apexterm-file-access-tests-" + UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))

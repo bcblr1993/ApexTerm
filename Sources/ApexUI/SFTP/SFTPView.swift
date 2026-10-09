@@ -629,7 +629,7 @@ public struct SFTPView: View {
 
     @ViewBuilder
     private func fileContextActions(_ item: SFTPItem) -> some View {
-        Button(L10n.downloadToDownloads) {
+        Button(DistributionChannel.current == .appStore ? "下载并保存…" : L10n.downloadToDownloads) {
             selectedPaths = [item.path]
             downloadAction(item)
         }
@@ -689,14 +689,16 @@ public struct SFTPView: View {
     /// Resolve a configured destination and retain its grant through queue construction.
     private func downloadDirectoryAccess() throws -> FileAccessLease {
         let configured = URL(fileURLWithPath: NativeSSHSession.expandPath(AppSettings.shared.defaultDownloadDirectory))
-        var access = try? FileAccessStore.shared.acquire(configured)
-        if let existing = access, FileManager.default.isWritableFile(atPath: existing.url.path) {
-            return existing
+        if DistributionChannel.current != .appStore {
+            let access = try FileAccessStore.shared.acquire(configured)
+            guard FileManager.default.isWritableFile(atPath: access.url.path) else {
+                access.close()
+                throw CocoaError(.fileWriteNoPermission)
+            }
+            return access
         }
-        access?.close()
-        guard DistributionChannel.current == .appStore else {
-            throw CocoaError(.fileWriteNoPermission)
-        }
+        // A writable Downloads URL in App Sandbox can be inside the hidden
+        // container. User documents must always have an explicit destination.
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
@@ -705,14 +707,32 @@ public struct SFTPView: View {
         panel.prompt = "选择目录"
         guard panel.runModal() == .OK, let url = panel.url else { throw CancellationError() }
         try FileAccessStore.shared.remember(url, isDirectory: true)
-        access = try FileAccessStore.shared.acquire(url)
-        guard let access else { throw CocoaError(.fileWriteNoPermission) }
+        let access = try FileAccessStore.shared.acquire(url)
         guard FileManager.default.isWritableFile(atPath: access.url.path) else {
             access.close()
             throw CocoaError(.fileWriteNoPermission)
         }
         AppSettings.shared.defaultDownloadDirectory = access.url.path
         return access
+    }
+
+    private func downloadDestinationAccess(_ item: SFTPItem) throws -> FileAccessLease {
+        if DistributionChannel.current == .appStore && !item.isDirectory {
+            let panel = NSSavePanel()
+            panel.title = "保存下载文件"
+            panel.message = "选择下载文件的保存位置"
+            panel.nameFieldStringValue = item.name
+            panel.canCreateDirectories = true
+            panel.prompt = "保存"
+            guard panel.runModal() == .OK, let url = panel.url else { throw CancellationError() }
+            // A new file has no persistent bookmark yet. Retain the panel's
+            // transient grant until the asynchronous transfer has finished.
+            return try FileAccessStore.shared.prepareSelectedSave(url)
+        }
+        let directory = try downloadDirectoryAccess()
+        defer { directory.close() }
+        let destination = TransferManager.shared.availableDownloadURL(in: directory.url, fileName: item.name)
+        return try FileAccessStore.shared.acquire(destination)
     }
 
     private func downloadBatchAction(_ targetItems: [SFTPItem]) {
@@ -1172,15 +1192,13 @@ public struct SFTPView: View {
     private func downloadAction(_ item: SFTPItem) {
         guard let s = session else { return }
         let access: FileAccessLease
-        do { access = try downloadDirectoryAccess() }
+        do { access = try downloadDestinationAccess(item) }
         catch is CancellationError { return }
         catch {
-            transferNotice = "无法访问下载目录：\(error.localizedDescription)"
+            transferNotice = "无法访问保存位置：\(error.localizedDescription)"
             return
         }
-        defer { access.close() }
-        let downloads = access.url
-        let localURL = TransferManager.shared.availableDownloadURL(in: downloads, fileName: item.name)
+        let localURL = access.url
         self.transferNotice = "正在下载: \(item.name)..."
         withAnimation(.spring(duration: 0.25)) {
             self.isTransferDrawerExpanded = true
@@ -1196,6 +1214,7 @@ public struct SFTPView: View {
                 }
             },
             onResult: { result in
+                access.close()
                 Task { @MainActor in
                     switch result {
                     case .success:

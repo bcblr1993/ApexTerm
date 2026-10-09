@@ -47,7 +47,7 @@ struct ApexTermApp: App {
     @State private var isNewSessionPresented = false
     
     var body: some Scene {
-        WindowGroup(id: "main") {
+        Window("AetherTerm", id: "main") {
             NavigationSplitView {
                 SidebarView(
                     store: sessionStore,
@@ -102,6 +102,13 @@ struct ApexTermApp: App {
         }
         .windowToolbarStyle(.unifiedCompact(showsTitle: true))
         .commands {
+            CommandGroup(after: .windowArrangement) {
+                Button("显示主窗口") {
+                    openWindow(id: "main")
+                }
+                .keyboardShortcut("0", modifiers: [.command, .shift])
+            }
+
             CommandGroup(replacing: .appInfo) {
                 Button(L10n.menuAbout) {
                     isAboutPresented = true

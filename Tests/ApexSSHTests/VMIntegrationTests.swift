@@ -389,11 +389,13 @@ final class VMIntegrationTests: XCTestCase {
         try requireVMConfig()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/sshpass")
+        let appPath = ProcessInfo.processInfo.environment["APEX_TEST_VM_APP_PATH"] ?? "/Applications/AetherTerm.app"
+        let quotedPath = "'" + appPath.replacingOccurrences(of: "'", with: "'\\''") + "'"
         process.arguments = [
             "-p", vmPassword,
             "/usr/bin/ssh",
             "\(vmUser)@\(vmHost)",
-            "du -sh /Applications/ApexTerm.app"
+            "du -sk " + quotedPath
         ]
         let pipe = Pipe()
         process.standardOutput = pipe
@@ -402,7 +404,9 @@ final class VMIntegrationTests: XCTestCase {
         
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         let output = String(data: data, encoding: .utf8) ?? ""
-        XCTAssertTrue(output.contains("ApexTerm.app"))
-        XCTAssertFalse(output.contains("G\t"), "Installed size should be in MBs, definitely not GBs!")
+        XCTAssertEqual(process.terminationStatus, 0, "The installed acceptance bundle must exist")
+        let kilobytes = try XCTUnwrap(Int(output.split(whereSeparator: \.isWhitespace).first ?? ""))
+        XCTAssertGreaterThan(kilobytes, 0)
+        XCTAssertLessThan(kilobytes, 1_048_576, "Installed size must be below 1 GiB")
     }
 }

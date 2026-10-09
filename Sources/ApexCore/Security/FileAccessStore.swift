@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 /// Keeps a security-scoped URL alive until an asynchronous operation has ended.
 public final class FileAccessLease: @unchecked Sendable {
@@ -123,8 +124,38 @@ public final class FileAccessStore: @unchecked Sendable {
             ancestor.deleteLastPathComponent()
         }
         // Open/Save panels and Finder may provide a transient scoped URL without a saved bookmark.
+        return try acquireSelected(url)
+    }
+
+    /// Use the exact URL returned by a panel, ignoring any moved bookmark alias.
+    public func acquireSelected(_ url: URL) throws -> FileAccessLease {
+        guard url.isFileURL else { throw CocoaError(.fileReadUnsupportedScheme) }
         let started = backend.start(url)
         let backend = self.backend
         return FileAccessLease(url: url) { if started { backend.stop(url) } }
+    }
+
+    /// Establish a bookmarkable file for an inheriting SSH helper. A Save panel
+    /// can authorize a new file, but a bookmark to its unselected parent cannot
+    /// carry that file grant. Existing content is never truncated here.
+    public func prepareSelectedSave(_ url: URL) throws -> FileAccessLease {
+        let lease = try acquireSelected(url)
+        do {
+            let descriptor = open(url.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
+            if descriptor >= 0 {
+                Darwin.close(descriptor)
+            } else if errno != EEXIST {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            guard values.isRegularFile == true, values.isSymbolicLink != true else {
+                throw CocoaError(.fileWriteInvalidFileName)
+            }
+            try remember(url)
+            return lease
+        } catch {
+            lease.close()
+            throw error
+        }
     }
 }

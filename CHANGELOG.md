@@ -2,7 +2,7 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
-## [Unreleased]
+## [v1.6.2] - 2026-10-10
 
 ### ⚡️ 体验优化 (Improvements)
 - 产品名称统一为 AetherTerm，与 Aether Native 产品系列一致；应用文案、官网隐私链接及分发包命名同步更新。
@@ -15,6 +15,7 @@
 - tar 更新包保留旧版更新器要求的内部目录；DMG 使用 AetherTerm.app 和 AetherTerm 卷名。
 
 ### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- 2026-10-10：5 项独立沙盒 UI 验收全部通过，包含隐私链接、取消下载、指定文件保存、主窗口恢复及私钥选择取消。
 - 2026-10-09 审核修复阶段：362 项 Swift 测试零失败、零跳过，8 项优化性能基准及 75 项脚本测试通过；新增保存授权与已有文件保护回归，真实商店沙盒 UI 验收随后单独执行。
 - 增加新旧更新包发现与真实 tar 解压回归测试；真实 VM 与正式发布门禁在版本签发前执行。
 

@@ -154,7 +154,9 @@ final class StoreSandboxUITests: XCTestCase, @unchecked Sendable {
             return String(decoding: data, as: UTF8.self).contains("nginx.conf")
         }, object: nil)
         XCTAssertEqual(XCTWaiter.wait(for: [saved], timeout: 15), .completed)
-        XCTAssertTrue(application.staticTexts["下载完成: nginx.conf"].firstMatch.waitForExistence(timeout: 5))
+        let completed = application.buttons.matching(NSPredicate(
+            format: "label CONTAINS %@", "下载完成: nginx.conf")).firstMatch
+        XCTAssertTrue(completed.waitForExistence(timeout: 5))
         capture("store-sandbox-download-saved-outside-container")
     }
 
@@ -170,7 +172,7 @@ final class StoreSandboxUITests: XCTestCase, @unchecked Sendable {
         menu.click()
         let about = application.menuItems["关于 AetherTerm"].firstMatch
         XCTAssertTrue(about.waitForExistence(timeout: 5))
-        about.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
+        about.click()
         let privacy = application.descendants(matching: .any).matching(identifier: "about.privacy").firstMatch
         XCTAssertTrue(privacy.waitForExistence(timeout: 5))
         XCTAssertTrue(privacy.isHittable, "The actual sandboxed About window must expose the privacy link")

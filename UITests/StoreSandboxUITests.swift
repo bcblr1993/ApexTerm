@@ -143,7 +143,12 @@ final class StoreSandboxUITests: XCTestCase, @unchecked Sendable {
         XCTAssertTrue(path.waitForExistence(timeout: 5))
         paste(destination.path, into: path, focusedApplication: application)
         application.typeKey(.return, modifierFlags: [])
-        panel.buttons["OKButton"].click()
+        // macOS may accept a complete file path directly from Go to Folder.
+        // Otherwise confirm the remaining save panel; both paths must produce
+        // the selected file and the successful transfer below.
+        if panel.exists {
+            panel.buttons["OKButton"].click()
+        }
         let saved = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             guard let data = try? Data(contentsOf: destination) else { return false }
             return String(decoding: data, as: UTF8.self).contains("nginx.conf")

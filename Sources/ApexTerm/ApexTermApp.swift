@@ -23,6 +23,7 @@ private final class ApexTermAppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if !flag {
             reopenMainWindow?()
+            return reopenMainWindow == nil
         }
         return true
     }
@@ -255,7 +256,11 @@ struct ApexTermApp: App {
     }
 
     private func showMainWindow() {
-        if let window = NSApp.windows.first(where: { $0.frameAutosaveName == "ApexTerm.MainWorkspace" }) {
+        let workspace = NSApp.windows.first(where: {
+            $0.isVisible && ($0.frameAutosaveName == "ApexTerm.MainWorkspace"
+                || $0.identifier?.rawValue.hasPrefix("main-") == true)
+        }) ?? NSApp.windows.first(where: { $0.frameAutosaveName == "ApexTerm.MainWorkspace" })
+        if let window = workspace {
             window.deminiaturize(nil)
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)

@@ -174,12 +174,21 @@ subprocess.run(['codesign', '--verify', '--deep', '--strict', str(destination)],
 pathlib.Path('reports/physical-key-fixture.json').write_text(json.dumps({'bundleIdentifier': identifier, 'executableSHA256': hashlib.sha256(helper.read_bytes()).hexdigest()}))
 # Launch Services makes the signed helper, rather than sshd, responsible for TCC.
 # open can exit zero even when its application exits 77: require fresh helper proof.
-import tempfile
+import tempfile, time
 with tempfile.TemporaryDirectory(prefix='apex-key-preflight-') as directory:
     output = pathlib.Path(directory) / 'stdout'
     error = pathlib.Path(directory) / 'stderr'
-    subprocess.run(['/usr/bin/open', '-n', '-g', '-W', '--stdout', str(output), '--stderr', str(error),
+    # A short-lived helper can exit before open -W installs its kevent watch.
+    # Require its fresh success output instead of treating open's exit as proof.
+    subprocess.run(['/usr/bin/open', '-n', '-g', '--stdout', str(output), '--stderr', str(error),
                     '-a', str(destination), '--args', '--preflight'], check=True, timeout=15)
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        if output.exists() and output.read_text() == 'APEX_PHYSICAL_KEY_OK --preflight\n':
+            break
+        if error.exists() and error.read_text():
+            break
+        time.sleep(0.1)
     if not output.exists() or output.read_text() != 'APEX_PHYSICAL_KEY_OK --preflight\n':
         raise RuntimeError('Physical key preflight did not succeed: ' + (error.read_text() if error.exists() else 'missing helper result'))
 PY_KEY_FIXTURE

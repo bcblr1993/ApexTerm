@@ -1103,15 +1103,23 @@ final class ApexTermUITests: XCTestCase, @unchecked Sendable {
             let helperError = directory.appendingPathComponent("stderr")
             let helper = Process()
             helper.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-            helper.arguments = ["-n", "-g", "-W", "--stdout", output.path, "--stderr", helperError.path,
+            helper.arguments = ["-n", "-g", "--stdout", output.path, "--stderr", helperError.path,
                                 "--env", "APEX_UI_PHYSICAL_KEY_TARGET=" + target, "-a", bundle.path, "--args", name]
             let error = Pipe()
             helper.standardError = error
             try helper.run()
             helper.waitUntilExit()
             XCTAssertEqual(helper.terminationStatus, 0, String(decoding: error.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self))
+            // A short-lived helper can exit before open -W registers its
+            // process wait on macOS 27. Require this invocation's fresh receipt.
+            let expected = "APEX_PHYSICAL_KEY_OK \(name)\n"
+            let completed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                (try? String(contentsOf: output, encoding: .utf8)) == expected
+            }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [completed], timeout: 15), .completed,
+                           "The physical key helper must provide a fresh completion receipt")
             let diagnostic = (try? String(contentsOf: helperError, encoding: .utf8)) ?? ""
-            XCTAssertEqual(try String(contentsOf: output, encoding: .utf8), "APEX_PHYSICAL_KEY_OK \(name)\n",
+            XCTAssertEqual(try String(contentsOf: output, encoding: .utf8), expected,
                            "The helper must confirm completion; open's exit status does not report helper failures. " + diagnostic)
         }
         try postPhysicalKey("--preflight")

@@ -2,10 +2,16 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
-## [Unreleased]
+## [v1.6.3] - 2026-10-13
 
 ### 🐞 问题修复 (Bug Fixes)
 - 直接分发版更新器将历史 ApexTerm.app 安装路径迁移为同目录的 AetherTerm.app；更新复制失败保留旧安装，保留回滚副本并拒绝覆盖其他应用。
+
+### ⚡️ 体验优化 (Improvements)
+- 新安装包使用 AetherTerm.app 与 AetherTerm 磁盘卷名；公开下载同步到已完成更名的产品构建。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- 安装目录迁移、复制失败保护及拒绝覆盖其他应用的真实文件系统回归通过；全量 Swift 测试通过。正式包仍需完整 VM、UI、性能与签名门禁。
 
 ## [v1.6.2] - 2026-10-10
 

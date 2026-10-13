@@ -1066,7 +1066,8 @@ final class ApexTermUITests: XCTestCase, @unchecked Sendable {
         try inputSource.selectEnabled("com.apple.inputmethod.SCIM.ITABC")
         // Select the real system IME in the focused client's context, not only
         // in the background runner's process-local input source cache.
-        app.typeKey("p", modifierFlags: [.command, .option, .shift])
+        clickMenuBarItem("验收操作")
+        clickVisibleCenter(menuItem("切换系统拼音"))
         func waitForInputState(marked: Bool) {
             let state = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
                 guard let data = try? Data(contentsOf: inputState),
@@ -1199,6 +1200,12 @@ final class ApexTermUITests: XCTestCase, @unchecked Sendable {
         let restoredOutput = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "\nAPEX_UI_REAL_RECONNECT_OK\n"), object: terminal)
         XCTAssertEqual(XCTWaiter.wait(for: [restoredOutput], timeout: 15), .completed)
         capture("real-ssh-reconnect-pty")
+        // The asynchronous reconnect home probe must settle before navigating
+        // the SFTP browser to the owned fixture directory.
+        let homeResolved = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value BEGINSWITH %@", "/"),
+            object: app.textFields["远程路径"])
+        XCTAssertEqual(XCTWaiter.wait(for: [homeResolved], timeout: 30), .completed)
         terminal.typeText("printf '\\nAPEX_UI_TMP=%s\\n' \"$(mktemp -d /tmp/apex-ui-XXXXXX)\"\n")
         let directoryOutput = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value MATCHES %@", "(?s).*\\nAPEX_UI_TMP=/tmp/apex-ui-[A-Za-z0-9]+\\r?\\n.*"), object: terminal)
         XCTAssertEqual(XCTWaiter.wait(for: [directoryOutput], timeout: 15), .completed)
@@ -1213,6 +1220,13 @@ final class ApexTermUITests: XCTestCase, @unchecked Sendable {
         fixtureRecord.name = "real-host-owned-fixture"
         fixtureRecord.lifetime = .keepAlways
         add(fixtureRecord)
+        // This scenario explicitly navigates SFTP independently of the shell.
+        // Use the real user toggle so delayed shell reports cannot change its
+        // owned directory during file editing; linkage has a separate scenario.
+        let linkage = app.checkBoxes["路径联动：开"].firstMatch
+        XCTAssertTrue(linkage.waitForExistence(timeout: 5))
+        linkage.click()
+        XCTAssertTrue(app.checkBoxes["路径联动：关"].firstMatch.waitForExistence(timeout: 5))
         let path = app.textFields["远程路径"]
         path.click()
         path.typeKey("a", modifierFlags: .command)
@@ -1344,6 +1358,23 @@ final class ApexTermUITests: XCTestCase, @unchecked Sendable {
         let window = finder.windows[local.lastPathComponent]
         XCTAssertTrue(window.waitForExistence(timeout: 10))
         dragFinderWindow = window
+        if !download {
+            // Leave a visible portion of the file browser for a real upload.
+            // Finder retains its geometry, so move its actual title strip.
+            let screen = try XCTUnwrap(NSScreen.main)
+            let frame = window.frame
+            let desiredX = max(frame.minX, screen.frame.maxX - frame.width)
+            let title = window.coordinate(withNormalizedOffset: .zero)
+                .withOffset(CGVector(dx: frame.width * 0.45, dy: 26))
+            title.click(forDuration: 0.2,
+                        thenDragTo: title.withOffset(CGVector(dx: desiredX - frame.minX, dy: 0)),
+                        withVelocity: .slow, thenHoldForDuration: 0.2)
+            let moved = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                abs(window.frame.minX - desiredX) <= 4
+            }, object: window)
+            XCTAssertEqual(XCTWaiter.wait(for: [moved], timeout: 5), .completed,
+                           "Finder must move beside the actual upload target")
+        }
         // Finder retains window positions across runs. Choose a content point
         // beyond the app's right edge instead of moving Finder via its toolbar.
         let finderDropOffset = CGPoint(
@@ -1438,7 +1469,9 @@ final class ApexTermUITests: XCTestCase, @unchecked Sendable {
             // Click its visible title strip before resolving the source icon.
             window.coordinate(withNormalizedOffset: .zero).withOffset(
                 CGVector(dx: finderDropOffset.x, dy: 8)).click()
-            finder.typeKey("2", modifierFlags: .command)
+            let listView = window.radioButtons["列表视图"].firstMatch
+            XCTAssertTrue(listView.waitForExistence(timeout: 5))
+            listView.click()
             XCTAssertTrue(source.waitForExistence(timeout: 5))
             XCTAssertTrue(source.isHittable, "Finder's source file must be visible before dragging")
             let sourceTree = XCTAttachment(string: window.debugDescription)
@@ -1458,6 +1491,13 @@ final class ApexTermUITests: XCTestCase, @unchecked Sendable {
             let dragStart = window.coordinate(withNormalizedOffset: .zero).withOffset(
                 CGVector(dx: iconFrame.midX - window.frame.minX, dy: iconFrame.midY - window.frame.minY))
             print("Finder upload source=\(source.frame) target=\(uploadPoint)")
+            // Raise the upload destination above unrelated desktop windows,
+            // then raise Finder's exposed right-hand title strip again.
+            focusOwnedWindow()
+            finder.activate()
+            window.coordinate(withNormalizedOffset: .zero).withOffset(
+                CGVector(dx: finderDropOffset.x, dy: 26)).click()
+            XCTAssertTrue(source.isHittable)
             dragStart.click(forDuration: 0.6,
                 thenDragTo: window.coordinate(withNormalizedOffset: .zero).withOffset(
                     CGVector(dx: uploadPoint.x - window.frame.minX, dy: uploadPoint.y - window.frame.minY)),

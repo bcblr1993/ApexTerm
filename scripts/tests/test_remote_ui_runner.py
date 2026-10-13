@@ -99,23 +99,31 @@ class RemoteUIRunnerTests(unittest.TestCase):
 
     def test_launch_services_preflight_requires_helper_completion(self):
         script = self.execute(0).split('# Launch Services makes the signed helper, rather than sshd, responsible for TCC.\n', 1)[1].split('\nPY_KEY_FIXTURE', 1)[0]
-        for outcome in ('success', 'denied', 'missing', 'launch-failed'):
+        for outcome in ('success', 'delayed-success', 'denied', 'missing', 'launch-failed'):
             with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as directory:
                 destination = Path(directory) / 'PhysicalKeyQA.app'
+                launched = []
                 def launch(arguments, **kwargs):
-                    self.assertEqual(arguments[:4], ['/usr/bin/open', '-n', '-g', '-W'])
+                    self.assertEqual(arguments[:3], ['/usr/bin/open', '-n', '-g'])
+                    self.assertNotIn('-W', arguments)
+                    launched[:] = arguments
                     self.assertEqual(arguments[-4:], ['-a', str(destination), '--args', '--preflight'])
                     if outcome == 'launch-failed':
                         raise subprocess.CalledProcessError(1, arguments)
-                    if outcome != 'missing':
+                    if outcome not in ('missing', 'delayed-success'):
                         Path(arguments[arguments.index('--stdout') + 1]).write_text(
                             'APEX_PHYSICAL_KEY_OK --preflight\n' if outcome == 'success' else '')
                         Path(arguments[arguments.index('--stderr') + 1]).write_text(
                             '' if outcome == 'success' else 'Accessibility denied')
                     return subprocess.CompletedProcess(arguments, 0)
-                with patch('subprocess.run', side_effect=launch):
+                def complete_later(_):
+                    if outcome == 'delayed-success':
+                        Path(launched[launched.index('--stdout') + 1]).write_text('APEX_PHYSICAL_KEY_OK --preflight\n')
+                with patch('subprocess.run', side_effect=launch), \
+                     patch('time.monotonic', side_effect=[0, 0, 1, 16]), \
+                     patch('time.sleep', side_effect=complete_later):
                     context = {'pathlib': __import__('pathlib'), 'subprocess': subprocess, 'destination': destination}
-                    if outcome == 'success':
+                    if outcome in ('success', 'delayed-success'):
                         exec(script, context)
                     elif outcome == 'launch-failed':
                         with self.assertRaises(subprocess.CalledProcessError):

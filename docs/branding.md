@@ -6,7 +6,7 @@
 
 升级保持 com.apexterm.app、Application Support/ApexTerm、com.apexterm.ssh.credentials、窗口恢复键和主题存储原值不变。候选和 QA 目录仍隔离，避免误读正式会话。新更新器同时接受两种 app 目录名。
 
-历史更新器优先下载 tar.gz 并固定查找 ApexTerm.app，因此正式 tar.gz 内部保留该目录名（显示名仍为 AetherTerm）；DMG 使用 AetherTerm.app。旧版原位升级会保留用户原有安装目录名；新安装采用新名称。这一兼容布局在正式发版前必须用实际旧版本验证。
+历史更新器优先下载 tar.gz 并固定查找 ApexTerm.app，因此正式 tar.gz 内部保留该目录名（显示名仍为 AetherTerm）；DMG 使用 AetherTerm.app。新更新器将历史 ApexTerm.app 安装路径迁移为同目录的 AetherTerm.app；替换前先复制完整更新包，旧应用保留在不含 .app 后缀的回滚目录，复制失败不会删除旧安装。用户自定义应用名称保留。尚未包含这项修复的旧更新器仍会沿用旧目录；首次改名应通过正式 AetherTerm DMG 安装。tar 的旧目录只用于读取兼容，不能用来宣称首次旧版自动升级已完成文件名迁移。
 
 官网迁移至 /apps/aetherterm/，中文与英文旧路径及其文档、历史版本和 JSON 接口全部 301 重定向。历史 Release 地址保持可用，旧官网同步通知的 apexterm id 映射到 aetherterm。
 

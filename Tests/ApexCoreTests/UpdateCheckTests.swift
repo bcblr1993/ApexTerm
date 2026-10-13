@@ -3,6 +3,67 @@ import XCTest
 
 @MainActor
 final class UpdateCheckTests: XCTestCase {
+    func testLegacyInstallationUsesNewNameInSameFolder() {
+        XCTAssertEqual(UpdateManager.brandedInstallationURL(for: URL(fileURLWithPath: "/Users/demo/My Apps/ApexTerm.app")).path,
+                       "/Users/demo/My Apps/AetherTerm.app")
+        let custom = URL(fileURLWithPath: "/Users/demo/My Terminal.app")
+        XCTAssertEqual(UpdateManager.brandedInstallationURL(for: custom), custom)
+    }
+
+    func testReplacementMigratesLegacyWithoutLosingRollbackOrSessionData() throws {
+        try exerciseReplacement(failCopy: false, unrelatedTarget: false)
+    }
+
+    func testFailedCopyKeepsInstalledApplication() throws {
+        try exerciseReplacement(failCopy: true, unrelatedTarget: false)
+    }
+
+    func testMigrationRefusesUnrelatedDestination() throws {
+        try exerciseReplacement(failCopy: false, unrelatedTarget: true)
+    }
+
+    private func exerciseReplacement(failCopy: Bool, unrelatedTarget: Bool) throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("installer ' $(literal) " + UUID().uuidString)
+        defer { try? fm.removeItem(at: root) }
+        let current = root.appendingPathComponent("ApexTerm.app")
+        let target = UpdateManager.brandedInstallationURL(for: current)
+        let stage = root.appendingPathComponent("staged/ApexTerm.app")
+        try fm.createDirectory(at: current.appendingPathComponent("Contents"), withIntermediateDirectories: true)
+        let oldInfo = try PropertyListSerialization.data(fromPropertyList: ["CFBundleIdentifier": "com.apexterm.app"], format: .xml, options: 0)
+        try oldInfo.write(to: current.appendingPathComponent("Contents/Info.plist"))
+        try Data("old".utf8).write(to: current.appendingPathComponent("version"))
+        let sessions = root.appendingPathComponent("sessions.json")
+        try Data("user data".utf8).write(to: sessions)
+        if !failCopy {
+            try fm.createDirectory(at: stage, withIntermediateDirectories: true)
+            try Data("new".utf8).write(to: stage.appendingPathComponent("version"))
+        }
+        if unrelatedTarget {
+            let contents = target.appendingPathComponent("Contents")
+            try fm.createDirectory(at: contents, withIntermediateDirectories: true)
+            let info = try PropertyListSerialization.data(fromPropertyList: ["CFBundleIdentifier": "org.example.other"], format: .xml, options: 0)
+            try info.write(to: contents.appendingPathComponent("Info.plist"))
+        }
+        let shell = Process()
+        shell.executableURL = URL(fileURLWithPath: "/bin/bash")
+        shell.arguments = ["-c", UpdateManager.replacementScript(staging: stage, current: current, destination: target)
+            + "\nprintf '%s' \"$BACKUP\" > " + "'" + root.appendingPathComponent("backup-path").path.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"]
+        try shell.run(); shell.waitUntilExit()
+        XCTAssertEqual(try String(contentsOf: sessions, encoding: .utf8), "user data")
+        if failCopy || unrelatedTarget {
+            XCTAssertNotEqual(shell.terminationStatus, 0)
+            XCTAssertEqual(try String(contentsOf: current.appendingPathComponent("version"), encoding: .utf8), "old")
+        } else {
+            XCTAssertEqual(shell.terminationStatus, 0)
+            XCTAssertFalse(fm.fileExists(atPath: current.path))
+            XCTAssertEqual(try String(contentsOf: target.appendingPathComponent("version"), encoding: .utf8), "new")
+            let backup = URL(fileURLWithPath: try String(contentsOf: root.appendingPathComponent("backup-path"), encoding: .utf8))
+            defer { try? fm.removeItem(at: backup) }
+            XCTAssertEqual(try String(contentsOf: backup.appendingPathComponent("legacy/version"), encoding: .utf8), "old")
+        }
+    }
+
     func testRenamedAndLegacyUpdateBundlesAreAccepted() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

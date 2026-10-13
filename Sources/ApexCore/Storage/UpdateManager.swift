@@ -294,11 +294,55 @@ public final class UpdateManager: ObservableObject {
     nonisolated public static func defaultTargetAppURL() -> URL {
         let bundle = Bundle.main.bundleURL
         if bundle.pathExtension == "app" && !bundle.path.contains("/.build/") && !bundle.path.contains("/DerivedData/") {
-            return bundle
+            return Self.brandedInstallationURL(for: bundle)
         }
         return URL(fileURLWithPath: "/Applications/AetherTerm.app")
     }
     
+    /// Preserve custom installation folders while migrating the historical bundle name.
+    nonisolated static func brandedInstallationURL(for current: URL) -> URL {
+        guard current.lastPathComponent == "ApexTerm.app" else { return current }
+        return current.deletingLastPathComponent().appendingPathComponent("AetherTerm.app", isDirectory: true)
+    }
+
+    /// Copy before replacing either installed name; keep rollback copies outside Launchpad.
+    nonisolated static func replacementScript(staging: URL, current: URL, destination: URL) -> String {
+        func quote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\"'\"'") + "'" }
+        return """
+        STAGING=\(quote(staging.path))
+        CURRENT=\(quote(current.path))
+        TARGET=\(quote(destination.path))
+        WORK=$(mktemp -d "$(dirname "$TARGET")/.aetherterm-install.XXXXXX") || exit 1
+        BACKUP=$(mktemp -d /tmp/aetherterm-rollback.XXXXXX) || { rmdir "$WORK"; exit 1; }
+        rollback() {
+            if [ -d "$BACKUP/previous" ]; then
+                rm -rf "$TARGET"
+                mv "$BACKUP/previous" "$TARGET"
+            fi
+            if [ -d "$BACKUP/legacy" ]; then mv "$BACKUP/legacy" "$CURRENT"; fi
+            rm -rf "$WORK"
+            rmdir "$BACKUP" 2>/dev/null || true
+        }
+        trap rollback EXIT
+        cp -R "$STAGING" "$WORK/AetherTerm.app" || exit 1
+        # Refuse to overwrite an unrelated application at the branded destination.
+        if [ -e "$TARGET" ]; then
+            ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$TARGET/Contents/Info.plist") || exit 1
+            [ "$ID" = 'com.apexterm.app' ] || exit 1
+            mv "$TARGET" "$BACKUP/previous" || exit 1
+        fi
+        if [ "$CURRENT" != "$TARGET" ] && [ "$(basename "$CURRENT")" = "ApexTerm.app" ] && [ -d "$CURRENT" ]; then
+            OLD_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$CURRENT/Contents/Info.plist") || exit 1
+            [ "$OLD_ID" = 'com.apexterm.app' ] || exit 1
+            mv "$CURRENT" "$BACKUP/legacy" || exit 1
+        fi
+        mv "$WORK/AetherTerm.app" "$TARGET" || exit 1
+        trap - EXIT
+        rmdir "$WORK"
+        # Backups have no .app suffix and remain available for rollback.
+        """
+    }
+
     /// Executes detached update replacement script and restarts the application
     public func relaunchAndInstall(targetURL: URL? = nil) {
         guard distributionChannel == .direct else {
@@ -309,19 +353,16 @@ public final class UpdateManager: ObservableObject {
             return
         }
         
-        let destination = targetURL ?? Self.defaultTargetAppURL()
+        let current = targetURL ?? Bundle.main.bundleURL
+        let destination = targetURL.map(Self.brandedInstallationURL(for:)) ?? Self.defaultTargetAppURL()
         let pid = ProcessInfo.processInfo.processIdentifier
         
         let script = """
         #!/bin/bash
         PID=\(pid)
-        STAGING="\(stagingAppURL.path)"
-        TARGET="\(destination.path)"
         LOG="/tmp/apexterm_update.log"
 
         echo "[$(date)] Starting update replacement for PID $PID..." > "$LOG"
-        echo "[$(date)] Staging: $STAGING" >> "$LOG"
-        echo "[$(date)] Target:  $TARGET" >> "$LOG"
 
         WAIT_COUNT=0
         while kill -0 "$PID" 2>/dev/null; do
@@ -335,12 +376,7 @@ public final class UpdateManager: ObservableObject {
 
         sleep 0.2
 
-        if [ -d "$TARGET" ]; then
-            rm -rf "$TARGET" 2>> "$LOG"
-        fi
-
-        cp -R "$STAGING" "$TARGET" 2>> "$LOG"
-        xattr -dr com.apple.quarantine "$TARGET" 2>/dev/null || true
+        \(Self.replacementScript(staging: stagingAppURL, current: current, destination: destination))
 
         STAGING_PARENT="$(dirname "$STAGING")"
         rm -rf "$STAGING_PARENT" 2>/dev/null

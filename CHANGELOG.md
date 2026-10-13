@@ -2,6 +2,11 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [Unreleased]
+
+### 🐞 问题修复 (Bug Fixes)
+- 直接分发版更新器将历史 ApexTerm.app 安装路径迁移为同目录的 AetherTerm.app；更新复制失败保留旧安装，保留回滚副本并拒绝覆盖其他应用。
+
 ## [v1.6.2] - 2026-10-10
 
 ### ⚡️ 体验优化 (Improvements)

@@ -2,6 +2,26 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.7.2] - 2026-10-14
+
+### ⚡️ 体验优化 (Improvements)
+- **支持 macOS 边缘吸附与 50/50 半屏/网格分屏 (TC-WIN-08)**：
+  - 重构主窗口与侧边栏尺寸规格约束体系（[`ApexStyle.swift`](file:///Users/chenxu/IdeaProjects/ApexTerm/Sources/ApexUI/ApexStyle.swift)），将最小窗口尺寸从历史硬编码的 `960x640pt` 全面优化并统一为 `600x400pt`，彻底解决旧版本在拖动至屏幕边缘磁吸或使用窗口管理器（Raycast / Magnet / Rectangle / Sequoia 磁贴）分屏时，因 960pt 尺寸限制被强制截断在 66.5% 导致两边分屏不均匀并严重挤压/遮挡相邻窗口的缺陷；
+  - 侧边栏最小宽度优化为 `minWidth: 200, idealWidth: 260, maxWidth: 360`，确保半屏分屏状态下侧边栏占用合理空间，为终端与工作区留出充足宽度；
+  - 底层 AppKit 窗口同步：在 `WindowStateAnchor.viewDidMoveToWindow()` 中显式将底层 `NSWindow.minSize` 同步至 `600x400pt`，使系统级分屏与第三方窗口管理器即刻精准识别；
+  - SFTP 路径栏紧凑自适应：将路径输入框 `minWidth` 调整为 `120pt`，在半屏模式及折叠分栏下更从容地自适应换行，避免产生内容溢出。
+- **工作区顶部操作按钮区右侧吸附布局恢复 (TC-WIN-06)**：
+  - 恢复工作区顶部工具栏操作按钮（复制会话、分屏、CPU 指标胶囊、文件面板开关）在窗口最右侧（trailing 端）的吸附排布；
+  - 在操作区与左侧会话标题之间保留宽阔的空白可点击区域，修复旧版本中按钮紧贴会话标题栏居左挤压的排版缺陷。
+- **全局 UI 统一网格体系规范 (4pt/8pt Grid) 与对齐微调 (TC-WIN-07)**：
+  - 审查并统一侧边栏与工作区全组件水平边距（标头、搜索框、会话列表行、标签栏、广播条、SFTP 工具条、底部状态栏）；
+  - 全链路严格对齐 `ApexStyle.s4` (16pt) 水平基准线，本地终端与 SSH 会话统一采用标准 SessionRow 与 22x22 快捷连接按钮，彻底消除视觉错位与右侧凸出悬挂。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- 在 `AGENTS.md` 与构建流水线中确立 **RG-08: Window Tiling & UI Alignment Gate（每版必测门禁）**，将窗口半屏磁吸、UI 统一网格对齐、工作区操作区右侧吸附纳入正式发布的强制门禁，任何单项未通过立即熔断打包流水线；
+- 在 `TEST_SCENARIOS.md` 中新增登记 **`TC-WIN-06` ~ `TC-WIN-08`** 场景矩阵与覆盖要求；
+- `TitlebarZoomAndUIRegressionTests` 8 项测试用例全部通过，全量自动化单元测试 100% 绿色通过（0 failures, 0 unexpected）。
+
 ## [v1.7.1] - 2026-10-14
 
 ### ✨ 新增特性 (Features)

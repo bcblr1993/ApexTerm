@@ -115,6 +115,14 @@ if ! grep -Fq "testVimAlternateScreenRendersRowsAndRestoresShell]' passed" "${RE
     exit 1
 fi
 
+echo "🧪 [Release Regression RG-08] Verifying Window Tiling & UI Grid Alignment (TC-WIN-01 ~ TC-WIN-08)..."
+swift test --jobs 2 --filter TitlebarZoomAndUIRegressionTests \
+    2>&1 | tee "${REPORT_DIR}/window_ui_regression.log"
+if ! grep -Fq "TitlebarZoomAndUIRegressionTests' passed" "${REPORT_DIR}/window_ui_regression.log"; then
+    echo "❌ Required Window Tiling and UI Grid regression (TC-WIN-01~08) did not pass."
+    exit 1
+fi
+
 echo "======================================================="
 echo "🎉 [Tart VM Gate] Quality Gate Cleared! Ready for Release Build."
 echo "======================================================="

@@ -174,4 +174,44 @@ final class TitlebarZoomAndUIRegressionTests: XCTestCase {
         XCTAssertEqual(window.title, "本地终端", "Window title should be synchronized with tab display title")
         window.orderOut(nil)
     }
+
+    func testWorkspaceActionControlsOnRightSide() {
+        let store = SessionStore()
+        let local = Session.local()
+        store.sessions = [local]
+        let client = SSHClientFactory.makeClient(for: local)
+        let tab = TerminalTabItem(session: local, sshClient: client)
+
+        let workspace = WorkspaceView(
+            store: store,
+            activeTabs: .constant([tab]),
+            selectedTabId: .constant(tab.id)
+        )
+
+        let host = NSHostingView(rootView: workspace.apexTheme())
+        let window = NSWindow(
+            contentRect: NSRect(x: 100, y: 100, width: 960, height: 640),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.toolbarStyle = .unifiedCompact
+        window.contentView = host
+        window.makeKeyAndOrderFront(nil)
+        host.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.2))
+
+        // Any toolbar items hosted in the window should be positioned towards the trailing (right) half
+        for item in window.toolbar?.items ?? [] {
+            if let view = item.view, view.window === window {
+                let frameInWindow = view.convert(view.bounds, to: nil)
+                XCTAssertGreaterThan(
+                    frameInWindow.midX,
+                    window.frame.width * 0.4,
+                    "Toolbar action item \(item.itemIdentifier.rawValue) should be in the right/trailing area of the window, not clustered near the left title"
+                )
+            }
+        }
+        window.orderOut(nil)
+    }
 }

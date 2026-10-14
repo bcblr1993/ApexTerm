@@ -235,6 +235,7 @@
 | **TC-WIN-03** | 系统双击标题栏偏好响应 (AppleActionOnDoubleClick) | P1 | 校验用户系统设置 `AppleActionOnDoubleClick` 为 "Minimize" 或 "None" 时的行为 | 为 "Minimize" 时窗口平滑最小化至 Dock；为 "None" 时静默无动作；为 "Maximize"/"Zoom"/默认时执行全屏缩放 | `TitlebarZoomAndUIRegressionTests.testTitlebarDoubleClickRespectsMinimizePreference`<br>`TitlebarZoomAndUIRegressionTests.testTitlebarDoubleClickRespectsNonePreference` |
 | **TC-WIN-04** | 工具栏标题与工作区内容垂直基准对齐 | P1 | 启动应用并连接本地或 SSH 会话，观察工具栏标题、标签栏首项、终端 Prompt 与 SFTP 面板的左侧起始轴 | 工具栏会话标题 (`本地终端` / 主机名) 与下方标签页 (`● 本地终端 ×`)、终端 Shell 提示符、SFTP 面板垂直基准严格对齐（~16pt 起始），无紧贴分割线或错位突出现象 | `TitlebarZoomAndUIRegressionTests.testWorkspaceToolbarAlignedTitle` |
 | **TC-WIN-05** | 侧边栏搜索头与会话列表行边距像素级对齐 | P1 | 观察侧边栏顶部搜索框、添加会话按钮 `+` 与下方会话列表项快捷连接按钮 `↗` 的右侧边距 | 侧边栏搜索头与列表内容统一采用 16pt 水平边距，操作按钮与会话名称垂直边缘完美对齐，无右侧凹凸差 | `TitlebarZoomAndUIRegressionTests` |
+| **TC-WIN-06** | 工作区操作按钮区（复制/分屏/指标/文件）右侧吸附 | P0 | 观察顶部工具栏操作按钮（复制会话、分屏、CPU 指标胶囊、文件面板开关）在不同窗口宽度下的排布位置 | 操作按钮组始终位于窗口最右侧（trailing 端），与左侧会话标题之间保留宽阔的空白可点击区域，严禁挤压在左侧标题旁 | `TitlebarZoomAndUIRegressionTests.testWorkspaceActionControlsOnRightSide` |
 
 ---
 

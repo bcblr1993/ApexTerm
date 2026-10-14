@@ -33,38 +33,46 @@ public struct SidebarView: View {
             HStack(alignment: .firstTextBaseline) {
                 Text("会话")
                     .font(.headline)
+                    .fontWeight(.bold)
+                    .foregroundColor(ApexStyle.primary)
                 Spacer()
                 Text("\(store.sessions.count) 台主机")
                     .font(.caption)
                     .foregroundStyle(ApexStyle.secondary)
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 12)
-            .padding(.bottom, 10)
+            .padding(.horizontal, ApexStyle.s4)
+            .padding(.top, ApexStyle.s3)
+            .padding(.bottom, ApexStyle.sRow)
 
-            HStack(spacing: 6) {
+            HStack(spacing: ApexStyle.sCompact) {
                 TextField(L10n.searchPlaceholder, text: $searchFilter)
                     .textFieldStyle(.roundedBorder)
                     .accessibilityLabel(L10n.searchPlaceholder)
                 
                 Button(action: { showingImportSheet = true }) {
-                    Label("导入主机", systemImage: "square.and.arrow.down")
+                    Image(systemName: "square.and.arrow.down")
+                        .font(.system(size: 11, weight: .medium))
+                        .frame(width: 24, height: 24)
                 }
-                .labelStyle(.iconOnly)
                 .buttonStyle(.bordered)
+                .controlSize(.small)
                 .help("从 ~/.ssh/config 导入主机")
                 
                 Button(action: { showingAddSheet = true }) {
-                    Label(L10n.addSessionHelp, systemImage: "plus")
+                    Image(systemName: "plus")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 24, height: 24)
                 }
-                .labelStyle(.iconOnly)
                 .apexProminentButton()
+                .controlSize(.small)
                 .help(L10n.addSessionHelp)
             }
-            .padding(.horizontal, 16)
-            .padding(.bottom, 12)
+            .padding(.horizontal, ApexStyle.s4)
+            .padding(.bottom, ApexStyle.s3)
             
             Divider()
+                .padding(.horizontal, ApexStyle.s4)
+                .padding(.bottom, ApexStyle.s1)
             
             if store.sessions.isEmpty && searchFilter.isEmpty {
                 VStack(spacing: 16) {
@@ -107,35 +115,14 @@ public struct SidebarView: View {
                 List(selection: selectedSessionID) {
                     if searchFilter.isEmpty || "本地终端".localizedCaseInsensitiveContains(searchFilter) || "local".localizedCaseInsensitiveContains(searchFilter) {
                         Section(header: Label("本地环境", systemImage: "laptopcomputer").font(.caption).fontWeight(.semibold)) {
-                            HStack(spacing: 8) {
-                                Circle()
-                                    .fill(Color(hex: "#34C759") ?? .green)
-                                    .frame(width: 8, height: 8)
-                                
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(L10n.localTerminalTitle)
-                                        .font(.subheadline)
-                                        .foregroundColor(ApexStyle.primary)
-                                    
-                                    Text("\(L10n.localTerminalSubtitle) (\(ProcessInfo.processInfo.userName.isEmpty ? "Mac" : ProcessInfo.processInfo.userName))")
-                                        .font(.caption.monospaced())
-                                        .foregroundColor(ApexStyle.secondary)
-                                }
-                                
-                                Spacer(minLength: 4)
-                                
-                                Button(action: { onConnect(Session.local()) }) {
-                                    Label(L10n.openLocalTerminal, systemImage: "arrow.up.right")
-                                }
-                                .labelStyle(.iconOnly)
-                                .buttonStyle(.borderless)
-                                .controlSize(.small)
-                                .help(L10n.openLocalTerminal)
-                            }
-                            .padding(.vertical, 4)
-                            .contentShape(Rectangle())
+                            let local = Session.local()
+                            SessionRow(
+                                session: local,
+                                onConnect: { onConnect(local) }
+                            )
+                            .tag(local.id)
                             .onTapGesture {
-                                onConnect(Session.local())
+                                onConnect(local)
                             }
                         }
                     }
@@ -186,12 +173,11 @@ public struct SidebarView: View {
                                             .font(.system(size: 12, weight: .medium))
                                         Spacer()
                                         Text("\(sessionsInFolder(folder).count)")
-                                            .font(.system(size: 10))
+                                            .font(.system(size: 10, weight: .medium))
                                             .foregroundColor(ApexStyle.secondary)
-                                            .padding(.horizontal, 5)
+                                            .padding(.horizontal, 6)
                                             .padding(.vertical, 1)
-                                            .background(ApexStyle.primary.opacity(0.06))
-                                            .cornerRadius(4)
+                                            .background(ApexStyle.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: ApexStyle.badgeRadius))
                                     }
                                 }
                             )
@@ -314,32 +300,36 @@ struct SessionRow: View {
     let onConnect: () -> Void
     
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: ApexStyle.s2) {
             Circle()
-                .fill(Color(hex: session.colorHex ?? "#0A84FF") ?? .blue)
+                .fill(Color(hex: session.colorHex ?? (session.isLocal ? "#34C759" : "#0A84FF")) ?? .blue)
                 .frame(width: 8, height: 8)
             
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: ApexStyle.sMicro) {
                 Text(session.name)
                     .font(.subheadline)
                     .foregroundColor(ApexStyle.primary)
+                    .lineLimit(1)
                 
-                Text("\(session.username)@\(session.host)")
+                Text(session.isLocal ? "\(L10n.localTerminalSubtitle) (\(session.username))" : "\(session.username)@\(session.host)")
                     .font(.caption.monospaced())
                     .foregroundColor(ApexStyle.secondary)
+                    .lineLimit(1)
             }
             
-            Spacer(minLength: 4)
+            Spacer(minLength: ApexStyle.s1)
 
             Button(action: onConnect) {
-                Label("连接到 \(session.name)", systemImage: "arrow.up.right")
+                Image(systemName: "arrow.up.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(ApexStyle.secondary)
+                    .frame(width: 22, height: 22)
+                    .contentShape(Rectangle())
             }
-            .labelStyle(.iconOnly)
-            .buttonStyle(.borderless)
-            .controlSize(.small)
+            .buttonStyle(.plain)
             .help("连接到 \(session.name)")
         }
-        .padding(.vertical, 7)
+        .padding(.vertical, 3)
         .contentShape(Rectangle())
     }
 }

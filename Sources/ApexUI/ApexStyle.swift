@@ -22,7 +22,25 @@ enum ApexStyle {
     static var error: Color { color(palette.error) }
     static var buttonAccent: Color { color(ThemePalette.readable(palette.accent, on: ["#FFFFFF"])) }
     static var selection: Color { color(palette.selection) }
+    
+    // MARK: - Spacing Grid (4pt / 8pt standard system)
+    static let sMicro: CGFloat = 2
+    static let s1: CGFloat = 4
+    static let sCompact: CGFloat = 6
+    static let s2: CGFloat = 8
+    static let sRow: CGFloat = 10
+    static let s3: CGFloat = 12
+    static let s4: CGFloat = 16  // Standard page & component horizontal axis padding
+    static let s5: CGFloat = 20
+    static let s6: CGFloat = 24
+
+    // MARK: - Corner Radii
+    static let badgeRadius: CGFloat = 4
+    static let controlRadius: CGFloat = 6
+    static let cardRadius: CGFloat = 8
     static let radius: CGFloat = 10
+    static let panelRadius: CGFloat = 12
+
     private static func color(_ hex: String) -> Color { Color(hex: hex) ?? .primary }
 }
 

@@ -77,7 +77,7 @@ public struct TransferDrawer: View {
                         .buttonStyle(.borderless)
                         .controlSize(.small)
                     }
-                    .padding(.horizontal, 14)
+                    .padding(.horizontal, ApexStyle.s4)
                     .padding(.vertical, 10)
                     .background(ApexStyle.surface)
                     

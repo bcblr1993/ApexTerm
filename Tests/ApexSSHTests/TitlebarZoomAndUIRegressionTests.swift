@@ -214,4 +214,37 @@ final class TitlebarZoomAndUIRegressionTests: XCTestCase {
         }
         window.orderOut(nil)
     }
+
+    func testSidebarAndDetailViewDesignSystem16ptGrid() {
+        XCTAssertEqual(ApexStyle.s4, 16, "ApexStyle.s4 must be standardized to 16pt")
+        XCTAssertEqual(ApexStyle.badgeRadius, 4)
+        XCTAssertEqual(ApexStyle.controlRadius, 6)
+
+        let store = SessionStore()
+        let local = Session.local()
+        store.sessions = [local]
+        
+        let sidebar = SidebarView(
+            store: store,
+            selectedSession: .constant(nil),
+            onConnect: { _ in },
+            onRunSnippet: { _ in }
+        )
+        let sidebarHost = NSHostingView(rootView: sidebar.apexTheme())
+        sidebarHost.frame = NSRect(x: 0, y: 0, width: 290, height: 600)
+        sidebarHost.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(sidebarHost.subviews.count, 0, "Sidebar should render subviews cleanly")
+
+        let client = SSHClientFactory.makeClient(for: local)
+        let tab = TerminalTabItem(session: local, sshClient: client)
+        let workspace = WorkspaceView(
+            store: store,
+            activeTabs: .constant([tab]),
+            selectedTabId: .constant(tab.id)
+        )
+        let workspaceHost = NSHostingView(rootView: workspace.apexTheme())
+        workspaceHost.frame = NSRect(x: 0, y: 0, width: 700, height: 600)
+        workspaceHost.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(workspaceHost.subviews.count, 0, "Workspace should render subviews cleanly")
+    }
 }

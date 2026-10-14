@@ -56,7 +56,7 @@ public struct BroadcastBar: View {
                 .controlSize(.small)
             }
         }
-        .padding(.horizontal, 10)
+        .padding(.horizontal, ApexStyle.s4)
         .padding(.vertical, 7)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(isBroadcastActive ? ApexStyle.warning.opacity(0.12) : ApexStyle.surface)

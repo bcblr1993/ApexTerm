@@ -324,7 +324,7 @@ public struct WorkspaceView: View {
                             .buttonStyle(.plain)
                             .help("新建本地终端 (⇧⌘T)")
                         }
-                        .padding(.horizontal, 12)
+                        .padding(.horizontal, ApexStyle.s4)
                     }
                 }
                 .frame(height: 38)
@@ -420,7 +420,7 @@ public struct WorkspaceView: View {
                         .foregroundColor(ApexStyle.secondary)
                     Spacer()
                 }
-                .padding(.horizontal, 14)
+                .padding(.horizontal, ApexStyle.s4)
                 .padding(.vertical, 8)
                 .frame(minHeight: 32)
                 .background(ApexStyle.surface)
@@ -928,7 +928,7 @@ private struct WorkspaceBottomStatusBar: View {
                     .truncationMode(.middle)
             }
         }
-        .padding(.horizontal, 14)
+        .padding(.horizontal, ApexStyle.s4)
         .padding(.vertical, 8)
         .frame(minHeight: 32)
         .background(ApexStyle.surface)

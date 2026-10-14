@@ -220,7 +220,7 @@ public struct SFTPView: View {
                 fileActions(compact: toolbarWidth < 880)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 12)
+            .padding(.horizontal, ApexStyle.s4)
             .padding(.vertical, 8)
             .background(ApexStyle.surface)
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { toolbarWidth = $0 }
@@ -281,7 +281,7 @@ public struct SFTPView: View {
 
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, 12)
+            .padding(.horizontal, ApexStyle.s4)
 
             // Search filter bar
             if isFilterVisible || !searchFilter.isEmpty {
@@ -322,7 +322,7 @@ public struct SFTPView: View {
                     .controlSize(.small)
                 }
             }
-            .padding(.horizontal, 10)
+            .padding(.horizontal, ApexStyle.s4)
             .padding(.vertical, 4)
             .background(ApexStyle.subtleSurface)
 

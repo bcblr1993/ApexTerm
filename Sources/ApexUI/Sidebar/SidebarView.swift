@@ -85,11 +85,19 @@ public struct SidebarView: View {
                             .padding(.horizontal, 20)
                     }
                     
-                    Button(action: { showingAddSheet = true }) {
-                        Label(L10n.addFirstSessionButton, systemImage: "plus")
+                    HStack(spacing: 8) {
+                        Button(action: { onConnect(Session.local()) }) {
+                            Label(L10n.openLocalTerminal, systemImage: "laptopcomputer")
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.regular)
+                        
+                        Button(action: { showingAddSheet = true }) {
+                            Label(L10n.addFirstSessionButton, systemImage: "plus")
+                        }
+                        .apexProminentButton()
+                        .controlSize(.regular)
                     }
-                    .apexProminentButton()
-                    .controlSize(.regular)
                     
                     Spacer()
                 }
@@ -97,6 +105,41 @@ public struct SidebarView: View {
             } else {
                 // Session tree
                 List(selection: selectedSessionID) {
+                    if searchFilter.isEmpty || "本地终端".localizedCaseInsensitiveContains(searchFilter) || "local".localizedCaseInsensitiveContains(searchFilter) {
+                        Section(header: Label("本地环境", systemImage: "laptopcomputer").font(.caption).fontWeight(.semibold)) {
+                            HStack(spacing: 8) {
+                                Circle()
+                                    .fill(Color(hex: "#34C759") ?? .green)
+                                    .frame(width: 8, height: 8)
+                                
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(L10n.localTerminalTitle)
+                                        .font(.subheadline)
+                                        .foregroundColor(ApexStyle.primary)
+                                    
+                                    Text("\(L10n.localTerminalSubtitle) (\(ProcessInfo.processInfo.userName.isEmpty ? "Mac" : ProcessInfo.processInfo.userName))")
+                                        .font(.caption.monospaced())
+                                        .foregroundColor(ApexStyle.secondary)
+                                }
+                                
+                                Spacer(minLength: 4)
+                                
+                                Button(action: { onConnect(Session.local()) }) {
+                                    Label(L10n.openLocalTerminal, systemImage: "arrow.up.right")
+                                }
+                                .labelStyle(.iconOnly)
+                                .buttonStyle(.borderless)
+                                .controlSize(.small)
+                                .help(L10n.openLocalTerminal)
+                            }
+                            .padding(.vertical, 4)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                onConnect(Session.local())
+                            }
+                        }
+                    }
+                    
                     Section(header: Label(L10n.sessionsHeader, systemImage: "server.rack").font(.caption).fontWeight(.semibold)) {
                         ForEach(groupedFolders, id: \.self) { folder in
                             DisclosureGroup(

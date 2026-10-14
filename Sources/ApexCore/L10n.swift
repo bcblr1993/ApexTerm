@@ -16,6 +16,10 @@ public enum L10n {
     public static let emptySessionTitle = "暂无服务器会话"
     public static let emptySessionSubtitle = "点击上方「+」按钮或下方按钮添加第一台主机"
     public static let addFirstSessionButton = "添加服务器"
+    public static let localTerminalTitle = "本地终端"
+    public static let localTerminalSubtitle = "本机 Shell"
+    public static let openLocalTerminal = "打开本地终端"
+    public static let newLocalTerminalHelp = "新建本地终端 (⇧⌘T)"
     
     // 会话操作
     public static let connectAction = "连接会话"

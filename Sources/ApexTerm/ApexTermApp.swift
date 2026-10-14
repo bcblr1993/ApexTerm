@@ -127,22 +127,21 @@ struct ApexTermApp: App {
             }
             
             CommandGroup(replacing: .newItem) {
+                Button("新建本地终端") {
+                    openLocalTerminal()
+                }
+                .keyboardShortcut("t", modifiers: [.command, .shift])
+                
                 Button("复制当前会话 / 新建标签页") {
                     if activeTabs.contains(where: { $0.id == selectedTabId }) {
                         duplicateCurrentSession()
                     } else if let selected = selectedSidebarSession ?? sessionStore.sessions.first {
                         connectToSession(selected)
                     } else {
-                        isNewSessionPresented = true
+                        openLocalTerminal()
                     }
                 }
                 .keyboardShortcut("t", modifiers: .command)
-                
-                Button("复制当前会话") {
-                    duplicateCurrentSession()
-                }
-                .keyboardShortcut("t", modifiers: [.command, .shift])
-                .disabled(!activeTabs.contains(where: { $0.id == selectedTabId }))
                 
                 Divider()
                 
@@ -309,7 +308,7 @@ struct ApexTermApp: App {
     private func duplicateCurrentSession() {
         guard let current = activeTabs.first(where: { $0.id == selectedTabId }) else { return }
         let session = current.session
-        let client: SSHSessionProtocol = session.host == "192.0.2.10" ? MockSSHSession(session: session) : NativeSSHSession(session: session)
+        let client = SSHClientFactory.makeClient(for: session)
         let tab = TerminalTabItem(session: session, sshClient: client)
         tab.currentRemotePath = current.currentRemotePath
         tab.isDirectoryLinkageEnabled = current.isDirectoryLinkageEnabled
@@ -324,15 +323,17 @@ struct ApexTermApp: App {
     }
 
     private func connectToSession(_ session: Session) {
-        // Only synthetic demo host 192.0.2.10 uses Mock; real IPs (including 192.168.x.x Tart VMs) use NativeSSHSession
-        let client: SSHSessionProtocol
-        if session.host == "192.0.2.10" {
-            client = MockSSHSession(session: session)
-        } else {
-            client = NativeSSHSession(session: session)
-        }
-        
+        let client = SSHClientFactory.makeClient(for: session)
         let tab = TerminalTabItem(session: session, sshClient: client)
+        activeTabs.append(tab)
+        selectedTabId = tab.id
+        tab.connect()
+    }
+    
+    private func openLocalTerminal() {
+        let local = Session.local()
+        let client = SSHClientFactory.makeClient(for: local)
+        let tab = TerminalTabItem(session: local, sshClient: client)
         activeTabs.append(tab)
         selectedTabId = tab.id
         tab.connect()

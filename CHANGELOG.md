@@ -2,6 +2,26 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.7.0] - 2026-10-14
+
+### ✨ 新增特性 (Features)
+- **支持纯原生高帧率本地终端 (Local Terminal)**：
+  - 深度集成 macOS 原生 Darwin POSIX PTY 与系统默认登录 Shell（优先探测 `$SHELL`，兜底调用 `getpwuid` / `/bin/zsh`），严格遵循 Unix 登录 Shell 规范加载环境配置（`~/.zprofile` / `~/.zshrc`）；
+  - 继承 AetherTerm 完整的 120Hz ProMotion 渲染、`TerminalRingBuffer` 防卡死日志流控与多套现代主题；
+  - 底部文件面板与本地终端联动：自动定位用户主目录或当前终端目录，使用原生 `FileManager` 提供微秒级文件列表浏览与创建、重命名、删除操作，无需经过网络；
+  - 快捷入口与快捷键全面对齐：侧边栏常驻本地环境快捷入口，标签栏新增本地终端按钮，支持全局快捷键 `⇧⌘T` 一键秒开本地终端；
+  - 支持本地终端与远程 SSH 会话同屏分屏（水平/垂直 Split Pane）及多会话键盘广播。
+
+### ⚡️ 体验优化 (Improvements)
+- 会话统一工厂化调度：引入 `SSHClientFactory` 统一管理 Local、Mock 与 Native SSH 会话驱动，解耦视图与协议层实现；
+- 兼容旧版资产：`Session` 模型扩展 `SessionType` 并实现向后兼容序列化解码逻辑，历史 `sessions.json` 自动平滑升级，零反序列化失败风险；
+- 空白工作台引导增强：在尚未配置远程会话时，提供醒目的“打开本地终端”与“添加服务器”双按钮引导，开箱即用。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- 遵循 SOP 规范在 `TEST_SCENARIOS.md` 中建立「模块 9：本地终端与系统原生 Shell 集成」12 大验收矩阵；
+- 新增 `LocalTerminalSessionTests`（7 项）与 `SessionTypeCompatibilityTests`（3 项）单元测试套件，覆盖 PTY 数据吞吐、本地文件 CRUD、登录 Shell 探测、会话分屏隔离及混合广播；
+- 370+ 全量自动化测试 100% 绿色通过（0 failures, 0 errors），8 项核心性能基准全部达标，Release 模式零编译错误。
+
 ## [v1.6.3] - 2026-10-13
 
 ### 🐞 问题修复 (Bug Fixes)

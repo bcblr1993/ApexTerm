@@ -191,12 +191,7 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
             self.splitMode = mode
             return
         }
-        let newClient: SSHSessionProtocol
-        if session.host == "192.0.2.10" {
-            newClient = MockSSHSession(session: session)
-        } else {
-            newClient = NativeSSHSession(session: session)
-        }
+        let newClient = SSHClientFactory.makeClient(for: session)
         
         let newPane = TerminalPaneItem(session: session, sshClient: newClient, title: "\(session.name) (分屏)", initialState: .connecting(step: "连接中"))
         newPane.onConnectionStateChanged = { [weak self, weak newPane] newState in
@@ -298,11 +293,13 @@ public struct WorkspaceView: View {
                                 if let cur = currentTab {
                                     duplicateTab(cur)
                                 } else if let first = store.sessions.first {
-                                    let client: SSHSessionProtocol = first.host == "192.0.2.10" ? MockSSHSession(session: first) : NativeSSHSession(session: first)
+                                    let client = SSHClientFactory.makeClient(for: first)
                                     let newTab = TerminalTabItem(session: first, sshClient: client)
                                     activeTabs.append(newTab)
                                     selectedTabId = newTab.id
                                     newTab.connect()
+                                } else {
+                                    openLocalTerminal()
                                 }
                             }) {
                                 Image(systemName: "plus")
@@ -312,7 +309,20 @@ public struct WorkspaceView: View {
                                     .background(ApexStyle.surface, in: RoundedRectangle(cornerRadius: 6))
                             }
                             .buttonStyle(.plain)
-                            .help("复制当前会话 (⌘T)")
+                            .help("复制当前会话 / 新建标签页 (⌘T)")
+                            
+                            // Dedicated Local Terminal button
+                            Button(action: {
+                                openLocalTerminal()
+                            }) {
+                                Image(systemName: "laptopcomputer")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundColor(ApexStyle.secondary)
+                                    .frame(width: 24, height: 24)
+                                    .background(ApexStyle.surface, in: RoundedRectangle(cornerRadius: 6))
+                            }
+                            .buttonStyle(.plain)
+                            .help("新建本地终端 (⇧⌘T)")
                         }
                         .padding(.horizontal, 12)
                     }
@@ -349,6 +359,8 @@ public struct WorkspaceView: View {
                     .keyboardShortcut("d", modifiers: .command)
                 Button("") { currentTab?.split(mode: .horizontal) }
                     .keyboardShortcut("d", modifiers: [.command, .shift])
+                Button("") { openLocalTerminal() }
+                    .keyboardShortcut("t", modifiers: [.command, .shift])
                 Button("") {
                     if let cur = currentTab, let active = cur.activePane {
                         cur.reconnect(pane: active)
@@ -380,9 +392,17 @@ public struct WorkspaceView: View {
                         .background(ApexStyle.accent.opacity(0.10), in: RoundedRectangle(cornerRadius: 22))
                     Text("从会话开始")
                         .font(.title2.weight(.semibold))
-                    Text("在左侧选择主机，然后点击连接按钮")
+                    Text("在左侧选择主机，或者直接新建本地终端")
                         .font(.subheadline)
                         .foregroundColor(ApexStyle.secondary.opacity(0.8))
+                    
+                    Button(action: { openLocalTerminal() }) {
+                        Label(L10n.openLocalTerminal, systemImage: "laptopcomputer")
+                    }
+                    .apexProminentButton()
+                    .controlSize(.regular)
+                    .padding(.top, 4)
+                    
                     Spacer()
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -407,7 +427,7 @@ public struct WorkspaceView: View {
             }
         }
         .navigationTitle(currentTab?.displayTitle ?? L10n.appName)
-        .navigationSubtitle(currentTab.map { "\($0.session.username)@\($0.session.host)" } ?? "SSH 与文件工作台")
+        .navigationSubtitle(currentTab.map { $0.session.isLocal ? "本机 Shell (\($0.session.username))" : "\($0.session.username)@\($0.session.host)" } ?? "SSH 与文件工作台")
         .toolbar { workspaceToolbar }
         .onChange(of: activeTabs.count) { _, count in
             if count < 2 { isBroadcastActive = false }
@@ -463,12 +483,7 @@ public struct WorkspaceView: View {
 
     public func duplicateTab(_ tab: TerminalTabItem) {
         let session = tab.session
-        let client: SSHSessionProtocol
-        if session.host == "192.0.2.10" {
-            client = MockSSHSession(session: session)
-        } else {
-            client = NativeSSHSession(session: session)
-        }
+        let client = SSHClientFactory.makeClient(for: session)
         
         let newTab = TerminalTabItem(session: session, sshClient: client)
         newTab.currentRemotePath = tab.currentRemotePath
@@ -479,6 +494,15 @@ public struct WorkspaceView: View {
         } else {
             activeTabs.append(newTab)
         }
+        selectedTabId = newTab.id
+        newTab.connect()
+    }
+    
+    public func openLocalTerminal() {
+        let local = Session.local()
+        let client = SSHClientFactory.makeClient(for: local)
+        let newTab = TerminalTabItem(session: local, sshClient: client)
+        activeTabs.append(newTab)
         selectedTabId = newTab.id
         newTab.connect()
     }

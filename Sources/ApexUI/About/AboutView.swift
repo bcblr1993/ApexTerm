@@ -74,7 +74,7 @@ public struct AboutView: View {
                 HStack(spacing: 12) {
                     Button {
                         Task {
-                            await updateManager.checkForUpdates(manual: true)
+                            await updateManager.checkForUpdates(manual: false, promptSheet: false)
                         }
                     } label: {
                         HStack(spacing: 6) {
@@ -135,9 +135,24 @@ public struct AboutView: View {
                             Text("发现新版本 v\(rel.version)")
                                 .font(.caption.bold())
                             Button(L10n.updateNow) {
-                                updateManager.isUpdateSheetPresented = true
+                                dismiss()
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                                    updateManager.isUpdateSheetPresented = true
+                                    Task {
+                                        await updateManager.startInAppUpdate(release: rel)
+                                    }
+                                }
                             }
                             .apexProminentButton()
+                            .controlSize(.small)
+                            
+                            Button("查看更新日志") {
+                                dismiss()
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                                    updateManager.isUpdateSheetPresented = true
+                                }
+                            }
+                            .buttonStyle(.bordered)
                             .controlSize(.small)
                         }
                     case .downloading(let progress, _, _):
@@ -148,7 +163,10 @@ public struct AboutView: View {
                                 .font(.caption)
                                 .foregroundColor(ApexStyle.secondary)
                             Button("查看") {
-                                updateManager.isUpdateSheetPresented = true
+                                dismiss()
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                                    updateManager.isUpdateSheetPresented = true
+                                }
                             }
                             .controlSize(.small)
                         }

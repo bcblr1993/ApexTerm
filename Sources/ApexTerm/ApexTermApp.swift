@@ -94,6 +94,11 @@ struct ApexTermApp: App {
             .sheet(isPresented: $updateManager.isUpdateSheetPresented) {
                 UpdateSheetView().apexTheme()
             }
+            .onChange(of: updateManager.isUpdateSheetPresented) { _, isPresented in
+                if isPresented && isAboutPresented {
+                    isAboutPresented = false
+                }
+            }
             .task {
                 appDelegate.reopenMainWindow = { showMainWindow() }
                 if updateManager.distributionChannel == .direct && settings.checkForUpdatesOnLaunch && ProcessInfo.processInfo.environment["APEX_UI_TEST_REOPEN"] != "1" {

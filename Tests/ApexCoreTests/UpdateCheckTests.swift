@@ -207,6 +207,33 @@ final class UpdateCheckTests: XCTestCase {
         XCTAssertEqual(release.packageSize, 2800000)
     }
 
+    func testCheckForUpdatesPromptSheetOption() async throws {
+        let json = """
+        {
+          "tag_name": "v2.0.0",
+          "name": "ApexTerm v2.0.0",
+          "html_url": "https://github.com/bcblr1993/ApexTerm/releases/tag/v2.0.0"
+        }
+        """
+        let managerNoPrompt = UpdateManager { request in
+            (Data(json.utf8), HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+        }
+        await managerNoPrompt.checkForUpdates(manual: false, promptSheet: false)
+        guard case .updateAvailable = managerNoPrompt.status else {
+            return XCTFail("Expected updateAvailable, got \(managerNoPrompt.status)")
+        }
+        XCTAssertFalse(managerNoPrompt.isUpdateSheetPresented, "promptSheet: false must not present sheet")
+
+        let managerPrompt = UpdateManager { request in
+            (Data(json.utf8), HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+        }
+        await managerPrompt.checkForUpdates(manual: false, promptSheet: true)
+        guard case .updateAvailable = managerPrompt.status else {
+            return XCTFail("Expected updateAvailable, got \(managerPrompt.status)")
+        }
+        XCTAssertTrue(managerPrompt.isUpdateSheetPresented, "promptSheet: true must present sheet")
+    }
+
     func testStartInAppUpdateFlowWithProgressAndStaging() async throws {
         let tempAppDir = FileManager.default.temporaryDirectory.appendingPathComponent("MockStagedApp_\(UUID().uuidString).app")
         try FileManager.default.createDirectory(at: tempAppDir, withIntermediateDirectories: true)

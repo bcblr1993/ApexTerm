@@ -144,7 +144,9 @@ public final class UpdateManager: ObservableObject {
     }
     
     /// Trigger an update check. If `manual` is true, prompts sheet even when up-to-date.
-    public func checkForUpdates(manual: Bool = false) async {
+    /// If `promptSheet` is explicitly provided, it controls whether `isUpdateSheetPresented` is raised.
+    public func checkForUpdates(manual: Bool = false, promptSheet: Bool? = nil) async {
+        let shouldPrompt = promptSheet ?? manual
         guard distributionChannel == .direct else {
             status = .failed("更新由 App Store 管理，请在 App Store 查看。")
             return
@@ -152,13 +154,13 @@ public final class UpdateManager: ObservableObject {
         guard !isChecking else { return }
         isChecking = true
         status = .checking
-        if manual { isUpdateSheetPresented = true }
+        if shouldPrompt { isUpdateSheetPresented = true }
         lastCheckedDate = Date()
         
         guard let url = updateManifestURL else {
             isChecking = false
             status = .failed("未配置更新检查地址")
-            if manual { isUpdateSheetPresented = true }
+            if shouldPrompt { isUpdateSheetPresented = true }
             return
         }
         
@@ -173,7 +175,7 @@ public final class UpdateManager: ObservableObject {
             guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
                 self.isChecking = false
                 self.status = .failed("更新服务器返回错误，请稍后重试")
-                if manual { self.isUpdateSheetPresented = true }
+                if shouldPrompt { self.isUpdateSheetPresented = true }
                 return
             }
             
@@ -181,18 +183,20 @@ public final class UpdateManager: ObservableObject {
                 self.latestRelease = release
                 if Self.isVersion(release.version, higherThan: self.currentVersion) {
                     self.status = .updateAvailable(release)
-                    self.isUpdateSheetPresented = true
+                    if promptSheet ?? true {
+                        self.isUpdateSheetPresented = true
+                    }
                 } else {
                     self.status = .upToDate(currentVersion: self.currentVersion)
-                    if manual { self.isUpdateSheetPresented = true }
+                    if shouldPrompt { self.isUpdateSheetPresented = true }
                 }
             } else {
                 self.status = .failed("无法读取更新信息，请稍后重试")
-                if manual { self.isUpdateSheetPresented = true }
+                if shouldPrompt { self.isUpdateSheetPresented = true }
             }
         } catch {
             self.status = .failed(error.localizedDescription)
-            if manual { self.isUpdateSheetPresented = true }
+            if shouldPrompt { self.isUpdateSheetPresented = true }
         }
         
         isChecking = false

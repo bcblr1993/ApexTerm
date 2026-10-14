@@ -247,8 +247,8 @@ final class LocalTerminalSessionTests: XCTestCase {
         try await session.connect()
         try await Task.sleep(nanoseconds: 100_000_000)
         
-        // Send a command that sleeps, then send Ctrl+C (0x03)
-        let cmd = "echo 'WAITING_FOR_INTERRUPT'; sleep 10\n"
+        // Send a command that waits on input, then send Ctrl+C (0x03)
+        let cmd = "echo 'WAITING_FOR_INTERRUPT'; cat\n"
         try await session.sendInput(Data(cmd.utf8))
         await fulfillment(of: [readyExp], timeout: 5.0)
         

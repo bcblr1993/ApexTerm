@@ -246,7 +246,15 @@ public final class LocalTerminalSession: SSHSessionProtocol, @unchecked Sendable
         if pid > 0 {
             kill(-pid, SIGHUP)
             kill(pid, SIGHUP)
+            kill(-pid, SIGTERM)
+            kill(pid, SIGTERM)
             var status: Int32 = 0
+            for _ in 0..<10 {
+                if waitpid(pid, &status, WNOHANG) != 0 { break }
+                usleep(5000)
+            }
+            kill(-pid, SIGKILL)
+            kill(pid, SIGKILL)
             waitpid(pid, &status, WNOHANG)
             stateLock.withLock { self.childPid = -1 }
         }
@@ -258,6 +266,27 @@ public final class LocalTerminalSession: SSHSessionProtocol, @unchecked Sendable
         }
         
         connectionState = .disconnected
+    }
+    
+    deinit {
+        metricsTimer?.cancel()
+        if let procSource = processSource {
+            procSource.cancel()
+        }
+        if let readSource = readSource {
+            readSource.cancel()
+        }
+        let pid = stateLock.withLock { self.childPid }
+        if pid > 0 {
+            kill(-pid, SIGKILL)
+            kill(pid, SIGKILL)
+            var status: Int32 = 0
+            waitpid(pid, &status, WNOHANG)
+        }
+        let fd = stateLock.withLock { self.ptyMasterFd }
+        if fd != -1 {
+            close(fd)
+        }
     }
     
     public func sendInput(_ data: Data) async throws {

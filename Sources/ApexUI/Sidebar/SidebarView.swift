@@ -38,7 +38,7 @@ public struct SidebarView: View {
                     .font(.caption)
                     .foregroundStyle(ApexStyle.secondary)
             }
-            .padding(.horizontal, 14)
+            .padding(.horizontal, 16)
             .padding(.top, 12)
             .padding(.bottom, 10)
 
@@ -61,7 +61,7 @@ public struct SidebarView: View {
                 .apexProminentButton()
                 .help(L10n.addSessionHelp)
             }
-            .padding(.horizontal, 14)
+            .padding(.horizontal, 16)
             .padding(.bottom, 12)
             
             Divider()

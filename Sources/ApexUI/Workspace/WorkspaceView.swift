@@ -451,6 +451,20 @@ public struct WorkspaceView: View {
     
     @ToolbarContentBuilder
     private var workspaceToolbar: some ToolbarContent {
+        ToolbarItem(placement: .automatic) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(currentTab?.displayTitle ?? L10n.appName)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(ApexStyle.primary)
+                    .lineLimit(1)
+                Text(currentTab.map { $0.session.isLocal ? "本机 Shell (\($0.session.username))" : "\($0.session.username)@\($0.session.host)" } ?? "SSH 与文件工作台")
+                    .font(.system(size: 11))
+                    .foregroundColor(ApexStyle.secondary)
+                    .lineLimit(1)
+            }
+            .padding(.leading, 8)
+        }
+
         if let tab = currentTab {
             ToolbarItemGroup(placement: .primaryAction) {
                 Button(action: { duplicateTab(tab) }) {

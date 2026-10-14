@@ -106,7 +106,7 @@ struct ApexTermApp: App {
                 }
             }
         }
-        .windowToolbarStyle(.unifiedCompact(showsTitle: true))
+        .windowToolbarStyle(.unifiedCompact(showsTitle: false))
         .commands {
             CommandGroup(after: .windowArrangement) {
                 Button("显示主窗口") {

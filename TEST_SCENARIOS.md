@@ -226,6 +226,18 @@
 
 ---
 
+### 模块 11：macOS 原生窗口交互与 UI 像素级对齐 (Window Interaction & UI Alignment Matrix)
+
+| 用例 ID | 场景描述 | 优先级 | 测试步骤 / 验证方法 | 预期结果 | 自动化覆盖 / 状态 |
+| :--- | :--- | :---: | :--- | :--- | :--- |
+| **TC-WIN-01** | 标题栏/工具栏空白区域双击放大窗口 | P0 | 鼠标双击顶部工具栏中央空白区域（工作区标题右侧至操作按钮左侧） | 窗口触发 macOS 原生 `performZoom` 平滑放大至屏幕最大可用区域；再次双击平滑恢复原始窗口几何尺寸 | `TitlebarZoomAndUIRegressionTests.testTitlebarDoubleClickPerformsZoom` |
+| **TC-WIN-02** | 双击标题栏交互控件不触发窗口缩放 | P0 | 鼠标快速连续双击复制会话按钮、分屏菜单、CPU 指标胶囊、文件面板开关或红黄绿交通灯 | 仅触发按钮或菜单本身的点击响应，严格不误触发窗口缩放 | `TitlebarZoomAndUIRegressionTests.testTitlebarEmptyAreaDetection` |
+| **TC-WIN-03** | 系统双击标题栏偏好响应 (AppleActionOnDoubleClick) | P1 | 校验用户系统设置 `AppleActionOnDoubleClick` 为 "Minimize" 或 "None" 时的行为 | 为 "Minimize" 时窗口平滑最小化至 Dock；为 "None" 时静默无动作；为 "Maximize"/"Zoom"/默认时执行全屏缩放 | `TitlebarZoomAndUIRegressionTests.testTitlebarDoubleClickRespectsMinimizePreference`<br>`TitlebarZoomAndUIRegressionTests.testTitlebarDoubleClickRespectsNonePreference` |
+| **TC-WIN-04** | 工具栏标题与工作区内容垂直基准对齐 | P1 | 启动应用并连接本地或 SSH 会话，观察工具栏标题、标签栏首项、终端 Prompt 与 SFTP 面板的左侧起始轴 | 工具栏会话标题 (`本地终端` / 主机名) 与下方标签页 (`● 本地终端 ×`)、终端 Shell 提示符、SFTP 面板垂直基准严格对齐（~16pt 起始），无紧贴分割线或错位突出现象 | `TitlebarZoomAndUIRegressionTests.testWorkspaceToolbarAlignedTitle` |
+| **TC-WIN-05** | 侧边栏搜索头与会话列表行边距像素级对齐 | P1 | 观察侧边栏顶部搜索框、添加会话按钮 `+` 与下方会话列表项快捷连接按钮 `↗` 的右侧边距 | 侧边栏搜索头与列表内容统一采用 16pt 水平边距，操作按钮与会话名称垂直边缘完美对齐，无右侧凹凸差 | `TitlebarZoomAndUIRegressionTests` |
+
+---
+
 ## 三、 历史高频 Bug 与排查指南 (electerm / FinalShell 经验总结)
 
 1. **Bug 1: 终端持续输出海量日志导致 UI 完全死锁**

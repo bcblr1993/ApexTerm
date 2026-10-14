@@ -18,9 +18,9 @@
 - 空白工作台引导增强：在尚未配置远程会话时，提供醒目的“打开本地终端”与“添加服务器”双按钮引导，开箱即用。
 
 ### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
-- 遵循 SOP 规范在 `TEST_SCENARIOS.md` 中建立「模块 9：本地终端与系统原生 Shell 集成」12 大验收矩阵；
-- 新增 `LocalTerminalSessionTests`（7 项）与 `SessionTypeCompatibilityTests`（3 项）单元测试套件，覆盖 PTY 数据吞吐、本地文件 CRUD、登录 Shell 探测、会话分屏隔离及混合广播；
-- 370+ 全量自动化测试 100% 绿色通过（0 failures, 0 errors），8 项核心性能基准全部达标，Release 模式零编译错误。
+- 遵循 SOP 规范在 `TEST_SCENARIOS.md` 中建立「模块 9：本地终端与系统原生 Shell 集成」14 大验收矩阵与覆盖映射表；
+- 新增 `LocalTerminalSessionTests`（15 项）与 `SessionTypeCompatibilityTests`（3 项）自动化测试套件，全面覆盖 PTY 数据吞吐与洪峰压测（1500+ 行非阻塞冲刷）、环境变量校验（`xterm-256color`/`truecolor`/`en_US.UTF-8`）、路径波浪号展开、Ctrl+C 中断控制信号、Shell exit 退出监听、本地文件系统异常边界与权限容错、文件 CRUD、登录 Shell 探测、会话分屏隔离、混合广播及本地系统指标瞬时采样；
+- 380+ 全量自动化测试 100% 绿色通过（0 failures, 0 errors），8 项核心性能基准全部达标，Release 模式零编译错误。
 
 ## [v1.6.3] - 2026-10-13
 

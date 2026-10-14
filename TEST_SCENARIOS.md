@@ -237,6 +237,7 @@
 | **TC-WIN-05** | 侧边栏搜索头与会话列表行边距像素级对齐 | P1 | 观察侧边栏顶部搜索框、添加会话按钮 `+` 与下方会话列表项快捷连接按钮 `↗` 的右侧边距 | 侧边栏搜索头与列表内容统一采用 16pt 水平边距，操作按钮与会话名称垂直边缘完美对齐，无右侧凹凸差 | `TitlebarZoomAndUIRegressionTests` |
 | **TC-WIN-06** | 工作区操作按钮区（复制/分屏/指标/文件）右侧吸附 | P0 | 观察顶部工具栏操作按钮（复制会话、分屏、CPU 指标胶囊、文件面板开关）在不同窗口宽度下的排布位置 | 操作按钮组始终位于窗口最右侧（trailing 端），与左侧会话标题之间保留宽阔的空白可点击区域，严禁挤压在左侧标题旁 | `TitlebarZoomAndUIRegressionTests.testWorkspaceActionControlsOnRightSide` |
 | **TC-WIN-07** | 全局 UI 统一网格体系规范 (4pt/8pt Grid) | P0 | 审查侧边栏与工作区全组件水平边距（标头、搜索框、会话列表行、标签栏、广播条、SFTP 工具条、底部状态栏） | 全链路严格对齐 `ApexStyle.s4` (16pt) 水平基准线；本地终端与 SSH 会话统一采用标准 SessionRow 与 22x22 快捷连接按钮，无错位与右侧凸出悬挂 | `TitlebarZoomAndUIRegressionTests.testSidebarAndDetailViewDesignSystem16ptGrid` |
+| **TC-WIN-08** | macOS 边缘吸附/半屏分屏平分 (Half-Screen Tiling & Snapping) | P0 | 拖动主窗口至屏幕边缘触发系统磁吸，或使用 macOS Sequoia 窗口分屏磁贴与第三方窗口管理器（Raycast / Rectangle / Magnet）执行 50/50 分屏 | 窗口最小尺寸限制降至 600x400pt（低于 1280x800 及 1440x900 屏幕半宽 640/720pt）；分屏时完美占据 50.0% 屏幕宽度与相邻窗口均分，彻底解决旧版本因 960pt 最小宽度硬编码导致分屏占用 66.5% 严重挤压相邻窗口的缺陷 | `TitlebarZoomAndUIRegressionTests.testWindowMinimumDimensionsSupportHalfScreenTiling` |
 
 ---
 

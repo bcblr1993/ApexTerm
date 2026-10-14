@@ -247,4 +247,62 @@ final class TitlebarZoomAndUIRegressionTests: XCTestCase {
         workspaceHost.layoutSubtreeIfNeeded()
         XCTAssertGreaterThan(workspaceHost.subviews.count, 0, "Workspace should render subviews cleanly")
     }
+
+    func testWindowMinimumDimensionsSupportHalfScreenTiling() {
+        // 1. Verify design metrics guarantee 50/50 half-screen tiling on all standard MacBook displays:
+        // - 13" MacBook standard (1280x800): half-width is 640pt
+        // - 13"/14" MacBook scaled (1440x900): half-width is 720pt
+        // - 14" MacBook Pro default (1512x982): half-width is 756pt
+        // The previous bug had minWidth = 960pt, causing 960/1440 = 66.7% window occupation and clipping adjacent windows.
+        XCTAssertLessThanOrEqual(ApexStyle.minWindowWidth, 640, "Window minWidth must be <= 640 to support half-screen tiling on 1280x800 screens")
+        XCTAssertEqual(ApexStyle.minWindowWidth, 600, "Window minWidth should be 600pt")
+        XCTAssertLessThanOrEqual(ApexStyle.minWindowHeight, 440, "Window minHeight must be <= 440")
+        XCTAssertEqual(ApexStyle.minWindowHeight, 400, "Window minHeight should be 400pt")
+        XCTAssertLessThanOrEqual(ApexStyle.minSidebarWidth, 200, "Sidebar minWidth must be <= 200 to allow sufficient detail pane width in half-screen")
+
+        // 2. Verify WindowStateView sets minSize on NSWindow
+        let window = NSWindow(
+            contentRect: NSRect(x: 100, y: 100, width: 1000, height: 680),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        let stateHost = NSHostingView(rootView: WindowStateView().frame(width: 0, height: 0))
+        window.contentView = stateHost
+        window.makeKeyAndOrderFront(nil)
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.1))
+
+        XCTAssertLessThanOrEqual(window.minSize.width, 640, "NSWindow minSize width must not exceed 640pt")
+        XCTAssertEqual(window.minSize.width, ApexStyle.minWindowWidth)
+        XCTAssertLessThanOrEqual(window.minSize.height, 440, "NSWindow minSize height must not exceed 440pt")
+        XCTAssertEqual(window.minSize.height, ApexStyle.minWindowHeight)
+        window.orderOut(nil)
+
+        // 3. Verify Sidebar and Workspace layout render cleanly at compact 600x400 split dimensions
+        let store = SessionStore()
+        let local = Session.local()
+        store.sessions = [local]
+        let sidebar = SidebarView(
+            store: store,
+            selectedSession: .constant(nil),
+            onConnect: { _ in },
+            onRunSnippet: { _ in }
+        )
+        let compactSidebarHost = NSHostingView(rootView: sidebar.apexTheme())
+        compactSidebarHost.frame = NSRect(x: 0, y: 0, width: 200, height: 400)
+        compactSidebarHost.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(compactSidebarHost.subviews.count, 0, "Compact sidebar at 200pt width must lay out successfully")
+
+        let client = SSHClientFactory.makeClient(for: local)
+        let tab = TerminalTabItem(session: local, sshClient: client)
+        let workspace = WorkspaceView(
+            store: store,
+            activeTabs: .constant([tab]),
+            selectedTabId: .constant(tab.id)
+        )
+        let compactWorkspaceHost = NSHostingView(rootView: workspace.apexTheme())
+        compactWorkspaceHost.frame = NSRect(x: 0, y: 0, width: 400, height: 400)
+        compactWorkspaceHost.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(compactWorkspaceHost.subviews.count, 0, "Compact detail pane at 400pt width must lay out successfully")
+    }
 }

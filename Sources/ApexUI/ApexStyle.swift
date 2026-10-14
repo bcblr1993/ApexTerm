@@ -3,7 +3,7 @@ import AppKit
 import ApexCore
 
 @MainActor
-enum ApexStyle {
+public enum ApexStyle {
     private static var palette: ThemePalette {
         if AppSettings.shared.followsSystemAppearance {
             let dark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
@@ -11,35 +11,44 @@ enum ApexStyle {
         }
         return AppSettings.shared.themePreset.palette
     }
-    static var accent: Color { color(palette.accent) }
-    static var surface: Color { AppSettings.shared.followsSystemAppearance ? Color(nsColor: .windowBackgroundColor) : color(palette.surface) }
-    static var subtleSurface: Color { AppSettings.shared.followsSystemAppearance ? Color(nsColor: .controlBackgroundColor) : color(palette.sidebar) }
-    static var primary: Color { AppSettings.shared.followsSystemAppearance ? .primary : color(palette.foreground) }
-    static var secondary: Color { AppSettings.shared.followsSystemAppearance ? .secondary : color(palette.secondary) }
-    static var border: Color { color(palette.border) }
-    static var success: Color { color(palette.success) }
-    static var warning: Color { color(palette.warning) }
-    static var error: Color { color(palette.error) }
-    static var buttonAccent: Color { color(ThemePalette.readable(palette.accent, on: ["#FFFFFF"])) }
-    static var selection: Color { color(palette.selection) }
+    public static var accent: Color { color(palette.accent) }
+    public static var surface: Color { AppSettings.shared.followsSystemAppearance ? Color(nsColor: .windowBackgroundColor) : color(palette.surface) }
+    public static var subtleSurface: Color { AppSettings.shared.followsSystemAppearance ? Color(nsColor: .controlBackgroundColor) : color(palette.sidebar) }
+    public static var primary: Color { AppSettings.shared.followsSystemAppearance ? .primary : color(palette.foreground) }
+    public static var secondary: Color { AppSettings.shared.followsSystemAppearance ? .secondary : color(palette.secondary) }
+    public static var border: Color { color(palette.border) }
+    public static var success: Color { color(palette.success) }
+    public static var warning: Color { color(palette.warning) }
+    public static var error: Color { color(palette.error) }
+    public static var buttonAccent: Color { color(ThemePalette.readable(palette.accent, on: ["#FFFFFF"])) }
+    public static var selection: Color { color(palette.selection) }
     
     // MARK: - Spacing Grid (4pt / 8pt standard system)
-    static let sMicro: CGFloat = 2
-    static let s1: CGFloat = 4
-    static let sCompact: CGFloat = 6
-    static let s2: CGFloat = 8
-    static let sRow: CGFloat = 10
-    static let s3: CGFloat = 12
-    static let s4: CGFloat = 16  // Standard page & component horizontal axis padding
-    static let s5: CGFloat = 20
-    static let s6: CGFloat = 24
+    public static let sMicro: CGFloat = 2
+    public static let s1: CGFloat = 4
+    public static let sCompact: CGFloat = 6
+    public static let s2: CGFloat = 8
+    public static let sRow: CGFloat = 10
+    public static let s3: CGFloat = 12
+    public static let s4: CGFloat = 16  // Standard page & component horizontal axis padding
+    public static let s5: CGFloat = 20
+    public static let s6: CGFloat = 24
 
     // MARK: - Corner Radii
-    static let badgeRadius: CGFloat = 4
-    static let controlRadius: CGFloat = 6
-    static let cardRadius: CGFloat = 8
-    static let radius: CGFloat = 10
-    static let panelRadius: CGFloat = 12
+    public static let badgeRadius: CGFloat = 4
+    public static let controlRadius: CGFloat = 6
+    public static let cardRadius: CGFloat = 8
+    public static let radius: CGFloat = 10
+    public static let panelRadius: CGFloat = 12
+
+    // MARK: - Window Layout & Half-Screen Tiling Metrics
+    public static let minWindowWidth: CGFloat = 600
+    public static let minWindowHeight: CGFloat = 400
+    public static let defaultWindowWidth: CGFloat = 1000
+    public static let defaultWindowHeight: CGFloat = 680
+    public static let minSidebarWidth: CGFloat = 200
+    public static let idealSidebarWidth: CGFloat = 260
+    public static let maxSidebarWidth: CGFloat = 360
 
     private static func color(_ hex: String) -> Color { Color(hex: hex) ?? .primary }
 }

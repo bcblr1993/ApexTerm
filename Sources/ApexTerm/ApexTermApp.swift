@@ -60,7 +60,7 @@ struct ApexTermApp: App {
                         runSnippet(snippet)
                     }
                 )
-                .frame(minWidth: 260, idealWidth: 290, maxWidth: 370)
+                .frame(minWidth: ApexStyle.minSidebarWidth, idealWidth: ApexStyle.idealSidebarWidth, maxWidth: ApexStyle.maxSidebarWidth)
             } detail: {
                 WorkspaceView(
                     store: sessionStore,
@@ -79,7 +79,7 @@ struct ApexTermApp: App {
             .navigationSplitViewStyle(.balanced)
             .background(WindowStateView().frame(width: 0, height: 0))
             .apexTheme()
-            .frame(minWidth: 960, minHeight: 640)
+            .frame(minWidth: ApexStyle.minWindowWidth, minHeight: ApexStyle.minWindowHeight)
             .sheet(isPresented: $isAboutPresented) {
                 AboutView().apexTheme()
             }
@@ -107,6 +107,7 @@ struct ApexTermApp: App {
             }
         }
         .windowToolbarStyle(.unifiedCompact(showsTitle: true))
+        .defaultSize(width: ApexStyle.defaultWindowWidth, height: ApexStyle.defaultWindowHeight)
         .commands {
             CommandGroup(after: .windowArrangement) {
                 Button("显示主窗口") {

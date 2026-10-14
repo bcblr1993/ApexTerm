@@ -17,6 +17,7 @@ private final class WindowStateAnchor: NSView {
         super.viewDidMoveToWindow()
         guard let window, configuredWindow !== window else { return }
         configuredWindow = window
+        window.minSize = NSSize(width: ApexStyle.minWindowWidth, height: ApexStyle.minWindowHeight)
         // A second workspace keeps its own frame; the main workspace restores the last one.
         if NSApplication.shared.windows.contains(where: { $0 !== window && $0.frameAutosaveName == "ApexTerm.MainWorkspace" }) {
             return

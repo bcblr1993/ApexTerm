@@ -113,7 +113,7 @@ public struct SFTPView: View {
             .autocorrectionDisabled()
             .textFieldStyle(.roundedBorder)
             .font(.system(size: 12, design: .monospaced))
-            .frame(minWidth: 240)
+            .frame(minWidth: 120)
 
             Button("复制当前路径", systemImage: "doc.on.doc") {
                 NSPasteboard.general.clearContents()

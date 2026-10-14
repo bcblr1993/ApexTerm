@@ -77,6 +77,15 @@ swift test
    - [Benchmark 7] SFTP 任务中心 100 任务并发调度性能：≥ 800 tasks/秒
    - [Benchmark 8] 终端物理按键直通与全链路键入延迟：≤ 15.0 微秒 (μs)
 4. **编译器状态**：Swift 6 模式下零警告（Zero Warnings）。
+5. **在线更新与版本发布闭环门禁 (RG-07: Online Update Gate - 每版必测)**：
+   - 每次发布打标并创建 GitHub Release 后，**必须无条件运行 `./scripts/verify_online_update.py <VERSION>` 验收在线更新链路**；
+   - 必须通过 5 项端到端在线更新检查：
+     1. GitHub Releases API (`https://api.github.com/repos/bcblr1993/ApexTerm/releases/latest`) 准确返回目标版本标签；
+     2. Release Assets 完整性（DMG、tar.gz 与 SHA256SUMS.txt 齐全且体积正常）；
+     3. 下载链接连通性（DMG 与 tar.gz 返回 HTTP 200/302，严禁 404）；
+     4. 模拟客户端解压校验（解压后应用包存在、Bundle ID 为 `com.apexterm.app`、版本一致、主程序 Mach-O 具备可执行权限）；
+     5. 远端 SHA256SUMS.txt 与本地构建清单逐字节对齐。
+   - 任何一项校验失败立即熔断排查，严禁发布不可在线更新的死版本。
 
 ---
 
@@ -117,7 +126,27 @@ swift test
 4. 运行发布打包脚本：`./scripts/build_app.sh <VERSION> <BUILD>`；
 5. 脚本自动完成：清理缓存 -> 测试门禁 -> Release 编译 -> 捆绑与 Info.plist 对齐 -> Developer ID 签名 -> 深度验签 -> 产出 DMG 与 SHA256SUMS -> 本地安装验证；
 6. 提交 Git 变更：`git commit -m "chore(release): 发布 v<VERSION> 正式版"`；
-7. 打带注释的 Git Tag：`git tag -a "v<VERSION>" -m "Release v<VERSION>"`。
+7. 打带注释的 Git Tag：`git tag -a "v<VERSION>" -m "Release v<VERSION>"`；
+8. **推送主干与 Tag 至 GitHub**：
+   ```bash
+   git push origin master && git push origin "v<VERSION>"
+   ```
+9. **创建 GitHub Release 并上传分发资产**：
+   ```bash
+   gh release create "v<VERSION>" \
+     .build/AetherTerm-v<VERSION>-macos-arm64.dmg \
+     .build/AetherTerm-v<VERSION>-macos-arm64.tar.gz \
+     .build/SHA256SUMS.txt \
+     --title "AetherTerm v<VERSION>" \
+     --notes "..."
+   ```
+10. **在线更新全链路闭环验收门禁（每版必测）**：
+    ```bash
+    python3 scripts/verify_online_update.py <VERSION>
+    ```
+    断言 GitHub API 返回、分发包下载连通性、更新包解压验证、Bundle 规范及 SHA-256 清单 100% 绿色通过；
+11. **官方网站同步核验**：
+    确认官方网站触发同步并部署上线，核验 `releases.yaml` 与官网下载链接。
 
 ## 产品名称兼容
 

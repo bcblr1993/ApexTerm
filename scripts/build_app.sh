@@ -213,3 +213,10 @@ if [ -f "${DIST_DMG}" ]; then
     echo "📍 Disk Image:  ${DIST_DMG}"
 fi
 echo "📍 Checksums:   ${SHA_FILE}"
+echo ""
+echo "🚀 [发布后闭环操作标准流程 (SOP Checklist)]:"
+echo "1. git commit -m \"chore(release): 发布 v${VERSION} 正式版\""
+echo "2. git tag -a \"v${VERSION}\" -m \"Release v${VERSION}\""
+echo "3. git push origin master && git push origin \"v${VERSION}\""
+echo "4. gh release create \"v${VERSION}\" \"${DIST_DMG}\" \"${DIST_ARCHIVE}\" \"${SHA_FILE}\" --title \"AetherTerm v${VERSION}\""
+echo "5. python3 scripts/verify_online_update.py ${VERSION} (在线更新链路全量核验，每版必测)"

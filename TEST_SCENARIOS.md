@@ -205,6 +205,24 @@
   3. 执行 `ls -la`、`top`、`clear`，验证终端字符与清屏正常。
   4. 切换到 SFTP 面板，浏览并下载一个文件，验证下载正常。
   5. 验证快捷键 Cmd+W 关闭标签，Cmd+Q 正常退出应用。
+- [ ] **RG-07 在线更新服务链路与发布物闭环校验 (Online Update & GitHub Release Gate - 每版必测)**：
+  1. **远端 GitHub 发布状态验证**：必须成功通过 `git push origin master --tags` 与 `gh release create v<VERSION>`；
+  2. **最新版本 API 可查性**：`https://api.github.com/repos/bcblr1993/ApexTerm/releases/latest` 必须正确返回匹配的目标版本号；
+  3. **分发包连通性**：`.dmg` 与 `.tar.gz` 真实下载链接必须返回 HTTP 200/302，严禁 404；
+  4. **解压与沙盒规范**：在线更新包内应用名必须为 `AetherTerm.app` 或 `ApexTerm.app`，Bundle ID 必须为 `com.apexterm.app`，主二进制具可执行权限；
+  5. **自动化脚本一键验收**：执行 `python3 scripts/verify_online_update.py <VERSION>` 必须 100% Passed。
+
+---
+
+### 模块 10：在线更新与版本升级端到端场景矩阵 (Online Update Matrix)
+
+| 用例 ID | 场景描述 | 优先级 | 测试步骤 / 验证方法 | 预期结果 | 自动化覆盖 / 状态 |
+| :--- | :--- | :---: | :--- | :--- | :--- |
+| **TC-UPD-01** | GitHub Releases API 在线版本检测 | P0 | 客户端启动或手动触发“检查更新”，请求远端 GitHub Releases 接口 | 成功捕获最新 release 信息，准确识别版本号、发布日期与 Release Notes | `UpdateCheckTests.testGitHubReleaseAssetParsing`<br>`verify_online_update.py` |
+| **TC-UPD-02** | 语义化版本比对逻辑 (SemVer Diff) | P0 | 比对本地版本与远端版本（如 `1.6.3` vs `1.7.0`，`v2.0.0` vs `1.9.9`） | 远端版本严格更新时流转至 `updateAvailable`；版本一致或更低时显示 `upToDate` | `UpdateCheckTests.testSemverComparison` |
+| **TC-UPD-03** | 远程分发包资源优选与下载流控 | P0 | 解析 assets 列表，优选 macOS arm64 `tar.gz`（回退 `dmg`）并流式下载 | 准确读取文件大小，下载进度条 0%~100% 平滑更新，支持中途取消与重试 | `UpdateCheckTests.testStartInAppUpdateFlowWithProgressAndStaging` |
+| **TC-UPD-04** | 更新包沙盒解压与签名安全校验 | P0 | 下载后自动在临时目录解压，校验 Info.plist 与主程序 Mach-O 结构 | 校验 Bundle ID 必须为 `com.apexterm.app`，主程序存在且具备可执行权限，否则抛错拦截 | `UpdateCheckTests.testRenamedAndLegacyUpdateBundlesAreAccepted`<br>`verify_online_update.py` |
+| **TC-UPD-05** | 原子替换与重启安装 (Relaunch & Rollback) | P0 | 点击“重新启动并更新”，触发外部替换脚本，关闭旧进程，原子替换到 `/Applications` 并重启应用 | 目标应用安全替换为新版本，原旧版本进入 `/tmp` 回滚备份，重启后成功进入新版本终端，历史会话与钥匙串 100% 保持 | `UpdateCheckTests.testReplacementMigratesLegacyWithoutLosingRollbackOrSessionData` |
 
 ---
 

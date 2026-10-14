@@ -16,7 +16,7 @@
 
 ---
 
-## 二、 全量核心测试场景矩阵 (8 大维度 86 个测试用例)
+## 二、 全量核心测试场景矩阵 (9 大维度 100 个核心测试用例)
 
 ### 模块 1：SSH 连接与多模态身份认证 (SSH Connection & Authentication)
 
@@ -160,6 +160,27 @@
 | **TC-LOC-10** | 多会话广播兼容性 | P1 | 开启广播栏向同时包含本地终端与 SSH 终端的所有会话广播指令 | 所有会话并行接收并执行指令，无挂死或死锁 |
 | **TC-LOC-11** | 快捷键开箱即用一键新建 | P0 | 按快捷键 ⇧⌘T 或点击标签栏本地终端新建按钮 | 瞬间创建并聚焦新的本地终端标签页，无需填写任何连接配置 |
 | **TC-LOC-12** | 本地系统指标采集适配 | P1 | 观察本地终端的顶部微型胶囊与指标详情 | 正确展示本地 Mac 的 CPU、物理内存与磁盘使用率，标明“本地会话” |
+| **TC-LOC-13** | 本地文件系统异常路径与容错 | P1 | 访问不存在的路径、尝试向只读路径写入、无效的 chmod 八进制权限值 | 优雅抛出标准错误码与中文提示，严禁主线程闪退，保持 UI 稳定性 |
+| **TC-LOC-14** | PTY 洪峰吞吐与非阻塞冲刷压测 | P0 | 在本地终端中高频产生海量字符输出（≥ 50KB / 1500+ 行） | Darwin PTY 读缓冲区非阻塞平滑消费，100% 完整接收，无死锁或内存溢出 |
+
+#### 本地终端全量自动化测试场景执行与覆盖矩阵 (Local Terminal Test Matrix)
+
+| 场景 ID | 测试场景描述 | 优先级 | 测试分层 | 对应自动化测试函数 (Automated Test Case) | 验证状态 |
+| :--- | :--- | :---: | :---: | :--- | :---: |
+| **TC-LOC-01** | 默认登录 Shell 探测与启动 | P0 | 单元测试 | `LocalTerminalSessionTests.testShellResolutionReturnsExecutable` | ✅ 100% Passed |
+| **TC-LOC-02** | 环境变量继承与设置 (TERM/COLORTERM/LANG) | P0 | 集成测试 | `LocalTerminalSessionTests.testLocalTerminalEnvironmentAndOutput` | ✅ 100% Passed |
+| **TC-LOC-03** | 初始工作目录 (CWD) 设置与路径波浪号展开 | P0 | 单元/集成 | `LocalTerminalSessionTests.testLocalTerminalWorkingDirectoryAndPathExpansion` | ✅ 100% Passed |
+| **TC-LOC-04** | PTY 双向输入输出与回显 | P0 | 集成测试 | `LocalTerminalSessionTests.testLocalTerminalSessionConnectAndEcho` | ✅ 100% Passed |
+| **TC-LOC-05** | 本地文件系统浏览器秒级加载与目录优先排序 | P0 | 单元测试 | `LocalTerminalSessionTests.testLocalDirectoryListing` | ✅ 100% Passed |
+| **TC-LOC-06** | 本地文件操作 CRUD 闭环 (创建/重命名/权限/删除) | P0 | 单元测试 | `LocalTerminalSessionTests.testLocalFileOperationsCRUD` | ✅ 100% Passed |
+| **TC-LOC-07** | 本地 Shell 正常退出与断开处理 (exit / Ctrl+D) | P0 | 集成测试 | `LocalTerminalSessionTests.testLocalTerminalShellExitHandling` | ✅ 100% Passed |
+| **TC-LOC-08** | 会话配置向下兼容性 (旧版本 sessions.json 解码) | P0 | 单元测试 | `SessionTypeCompatibilityTests.testLegacySessionJSONDecodesAsSSHByDefault`<br>`SessionTypeCompatibilityTests.testLocalSessionCreationAndRoundtrip`<br>`SessionTypeCompatibilityTests.testSessionStoreAddAndFilterLocalSession` | ✅ 100% Passed |
+| **TC-LOC-09** | 本地会话分屏与多标签混合并存 (水平/垂直) | P1 | 集成测试 | `LocalTerminalSessionTests.testLocalSessionSplitPaneCreationAndIndependence` | ✅ 100% Passed |
+| **TC-LOC-10** | 多会话广播兼容性 (本地终端与 SSH 终端混合同步) | P1 | 并发测试 | `LocalTerminalSessionTests.testBroadcastWithMixedLocalAndRemoteSessions` | ✅ 100% Passed |
+| **TC-LOC-11** | 快捷键开箱即用与工厂单例构造 | P0 | 单元测试 | `LocalTerminalSessionTests.testFactoryInstantiatesLocalSession`<br>`LocalTerminalSessionTests.testLocalSessionPropertiesAndDefaults` | ✅ 100% Passed |
+| **TC-LOC-12** | 本地系统指标采集适配 (CPU/内存/磁盘瞬时采样) | P1 | 集成测试 | `LocalTerminalSessionTests.testLocalMetricsCollection` | ✅ 100% Passed |
+| **TC-LOC-13** | 本地文件系统异常路径与权限容错 | P1 | 边界测试 | `LocalTerminalSessionTests.testLocalFileSystemEdgeCases` | ✅ 100% Passed |
+| **TC-LOC-14** | PTY 控制信号中断 (Ctrl+C) 与非阻塞吞吐压测 | P0 | 压力测试 | `LocalTerminalSessionTests.testLocalTerminalInterruptSignal`<br>`LocalTerminalSessionTests.testLocalTerminalHighThroughputPTY` | ✅ 100% Passed |
 
 ---
 

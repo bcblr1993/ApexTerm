@@ -387,6 +387,10 @@ final class ComprehensiveFeatureTests: XCTestCase {
         XCTAssertTrue(TransferManager.shared.tasks.contains { $0.remotePath == path })
         try XCTUnwrap(progress).cancel()
         await fulfillment(of: [completion], timeout: 2)
+        let cancelDeadline = ContinuousClock.now.advanced(by: .seconds(1))
+        while TransferManager.shared.tasks.first(where: { $0.remotePath == path })?.status != .cancelled && ContinuousClock.now < cancelDeadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
         let task = try XCTUnwrap(TransferManager.shared.tasks.first { $0.remotePath == path })
         XCTAssertEqual(task.status, .cancelled)
         XCTAssertFalse(FileManager.default.fileExists(atPath: task.localURL.path))

@@ -93,6 +93,12 @@ swift test
      2. 全局 UI 统一网格体系规范（`ApexStyle.s4 = 16pt` 基准线与无错位）；
      3. 顶部工作区操作按钮区（复制/分屏/指标/文件）右侧吸附与标题栏空白双击缩放。
    - 任何单项未通过立即熔断打包流水线。
+7. **核心功能与扩展能力门禁 (RG-09: Core Capabilities & Extensions Gate - 每版必测)**：
+   - 每次发布新版本前，**必须无条件通过核心扩展用例集（含 24 项新增自动化测试）**：
+     1. `SSHTunnelTests`（含 TC-TUN-01 ~ TC-TUN-08）：覆盖 Local/Remote/Dynamic SOCKS5 端口转发配置合法性、OpenSSH `-L`/`-R`/`-D` 参数构建、端口冲突防范、自动启动与生命周期持久化；
+     2. `QuickCommandBarTests`（含 TC-CMD-01 ~ TC-CMD-08）：覆盖常用运维命令预设、分类动态过滤、`{{var}}` 占位符提取与动态插值、`{{date}}` 解析与安全换行发送；
+     3. `CommandPaletteTests`（含 TC-PAL-01 ~ TC-PAL-08）：覆盖全局 Spotlight 调色板搜索（`⌘P` / `⌘K`）、前缀路由（`>` 功能 / `@` 主机 / `/` 路径 / `#` 命令）、模糊匹配与权重排序、快捷键分发。
+   - 任何单项未通过立即熔断打包流水线。
 
 ---
 

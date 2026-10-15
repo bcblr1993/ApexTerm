@@ -123,6 +123,16 @@ if ! grep -Fq "TitlebarZoomAndUIRegressionTests' passed" "${REPORT_DIR}/window_u
     exit 1
 fi
 
+echo "🧪 [Release Regression RG-09] Verifying Core Capabilities & Extensions (Tunnels, Quick Command Bar, Command Palette)..."
+swift test --jobs 2 --filter "SSHTunnelTests|QuickCommandBarTests|CommandPaletteTests" \
+    2>&1 | tee "${REPORT_DIR}/core_extensions_regression.log"
+if ! grep -Fq "SSHTunnelTests' passed" "${REPORT_DIR}/core_extensions_regression.log" || \
+   ! grep -Fq "QuickCommandBarTests' passed" "${REPORT_DIR}/core_extensions_regression.log" || \
+   ! grep -Fq "CommandPaletteTests' passed" "${REPORT_DIR}/core_extensions_regression.log"; then
+    echo "❌ Required Core Capabilities and Extensions regression (RG-09: TC-TUN, TC-CMD, TC-PAL) did not pass."
+    exit 1
+fi
+
 echo "======================================================="
 echo "🎉 [Tart VM Gate] Quality Gate Cleared! Ready for Release Build."
 echo "======================================================="

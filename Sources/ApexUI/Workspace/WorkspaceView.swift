@@ -168,6 +168,27 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
                 if p.id == (self.activePane?.id ?? self.panes.first?.id) {
                     self.connectionState = p.sshClient.connectionState
                 }
+                
+                // Auto-start configured tunnels for this session
+                let autoTunnels = SSHTunnelManager.shared.tunnels(for: self.session.id).filter { $0.autoStart }
+                for t in autoTunnels {
+                    if !SSHTunnelManager.shared.state(for: t.id).isRunning {
+                        var pw: String? = nil
+                        switch self.session.authMethod {
+                        case .password(let ref):
+                            pw = try? await KeychainStore.shared.get(key: ref)
+                        case .privateKey(_, let passphraseRef):
+                            if let ref = passphraseRef, !ref.isEmpty {
+                                pw = try? await KeychainStore.shared.get(key: ref)
+                            }
+                        default: break
+                        }
+                        var keyPath: String? = nil
+                        if case .privateKey(let ref, _) = self.session.authMethod { keyPath = ref }
+                        let sshpass = (self.sshClient as? NativeSSHSession)?.sshpassExecutablePath
+                        try? SSHTunnelManager.shared.startTunnel(id: t.id, session: self.session, password: pw, privateKeyPath: keyPath, sshpassPath: sshpass)
+                    }
+                }
             } catch {
                 p.connectionState = .failed(error.localizedDescription)
                 if p.id == (self.activePane?.id ?? self.panes.first?.id) {
@@ -270,6 +291,9 @@ public struct WorkspaceView: View {
     }
     @State private var splitDragStartRatio: CGFloat?
     @AppStorage("workspace.filesVisible") private var isSFTPVisible = true
+    @State private var isQuickCommandBarVisible: Bool = false
+    @State private var isCommandPalettePresented: Bool = false
+    @State private var isTunnelModalPresented: Bool = false
     
     // Tab Rename
     @State private var tabToRename: TerminalTabItem?
@@ -413,6 +437,12 @@ public struct WorkspaceView: View {
                     .keyboardShortcut(.downArrow, modifiers: [.command, .option])
                 Button("") { currentTab?.focusPreviousPane() }
                     .keyboardShortcut(.upArrow, modifiers: [.command, .option])
+                Button("") { isCommandPalettePresented.toggle() }
+                    .keyboardShortcut("p", modifiers: .command)
+                Button("") { isQuickCommandBarVisible.toggle() }
+                    .keyboardShortcut("b", modifiers: [.command, .shift])
+                Button("") { isTunnelModalPresented.toggle() }
+                    .keyboardShortcut("t", modifiers: [.command, .option])
             }
             .frame(width: 0, height: 0)
             .opacity(0)
@@ -428,6 +458,19 @@ public struct WorkspaceView: View {
                     splitRatio: splitRatioBinding,
                     splitDragStartRatio: $splitDragStartRatio
                 )
+                
+                if isQuickCommandBarVisible {
+                    QuickCommandBarView(
+                        store: store,
+                        isVisible: $isQuickCommandBarVisible,
+                        onExecuteCommand: { cmd in
+                            if let pane = tab.activePane ?? tab.panes.first,
+                               let data = cmd.data(using: .utf8) {
+                                Task { try? await pane.sshClient.sendInput(data) }
+                            }
+                        }
+                    )
+                }
             } else {
                 VStack(spacing: 14) {
                     Spacer()
@@ -493,6 +536,42 @@ public struct WorkspaceView: View {
         } message: {
             Text("自定义该标签页的显示名称，输入留空或恢复默认将恢复为服务器名称。")
         }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("TriggerCommandPalette"))) { _ in
+            isCommandPalettePresented = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("TriggerSSHTunnels"))) { _ in
+            isTunnelModalPresented = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("TriggerQuickCommandBar"))) { _ in
+            isQuickCommandBarVisible.toggle()
+        }
+        .sheet(isPresented: $isTunnelModalPresented) {
+            SSHTunnelModalView(store: store).apexTheme()
+        }
+        .overlay {
+            if isCommandPalettePresented {
+                ZStack {
+                    Color.black.opacity(0.35)
+                        .ignoresSafeArea()
+                        .onTapGesture {
+                            isCommandPalettePresented = false
+                        }
+                    
+                    VStack {
+                        CommandPaletteModalView(
+                            store: store,
+                            isPresented: $isCommandPalettePresented,
+                            onSelectAction: { action in
+                                handleCommandPaletteAction(action)
+                            }
+                        )
+                        .padding(.top, 40)
+                        Spacer()
+                    }
+                }
+                .transition(.opacity.combined(with: .scale(scale: 0.98)))
+            }
+        }
     }
     
     @ToolbarContentBuilder
@@ -511,18 +590,96 @@ public struct WorkspaceView: View {
                 }
                 .disabled(tab.panes.count >= 2)
                 .help("分屏 (⌘D / ⌘⇧D)")
+                
+                Button(action: { isTunnelModalPresented = true }) {
+                    Label("端口转发", systemImage: "arrow.triangle.swap")
+                }
+                .help("SSH 端口转发与隧道管理 (⌘⌥T)")
+                
+                Button(action: { isCommandPalettePresented = true }) {
+                    Label("命令面板", systemImage: "command")
+                }
+                .help("全局快速搜索与命令面板 (⌘P)")
             }
             ToolbarItem(placement: .primaryAction) {
                 if let primaryPane = tab.panes.first {
                     WorkspaceMetricsView(pane: primaryPane, historyStore: tab.metricsHistory, monitoringEnabled: tab.session.agentlessMonitorEnabled)
                 }
             }
-            ToolbarItem(placement: .primaryAction) {
+            ToolbarItemGroup(placement: .primaryAction) {
+                Toggle(isOn: $isQuickCommandBarVisible) {
+                    Label("快捷命令", systemImage: "bolt")
+                }
+                .toggleStyle(.button)
+                .help(isQuickCommandBarVisible ? "隐藏底部快捷命令栏 (⌘⇧B)" : "显示底部快捷命令栏 (⌘⇧B)")
+
                 Toggle(isOn: $isSFTPVisible) {
                     Label("文件面板", systemImage: "folder")
                 }
                 .toggleStyle(.button)
                 .help(isSFTPVisible ? "隐藏文件面板" : "显示文件面板")
+            }
+        }
+    }
+
+    public func connectToSession(_ session: Session) {
+        let client = SSHClientFactory.makeClient(for: session)
+        let newTab = TerminalTabItem(session: session, sshClient: client)
+        activeTabs.append(newTab)
+        selectedTabId = newTab.id
+        newTab.connect()
+    }
+    
+    private func handleCommandPaletteAction(_ action: CommandPaletteAction) {
+        switch action {
+        case .connectSession(let id):
+            if let session = store.sessions.first(where: { $0.id == id }) {
+                connectToSession(session)
+            }
+        case .openBookmark(let path):
+            if let tab = currentTab {
+                tab.currentRemotePath = path
+                isSFTPVisible = true
+            }
+        case .runSnippet(let snippet):
+            if let tab = currentTab, let pane = tab.activePane ?? tab.panes.first {
+                let resolved = snippet.resolvedCommand(context: [
+                    "host": tab.session.host,
+                    "user": tab.session.username,
+                    "port": "\(tab.session.port)"
+                ])
+                if let data = (resolved + "\n").data(using: .utf8) {
+                    Task { try? await pane.sshClient.sendInput(data) }
+                }
+            }
+        case .executeAppAction(let appAction):
+            switch appAction {
+            case .newLocalTerminal:
+                openLocalTerminal()
+            case .duplicateSession:
+                if let cur = currentTab { duplicateTab(cur) }
+            case .splitVertical:
+                currentTab?.split(mode: .vertical)
+            case .splitHorizontal:
+                currentTab?.split(mode: .horizontal)
+            case .toggleMaximize:
+                currentTab?.toggleMaximizeActivePane()
+            case .openTunnels:
+                isTunnelModalPresented = true
+            case .toggleQuickCommandBar:
+                isQuickCommandBarVisible.toggle()
+            case .toggleSFTP:
+                isSFTPVisible.toggle()
+            case .clearScrollback:
+                currentTab?.ringBuffer.clear()
+            case .openSettings:
+                NotificationCenter.default.post(name: NSNotification.Name("OpenSettingsModal"), object: nil)
+            case .checkForUpdates:
+                Task { await UpdateManager.shared.checkForUpdates(manual: true) }
+            case .openAbout:
+                NotificationCenter.default.post(name: NSNotification.Name("OpenAboutModal"), object: nil)
+            case .openShortcuts:
+                NotificationCenter.default.post(name: NSNotification.Name("OpenShortcutsModal"), object: nil)
             }
         }
     }

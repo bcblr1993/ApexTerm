@@ -254,6 +254,38 @@
 
 ---
 
+### 模块 13：SSH 端口转发与隧道生命周期矩阵 (SSH Port Forwarding & Tunnels Matrix)
+
+| 用例 ID | 场景描述 | 优先级 | 测试步骤 / 验证方法 | 预期结果 | 自动化覆盖 / 状态 |
+| :--- | :--- | :---: | :--- | :--- | :--- |
+| **TC-TUN-01** | 端口范围校验与参数合法性约束 | P0 | 配置 Local/Remote/Dynamic 隧道，测试非法端口 (0, 65536, -1) 与空地址 | 端口严格限制在 1 ~ 65535 范围内，非法参数立即标记无效，防止底层进程崩溃 | `SSHTunnelTests.testTunnelValidationAndPortBounds` |
+| **TC-TUN-02** | OpenSSH Specifier 标准参数构建 | P0 | 校验本地端口转发 `-L`、远程反向穿透 `-R` 与动态 SOCKS5 代理 `-D` 的规范化格式 | 准确生成 `-L 127.0.0.1:8080:target:80`、`-R 0.0.0.0:9000:localhost:3000` 与 `-D 127.0.0.1:1080` | `SSHTunnelTests.testOpenSSHSpecifiers` |
+| **TC-TUN-03** | 隧道配置持久化与 CRUD 维护 | P0 | 创建、编辑名称、删除端口转发隧道，并重启重新读取 `tunnels.json` | 隧道配置安全原子持久化存储，重启后无缝完整恢复所有端口与关联会话 | `SSHTunnelTests.testTunnelManagerPersistenceAndCRUD` |
+| **TC-TUN-04** | 本地监听端口冲突防御与拦截 | P0 | 尝试添加两个相同本地绑定地址与端口的隧道 | 核心管理器抛出 `portConflict` 错误并予以拦截，杜绝端口冲突导致进程异常退出 | `SSHTunnelTests.testTunnelManagerPortConflictPrevention` |
+| **TC-TUN-05** | 完整 OpenSSH 隧道启动参数生成 | P0 | 生成带有私钥 `-i`、目标会话端口 `-p`、`-N` (无交互命令)、`-T` 与 `ExitOnForwardFailure=yes` 的命令行 | 参数符合 OpenSSH 标准规范，会话保活与认证参数齐备 | `SSHTunnelTests.testBuildSSHArguments` |
+| **TC-TUN-06** | 隧道生命周期状态机流转 | P0 | 模拟启动、运行中、异常退出与手动停止流程 | 状态准确从 `.stopped` -> `.starting` -> `.active` -> `.failed(reason)` 流转，UI 实时指示 | `SSHTunnelTests.testTunnelLifecycleStates` |
+| **TC-TUN-07** | 会话关联与按会话过滤 | P1 | 过滤指定 `sessionId` 拥有的所有端口转发隧道 | 准确返回对应会话配置的所有隧道列表，不同主机间配置严格隔离 | `SSHTunnelTests.testSessionFiltering` |
+| **TC-TUN-08** | 随会话连接自动启动隧道 | P0 | 勾选“连接会话时自动启动此隧道”后连接目标 SSH 会话 | 会话连接成功后后台自动拉起该隧道进程，状态平滑进入 `.active` | `SSHTunnelTests.testAutoStartConfigurationPersistence` |
+
+---
+
+### 模块 14：终端底部快捷命令栏与全局调色板搜索矩阵 (Quick Command Bar & Command Palette Matrix)
+
+| 用例 ID | 场景描述 | 优先级 | 测试步骤 / 验证方法 | 预期结果 | 自动化覆盖 / 状态 |
+| :--- | :--- | :---: | :--- | :--- | :--- |
+| **TC-CMD-01** | 快捷命令 `{{var}}` 动态变量提取 | P0 | 解析带有 `{{service}}`、`{{container}}` 等占位符的命令，自动剔除内置 `{{date}}` | 准确提取需要用户输入的变量名列表，去重且不把内置日期作为变量提示 | `QuickCommandBarTests.testVariableExtractionAndDeduplication` |
+| **TC-CMD-02** | 占位符上下文安全替换与日期解析 | P0 | 填充用户参数值并执行命令解析，包含内置日期 | 占位符被准确替换，`{{date}}` 自动解析为当前 `yyyy-MM-dd` 格式 | `QuickCommandBarTests.testContextResolutionAndInterpolation` |
+| **TC-CMD-03** | 精选常用运维预设命令库覆盖 | P0 | 审查内置默认快捷命令库（系统概览、磁盘、内存、进程服务、Docker、网络、日志） | 内置 15+ 条核心高频运维命令，覆盖全部五大标准分类，语法规范标准 | `QuickCommandBarTests.testCuratedDefaultSnippetsCompleteness` |
+| **TC-CMD-04** | 快捷命令分类过滤与快速检索 | P1 | 在快捷命令栏中点击不同分类胶囊标签（系统、Docker、网络等） | 列表动态响应并过滤展示目标分类下的命令项，全部/单类自由切换 | `QuickCommandBarTests.testDynamicCategoryFiltering` |
+| **TC-CMD-05** | 终端即时击键回车与命令流发送 | P0 | 点击快捷命令（无变量或填完变量后点击执行） | 拼接命令结尾换行符 `\n` 并以 UTF-8 字节流直接下发至活动终端 PTY 会话 | `QuickCommandBarTests.testExecutionPayloadGeneration` |
+| **TC-CMD-06** | 复杂管道符、特殊符号与多层引号转义安全 | P0 | 在复杂 awk/grep/sed 管道流命令中使用变量 | 变量替换后不破坏单双引号或管道结构，安全送达远程 Shell 执行 | `QuickCommandBarTests.testSpecialCharacterPreservation` |
+| **TC-PAL-01** | 全局 Spotlight 调色板聚合检索 | P0 | 按下 `⌘P` 或从菜单打开全局命令面板，检索会话、SFTP路径、快捷命令与系统功能 | 聚合检索 4 大维度资源，实时响应输入，支持模糊搜索 | `CommandPaletteTests.testPaletteItemConstruction` |
+| **TC-PAL-02** | 前缀路由符号过滤机制 | P0 | 输入 `>` 仅搜索功能操作；`@` 仅搜索主机会话；`/` 仅搜索 SFTP 目录；`#` 仅搜索快捷命令 | 快速按前缀窄化搜索范围，匹配结果严格限定在目标分类内 | `CommandPaletteTests.testPrefixFilterRouting` |
+| **TC-PAL-03** | 模糊匹配与权重相关性打分算法 | P0 | 测试完全匹配、前缀匹配、子串匹配与子序列匹配的优先级 | 精确匹配得分最高排首位，前缀次之，子串与子序列依次排列，确保高频项优先命中 | `CommandPaletteTests.testRankingExactVsSubstring` |
+| **TC-PAL-04** | 键盘上下光标快速巡航与回车即时分发 | P0 | 使用键盘 `↑` / `↓` 移动选择项，按下 `↵` 执行，`ESC` 取消 | 选中国际化响应流畅，列表自动滚动聚焦，执行对应动作后平滑退出调色板 | `CommandPaletteTests.testAppActionsCompleteness` |
+
+---
+
 ## 三、 历史高频 Bug 与排查指南 (electerm / FinalShell 经验总结)
 
 1. **Bug 1: 终端持续输出海量日志导致 UI 完全死锁**

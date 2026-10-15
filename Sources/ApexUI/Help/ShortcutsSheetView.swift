@@ -23,6 +23,15 @@ public struct ShortcutsSheetView: View {
     
     private let groups: [ShortcutGroup] = [
         ShortcutGroup(
+            title: "全局与调色板导航",
+            icon: "sparkle.magnifyingglass",
+            items: [
+                ShortcutItem(keys: ["⌘", "P"], description: "全局快速搜索与命令面板 (Command Palette)"),
+                ShortcutItem(keys: ["⌘", "⌥", "T"], description: "SSH 端口转发与隧道管理 (Port Forwarding)"),
+                ShortcutItem(keys: ["⌘", "⇧", "B"], description: "显示 / 隐藏底部快捷命令栏 (Quick Command Bar)")
+            ]
+        ),
+        ShortcutGroup(
             title: "会话与标签管理",
             icon: "macwindow.on.rectangle",
             items: [

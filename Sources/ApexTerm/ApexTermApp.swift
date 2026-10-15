@@ -94,6 +94,12 @@ struct ApexTermApp: App {
             .sheet(isPresented: $updateManager.isUpdateSheetPresented) {
                 UpdateSheetView().apexTheme()
             }
+            .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("OpenAboutModal"))) { _ in
+                isAboutPresented = true
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("OpenShortcutsModal"))) { _ in
+                isShortcutsPresented = true
+            }
             .onChange(of: updateManager.isUpdateSheetPresented) { _, isPresented in
                 if isPresented && isAboutPresented {
                     isAboutPresented = false
@@ -262,6 +268,23 @@ struct ApexTermApp: App {
                     }
                 }
                 .keyboardShortcut("k", modifiers: .command)
+                
+                Divider()
+                
+                Button("全局快速搜索与命令面板...") {
+                    NotificationCenter.default.post(name: NSNotification.Name("TriggerCommandPalette"), object: nil)
+                }
+                .keyboardShortcut("p", modifiers: .command)
+                
+                Button("SSH 端口转发与隧道管理...") {
+                    NotificationCenter.default.post(name: NSNotification.Name("TriggerSSHTunnels"), object: nil)
+                }
+                .keyboardShortcut("t", modifiers: [.command, .option])
+                
+                Button("显示 / 隐藏底部快捷命令栏") {
+                    NotificationCenter.default.post(name: NSNotification.Name("TriggerQuickCommandBar"), object: nil)
+                }
+                .keyboardShortcut("b", modifiers: [.command, .shift])
             }
             
             CommandGroup(replacing: .help) {

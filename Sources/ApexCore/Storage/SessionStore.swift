@@ -24,6 +24,11 @@ public final class SessionStore: ObservableObject {
         try? fileManager.createDirectory(at: self.baseDirectory, withIntermediateDirectories: true)
         loadAll()
         
+        if snippets.isEmpty {
+            self.snippets = Snippet.defaultCuratedSnippets
+            saveAll()
+        }
+        
         if triggers.isEmpty {
             seedDefaultTriggers()
         }
@@ -93,6 +98,25 @@ public final class SessionStore: ObservableObject {
     
     public func deleteSession(id: UUID) {
         sessions.removeAll(where: { $0.id == id })
+        saveAll()
+    }
+    
+    // MARK: - Snippet Management
+    
+    public func addSnippet(_ snippet: Snippet) {
+        snippets.append(snippet)
+        saveAll()
+    }
+    
+    public func updateSnippet(_ snippet: Snippet) {
+        if let index = snippets.firstIndex(where: { $0.id == snippet.id }) {
+            snippets[index] = snippet
+            saveAll()
+        }
+    }
+    
+    public func deleteSnippet(id: UUID) {
+        snippets.removeAll(where: { $0.id == id })
         saveAll()
     }
     

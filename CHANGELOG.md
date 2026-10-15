@@ -2,6 +2,52 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.8.0] - 2026-10-15
+
+### ✨ 新增特性 (Features)
+- **动态等宽字体枚举与 Nerd Font / Powerline 智能识别 (TC-EXP-01)**：
+  - 全新研发 `TerminalFontManager` 字体探测引擎，彻底废除原有 6 个字体的硬编码限制；
+  - 动态遍历 macOS 系统中已安装的所有等宽/固定字距（Fixed-Pitch）字体族；
+  - 深度识别常见 Nerd Font 与 Powerline 字体变体（如 `MesloLGS NF`、`FiraCode Nerd Font`、`JetBrainsMono Nerd Font`、`Hack NF`、`Cascadia Code` 等），并自动附加 `NF` / `[Nerd Font]` 专属高亮徽标；
+  - 具备优雅降级与兜底策略，在偏好设置中即选即用、瞬时生效。
+- **终端标签页双向快速循环切换 (Tab Cycling ⌘⇧] / ⌘⇧[ / ⌃Tab) (TC-EXP-02)**：
+  - 新增 `selectNextTab()` 与 `selectPreviousTab()` 标签快速导航指令；
+  - 完美绑定经典快捷键 `⌘⇧]` (下一个标签页) 与 `⌘⇧[` (上一个标签页)，并同步支持 `⌃Tab` 与 `⌃⇧Tab`；
+  - 标签到达末端自动首尾环形 Wrap-Around 循环流转，终端渲染与对应 SFTP 状态同步激活。
+- **终端多分屏全屏聚焦放大与无损还原 (Split Pane Zoom ⌘⇧Enter) (TC-EXP-03)**：
+  - 为多窗格分屏引入即时聚焦放大机制（Zoom Mode），按 `⌘⇧Enter` 或从菜单触发即可独占整个终端工作区；
+  - 放大期间，后台隐藏的同级分屏窗格保持原生物理链路与流控，无损独立接收后台数据；
+  - 终端右上角浮现精致的毛玻璃悬浮胶囊 `分屏已放大 (⌘⇧Enter 还原)`，点击或再次触发快捷键即可平滑恢复原有分屏几何比例。
+- **终端多分屏窗格焦点快捷巡航 (Split Pane Focus Navigation ⌘⌥方向键) (TC-EXP-04)**：
+  - 支持使用 `⌘⌥←`、`⌘⌥→`、`⌘⌥↑`、`⌘⌥↓` 直接在各分屏窗格间循环移动焦点，免除鼠标点击打断键盘流。
+- **SFTP 系统核心目录预设与自定义路径书签 (TC-EXP-06)**：
+  - 在远程路径栏旁新增快速书签下拉菜单（`SFTPBookmarkManager`）；
+  - 预设服务器核心运维目录：`~` (用户主目录)、`/var/log` (系统日志)、`/etc` (配置文件)、`/tmp` (临时目录)、`/opt` (应用部署)、`/usr/local` (本地程序)；
+  - 支持一键将当前路径加入书签收藏，并在重启应用后持久化保留。
+
+### ⚡️ 体验优化 (Improvements)
+- **全局快捷键速查表 (Shortcuts Cheat Sheet) 原子对齐 (TC-EXP-05)**：
+  - 彻底修正历史遗留文档漂移：将 `⌘⇧T` 正式修正标注为“新建本地终端 (Local Terminal)”；
+  - 全面补充记录标签循环 `⌘⇧] / ⌘⇧[`、分屏全屏聚焦 `⌘⇧↵`、分屏焦点巡航 `⌘⌥方向键`、快速重连 `⌘R`、查找搜索 `⌘F` 与 SFTP 路径聚焦 `⌘L`。
+- **分屏窗格生命周期稳健性增强**：
+  - 关闭分屏窗格时自动检测剩余窗格数量，单窗格时原子复位全屏放大状态，彻底防止幽灵全屏残留。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- **质量验收标准**：
+  - 新增 `ExperiencePolishTests` 自动化套件（涵盖 `TC-EXP-01` ~ `TC-EXP-06`），全量 396 项自动化测试 100% 绿色通过（0 failures, 0 unexpected）；
+  - `TitlebarZoomAndUIRegressionTests` 8 项测试用例全部绿色通过，macOS 半屏磁吸对齐（RG-08）100% 达标；
+  - Swift 6 模式下零编译警告 (Zero Warnings)；
+  - 严格通过 Tart VM 虚拟机验收流水线（`./scripts/test_vm_acceptance.sh`）。
+- **8 大性能基准实测数据 (Release Benchmarks)**：
+  - [Benchmark 1] RingBuffer 写入吞吐：**1,884,162 行/秒** (190.47 MB/秒，远超门禁指标 ≥ 50,000 行/秒)；
+  - [Benchmark 2] ANSI / TrueColor 颜色解析速度：**414,775 spans/秒** (远超门禁指标 ≥ 150,000 spans/秒)；
+  - [Benchmark 3] 内存水位与驻留集（Peak RSS）：**107.05 MB** (远低于安全红线 ≤ 250 MB)；
+  - [Benchmark 4] 16 线程高并发锁争用写入吞吐：**2,388,407 writes/秒** (远超门禁指标 ≥ 1,000,000 writes/秒)；
+  - [Benchmark 5] 64 核 Linux 无代理系统指标解析速度：**14,546 次/秒** (单次延迟 68.75 μs，优于门禁 ≥ 8,000 次/秒)；
+  - [Benchmark 6] OpenSSH 500 主机批量解析吞吐：**151,816 hosts/秒** (远超门禁指标 ≥ 80,000 hosts/秒)；
+  - [Benchmark 7] SFTP 任务中心 100 任务并发调度性能：**1,203 tasks/秒** (优于门禁指标 ≥ 800 tasks/秒)；
+  - [Benchmark 8] 终端物理按键直通全链路延迟：**5.68 微秒 (μs)** (优于门禁指标 ≤ 15.0 μs)。
+
 ## [v1.7.2] - 2026-10-14
 
 ### ⚡️ 体验优化 (Improvements)

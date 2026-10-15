@@ -796,6 +796,54 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         }
     }
     
+    /// Executes a one-shot remote command over multiplexed SSH socket
+    public func executeCommand(_ command: String) async throws -> String {
+        await resolvePasswordIfNeeded()
+        let process = Process()
+        let sshpass = self.sshpassExecutablePath
+        let ctrlArgs = [
+            "-o", "ControlMaster=auto",
+            "-o", self.controlSocketOption,
+            "-o", "ControlPersist=60s"
+        ]
+        
+        let keyAccess: FileAccessLease?
+        keyAccess = try? self.acquirePrivateKeyAccess()
+        defer { keyAccess?.close() }
+        let authArgs = self.sshAuthArgs(privateKeyURL: keyAccess?.url)
+        let jumpArgs = self.jumpServerArgs()
+        if let pw = self.resolvedPassword, !pw.isEmpty, let passBin = sshpass {
+            process.executableURL = URL(fileURLWithPath: passBin)
+            process.arguments = [
+                "-p", pw,
+                "/usr/bin/ssh",
+                "-o", "StrictHostKeyChecking=accept-new",
+                "-o", "ConnectTimeout=5",
+            ] + authArgs + jumpArgs + ctrlArgs + [
+                "-p", "\(self.session.port)",
+                "\(self.session.username)@\(self.session.host)",
+                command
+            ]
+        } else {
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+            process.arguments = [
+                "-o", "BatchMode=yes",
+                "-o", "StrictHostKeyChecking=accept-new",
+                "-o", "ConnectTimeout=5",
+            ] + authArgs + jumpArgs + ctrlArgs + [
+                "-p", "\(self.session.port)",
+                "\(self.session.username)@\(self.session.host)",
+                command
+            ]
+        }
+        
+        process.standardError = FileHandle.nullDevice
+        let grants = try? self.configureStoreProcess(process, accesses: [keyAccess])
+        defer { grants?.close() }
+        let outData = try await Self.runProbeProcess(process)
+        return String(data: outData, encoding: .utf8) ?? ""
+    }
+    
     // SFTP implementation
     public func listDirectory(path: String) async throws -> [SFTPItem] {
         await resolvePasswordIfNeeded()

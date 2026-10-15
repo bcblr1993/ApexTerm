@@ -94,10 +94,16 @@ swift test
      3. 顶部工作区操作按钮区（复制/分屏/指标/文件）右侧吸附与标题栏空白双击缩放。
    - 任何单项未通过立即熔断打包流水线。
 7. **核心功能与扩展能力门禁 (RG-09: Core Capabilities & Extensions Gate - 每版必测)**：
-   - 每次发布新版本前，**必须无条件通过核心扩展用例集（含 24 项新增自动化测试）**：
+   - 每次发布新版本前，**必须无条件通过核心扩展用例集（含 24 项自动化测试）**：
      1. `SSHTunnelTests`（含 TC-TUN-01 ~ TC-TUN-08）：覆盖 Local/Remote/Dynamic SOCKS5 端口转发配置合法性、OpenSSH `-L`/`-R`/`-D` 参数构建、端口冲突防范、自动启动与生命周期持久化；
      2. `QuickCommandBarTests`（含 TC-CMD-01 ~ TC-CMD-08）：覆盖常用运维命令预设、分类动态过滤、`{{var}}` 占位符提取与动态插值、`{{date}}` 解析与安全换行发送；
      3. `CommandPaletteTests`（含 TC-PAL-01 ~ TC-PAL-08）：覆盖全局 Spotlight 调色板搜索（`⌘P` / `⌘K`）、前缀路由（`>` 功能 / `@` 主机 / `/` 路径 / `#` 命令）、模糊匹配与权重排序、快捷键分发。
+   - 任何单项未通过立即熔断打包流水线。
+8. **运维深度监控与安全审计门禁 (RG-10: Process Inspector, SSH Key Vault & Session Audit Logging Gate - 每版必测)**：
+   - 每次发布新版本前，**必须无条件通过深度运维用例集（含 24 项新增自动化测试）**：
+     1. `ProcessInspectorTests`（含 TC-PROC-01 ~ TC-PROC-08）：覆盖 Top 45 进程指标解析、内存 KiB/MiB 换算、核心关键进程保护判定（PID 1、systemd、init、sshd、当前 Shell 自身防自杀）、进程信号分发（SIGTERM 15、SIGKILL 9、SIGHUP 1）、systemd 服务状态解析；
+     2. `SSHKeyVaultTests`（含 TC-KEY-01 ~ TC-KEY-08）：覆盖集中式 Ed25519/RSA/ECDSA 密钥保险库、SHA256 公钥指纹计算、Keychain 隔离存储私钥与口令、一键免密部署脚本（umask 077/chmod 700/600）生成与防重复导入；
+     3. `SessionAuditLoggingTests`（含 TC-LOG-01 ~ TC-LOG-08）：覆盖异步全量 PTY 流录制、ANSI 转义序列与控制符过滤、50MB 日志自动切割轮转、上一条执行命令输出精准提取（`⌘⌥C`）与边缘提示符识别。
    - 任何单项未通过立即熔断打包流水线。
 
 ---

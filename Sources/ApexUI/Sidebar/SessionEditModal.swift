@@ -18,6 +18,7 @@ public struct SessionEditModal: View {
     @State private var isPasswordVisible: Bool = false
     @State private var privateKeyPath: String = ""
     @State private var passphrase: String = ""
+    @State private var selectedVaultKeyId: UUID? = nil
     @State private var jumpServerId: UUID? = nil
     @State private var folder: String = "常用会话"
     @State private var tags: String = ""
@@ -135,8 +136,22 @@ public struct SessionEditModal: View {
                         }
                     } else if authType == .privateKey {
                         VStack(alignment: .leading, spacing: 8) {
+                            if !SSHKeyVaultManager.shared.keys.isEmpty {
+                                Picker("密钥保险库", selection: $selectedVaultKeyId) {
+                                    Text("手动指定路径 / 文件").tag(UUID?.none)
+                                    ForEach(SSHKeyVaultManager.shared.keys) { vk in
+                                        Text("\(vk.name) [\(vk.algorithm.rawValue)]").tag(UUID?.some(vk.id))
+                                    }
+                                }
+                                .onChange(of: selectedVaultKeyId) { _, newId in
+                                    if let newId = newId, let vk = SSHKeyVaultManager.shared.key(for: newId) {
+                                        privateKeyPath = vk.keychainPrivateKeyRef
+                                    }
+                                }
+                            }
+                            
                             HStack {
-                                TextField("私钥路径 (如 ~/.ssh/id_ed25519)", text: $privateKeyPath)
+                                TextField("私钥路径 (如 ~/.ssh/id_ed25519 或保险库标识)", text: $privateKeyPath)
                                     .accessibilityLabel("私钥路径")
                                     .accessibilityIdentifier("session.privateKeyPath")
                                     .font(.system(.body, design: .monospaced))

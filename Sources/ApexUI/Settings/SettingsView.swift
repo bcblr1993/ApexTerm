@@ -44,8 +44,14 @@ public struct SettingsView: View {
                     Label(L10n.settingsTabData, systemImage: "externaldrive.badge.icloud")
                 }
                 .tag(4)
+            
+            SSHKeyVaultSettingsView()
+                .tabItem {
+                    Label("密钥保险库", systemImage: "key.fill")
+                }
+                .tag(5)
         }
-        .frame(width: 580, height: 460)
+        .frame(width: 620, height: 480)
         .padding()
     }
 }
@@ -245,6 +251,42 @@ private struct BehaviorSettingsTab: View {
                 }
             } header: {
                 Text("终端缓冲区")
+            }
+            
+            Section {
+                Toggle("启用终端会话自动审计记录", isOn: $settings.isSessionLoggingEnabled)
+                if settings.isSessionLoggingEnabled {
+                    Picker("记录格式", selection: $settings.sessionLogFormat) {
+                        ForEach(SessionLogFormat.allCases, id: \.self) { fmt in
+                            Text(fmt.rawValue).tag(fmt)
+                        }
+                    }
+                    
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("日志存储路径")
+                            Text(settings.sessionLogDirectory)
+                                .font(.caption)
+                                .foregroundColor(ApexStyle.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                        Spacer()
+                        Button("打开目录") {
+                            let url = URL(fileURLWithPath: settings.sessionLogDirectory, isDirectory: true)
+                            try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+                            NSWorkspace.shared.open(url)
+                        }
+                    }
+                    
+                    HStack {
+                        Text("单文件自动切分上限")
+                        Spacer()
+                        Stepper("\(settings.sessionLogMaxFileSizeMB) MB", value: $settings.sessionLogMaxFileSizeMB, in: 10...500, step: 10)
+                    }
+                }
+            } header: {
+                Text("会话审计与日志记录")
             }
         }
         .formStyle(.grouped)

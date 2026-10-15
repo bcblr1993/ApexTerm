@@ -24,6 +24,7 @@ public final class TerminalPaneItem: Identifiable, ObservableObject {
         }
     }
     public var onConnectionStateChanged: ((SSHConnectionState) -> Void)?
+    public private(set) var logger: SessionLogger?
     
     public init(session: Session, sshClient: SSHSessionProtocol, title: String, initialState: SSHConnectionState = .connecting(step: "正在连接")) {
         self.session = session
@@ -31,14 +32,32 @@ public final class TerminalPaneItem: Identifiable, ObservableObject {
         self.title = title
         self.connectionState = initialState
         
+        if AppSettings.shared.isSessionLoggingEnabled {
+            let config = SessionLogConfig(
+                autoLoggingEnabled: true,
+                logDirectoryPath: AppSettings.shared.sessionLogDirectory,
+                format: AppSettings.shared.sessionLogFormat,
+                maxFileSizeMB: AppSettings.shared.sessionLogMaxFileSizeMB
+            )
+            self.logger = SessionLogger(session: session, config: config)
+        }
+        
         let ringBuffer = self.ringBuffer
+        let sessionLogger = self.logger
         self.sshClient.setOutputHandler { data in
             ringBuffer.appendData(data)
+            sessionLogger?.appendData(data)
         }
 
         self.sshClient.setStateChangeHandler { [weak self] state in
-            if case .disconnected = state { ringBuffer.finishStream() }
-            if case .failed = state { ringBuffer.finishStream() }
+            if case .disconnected = state {
+                ringBuffer.finishStream()
+                sessionLogger?.close()
+            }
+            if case .failed = state {
+                ringBuffer.finishStream()
+                sessionLogger?.close()
+            }
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
                 self.connectionState = state
@@ -294,6 +313,8 @@ public struct WorkspaceView: View {
     @State private var isQuickCommandBarVisible: Bool = false
     @State private var isCommandPalettePresented: Bool = false
     @State private var isTunnelModalPresented: Bool = false
+    @State private var isProcessInspectorPresented: Bool = false
+    @State private var hudToastMessage: String?
     
     // Tab Rename
     @State private var tabToRename: TerminalTabItem?
@@ -443,6 +464,10 @@ public struct WorkspaceView: View {
                     .keyboardShortcut("b", modifiers: [.command, .shift])
                 Button("") { isTunnelModalPresented.toggle() }
                     .keyboardShortcut("t", modifiers: [.command, .option])
+                Button("") { isProcessInspectorPresented.toggle() }
+                    .keyboardShortcut("k", modifiers: [.command, .option])
+                Button("") { copyLastCommandOutput() }
+                    .keyboardShortcut("c", modifiers: [.command, .option])
             }
             .frame(width: 0, height: 0)
             .opacity(0)
@@ -545,8 +570,29 @@ public struct WorkspaceView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("TriggerQuickCommandBar"))) { _ in
             isQuickCommandBarVisible.toggle()
         }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("TriggerProcessInspector"))) { _ in
+            isProcessInspectorPresented = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("TriggerCopyLastCommandOutput"))) { _ in
+            copyLastCommandOutput()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ShowStatusToast"))) { notif in
+            if let msg = notif.object as? String {
+                showHUDToast(msg)
+            }
+        }
         .sheet(isPresented: $isTunnelModalPresented) {
             SSHTunnelModalView(store: store).apexTheme()
+        }
+        .sheet(isPresented: $isProcessInspectorPresented) {
+            if let tab = currentTab {
+                ProcessInspectorView(
+                    session: tab.session,
+                    sshClient: tab.activePane?.sshClient ?? tab.sshClient,
+                    isPresented: $isProcessInspectorPresented
+                )
+                .apexTheme()
+            }
         }
         .overlay {
             if isCommandPalettePresented {
@@ -570,6 +616,29 @@ public struct WorkspaceView: View {
                     }
                 }
                 .transition(.opacity.combined(with: .scale(scale: 0.98)))
+            }
+            
+            if let toast = hudToastMessage {
+                VStack {
+                    Spacer()
+                    HStack(spacing: 8) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundColor(ApexStyle.success)
+                        Text(toast)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(ApexStyle.primary)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .background(ApexStyle.surface, in: RoundedRectangle(cornerRadius: 8))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(ApexStyle.border, lineWidth: 1)
+                    }
+                    .shadow(color: Color.black.opacity(0.15), radius: 8, x: 0, y: 4)
+                    .padding(.bottom, 36)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
             }
         }
     }
@@ -600,6 +669,11 @@ public struct WorkspaceView: View {
                     Label("命令面板", systemImage: "command")
                 }
                 .help("全局快速搜索与命令面板 (⌘P)")
+                
+                Button(action: { isProcessInspectorPresented = true }) {
+                    Label("进程监视", systemImage: "list.bullet.rectangle.portrait")
+                }
+                .help("Linux/macOS 远程进程与服务监视控制中心 (⌘⌥K)")
             }
             ToolbarItem(placement: .primaryAction) {
                 if let primaryPane = tab.panes.first {
@@ -618,6 +692,27 @@ public struct WorkspaceView: View {
                 }
                 .toggleStyle(.button)
                 .help(isSFTPVisible ? "隐藏文件面板" : "显示文件面板")
+            }
+        }
+    }
+
+    private func copyLastCommandOutput() {
+        guard let tab = currentTab, let active = tab.activePane else { return }
+        let lines = active.ringBuffer.allLines()
+        if let output = CommandBoundaryDetector.extractLastCommandOutput(from: lines) {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(output, forType: .string)
+            showHUDToast("已复制上一条命令输出 (\(output.count) 字符)")
+        } else {
+            showHUDToast("未检测到上一条命令输出")
+        }
+    }
+    
+    private func showHUDToast(_ message: String) {
+        hudToastMessage = message
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            if self.hudToastMessage == message {
+                self.hudToastMessage = nil
             }
         }
     }

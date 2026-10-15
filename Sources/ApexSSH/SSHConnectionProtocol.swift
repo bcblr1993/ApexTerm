@@ -40,6 +40,9 @@ public protocol SSHSessionProtocol: AnyObject, Sendable {
     func rename(oldPath: String, newPath: String) async throws
     func changePermissions(remotePath: String, permissions: String) async throws
     
+    /// Executes a one-shot command (remote over SSH or local shell)
+    func executeCommand(_ command: String) async throws -> String
+    
     // Callbacks
     func setOutputHandler(_ handler: @Sendable @escaping (Data) -> Void)
     func setMetricsHandler(_ handler: @Sendable @escaping (ServerMetricsSnapshot) -> Void)
@@ -48,6 +51,15 @@ public protocol SSHSessionProtocol: AnyObject, Sendable {
 }
 
 public extension SSHSessionProtocol {
+    var isConnected: Bool {
+        if case .connected = connectionState { return true }
+        return false
+    }
+    
+    func executeCommand(_ command: String) async throws -> String {
+        return ""
+    }
+    
     func setStateChangeHandler(_ handler: @Sendable @escaping (SSHConnectionState) -> Void) {}
     func sendInputSync(_ data: Data) {
         Task { try? await sendInput(data) }

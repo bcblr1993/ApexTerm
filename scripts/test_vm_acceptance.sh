@@ -133,6 +133,16 @@ if ! grep -Fq "SSHTunnelTests' passed" "${REPORT_DIR}/core_extensions_regression
     exit 1
 fi
 
+echo "🧪 [Release Regression RG-10] Verifying Process Inspector, SSH Key Vault & Session Audit Logging..."
+swift test --jobs 2 --filter "ProcessInspectorTests|SSHKeyVaultTests|SessionAuditLoggingTests" \
+    2>&1 | tee "${REPORT_DIR}/proc_vault_log_regression.log"
+if ! grep -Fq "ProcessInspectorTests' passed" "${REPORT_DIR}/proc_vault_log_regression.log" || \
+   ! grep -Fq "SSHKeyVaultTests' passed" "${REPORT_DIR}/proc_vault_log_regression.log" || \
+   ! grep -Fq "SessionAuditLoggingTests' passed" "${REPORT_DIR}/proc_vault_log_regression.log"; then
+    echo "❌ Required Process Inspector, SSH Key Vault & Session Audit Logging regression (RG-10: TC-PROC, TC-KEY, TC-LOG) did not pass."
+    exit 1
+fi
+
 echo "======================================================="
 echo "🎉 [Tart VM Gate] Quality Gate Cleared! Ready for Release Build."
 echo "======================================================="

@@ -486,4 +486,27 @@ public final class LocalTerminalSession: SSHSessionProtocol, @unchecked Sendable
             }
         }
     }
+    
+    /// Executes a one-shot command locally
+    public func executeCommand(_ command: String) async throws -> String {
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/bin/sh")
+                process.arguments = ["-c", command]
+                let pipe = Pipe()
+                process.standardOutput = pipe
+                process.standardError = FileHandle.nullDevice
+                do {
+                    try process.run()
+                    process.waitUntilExit()
+                    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                    let output = String(data: data, encoding: .utf8) ?? ""
+                    continuation.resume(returning: output)
+                } catch {
+                    continuation.resume(returning: "")
+                }
+            }
+        }
+    }
 }

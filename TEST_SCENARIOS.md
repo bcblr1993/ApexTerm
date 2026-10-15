@@ -286,6 +286,51 @@
 
 ---
 
+### 模块 15：Linux 远程进程与核心服务可视化监视控制矩阵 (Process & Service Inspector Matrix)
+
+| 用例 ID | 场景描述 | 优先级 | 测试步骤 / 验证方法 | 预期结果 | 自动化覆盖 / 状态 |
+| :--- | :--- | :---: | :--- | :--- | :--- |
+| **TC-PROC-01** | `ps -eo` 真实进程流多列零拷贝解析 | P0 | 解析包含 PID, USER, %CPU, %MEM, RSS, VSZ, STAT, COMMAND, ARGS 的 9 列标准输出 | 准确映射到 `ProcessDetailItem` 模型，RSS/VSZ 精确换算为字节单位，命令行参数解析完整 | `ProcessInspectorTests.testParsePSOutput` |
+| **TC-PROC-02** | 关键受保护核心系统进程拦截 | P0 | 测试 PID 1、systemd、init、sshd、launchd、kthreadd、login 等核心进程的终止操作 | `isProtected` 标记为 `true`，终止按钮禁用并提示安全防护理由，杜绝误杀系统核心 | `ProcessInspectorTests.testProcessProtection` |
+| **TC-PROC-03** | 当前会话自身 Shell 进程防自杀保护 | P0 | 尝试在进程列表中终止当前 SSH 会话自身的 Shell PID | 触发 `canKill(sessionPid:)` 校验，返回不允许终止自身会话 Shell，防止意外断开当前连接 | `ProcessInspectorTests.testCanKillSelfSession` |
+| **TC-PROC-04** | 用户非特权业务进程终止授权 | P0 | 对 node、python、nginx worker、sidekiq 等常规业务进程请求终止 | `canKill` 授权通过，可正常分发终止信号 | `ProcessInspectorTests.testCanKillNormalProcess` |
+| **TC-PROC-05** | UNIX 信号命名与数值标准对齐 | P0 | 验证 SIGTERM (15: 优雅退出)、SIGKILL (9: 强制结束)、SIGHUP (1: 重新加载配置) 枚举值与文案 | 信号代码准确对应 UNIX 标准规范，文案语义清晰明确 | `ProcessInspectorTests.testProcessSignalValues` |
+| **TC-PROC-06** | 进程列表按 CPU% 与物理内存排序 | P0 | 按 CPU 使用率或 RSS 物理内存降序对进程列表执行排序 | 列表正确依数值大小排列，高负载进程迅速置顶 | `ProcessInspectorTests.testProcessSorting` |
+| **TC-PROC-07** | Linux Systemd 核心服务状态批量解析 | P0 | 解析 systemctl is-active 输出流（nginx, redis, mysql, docker, sshd） | 准确生成 `SystemdServiceItem` 列表，绿色/灰色/红色状态胶囊准确映射 | `ProcessInspectorTests.testParseSystemdServices` |
+| **TC-PROC-08** | 物理内存人类可读格式化展示 | P1 | 验证 50MB、2GB、512KB 等不同内存尺寸的格式化输出 | 准确展示为易读的 KB/MB/GB 字符，符合 macOS 原生风格 | `ProcessInspectorTests.testFormattedMemoryString` |
+
+---
+
+### 模块 16：集中式 SSH 密钥保险库与一键免密分发矩阵 (SSH Key Vault & Deployment Matrix)
+
+| 用例 ID | 场景描述 | 优先级 | 测试步骤 / 验证方法 | 预期结果 | 自动化覆盖 / 状态 |
+| :--- | :--- | :---: | :--- | :--- | :--- |
+| **TC-KEY-01** | OpenSSH Ed25519 SHA256 指纹计算 | P0 | 传入标准 `ssh-ed25519` 公钥字符串，验证计算出的 SHA256 摘要 | 输出标准 `SHA256:<base64-without-padding>` 格式，与 `ssh-keygen -l` 逐字节对齐 | `SSHKeyVaultTests.testFingerprintCalculationEd25519` |
+| **TC-KEY-02** | 密钥算法特征自适应识别 | P0 | 自动探测识别 Ed25519、RSA-4096、ECDSA (P-256) | 准确识别公钥算法并在 UI 上呈现专属徽章 (绿色 Ed25519 等) | `SSHKeyVaultTests.testDetectAlgorithm` |
+| **TC-KEY-03** | 一键免密部署脚本安全加固生成 | P0 | 生成一键部署公钥至远端 `~/.ssh/authorized_keys` 的完整 Shell 脚本 | 脚本包含 `umask 077`、`chmod 700 ~/.ssh`、`chmod 600 authorized_keys`，单引号安全转义 | `SSHKeyVaultTests.testGenerateDeployCommand` |
+| **TC-KEY-04** | 密钥保险库添加与 UUID 索引检索 | P0 | 将新密钥身份录入 `SSHKeyVaultManager` 并按 UUID 查询 | 密钥安全入库，元数据持久化，通过 UUID 快速准确检索 | `SSHKeyVaultTests.testAddAndRetrieveKey` |
+| **TC-KEY-05** | 相同指纹重复密钥防御与拦截 | P0 | 尝试向保险库导入指纹完全相同的重复密钥 | 触发 `duplicateKey(fingerprint)` 错误并拦截，防止冗余脏数据堆积 | `SSHKeyVaultTests.testDuplicateKeyPrevention` |
+| **TC-KEY-06** | 密钥保险库与 Keychain 密钥级联清除 | P0 | 删除指定密钥身份 | 保险库列表移除该项，同时级联异步清除 macOS Keychain 中的私钥与口令明文 | `SSHKeyVaultTests.testDeleteKey` |
+| **TC-KEY-07** | 空私钥内容与格式合法性校验 | P0 | 传入空白或空字符串私钥执行导入 | 拦截并抛出 `privateKeyEmpty`，提示用户补充有效私钥 | `SSHKeyVaultTests.testEmptyPrivateKeyValidation` |
+| **TC-KEY-08** | 保险库元数据跨实例原子持久化回环 | P0 | 写入密钥后创建独立 Manager 实例重新从目录反序列化 | 密钥名称、算法、公钥、Keychain 引用及口令保护标记 100% 还原 | `SSHKeyVaultTests.testVaultPersistence` |
+
+---
+
+### 模块 17：终端会话审计与上一条命令输出提取矩阵 (Session Audit Logging & Output Extraction Matrix)
+
+| 用例 ID | 场景描述 | 优先级 | 测试步骤 / 验证方法 | 预期结果 | 自动化覆盖 / 状态 |
+| :--- | :--- | :---: | :--- | :--- | :--- |
+| **TC-LOG-01** | ANSI 转义序列、色彩与控制符过滤 | P0 | 传入包含 ANSI 颜色码、光标移动及清除行控制符的高频流 | 彻底剔除 `\x1B[...]` 等转义序列，还原干净整洁纯文本日志 | `SessionAuditLoggingTests.testStripANSISequences` |
+| **TC-LOG-02** | 会话审计日志文件创建与头部戳记 | P0 | 开启自动审计记录，创建终端会话 | 自动在指定目录下创建标准格式 `.log` 文件，写入会话目标、用户名、主机与时间戳头部 | `SessionAuditLoggingTests.testSessionLoggerFileCreationAndHeader` |
+| **TC-LOG-03** | 异步纯文本日志流写入性能 | P0 | 向活动会话高频推送数据块 | 异步队列无损写入磁盘，不阻塞主线程与 PTY 吞吐性能，内容与过滤后文本一致 | `SessionAuditLoggingTests.testSessionLoggerAppendPlainText` |
+| **TC-LOG-04** | 原始 ANSI 数据流日志格式支持 | P0 | 配置日志格式为 `.rawAnsi` 并写入终端彩色彩蛋数据 | 保留原始终端控制字符与色彩格式，供 asciinema 等工具回放 | `SessionAuditLoggingTests.testSessionLoggerAppendRawAnsi` |
+| **TC-LOG-05** | 会话安全关闭与尾部戳记固化 | P0 | 会话退出或断开连接触发 `logger.close()` | 写入“Session Log Ended”时间戳尾部，安全 flush 缓冲区并关闭文件句柄 | `SessionAuditLoggingTests.testSessionLoggerClose` |
+| **TC-LOG-06** | 上一条命令输出提取 (标准 Shell 提示符) | P0 | 包含 `ubuntu@cloud:~$ ` 提示符与命令输出多行日志，执行提取 | 精准切出上一条命令输出主体，不包含前后提示符与无关上下文 | `SessionAuditLoggingTests.testExtractLastCommandOutputBasic` |
+| **TC-LOG-07** | 现代多样化提示符自适应提取 (`❯`, `➜`) | P0 | 包含 zsh、starship 等现代单字符或花哨提示符的终端记录 | 准确识别提示符边界，一键快捷键 `⌘⌥C` 无损提取整段命令输出至剪贴板 | `SessionAuditLoggingTests.testExtractLastCommandOutputAlternativePrompts` |
+| **TC-LOG-08** | 空缓冲区与单一提示符边界防御 | P0 | 在空终端或只有首行提示符的情况下触发提取 | 安全返回 `nil`，界面提示“未检测到上一条命令输出”，无崩溃或越界异常 | `SessionAuditLoggingTests.testExtractLastCommandOutputEmpty` |
+
+---
+
 ## 三、 历史高频 Bug 与排查指南 (electerm / FinalShell 经验总结)
 
 1. **Bug 1: 终端持续输出海量日志导致 UI 完全死锁**

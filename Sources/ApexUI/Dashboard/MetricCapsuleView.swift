@@ -389,9 +389,20 @@ public struct MetricDetailView: View {
                 if let procs = latest?.topProcesses, !procs.isEmpty {
                     VStack(alignment: .leading, spacing: 3) {
                         HStack {
-                            Text("Top 进程占用")
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundColor(ApexStyle.secondary)
+                            HStack(spacing: 4) {
+                                Text("Top 进程占用")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundColor(ApexStyle.secondary)
+                                Button(action: {
+                                    NotificationCenter.default.post(name: NSNotification.Name("TriggerProcessInspector"), object: nil)
+                                }) {
+                                    Image(systemName: "arrow.up.right.square")
+                                        .font(.system(size: 10))
+                                        .foregroundColor(ApexStyle.accent)
+                                }
+                                .buttonStyle(.plain)
+                                .help("打开进程与服务监视中心 (⌘⌥K)")
+                            }
                             Spacer()
                             if let l1 = latest?.loadAvg1m, let l5 = latest?.loadAvg5m, let l15 = latest?.loadAvg15m {
                                 Text(String(format: "系统负载: %.2f  %.2f  %.2f", l1, l5, l15))

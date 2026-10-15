@@ -24,6 +24,25 @@ public final class AgentlessMonitor: Sendable {
     fi
     """
     
+    /// Full process inspection command returning Top 45 processes with complete attributes
+    public static let processInspectorProbeCommand = """
+    if [ "$(uname)" = "Darwin" ]; then
+        ps -eo pid,user,%cpu,%mem,rss,vsz,stat,comm,command -r 2>/dev/null | head -46
+    else
+        ps -eo pid,user,%cpu,%mem,rss,vsz,stat,comm,args --sort=-%cpu 2>/dev/null | head -46
+    fi
+    """
+    
+    /// Systemd service states query command
+    public static func systemdServicesProbeCommand(services: [String] = ["nginx", "docker", "redis", "mysql", "sshd", "postgresql", "caddy"]) -> String {
+        let joined = services.joined(separator: " ")
+        return """
+        for s in \(joined); do
+            systemctl is-active "$s" 2>/dev/null || echo "inactive"
+        done
+        """
+    }
+    
     // Previous CPU state for calculating deltas: (idle, total)
     public struct CpuTickState: Sendable {
         public let idle: UInt64

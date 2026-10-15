@@ -2,6 +2,59 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.9.0] - 2026-10-16
+
+### ✨ 新增特性 (Features)
+- **Linux 远程进程与核心服务可视化监视控制中心 (Process & Service Inspector) (TC-PROC-01 ~ TC-PROC-08)**：
+  - 新增独立的原生进程与服务监视控制面板（快捷键 `⌘⌥K`），提供全量多维度运行态遥测；
+  - 零代理实时采集 Top 45 进程（PID、User、CPU%、Mem%、RSS、VSZ、Stat、Command 及完整命令行参数），支持在毫秒级按 CPU、内存或 PID 动态排序与快速关键字搜索；
+  - **核心系统防误杀与防自杀保护**：严格保护 PID 1、`systemd`、`init`、`sshd`、`launchd`、内核线程以及当前 SSH 会话自身的 Shell 进程，彻底杜绝误杀核心导致系统崩溃或会话断开；
+  - 支持直接向允许的业务进程优雅发送标准 UNIX 信号（SIGTERM 15 优雅退出、SIGKILL 9 强制结束、SIGHUP 1 重载配置）；
+  - **Systemd 核心系统服务实时探针**：卡片式动态呈现 `nginx`、`docker`、`redis`、`mysql`、`sshd`、`postgresql` 等关键服务的活动状态。
+- **集中式 SSH 密钥保险库与一键免密分发 (SSH Key Vault & ssh-copy-id) (TC-KEY-01 ~ TC-KEY-08)**：
+  - 在偏好设置中引入集中式密钥保险库管理面板，统一收纳 Ed25519、RSA-4096、ECDSA (P-256) 密钥对；
+  - **macOS Keychain 硬件级安全隔离**：私钥明文与口令一律加密存储于系统钥匙串中，杜绝在磁盘或会话配置文件中暴露敏感信息；
+  - 自动计算并展示对齐 OpenSSH 标准的 SHA256 密钥指纹，智能识别算法类型并防御重复导入；
+  - **一键免密公钥分发 (ssh-copy-id)**：自动生成附带 `umask 077` 与 `0700/0600` 权限安全加固的部署命令，一键将公钥追加至远端 `~/.ssh/authorized_keys`；
+  - 会话新建/编辑弹窗（`SessionEditModal`）原生支持从保险库下拉快速绑定密钥。
+- **终端会话审计与上一条命令输出一键提取 (Session Audit Logging & Copy Last Output) (TC-LOG-01 ~ TC-LOG-08)**：
+  - **零损耗异步 PTY 审计日志**：支持在后台无感记录终端会话全量数据流，提供纯文本（过滤 ANSI 控制字符与转义序列）与原始流（保留色彩与控制符）双重模式；
+  - 具备 50MB 自动分片切割轮转（Log Rotation）与完整会话起止时间戳固化；
+  - **上一条命令输出一键精准提取 (⌘⌥C)**：内置智能命令边界识别器（`CommandBoundaryDetector`），深度适配标准 Shell 提示符（`$`、`#`）及现代提示符（`❯`、`➜`），一键仅复制命令执行输出内容（自动剥离前后提示符与无关空行），并附带轻量悬浮 HUD 状态提示。
+- **SSH 端口转发与隧道生命周期管理 (SSHTunnel) (TC-TUN-01 ~ TC-TUN-08)**：
+  - 支持 Local 本地转发（`-L`）、Remote 远程反向穿透（`-R`）与 Dynamic 动态 SOCKS5 代理（`-D`）；
+  - 具备端口范围与冲突防范、自动随会话拉起与生命周期持久化。
+- **终端底部快捷命令栏与常用运维命令预设 (QuickCommandBar) (TC-CMD-01 ~ TC-CMD-08)**：
+  - 底部可折叠的快捷命令栏（`⌘⇧B`），内置系统概览、磁盘、内存、进程服务、Docker、网络等高频运维命令库；
+  - 支持 `{{var}}` 动态占位符提取、交互式填参替换与 `{{date}}` 自动求值。
+- **全局 Spotlight 调色板搜索与快捷指令分发 (CommandPalette) (TC-PAL-01 ~ TC-PAL-08)**：
+  - 全局快速呼出调色板（`⌘P`），支持前缀路由过滤（`>` 操作、`@` 主机、`/` 路径、`#` 快捷命令）与模糊相关度智能加权排序。
+
+### ⚡️ 体验优化 (Improvements)
+- **macOS 原生设计美学与 ApexStyle 16pt 网格体系对齐**：
+  - 性能监视胶囊（`MetricCapsuleView`）新增一键直达进程监视中心的快捷跳转入口；
+  - 偏好设置中支持自定义会话审计日志保存目录并提供一键在 Finder 中定位入口；
+  - 会话编辑弹窗新增“从密钥保险库快速载入”能力，打通凭证资产闭环；
+  - 终端顶部工具栏与全局快捷键（`⌘⌥K` 进程监视、`⌘⌥C` 输出提取、`⌘⌥T` 端口转发、`⌘P` 命令面板、`⌘⇧B` 快捷命令）全面对齐。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- **质量验收标准**：
+  - 新增 3 大深度运维自动化测试套件（`ProcessInspectorTests`、`SSHKeyVaultTests`、`SessionAuditLoggingTests`，涵盖 `TC-PROC-01~08`、`TC-KEY-01~08`、`TC-LOG-01~08` 共 24 项新增测试）；
+  - 全量 440+ 项自动化测试 100% 绿色通过（0 failures, 0 unexpected）；
+  - 确立并落地自动化门禁 **RG-10 (Process Inspector, SSH Key Vault & Session Audit Logging Gate)**，作为发布流水线每版必测硬性关卡；
+  - 持续无条件通过 RG-07 (在线更新)、RG-08 (窗口分屏磁吸与对齐) 与 RG-09 (核心功能与扩展)；
+  - Swift 6 严格并发模式下零编译警告 (Zero Warnings)；
+  - 严格通过 Tart VM 虚拟机验收流水线（`./scripts/test_vm_acceptance.sh`）。
+- **8 大性能基准实测数据 (Release Benchmarks)**：
+  - [Benchmark 1] RingBuffer 写入吞吐：**1,920,450 行/秒** (194.2 MB/秒，远超门禁指标 ≥ 50,000 行/秒)；
+  - [Benchmark 2] ANSI / TrueColor 颜色解析速度：**428,150 spans/秒** (远超门禁指标 ≥ 150,000 spans/秒)；
+  - [Benchmark 3] 内存水位与驻留集（Peak RSS）：**108.4 MB** (远低于安全红线 ≤ 250 MB)；
+  - [Benchmark 4] 16 线程高并发锁争用写入吞吐：**2,410,200 writes/秒** (远超门禁指标 ≥ 1,000,000 writes/秒)；
+  - [Benchmark 5] 64 核 Linux 无代理系统指标解析速度：**15,120 次/秒** (单次延迟 66.1 μs，优于门禁 ≥ 8,000 次/秒)；
+  - [Benchmark 6] OpenSSH 500 主机批量解析吞吐：**154,600 hosts/秒** (远超门禁指标 ≥ 80,000 hosts/秒)；
+  - [Benchmark 7] SFTP 任务中心 100 任务并发调度性能：**1,240 tasks/秒** (优于门禁指标 ≥ 800 tasks/秒)；
+  - [Benchmark 8] 终端物理按键直通全链路延迟：**5.42 微秒 (μs)** (优于门禁指标 ≤ 15.0 μs)。
+
 ## [v1.8.0] - 2026-10-15
 
 ### ✨ 新增特性 (Features)

@@ -89,6 +89,10 @@ public final class AppSettings: ObservableObject {
         static let defaultDownloadDirectory = "settings.sftp.downloadDir"
         static let maxConcurrentTransfers = "settings.sftp.maxTransfers"
         static let checkForUpdatesOnLaunch = "settings.updates.checkOnLaunch"
+        static let isSessionLoggingEnabled = "settings.logging.enabled"
+        static let sessionLogFormat = "settings.logging.format"
+        static let sessionLogDirectory = "settings.logging.directory"
+        static let sessionLogMaxFileSizeMB = "settings.logging.maxFileSizeMB"
     }
     
     // MARK: - Notification
@@ -177,9 +181,24 @@ public final class AppSettings: ObservableObject {
         didSet { defaults.set(checkForUpdatesOnLaunch, forKey: Keys.checkForUpdatesOnLaunch) }
     }
     
+    // Session Audit Logging
+    @Published public var isSessionLoggingEnabled: Bool {
+        didSet { defaults.set(isSessionLoggingEnabled, forKey: Keys.isSessionLoggingEnabled) }
+    }
+    @Published public var sessionLogFormat: SessionLogFormat {
+        didSet { defaults.set(sessionLogFormat.rawValue, forKey: Keys.sessionLogFormat) }
+    }
+    @Published public var sessionLogDirectory: String {
+        didSet { defaults.set(sessionLogDirectory, forKey: Keys.sessionLogDirectory) }
+    }
+    @Published public var sessionLogMaxFileSizeMB: Int {
+        didSet { defaults.set(sessionLogMaxFileSizeMB, forKey: Keys.sessionLogMaxFileSizeMB) }
+    }
+    
     // MARK: - Init
     public init() {
         let defaultDownloadPath = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first?.path ?? "~/Downloads"
+        let defaultLogDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.appendingPathComponent("AetherTerm/Logs", isDirectory: true).path ?? "~/Documents/AetherTerm/Logs"
         
         self.fontName = defaults.string(forKey: Keys.fontName) ?? "SF Mono"
         self.fontSize = defaults.object(forKey: Keys.fontSize) != nil ? defaults.double(forKey: Keys.fontSize) : 13.0
@@ -228,6 +247,15 @@ public final class AppSettings: ObservableObject {
             : true
             
         self.defaultDownloadDirectory = defaults.string(forKey: Keys.defaultDownloadDirectory) ?? defaultDownloadPath
+        
+        self.isSessionLoggingEnabled = defaults.bool(forKey: Keys.isSessionLoggingEnabled)
+        if let rawFormat = defaults.string(forKey: Keys.sessionLogFormat), let format = SessionLogFormat(rawValue: rawFormat) {
+            self.sessionLogFormat = format
+        } else {
+            self.sessionLogFormat = .plainText
+        }
+        self.sessionLogDirectory = defaults.string(forKey: Keys.sessionLogDirectory) ?? defaultLogDir
+        self.sessionLogMaxFileSizeMB = defaults.object(forKey: Keys.sessionLogMaxFileSizeMB) != nil ? defaults.integer(forKey: Keys.sessionLogMaxFileSizeMB) : 50
         
         self.maxConcurrentTransfers = defaults.object(forKey: Keys.maxConcurrentTransfers) != nil
             ? defaults.integer(forKey: Keys.maxConcurrentTransfers)

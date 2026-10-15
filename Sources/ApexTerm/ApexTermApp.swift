@@ -216,6 +216,44 @@ struct ApexTermApp: App {
                 }
                 .keyboardShortcut("d", modifiers: [.command, .shift])
                 
+                Button("全屏放大 / 恢复分屏") {
+                    if let current = activeTabs.first(where: { $0.id == selectedTabId }) {
+                        current.toggleMaximizeActivePane()
+                    }
+                }
+                .keyboardShortcut(.return, modifiers: [.command, .shift])
+                .disabled((activeTabs.first(where: { $0.id == selectedTabId })?.panes.count ?? 0) < 2)
+
+                Button("切换到下一个分屏窗格") {
+                    if let current = activeTabs.first(where: { $0.id == selectedTabId }) {
+                        current.focusNextPane()
+                    }
+                }
+                .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
+                .disabled((activeTabs.first(where: { $0.id == selectedTabId })?.panes.count ?? 0) < 2)
+
+                Button("切换到上一个分屏窗格") {
+                    if let current = activeTabs.first(where: { $0.id == selectedTabId }) {
+                        current.focusPreviousPane()
+                    }
+                }
+                .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
+                .disabled((activeTabs.first(where: { $0.id == selectedTabId })?.panes.count ?? 0) < 2)
+
+                Divider()
+
+                Button("下一个标签页") {
+                    selectNextTab()
+                }
+                .keyboardShortcut("]", modifiers: [.command, .shift])
+                .disabled(activeTabs.count < 2)
+
+                Button("上一个标签页") {
+                    selectPreviousTab()
+                }
+                .keyboardShortcut("[", modifiers: [.command, .shift])
+                .disabled(activeTabs.count < 2)
+                
                 Divider()
                 
                 Button(L10n.menuClearScrollback) {
@@ -326,6 +364,20 @@ struct ApexTermApp: App {
         }
         selectedTabId = tab.id
         tab.connect()
+    }
+
+    private func selectNextTab() {
+        guard activeTabs.count > 1 else { return }
+        let curIdx = activeTabs.firstIndex(where: { $0.id == selectedTabId }) ?? 0
+        let nextIdx = (curIdx + 1) % activeTabs.count
+        selectedTabId = activeTabs[nextIdx].id
+    }
+
+    private func selectPreviousTab() {
+        guard activeTabs.count > 1 else { return }
+        let curIdx = activeTabs.firstIndex(where: { $0.id == selectedTabId }) ?? 0
+        let prevIdx = (curIdx - 1 + activeTabs.count) % activeTabs.count
+        selectedTabId = activeTabs[prevIdx].id
     }
 
     private func connectToSession(_ session: Session) {

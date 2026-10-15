@@ -82,6 +82,7 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
         }
     }
     @Published public var splitMode: PaneSplitMode = .single
+    @Published public var isPaneMaximized: Bool = false
     
     private let fallbackRingBuffer = TerminalRingBuffer(maxLines: AppSettings.shared.scrollbackMaxLines)
     public var ringBuffer: TerminalRingBuffer {
@@ -216,9 +217,40 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
         panes.remove(at: idx)
         splitMode = .single
         paneSplitRatio = 0.5
+        if panes.count <= 1 {
+            isPaneMaximized = false
+        }
         if let remaining = panes.first {
             remaining.title = session.name
             activePaneId = remaining.id
+        }
+    }
+    
+    public func toggleMaximizeActivePane() {
+        guard panes.count > 1 else {
+            isPaneMaximized = false
+            return
+        }
+        isPaneMaximized.toggle()
+    }
+    
+    public func focusNextPane() {
+        guard panes.count > 1 else { return }
+        if let curId = activePaneId, let idx = panes.firstIndex(where: { $0.id == curId }) {
+            let nextIdx = (idx + 1) % panes.count
+            activePaneId = panes[nextIdx].id
+        } else {
+            activePaneId = panes.first?.id
+        }
+    }
+    
+    public func focusPreviousPane() {
+        guard panes.count > 1 else { return }
+        if let curId = activePaneId, let idx = panes.firstIndex(where: { $0.id == curId }) {
+            let prevIdx = (idx - 1 + panes.count) % panes.count
+            activePaneId = panes[prevIdx].id
+        } else {
+            activePaneId = panes.last?.id
         }
     }
 }
@@ -367,6 +399,20 @@ public struct WorkspaceView: View {
                     }
                 }
                 .keyboardShortcut("r", modifiers: .command)
+                Button("") { selectNextTab() }
+                    .keyboardShortcut("]", modifiers: [.command, .shift])
+                Button("") { selectPreviousTab() }
+                    .keyboardShortcut("[", modifiers: [.command, .shift])
+                Button("") { currentTab?.toggleMaximizeActivePane() }
+                    .keyboardShortcut(.return, modifiers: [.command, .shift])
+                Button("") { currentTab?.focusNextPane() }
+                    .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
+                Button("") { currentTab?.focusPreviousPane() }
+                    .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
+                Button("") { currentTab?.focusNextPane() }
+                    .keyboardShortcut(.downArrow, modifiers: [.command, .option])
+                Button("") { currentTab?.focusPreviousPane() }
+                    .keyboardShortcut(.upArrow, modifiers: [.command, .option])
             }
             .frame(width: 0, height: 0)
             .opacity(0)
@@ -541,6 +587,20 @@ public struct WorkspaceView: View {
             selectedTabId = tab.id
         }
     }
+    
+    public func selectNextTab() {
+        guard activeTabs.count > 1 else { return }
+        let curIdx = activeTabs.firstIndex(where: { $0.id == selectedTabId }) ?? 0
+        let nextIdx = (curIdx + 1) % activeTabs.count
+        selectedTabId = activeTabs[nextIdx].id
+    }
+    
+    public func selectPreviousTab() {
+        guard activeTabs.count > 1 else { return }
+        let curIdx = activeTabs.firstIndex(where: { $0.id == selectedTabId }) ?? 0
+        let prevIdx = (curIdx - 1 + activeTabs.count) % activeTabs.count
+        selectedTabId = activeTabs[prevIdx].id
+    }
 }
 
 private struct WorkspaceMetricsView: View {
@@ -577,10 +637,35 @@ private struct WorkspaceActiveTabSplitView: View {
             VStack(spacing: 0) {
                 // Terminal Area with Split Panes
                 Group {
-                    if tab.splitMode == .single || tab.panes.count < 2 {
-                        if let pane = tab.panes.first {
-                            PaneContainerView(store: store, pane: pane, tab: tab, activeTabs: activeTabs, isBroadcastActive: isBroadcastActive)
-                                .id(pane.id)
+                    if tab.splitMode == .single || tab.panes.count < 2 || tab.isPaneMaximized {
+                        if let pane = tab.activePane ?? tab.panes.first {
+                            ZStack(alignment: .topTrailing) {
+                                PaneContainerView(store: store, pane: pane, tab: tab, activeTabs: activeTabs, isBroadcastActive: isBroadcastActive)
+                                    .id(pane.id)
+                                
+                                if tab.isPaneMaximized && tab.panes.count > 1 {
+                                    Button {
+                                        tab.toggleMaximizeActivePane()
+                                    } label: {
+                                        HStack(spacing: 5) {
+                                            Image(systemName: "arrow.down.right.and.arrow.up.left")
+                                                .font(.system(size: 11, weight: .bold))
+                                            Text("分屏已放大 (⌘⇧Enter 还原)")
+                                                .font(.system(size: 11, weight: .medium))
+                                        }
+                                        .foregroundColor(ApexStyle.primary)
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 5)
+                                        .background(ApexStyle.surface.opacity(0.92))
+                                        .clipShape(Capsule())
+                                        .overlay(Capsule().stroke(Color.accentColor.opacity(0.5), lineWidth: 1))
+                                        .shadow(color: .black.opacity(0.2), radius: 4, x: 0, y: 2)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .padding(10)
+                                    .help("还原分屏布局 (⌘⇧Enter)")
+                                }
+                            }
                         }
                     } else if tab.splitMode == .vertical {
                         GeometryReader { paneGeo in

@@ -241,6 +241,19 @@
 
 ---
 
+### 模块 12：极速生产力与高频交互打磨场景矩阵 (Productivity & Experience Polish Matrix)
+
+| 用例 ID | 场景描述 | 优先级 | 测试步骤 / 验证方法 | 预期结果 | 自动化覆盖 / 状态 |
+| :--- | :--- | :---: | :--- | :--- | :--- |
+| **TC-EXP-01** | 动态等宽字体枚举与 Nerd Font 识别 | P0 | 打开偏好设置“终端外观”面板，查看字体下拉列表；验证系统已安装的等宽字体（如 MesloLGS NF、Fira Code、Hack、JetBrains Mono、SF Mono 等）被准确检索并自动标记 `[Nerd Font]` / `NF` 徽标 | 彻底摆脱 6 个硬编码字体限制，自动发现并优先呈现精选等宽字体与已安装的 Nerd Fonts，选择后无缝实时应用 | `ExperiencePolishTests.testTerminalFontManagerEnumerationAndNerdFontRecognition` |
+| **TC-EXP-02** | 标签页快捷循环切换 (Tab Cycling) | P0 | 打开多个终端会话标签页，使用快捷键 `⌘⇧]` (下一个)、`⌘⇧[` (上一个) 或 `⌃Tab` 连续切换 | 标签页严格按左右几何顺序循环切换，到达末端自动 wrap-around 循环回首个标签，焦点与对应终端/SFTP状态同步激活 | `ExperiencePolishTests.testTabCyclingNavigationPreviousAndNext` |
+| **TC-EXP-03** | 终端多分屏全屏聚焦放大与无损还原 (Split Pane Zoom) | P0 | 在包含 2 个以上分屏窗格的标签页中，聚焦某一窗格并按下 `⌘⇧Enter` 或从菜单触发“全屏放大/恢复分屏”；再次按下或点击右上角还原胶囊 | 当前活动窗格平滑全屏独占整个终端展示区域（背景窗格无损正常收发后台数据流）；右上角浮现“分屏已放大”指示与还原按钮；再次触发或关闭分屏窗格安全恢复原始分屏比例 | `ExperiencePolishTests.testSplitPaneMaximizeAndRestore` |
+| **TC-EXP-04** | 终端多分屏窗格焦点快捷巡航 (Split Pane Focus Navigation) | P0 | 在水平或垂直分屏状态下，按下 `⌘⌥→` / `⌘⌥↓` 或 `⌘⌥←` / `⌘⌥↑` 循环导航焦点 | 窗格焦点高亮平滑转移至目标窗格，键盘击键与快捷操作直接作用于新激活窗格 | `ExperiencePolishTests.testSplitPaneFocusNavigation` |
+| **TC-EXP-05** | 全局快捷键速查表原子对齐与精准引导 | P1 | 按下 `⌘/` 打开快捷键速查表，核对所有快捷键文案与注册命令的一致性 | `⌘⇧T` 精确对齐“新建本地终端”，新增标签循环 `⌘⇧]` / `⌘⇧[`、分屏全屏聚焦 `⌘⇧↵`、分屏焦点循环、重新连接 `⌘R`、文件查找 `⌘F` 及 SFTP 路径聚焦 `⌘L`，无遗留陈旧文案 | `ExperiencePolishTests.testShortcutsSheetAccuracyAndCommandConsistency` |
+| **TC-EXP-06** | SFTP 高频系统目录预设与自定义路径书签 | P0 | 打开 SFTP 面板，点击路径栏旁书签图标，点击预设快捷目录（`~`、`/var/log`、`/etc`、`/tmp`、`/opt`）或“收藏当前路径” | 快速跳转至指定目录并触发远程文件流刷新；收藏路径在重启后依然持久化保存在书签列表中，支持随时取消收藏 | `ExperiencePolishTests.testSFTPBookmarksPresetAndCustomPersistence` |
+
+---
+
 ## 三、 历史高频 Bug 与排查指南 (electerm / FinalShell 经验总结)
 
 1. **Bug 1: 终端持续输出海量日志导致 UI 完全死锁**

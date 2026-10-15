@@ -27,10 +27,12 @@ public struct ShortcutsSheetView: View {
             icon: "macwindow.on.rectangle",
             items: [
                 ShortcutItem(keys: ["⌘", "T"], description: "复制当前会话 / 新建标签页"),
-                ShortcutItem(keys: ["⌘", "⇧", "T"], description: "复制当前活动会话到新标签页"),
+                ShortcutItem(keys: ["⌘", "⇧", "T"], description: "新建本地终端 (Local Terminal)"),
+                ShortcutItem(keys: ["⌘", "⇧", "]"], description: "切换至下一个标签页 (Next Tab)"),
+                ShortcutItem(keys: ["⌘", "⇧", "["], description: "切换至上一个标签页 (Previous Tab)"),
                 ShortcutItem(keys: ["⌘", "W"], description: "关闭当前终端标签或当前活动分屏"),
                 ShortcutItem(keys: ["⌘", "1...9"], description: "快速切换至指定编号的标签页"),
-                ShortcutItem(keys: ["标签右键"], description: "复制会话、分屏、关闭其他/右侧标签")
+                ShortcutItem(keys: ["标签右键"], description: "重命名会话、复制会话、分屏、关闭其他/右侧标签")
             ]
         ),
         ShortcutGroup(
@@ -38,13 +40,17 @@ public struct ShortcutsSheetView: View {
             icon: "rectangle.split.2x1",
             items: [
                 ShortcutItem(keys: ["⌘", "D"], description: "垂直分屏 (左右并排)"),
-                ShortcutItem(keys: ["⌘", "⇧", "D"], description: "水平分屏 (上下并列)")
+                ShortcutItem(keys: ["⌘", "⇧", "D"], description: "水平分屏 (上下并列)"),
+                ShortcutItem(keys: ["⌘", "⇧", "↵"], description: "全屏放大 / 恢复当前分屏 (Zoom Split Pane)"),
+                ShortcutItem(keys: ["⌘", "⌥", "← / → / ↑ / ↓"], description: "在分屏窗格间循环切换焦点")
             ]
         ),
         ShortcutGroup(
             title: "终端流与按键操作",
             icon: "terminal",
             items: [
+                ShortcutItem(keys: ["⌘", "R"], description: "重新连接当前会话"),
+                ShortcutItem(keys: ["⌘", "F"], description: "在终端与文件列表中快速搜索"),
                 ShortcutItem(keys: ["⌘", "K"], description: "彻底清屏并重置回滚历史"),
                 ShortcutItem(keys: ["⌃", "C"], description: "发送中断信号 (SIGINT)"),
                 ShortcutItem(keys: ["⌃", "D"], description: "发送 EOF / 登出当前 Shell"),
@@ -56,13 +62,22 @@ public struct ShortcutsSheetView: View {
             ]
         ),
         ShortcutGroup(
+            title: "SFTP 文件传输与书签",
+            icon: "folder",
+            items: [
+                ShortcutItem(keys: ["⌘", "L"], description: "快速聚焦远程路径输入框"),
+                ShortcutItem(keys: ["⌘", "⇧", "."], description: "切换显示 / 隐藏点开头的隐藏文件 (.dotfile)"),
+                ShortcutItem(keys: ["书签图标"], description: "快速跳转 ~、/var/log、/etc、/tmp 或收藏当前目录"),
+                ShortcutItem(keys: ["文件拖拽"], description: "直接将本地文件拖拽至终端或 SFTP 面板上传")
+            ]
+        ),
+        ShortcutGroup(
             title: "鼠标高效交互 (PuTTY / Xshell 风格)",
             icon: "cursorarrow.rays",
             items: [
                 ShortcutItem(keys: ["鼠标划选"], description: "自动复制到系统剪切板"),
                 ShortcutItem(keys: ["鼠标右键"], description: "直接粘贴系统剪切板内容"),
-                ShortcutItem(keys: ["⇧ + 右键"], description: "弹出完整右键上下文菜单"),
-                ShortcutItem(keys: ["文件拖拽"], description: "自动上传至当前 SFTP 目录并贴入路径")
+                ShortcutItem(keys: ["⇧ + 右键"], description: "弹出完整右键上下文菜单")
             ]
         ),
         ShortcutGroup(

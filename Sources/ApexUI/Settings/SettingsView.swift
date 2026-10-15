@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import ApexCore
+import ApexTerminal
 
 /// Standard macOS Preferences / Settings View
 public struct SettingsView: View {
@@ -109,14 +110,32 @@ private struct GeneralSettingsTab: View {
 private struct AppearanceSettingsTab: View {
     @ObservedObject var settings: AppSettings
     
-    private let availableFonts = ["SF Mono", "Menlo", "Courier", "Monaco", "JetBrains Mono", "PingFang SC"]
+    private var availableFontOptions: [TerminalFontOption] {
+        let list = TerminalFontManager.shared.availableFonts()
+        if !list.contains(where: { $0.familyName == settings.fontName }) {
+            return [TerminalFontOption(familyName: settings.fontName)] + list
+        }
+        return list
+    }
     
     var body: some View {
         Form {
             Section {
                 Picker(L10n.fontNameLabel, selection: $settings.fontName) {
-                    ForEach(availableFonts, id: \.self) { font in
-                        Text(font).tag(font)
+                    ForEach(availableFontOptions) { option in
+                        HStack {
+                            Text(option.displayName)
+                            if option.isNerdFont {
+                                Spacer()
+                                Text("NF")
+                                    .font(.system(size: 9, weight: .bold))
+                                    .padding(.horizontal, 4)
+                                    .padding(.vertical, 1)
+                                    .background(Color.accentColor.opacity(0.15))
+                                    .cornerRadius(3)
+                            }
+                        }
+                        .tag(option.familyName)
                     }
                 }
                 

@@ -62,6 +62,7 @@ public struct SFTPView: View {
     
     // Sort and visibility
     @State private var showHiddenFiles = false
+    @ObservedObject private var bookmarkManager = SFTPBookmarkManager.shared
     
     // File operations state
     @State private var itemToDelete: SFTPItem?
@@ -114,6 +115,57 @@ public struct SFTPView: View {
             .textFieldStyle(.roundedBorder)
             .font(.system(size: 12, design: .monospaced))
             .frame(minWidth: 120)
+
+            // SFTP Quick Bookmarks & Directory Presets Menu
+            Menu {
+                Section("系统常用目录预设") {
+                    ForEach(SFTPBookmarkManager.defaultPresets) { bookmark in
+                        Button {
+                            currentPath = bookmark.path
+                            pathInput = bookmark.path
+                        } label: {
+                            Label(bookmark.name, systemImage: bookmark.iconName)
+                        }
+                    }
+                }
+                
+                if !bookmarkManager.customBookmarks.isEmpty {
+                    Section("我的书签收藏") {
+                        ForEach(bookmarkManager.customBookmarks) { bookmark in
+                            Button {
+                                currentPath = bookmark.path
+                                pathInput = bookmark.path
+                            } label: {
+                                Label(bookmark.name, systemImage: bookmark.iconName)
+                            }
+                        }
+                    }
+                }
+                
+                Divider()
+                
+                if bookmarkManager.isBookmarked(path: currentPath) {
+                    Button(role: .destructive) {
+                        if let b = bookmarkManager.customBookmarks.first(where: { $0.path == currentPath }) {
+                            bookmarkManager.removeCustomBookmark(id: b.id)
+                        }
+                    } label: {
+                        Label("取消收藏当前路径", systemImage: "star.slash")
+                    }
+                } else if !currentPath.isEmpty {
+                    Button {
+                        bookmarkManager.addCustomBookmark(name: currentPath, path: currentPath)
+                    } label: {
+                        Label("收藏当前路径到书签", systemImage: "star")
+                    }
+                }
+            } label: {
+                Image(systemName: bookmarkManager.isBookmarked(path: currentPath) ? "star.fill" : "bookmark")
+                    .foregroundColor(bookmarkManager.isBookmarked(path: currentPath) ? .yellow : ApexStyle.secondary)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("常用目录预设与书签快速跳转")
 
             Button("复制当前路径", systemImage: "doc.on.doc") {
                 NSPasteboard.general.clearContents()

@@ -111,21 +111,24 @@ public struct ProcessInspectorView: View {
                     .padding(.trailing, 4)
             }
             
-            Button(action: { fetchProcessData() }) {
-                Image(systemName: "arrow.clockwise")
-                    .font(.system(size: 12, weight: .medium))
+            ApexIconButton(
+                icon: "arrow.clockwise",
+                label: "刷新进程列表 (⌘R)",
+                size: 26,
+                iconSize: 12
+            ) {
+                fetchProcessData()
             }
-            .buttonStyle(.plain)
-            .help("刷新进程列表 (⌘R)")
             .keyboardShortcut("r", modifiers: .command)
             
-            Button(action: { isPresented = false }) {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 14))
-                    .foregroundColor(ApexStyle.secondary)
+            ApexIconButton(
+                icon: "xmark",
+                label: "关闭面板 (Esc)",
+                size: 26,
+                iconSize: 11
+            ) {
+                isPresented = false
             }
-            .buttonStyle(.plain)
-            .help("关闭面板 (Esc)")
             .keyboardShortcut(.cancelAction)
         }
         .padding(.horizontal, ApexStyle.s4)
@@ -264,99 +267,20 @@ public struct ProcessInspectorView: View {
                 ScrollView {
                     LazyVStack(spacing: 0) {
                         ForEach(filteredProcesses) { proc in
-                            processRow(proc)
+                            ProcessRowView(
+                                proc: proc,
+                                isSelected: selectedProcess?.pid == proc.pid,
+                                onSelect: { selectedProcess = proc },
+                                onKill: {
+                                    selectedProcess = proc
+                                    showingKillConfirmation = true
+                                }
+                            )
                             Divider()
                         }
                     }
                 }
             }
-        }
-    }
-    
-    private func processRow(_ proc: ProcessDetailItem) -> some View {
-        HStack(spacing: 8) {
-            Text("\(proc.pid)")
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundColor(ApexStyle.secondary)
-                .frame(width: 60, alignment: .leading)
-            
-            Text(proc.user)
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundColor(ApexStyle.primary)
-                .lineLimit(1)
-                .frame(width: 80, alignment: .leading)
-            
-            // State badge
-            Text(proc.state.rawValue)
-                .font(.system(size: 10, weight: .bold, design: .monospaced))
-                .foregroundColor(stateColor(proc.state))
-                .padding(.horizontal, 5)
-                .padding(.vertical, 1.5)
-                .background(stateColor(proc.state).opacity(0.12), in: RoundedRectangle(cornerRadius: 3))
-                .frame(width: 70, alignment: .leading)
-                .help(proc.state.displayName)
-            
-            // CPU%
-            HStack(spacing: 4) {
-                Text(String(format: "%.1f%%", proc.cpuPercent))
-                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                    .foregroundColor(cpuColor(proc.cpuPercent))
-            }
-            .frame(width: 75, alignment: .trailing)
-            
-            // RSS
-            Text(proc.formattedRSS)
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundColor(ApexStyle.primary)
-                .frame(width: 95, alignment: .trailing)
-            
-            // Command & full commandline
-            VStack(alignment: .leading, spacing: 1) {
-                Text(proc.command)
-                    .font(.system(size: 11, weight: .medium, design: .monospaced))
-                    .foregroundColor(ApexStyle.primary)
-                    .lineLimit(1)
-                if proc.fullCommandLine != proc.command {
-                    Text(proc.fullCommandLine)
-                        .font(.system(size: 9.5, design: .monospaced))
-                        .foregroundColor(ApexStyle.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .help(proc.fullCommandLine)
-            
-            // Action button
-            if proc.isProtected {
-                Image(systemName: "lock.fill")
-                    .font(.system(size: 10))
-                    .foregroundColor(ApexStyle.secondary.opacity(0.6))
-                    .frame(width: 65, alignment: .center)
-                    .help("受保护的核心系统进程，禁止终止")
-            } else {
-                Button(action: {
-                    selectedProcess = proc
-                    showingKillConfirmation = true
-                }) {
-                    Text("终止")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundColor(ApexStyle.error)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(ApexStyle.error.opacity(0.1), in: RoundedRectangle(cornerRadius: 4))
-                }
-                .buttonStyle(.plain)
-                .frame(width: 65, alignment: .center)
-                .help("终止进程 (SIGTERM / SIGKILL)")
-            }
-        }
-        .padding(.horizontal, ApexStyle.s4)
-        .padding(.vertical, 5)
-        .background(selectedProcess?.pid == proc.pid ? ApexStyle.selection.opacity(0.15) : Color.clear)
-        .contentShape(Rectangle())
-        .onTapGesture {
-            selectedProcess = proc
         }
     }
     
@@ -486,13 +410,13 @@ public struct ProcessInspectorView: View {
     }
     
     // MARK: - Style Helpers
-    private func cpuColor(_ cpu: Double) -> Color {
+    static func cpuColor(_ cpu: Double) -> Color {
         if cpu > 80 { return ApexStyle.error }
         if cpu > 40 { return ApexStyle.warning }
         return ApexStyle.primary
     }
     
-    private func stateColor(_ state: ProcessState) -> Color {
+    static func stateColor(_ state: ProcessState) -> Color {
         switch state {
         case .running: return ApexStyle.success
         case .sleeping: return ApexStyle.secondary
@@ -500,6 +424,108 @@ public struct ProcessInspectorView: View {
         case .zombie: return ApexStyle.error
         case .stopped: return ApexStyle.warning
         case .unknown: return ApexStyle.secondary
+        }
+    }
+}
+
+private struct ProcessRowView: View {
+    let proc: ProcessDetailItem
+    let isSelected: Bool
+    let onSelect: () -> Void
+    let onKill: () -> Void
+    
+    @State private var isHovered = false
+    
+    var body: some View {
+        HStack(spacing: 8) {
+            Text("\(proc.pid)")
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundColor(ApexStyle.secondary)
+                .frame(width: 60, alignment: .leading)
+            
+            Text(proc.user)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundColor(ApexStyle.primary)
+                .lineLimit(1)
+                .frame(width: 80, alignment: .leading)
+            
+            // State badge
+            Text(proc.state.rawValue)
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .foregroundColor(ProcessInspectorView.stateColor(proc.state))
+                .padding(.horizontal, 5)
+                .padding(.vertical, 1.5)
+                .background(ProcessInspectorView.stateColor(proc.state).opacity(0.12), in: RoundedRectangle(cornerRadius: 3))
+                .frame(width: 70, alignment: .leading)
+                .help(proc.state.displayName)
+            
+            // CPU%
+            HStack(spacing: 4) {
+                Text(String(format: "%.1f%%", proc.cpuPercent))
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .foregroundColor(ProcessInspectorView.cpuColor(proc.cpuPercent))
+            }
+            .frame(width: 75, alignment: .trailing)
+            
+            // RSS
+            Text(proc.formattedRSS)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundColor(ApexStyle.primary)
+                .frame(width: 95, alignment: .trailing)
+            
+            // Command & full commandline
+            VStack(alignment: .leading, spacing: 1) {
+                Text(proc.command)
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundColor(ApexStyle.primary)
+                    .lineLimit(1)
+                if proc.fullCommandLine != proc.command {
+                    Text(proc.fullCommandLine)
+                        .font(.system(size: 9.5, design: .monospaced))
+                        .foregroundColor(ApexStyle.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .help(proc.fullCommandLine)
+            
+            // Action button
+            if proc.isProtected {
+                Image(systemName: "lock.fill")
+                    .font(.system(size: 10))
+                    .foregroundColor(ApexStyle.secondary.opacity(0.6))
+                    .frame(width: 65, alignment: .center)
+                    .help("受保护的核心系统进程，禁止终止")
+            } else {
+                Button(action: onKill) {
+                    Text("终止")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(ApexStyle.error)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2.5)
+                        .background(ApexStyle.error.opacity(isHovered ? 0.16 : 0.08), in: RoundedRectangle(cornerRadius: 4))
+                }
+                .buttonStyle(.plain)
+                .frame(width: 65, alignment: .center)
+                .help("终止进程 (SIGTERM / SIGKILL)")
+            }
+        }
+        .padding(.horizontal, ApexStyle.s4)
+        .padding(.vertical, 5)
+        .background(
+            isSelected
+                ? ApexStyle.selection.opacity(0.15)
+                : (isHovered ? ApexStyle.primary.opacity(0.04) : Color.clear)
+        )
+        .contentShape(Rectangle())
+        .onTapGesture {
+            onSelect()
+        }
+        .onHover { hovering in
+            withAnimation(ApexStyle.hoverTransition) {
+                isHovered = hovering
+            }
         }
     }
 }

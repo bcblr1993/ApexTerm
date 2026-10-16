@@ -366,7 +366,12 @@ public struct WorkspaceView: View {
                             }
                             
                             // + Button to duplicate current session or open new tab
-                            Button(action: {
+                            ApexIconButton(
+                                icon: "plus",
+                                label: "复制当前会话 / 新建标签页 (⌘T)",
+                                size: 26,
+                                iconSize: 11
+                            ) {
                                 if let cur = currentTab {
                                     duplicateTab(cur)
                                 } else if let first = store.sessions.first {
@@ -378,34 +383,25 @@ public struct WorkspaceView: View {
                                 } else {
                                     openLocalTerminal()
                                 }
-                            }) {
-                                Image(systemName: "plus")
-                                    .font(.system(size: 11, weight: .semibold))
-                                    .foregroundColor(ApexStyle.secondary)
-                                    .frame(width: 24, height: 24)
-                                    .background(ApexStyle.surface, in: RoundedRectangle(cornerRadius: 6))
                             }
-                            .buttonStyle(.plain)
-                            .help("复制当前会话 / 新建标签页 (⌘T)")
                             
                             // Dedicated Local Terminal button
-                            Button(action: {
+                            ApexIconButton(
+                                icon: "laptopcomputer",
+                                label: "新建本地终端 (⇧⌘T)",
+                                size: 26,
+                                iconSize: 11
+                            ) {
                                 openLocalTerminal()
-                            }) {
-                                Image(systemName: "laptopcomputer")
-                                    .font(.system(size: 11, weight: .semibold))
-                                    .foregroundColor(ApexStyle.secondary)
-                                    .frame(width: 24, height: 24)
-                                    .background(ApexStyle.surface, in: RoundedRectangle(cornerRadius: 6))
                             }
-                            .buttonStyle(.plain)
-                            .help("新建本地终端 (⇧⌘T)")
                         }
                         .padding(.horizontal, ApexStyle.s4)
+                        .padding(.vertical, 4)
                     }
                 }
                 .frame(height: 38)
-                .background(ApexStyle.subtleSurface.opacity(0.5))
+                .background(ApexStyle.subtleSurface.opacity(0.55))
+                .overlay(alignment: .bottom) { Divider() }
 
                 if activeTabs.count > 1 {
                     BroadcastBar(
@@ -623,19 +619,15 @@ public struct WorkspaceView: View {
                     Spacer()
                     HStack(spacing: 8) {
                         Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 13, weight: .semibold))
                             .foregroundColor(ApexStyle.success)
                         Text(toast)
                             .font(.system(size: 12, weight: .medium))
                             .foregroundColor(ApexStyle.primary)
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .background(ApexStyle.surface, in: RoundedRectangle(cornerRadius: 8))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 8)
-                            .stroke(ApexStyle.border, lineWidth: 1)
-                    }
-                    .shadow(color: Color.black.opacity(0.15), radius: 8, x: 0, y: 4)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 9)
+                    .apexGlassCard(cornerRadius: 18, material: .regularMaterial, borderColor: Color.primary.opacity(0.12), shadowRadius: 10)
                     .padding(.bottom, 36)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
@@ -1323,29 +1315,65 @@ struct TabButton: View {
     let onCloseOthers: () -> Void
     let onCloseRight: () -> Void
     
+    @State private var isHovered: Bool = false
+    @State private var isCloseHovered: Bool = false
+    
+    private var dotColor: Color {
+        Color(hex: colorHex ?? "#0A84FF") ?? .blue
+    }
+    
     var body: some View {
         HStack(spacing: 7) {
             Circle()
-                .fill(Color(hex: colorHex ?? "#0A84FF") ?? .blue)
-                .frame(width: 6, height: 6)
+                .fill(dotColor)
+                .frame(width: 7, height: 7)
+                .shadow(color: dotColor.opacity(isSelected ? 0.6 : 0.2), radius: isSelected ? 3 : 1)
             
             Text(title)
                 .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
-                .foregroundColor(isSelected ? ApexStyle.primary : ApexStyle.secondary)
+                .foregroundColor(isSelected ? ApexStyle.primary : (isHovered ? ApexStyle.primary.opacity(0.85) : ApexStyle.secondary))
+                .lineLimit(1)
             
             Button(action: onClose) {
-                Label("关闭 \(title)", systemImage: "xmark")
+                ZStack {
+                    Circle()
+                        .fill(isCloseHovered ? ApexStyle.primary.opacity(0.12) : Color.clear)
+                        .frame(width: 16, height: 16)
+                    Image(systemName: "xmark")
+                        .font(.system(size: 8.5, weight: .bold))
+                        .foregroundColor(isCloseHovered ? ApexStyle.primary : ApexStyle.secondary)
+                }
+                .contentShape(Circle())
             }
-            .labelStyle(.iconOnly)
-            .buttonStyle(.borderless)
-            .controlSize(.small)
+            .buttonStyle(.plain)
+            .opacity(isSelected || isHovered ? 1.0 : 0.0)
+            .animation(ApexStyle.hoverTransition, value: isHovered)
+            .animation(ApexStyle.hoverTransition, value: isSelected)
+            .onHover { closeHovering in
+                isCloseHovered = closeHovering
+            }
+            .help("关闭标签页 (⌘W)")
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 7)
+        .padding(.vertical, 6)
         .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(isSelected ? ApexStyle.accent.opacity(0.12) : Color.clear)
+            RoundedRectangle(cornerRadius: 7)
+                .fill(
+                    isSelected
+                        ? (themeSettings.followsSystemAppearance ? Color(nsColor: .windowBackgroundColor) : ApexStyle.accent.opacity(0.14))
+                        : (isHovered ? ApexStyle.primary.opacity(0.06) : Color.clear)
+                )
         )
+        .overlay(
+            RoundedRectangle(cornerRadius: 7)
+                .stroke(
+                    isSelected
+                        ? (themeSettings.followsSystemAppearance ? ApexStyle.border : ApexStyle.accent.opacity(0.35))
+                        : (isHovered ? ApexStyle.border.opacity(0.5) : Color.clear),
+                    lineWidth: 0.75
+                )
+        )
+        .shadow(color: isSelected ? Color.black.opacity(0.06) : Color.clear, radius: 3, x: 0, y: 1)
         .contentShape(Rectangle())
         .onTapGesture {
             onSelect()
@@ -1355,6 +1383,12 @@ struct TabButton: View {
                 onRename()
             }
         )
+        .onHover { hovering in
+            withAnimation(ApexStyle.hoverTransition) {
+                isHovered = hovering
+            }
+        }
+        .animation(ApexStyle.springSnappy, value: isSelected)
         .contextMenu {
             Button {
                 onReconnect()

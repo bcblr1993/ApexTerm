@@ -282,26 +282,32 @@ private struct TunnelRowView: View {
                 .padding(.vertical, 4)
                 .background(state.isRunning ? ApexStyle.error.opacity(0.15) : ApexStyle.success.opacity(0.15), in: RoundedRectangle(cornerRadius: ApexStyle.controlRadius))
                 .foregroundColor(state.isRunning ? ApexStyle.error : ApexStyle.success)
+                .overlay(
+                    RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
+                        .stroke((state.isRunning ? ApexStyle.error : ApexStyle.success).opacity(0.3), lineWidth: 0.75)
+                )
             }
             .buttonStyle(.plain)
             
             // Edit Button
-            Button(action: onEdit) {
-                Image(systemName: "pencil")
-                    .font(.system(size: 11))
-                    .foregroundColor(ApexStyle.secondary)
+            ApexIconButton(
+                icon: "pencil",
+                label: "编辑隧道参数",
+                size: 24,
+                iconSize: 11
+            ) {
+                onEdit()
             }
-            .buttonStyle(.plain)
-            .help("编辑隧道参数")
             
             // Delete Button
-            Button(action: onDelete) {
-                Image(systemName: "trash")
-                    .font(.system(size: 11))
-                    .foregroundColor(ApexStyle.error.opacity(0.8))
+            ApexIconButton(
+                icon: "trash",
+                label: "删除隧道",
+                size: 24,
+                iconSize: 11
+            ) {
+                onDelete()
             }
-            .buttonStyle(.plain)
-            .help("删除隧道")
         }
         .padding(.vertical, 4)
     }

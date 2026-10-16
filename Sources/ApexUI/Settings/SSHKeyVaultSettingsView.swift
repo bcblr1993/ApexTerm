@@ -147,15 +147,22 @@ public struct SSHKeyVaultSettingsView: View {
             Spacer()
             
             // Actions
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
                 Button(action: {
                     copyPublicKey(key)
                 }) {
-                    Label("复制公钥", systemImage: "doc.on.doc")
+                    HStack(spacing: 4) {
+                        Image(systemName: "doc.on.doc")
+                            .font(.system(size: 10))
+                        Text("复制公钥")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3.5)
+                    .background(ApexStyle.accent.opacity(0.1), in: RoundedRectangle(cornerRadius: ApexStyle.controlRadius))
+                    .foregroundColor(ApexStyle.accent)
                 }
                 .buttonStyle(.plain)
-                .font(.system(size: 11))
-                .foregroundColor(ApexStyle.accent)
                 .help("复制 OpenSSH 公钥到剪贴板")
                 
                 Button(action: {
@@ -163,23 +170,29 @@ public struct SSHKeyVaultSettingsView: View {
                     generatedDeployCommand = key.generateDeployCommand()
                     showingDeploySheet = true
                 }) {
-                    Label("一键部署", systemImage: "arrow.up.forward.app")
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.up.forward.app")
+                            .font(.system(size: 10))
+                        Text("一键部署")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3.5)
+                    .background(ApexStyle.accent.opacity(0.1), in: RoundedRectangle(cornerRadius: ApexStyle.controlRadius))
+                    .foregroundColor(ApexStyle.accent)
                 }
                 .buttonStyle(.plain)
-                .font(.system(size: 11))
-                .foregroundColor(ApexStyle.accent)
                 .help("一键免密分发公钥到远程服务器 (ssh-copy-id)")
                 
-                Button(action: {
+                ApexIconButton(
+                    icon: "trash",
+                    label: "删除密钥",
+                    size: 24,
+                    iconSize: 11
+                ) {
                     keyToDelete = key
                     showingDeleteAlert = true
-                }) {
-                    Image(systemName: "trash")
-                        .font(.system(size: 11))
-                        .foregroundColor(ApexStyle.error)
                 }
-                .buttonStyle(.plain)
-                .help("删除密钥")
             }
         }
         .padding(.horizontal, 12)

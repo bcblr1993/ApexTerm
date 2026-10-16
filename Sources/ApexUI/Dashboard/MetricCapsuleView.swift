@@ -114,8 +114,18 @@ public struct MetricCapsuleView: View {
                     .font(.system(size: 9, weight: .semibold))
                     .foregroundColor(ApexStyle.secondary)
             }
+            .padding(.horizontal, compact ? 8 : 10)
+            .padding(.vertical, compact ? 3 : 4)
+            .background(
+                Capsule()
+                    .fill(ApexStyle.subtleSurface.opacity(0.75))
+            )
+            .overlay(
+                Capsule()
+                    .stroke(ApexStyle.border.opacity(0.6), lineWidth: 0.75)
+            )
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(.plain)
         .accessibilityIdentifier("metrics.summary")
         .controlSize(compact ? .regular : .small)
         .help(isStale ? "超过 30 秒未收到新指标，详情为最后一次采样" : "查看服务器性能")

@@ -118,15 +118,11 @@ public struct CommandPaletteModalView: View {
                 }
                 
                 Text("⎋ ESC")
-                    .font(.caption2.monospaced())
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(ApexStyle.subtleSurface, in: RoundedRectangle(cornerRadius: ApexStyle.badgeRadius))
-                    .foregroundColor(ApexStyle.secondary)
+                    .apexKeycap()
             }
             .padding(.horizontal, ApexStyle.s4)
-            .padding(.vertical, ApexStyle.s3)
-            .background(ApexStyle.surface)
+            .padding(.vertical, 12)
+            .background(ApexStyle.surface.opacity(0.85))
             
             Divider()
             
@@ -203,14 +199,8 @@ public struct CommandPaletteModalView: View {
             .padding(.vertical, 8)
             .background(ApexStyle.subtleSurface.opacity(0.5))
         }
-        .frame(width: 600)
-        .background(ApexStyle.surface)
-        .clipShape(RoundedRectangle(cornerRadius: ApexStyle.panelRadius))
-        .overlay(
-            RoundedRectangle(cornerRadius: ApexStyle.panelRadius)
-                .stroke(ApexStyle.border, lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(0.35), radius: 24, x: 0, y: 12)
+        .frame(width: 620)
+        .apexGlassCard(cornerRadius: 14, material: .regularMaterial, borderColor: Color.primary.opacity(0.12), shadowRadius: 28)
         .onAppear {
             isInputFocused = true
             selectedIndex = 0
@@ -292,15 +282,7 @@ private struct ItemRowView: View {
                 
                 if let hint = item.shortcutHint {
                     Text(hint)
-                        .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(ApexStyle.surface, in: RoundedRectangle(cornerRadius: ApexStyle.badgeRadius))
-                        .foregroundColor(ApexStyle.secondary)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: ApexStyle.badgeRadius)
-                                .stroke(ApexStyle.border.opacity(0.6), lineWidth: 1)
-                        )
+                        .apexKeycap()
                 }
             }
             .padding(.horizontal, 10)
@@ -311,8 +293,9 @@ private struct ItemRowView: View {
             )
             .overlay(
                 RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
-                    .stroke(isSelected ? ApexStyle.accent.opacity(0.4) : Color.clear, lineWidth: 1)
+                    .stroke(isSelected ? ApexStyle.accent.opacity(0.4) : Color.clear, lineWidth: 0.75)
             )
+            .animation(ApexStyle.springSnappy, value: isSelected)
         }
         .buttonStyle(.plain)
     }

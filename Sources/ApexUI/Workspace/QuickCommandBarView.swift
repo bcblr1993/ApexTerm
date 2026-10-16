@@ -56,7 +56,7 @@ public struct QuickCommandBarView: View {
             Divider()
             
             HStack(spacing: ApexStyle.s2) {
-                // Category Selector / Pills
+                // Category Selector & Snippet Pills
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: ApexStyle.sCompact) {
                         HStack(spacing: 4) {
@@ -70,55 +70,20 @@ public struct QuickCommandBarView: View {
                         .padding(.trailing, 4)
                         
                         ForEach(allCategories, id: \.self) { cat in
-                            Button {
-                                selectedCategory = cat
-                            } label: {
-                                Text(cat)
-                                    .font(.system(size: 11, weight: selectedCategory == cat ? .semibold : .regular))
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 3)
-                                    .background(
-                                        selectedCategory == cat
-                                            ? ApexStyle.accent.opacity(0.18)
-                                            : ApexStyle.surface,
-                                        in: RoundedRectangle(cornerRadius: ApexStyle.badgeRadius)
-                                    )
-                                    .foregroundColor(selectedCategory == cat ? ApexStyle.accent : ApexStyle.secondary)
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: ApexStyle.badgeRadius)
-                                            .stroke(selectedCategory == cat ? ApexStyle.accent.opacity(0.4) : ApexStyle.border.opacity(0.5), lineWidth: 1)
-                                    )
-                            }
-                            .buttonStyle(.plain)
+                            ApexPillButton(
+                                title: cat,
+                                isSelected: selectedCategory == cat,
+                                action: { selectedCategory = cat }
+                            )
                         }
                         
                         Divider().frame(height: 14)
                         
                         // Snippet Action Pills
                         ForEach(filteredSnippets) { snippet in
-                            Button {
+                            QuickSnippetPill(snippet: snippet) {
                                 triggerSnippet(snippet)
-                            } label: {
-                                HStack(spacing: 4) {
-                                    if !snippet.extractVariables().isEmpty {
-                                        Image(systemName: "slider.horizontal.3")
-                                            .font(.system(size: 9))
-                                            .foregroundColor(ApexStyle.accent)
-                                    }
-                                    Text(snippet.title)
-                                        .font(.system(size: 11))
-                                        .lineLimit(1)
-                                }
-                                .padding(.horizontal, 9)
-                                .padding(.vertical, 4)
-                                .background(ApexStyle.subtleSurface, in: RoundedRectangle(cornerRadius: ApexStyle.controlRadius))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
-                                        .stroke(ApexStyle.border, lineWidth: 1)
-                                )
                             }
-                            .buttonStyle(.plain)
-                            .help("\(snippet.title)\n命令：\(snippet.command)")
                         }
                         
                         // + Add Custom Snippet Button
@@ -132,7 +97,7 @@ public struct QuickCommandBarView: View {
                                 Image(systemName: "plus")
                                     .font(.system(size: 9, weight: .bold))
                                 Text("添加")
-                                    .font(.system(size: 11))
+                                    .font(.system(size: 11, weight: .medium))
                             }
                             .padding(.horizontal, 8)
                             .padding(.vertical, 4)
@@ -140,7 +105,7 @@ public struct QuickCommandBarView: View {
                             .background(ApexStyle.surface, in: RoundedRectangle(cornerRadius: ApexStyle.controlRadius))
                             .overlay(
                                 RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
-                                    .stroke(ApexStyle.border.opacity(0.6), lineWidth: 1)
+                                    .stroke(ApexStyle.border.opacity(0.6), lineWidth: 0.75)
                             )
                         }
                         .buttonStyle(.plain)
@@ -153,23 +118,20 @@ public struct QuickCommandBarView: View {
                 Spacer(minLength: 4)
                 
                 // Hide bar button
-                Button {
-                    withAnimation(.easeInOut(duration: 0.15)) {
+                ApexIconButton(
+                    icon: "xmark",
+                    label: "隐藏快捷命令栏 (⌘⇧B)",
+                    size: 22,
+                    iconSize: 9
+                ) {
+                    withAnimation(ApexStyle.hoverTransition) {
                         isVisible = false
                     }
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundColor(ApexStyle.secondary)
-                        .padding(5)
-                        .background(ApexStyle.surface, in: Circle())
                 }
-                .buttonStyle(.plain)
-                .help("隐藏快捷命令栏 (⌘⇧B)")
                 .padding(.trailing, ApexStyle.s4)
             }
-            .frame(height: 36)
-            .background(ApexStyle.subtleSurface.opacity(0.6))
+            .frame(height: 38)
+            .background(ApexStyle.subtleSurface.opacity(0.65))
         }
         .sheet(item: $snippetWithVariables) { snippet in
             VariableInputSheet(
@@ -365,3 +327,44 @@ private struct AddSnippetSheet: View {
         .frame(width: 460)
     }
 }
+
+private struct QuickSnippetPill: View {
+    let snippet: Snippet
+    let onTrigger: () -> Void
+    @State private var isHovered = false
+    
+    var body: some View {
+        Button(action: onTrigger) {
+            HStack(spacing: 4) {
+                if !snippet.extractVariables().isEmpty {
+                    Image(systemName: "slider.horizontal.3")
+                        .font(.system(size: 9))
+                        .foregroundColor(ApexStyle.accent)
+                }
+                Text(snippet.title)
+                    .font(.system(size: 11, weight: .medium))
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
+                    .fill(isHovered ? ApexStyle.surface : ApexStyle.subtleSurface)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
+                    .stroke(isHovered ? ApexStyle.accent.opacity(0.4) : ApexStyle.border.opacity(0.7), lineWidth: 0.75)
+            )
+            .shadow(color: isHovered ? Color.black.opacity(0.06) : Color.clear, radius: 2, x: 0, y: 1)
+            .foregroundColor(isHovered ? ApexStyle.primary : ApexStyle.primary.opacity(0.85))
+            .scaleEffect(isHovered ? 1.02 : 1.0)
+            .animation(ApexStyle.springSnappy, value: isHovered)
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            isHovered = hovering
+        }
+        .help("\(snippet.title)\n命令：\(snippet.command)")
+    }
+}
+

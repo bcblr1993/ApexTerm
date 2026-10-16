@@ -34,6 +34,12 @@ public enum ApexStyle {
     public static let s5: CGFloat = 20
     public static let s6: CGFloat = 24
 
+    // MARK: - Fluid Spring Animations
+    public static let springDefault = Animation.spring(response: 0.32, dampingFraction: 0.80)
+    public static let springSnappy = Animation.spring(response: 0.24, dampingFraction: 0.76)
+    public static let springSmooth = Animation.spring(response: 0.38, dampingFraction: 0.85)
+    public static let hoverTransition = Animation.easeInOut(duration: 0.14)
+
     // MARK: - Corner Radii
     public static let badgeRadius: CGFloat = 4
     public static let controlRadius: CGFloat = 6
@@ -59,6 +65,178 @@ public extension View {
     func apexPanel() -> some View {
         self.background(ApexStyle.subtleSurface, in: RoundedRectangle(cornerRadius: ApexStyle.radius))
             .overlay { RoundedRectangle(cornerRadius: ApexStyle.radius).stroke(ApexStyle.border, lineWidth: 1) }
+    }
+    
+    func apexGlassCard(
+        cornerRadius: CGFloat = ApexStyle.radius,
+        material: Material = .regularMaterial,
+        borderColor: Color = Color.primary.opacity(0.08),
+        shadowRadius: CGFloat = 8
+    ) -> some View {
+        modifier(ApexGlassCardModifier(cornerRadius: cornerRadius, material: material, borderColor: borderColor, shadowRadius: shadowRadius))
+    }
+    
+    func apexKeycap() -> some View {
+        self.font(.caption2.monospaced())
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2.5)
+            .background(
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(ApexStyle.subtleSurface)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 4)
+                            .stroke(ApexStyle.border.opacity(0.6), lineWidth: 0.75)
+                    )
+                    .shadow(color: Color.black.opacity(0.04), radius: 1, x: 0, y: 1)
+            )
+            .foregroundColor(ApexStyle.secondary)
+    }
+}
+
+public struct ApexGlassCardModifier: ViewModifier {
+    public var cornerRadius: CGFloat
+    public var material: Material
+    public var borderColor: Color
+    public var shadowRadius: CGFloat
+    
+    public init(
+        cornerRadius: CGFloat = ApexStyle.radius,
+        material: Material = .regularMaterial,
+        borderColor: Color = Color.primary.opacity(0.08),
+        shadowRadius: CGFloat = 8
+    ) {
+        self.cornerRadius = cornerRadius
+        self.material = material
+        self.borderColor = borderColor
+        self.shadowRadius = shadowRadius
+    }
+    
+    public func body(content: Content) -> some View {
+        content
+            .background(material, in: RoundedRectangle(cornerRadius: cornerRadius))
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius)
+                    .stroke(borderColor, lineWidth: 1)
+            )
+            .shadow(color: Color.black.opacity(0.06), radius: shadowRadius, x: 0, y: shadowRadius > 0 ? 2 : 0)
+    }
+}
+
+/// Standardized tactile icon button conforming to macOS Liquid Class HIG
+public struct ApexIconButton: View {
+    let icon: String
+    let label: String?
+    let size: CGFloat
+    let iconSize: CGFloat
+    let isSelected: Bool
+    let action: () -> Void
+    
+    @State private var isHovered = false
+    
+    public init(
+        icon: String,
+        label: String? = nil,
+        size: CGFloat = 26,
+        iconSize: CGFloat = 11,
+        isSelected: Bool = false,
+        action: @escaping () -> Void
+    ) {
+        self.icon = icon
+        self.label = label
+        self.size = size
+        self.iconSize = iconSize
+        self.isSelected = isSelected
+        self.action = action
+    }
+    
+    public var body: some View {
+        Button(action: action) {
+            ZStack {
+                RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
+                    .fill(isSelected ? ApexStyle.accent.opacity(0.18) : (isHovered ? ApexStyle.primary.opacity(0.08) : Color.clear))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
+                            .stroke(isSelected ? ApexStyle.accent.opacity(0.35) : (isHovered ? ApexStyle.border.opacity(0.4) : Color.clear), lineWidth: 0.75)
+                    )
+                
+                Image(systemName: icon)
+                    .font(.system(size: iconSize, weight: isSelected ? .semibold : .medium))
+                    .foregroundColor(isSelected ? ApexStyle.accent : (isHovered ? ApexStyle.primary : ApexStyle.secondary))
+            }
+            .frame(width: size, height: size)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            withAnimation(ApexStyle.hoverTransition) {
+                isHovered = hovering
+            }
+        }
+        .help(label ?? "")
+    }
+}
+
+/// Tactile pill button with smooth spring selection indicator and hover lift
+public struct ApexPillButton: View {
+    let title: String
+    let icon: String?
+    let isSelected: Bool
+    let count: Int?
+    let action: () -> Void
+    
+    @State private var isHovered = false
+    
+    public init(
+        title: String,
+        icon: String? = nil,
+        isSelected: Bool = false,
+        count: Int? = nil,
+        action: @escaping () -> Void
+    ) {
+        self.title = title
+        self.icon = icon
+        self.isSelected = isSelected
+        self.count = count
+        self.action = action
+    }
+    
+    public var body: some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                if let icon = icon {
+                    Image(systemName: icon)
+                        .font(.system(size: 10, weight: .semibold))
+                }
+                Text(title)
+                    .font(.system(size: 11, weight: isSelected ? .semibold : .medium))
+                
+                if let count = count {
+                    Text("\(count)")
+                        .font(.system(size: 9, weight: .bold))
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(isSelected ? ApexStyle.accent.opacity(0.2) : ApexStyle.subtleSurface, in: Capsule())
+                }
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 4)
+            .background(
+                Capsule()
+                    .fill(isSelected ? ApexStyle.accent.opacity(0.18) : (isHovered ? ApexStyle.primary.opacity(0.06) : ApexStyle.surface.opacity(0.6)))
+            )
+            .overlay(
+                Capsule()
+                    .stroke(isSelected ? ApexStyle.accent.opacity(0.4) : (isHovered ? ApexStyle.border : ApexStyle.border.opacity(0.5)), lineWidth: 0.75)
+            )
+            .foregroundColor(isSelected ? ApexStyle.accent : (isHovered ? ApexStyle.primary : ApexStyle.secondary))
+            .scaleEffect(isHovered ? 1.02 : 1.0)
+            .animation(ApexStyle.springSnappy, value: isSelected)
+            .animation(ApexStyle.hoverTransition, value: isHovered)
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            isHovered = hovering
+        }
     }
 }
 

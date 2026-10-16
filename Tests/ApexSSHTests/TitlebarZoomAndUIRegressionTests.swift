@@ -305,4 +305,79 @@ final class TitlebarZoomAndUIRegressionTests: XCTestCase {
         compactWorkspaceHost.layoutSubtreeIfNeeded()
         XCTAssertGreaterThan(compactWorkspaceHost.subviews.count, 0, "Compact detail pane at 400pt width must lay out successfully")
     }
+
+    func testLiquidClassDesignTokensAndModifiers() {
+        // 1. Verify fluid spring animation tokens
+        XCTAssertNotNil(ApexStyle.springDefault)
+        XCTAssertNotNil(ApexStyle.springSnappy)
+        XCTAssertNotNil(ApexStyle.springSmooth)
+        XCTAssertNotNil(ApexStyle.hoverTransition)
+
+        // 2. Verify apexGlassCard modifier
+        let cardView = Text("Liquid Glass Content")
+            .apexGlassCard(cornerRadius: 12, material: .regularMaterial, borderColor: Color.primary.opacity(0.1), shadowRadius: 8)
+        let hostingCard = NSHostingView(rootView: cardView)
+        hostingCard.frame = NSRect(x: 0, y: 0, width: 240, height: 60)
+        let cardSize = hostingCard.fittingSize
+        XCTAssertGreaterThan(cardSize.width, 0, "apexGlassCard must compute valid layout width")
+        XCTAssertGreaterThan(cardSize.height, 0, "apexGlassCard must compute valid layout height")
+
+        // 3. Verify apexKeycap modifier
+        let keycapView = Text("⌘P").apexKeycap()
+        let hostingKeycap = NSHostingView(rootView: keycapView)
+        hostingKeycap.frame = NSRect(x: 0, y: 0, width: 60, height: 26)
+        let keycapSize = hostingKeycap.fittingSize
+        XCTAssertGreaterThan(keycapSize.width, 0, "apexKeycap must compute valid layout width")
+        XCTAssertGreaterThan(keycapSize.height, 0, "apexKeycap must compute valid layout height")
+
+        // 4. Verify ApexIconButton rendering and frame geometry
+        var iconClicked = false
+        let iconButton = ApexIconButton(
+            icon: "plus",
+            label: "新建",
+            size: 26,
+            iconSize: 11,
+            isSelected: false,
+            action: { iconClicked = true }
+        )
+        let hostingIconBtn = NSHostingView(rootView: iconButton)
+        hostingIconBtn.frame = NSRect(x: 0, y: 0, width: 26, height: 26)
+        let iconBtnSize = hostingIconBtn.fittingSize
+        XCTAssertGreaterThan(iconBtnSize.width, 0, "ApexIconButton must compute valid layout width")
+        XCTAssertFalse(iconClicked)
+
+        // 5. Verify ApexPillButton rendering
+        var pillClicked = false
+        let pillButton = ApexPillButton(
+            title: "Docker",
+            icon: "bolt.fill",
+            isSelected: true,
+            count: 5,
+            action: { pillClicked = true }
+        )
+        let hostingPillBtn = NSHostingView(rootView: pillButton)
+        hostingPillBtn.frame = NSRect(x: 0, y: 0, width: 120, height: 28)
+        let pillBtnSize = hostingPillBtn.fittingSize
+        XCTAssertGreaterThan(pillBtnSize.width, 0, "ApexPillButton must compute valid layout width")
+        XCTAssertFalse(pillClicked)
+    }
+
+    func testQuickCommandDockAndTabLiquidClassIntegration() {
+        let store = SessionStore()
+        let local = Session.local()
+        store.sessions = [local]
+        
+        var isQuickCmdVisible = true
+        var executedCommand = ""
+        let quickDock = QuickCommandBarView(
+            store: store,
+            isVisible: Binding(get: { isQuickCmdVisible }, set: { isQuickCmdVisible = $0 }),
+            onExecuteCommand: { cmd in executedCommand = cmd }
+        )
+        let hostingDock = NSHostingView(rootView: quickDock.apexTheme())
+        hostingDock.frame = NSRect(x: 0, y: 0, width: 600, height: 38)
+        hostingDock.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(hostingDock.subviews.count, 0, "QuickCommandBarView dock must lay out cleanly at 38pt height")
+        XCTAssertEqual(executedCommand, "")
+    }
 }

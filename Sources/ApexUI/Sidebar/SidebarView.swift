@@ -49,23 +49,24 @@ public struct SidebarView: View {
                     .textFieldStyle(.roundedBorder)
                     .accessibilityLabel(L10n.searchPlaceholder)
                 
-                Button(action: { showingImportSheet = true }) {
-                    Image(systemName: "square.and.arrow.down")
-                        .font(.system(size: 11, weight: .medium))
-                        .frame(width: 24, height: 24)
+                ApexIconButton(
+                    icon: "square.and.arrow.down",
+                    label: "从 ~/.ssh/config 导入主机",
+                    size: 24,
+                    iconSize: 11
+                ) {
+                    showingImportSheet = true
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .help("从 ~/.ssh/config 导入主机")
                 
-                Button(action: { showingAddSheet = true }) {
-                    Image(systemName: "plus")
-                        .font(.system(size: 11, weight: .semibold))
-                        .frame(width: 24, height: 24)
+                ApexIconButton(
+                    icon: "plus",
+                    label: L10n.addSessionHelp,
+                    size: 24,
+                    iconSize: 11,
+                    isSelected: true
+                ) {
+                    showingAddSheet = true
                 }
-                .apexProminentButton()
-                .controlSize(.small)
-                .help(L10n.addSessionHelp)
             }
             .padding(.horizontal, ApexStyle.s4)
             .padding(.bottom, ApexStyle.s3)
@@ -299,11 +300,16 @@ struct SessionRow: View {
     let session: Session
     let onConnect: () -> Void
     
+    private var dotColor: Color {
+        Color(hex: session.colorHex ?? (session.isLocal ? "#34C759" : "#0A84FF")) ?? .blue
+    }
+    
     var body: some View {
         HStack(spacing: ApexStyle.s2) {
             Circle()
-                .fill(Color(hex: session.colorHex ?? (session.isLocal ? "#34C759" : "#0A84FF")) ?? .blue)
+                .fill(dotColor)
                 .frame(width: 8, height: 8)
+                .shadow(color: dotColor.opacity(0.35), radius: 2)
             
             VStack(alignment: .leading, spacing: ApexStyle.sMicro) {
                 Text(session.name)
@@ -319,15 +325,14 @@ struct SessionRow: View {
             
             Spacer(minLength: ApexStyle.s1)
 
-            Button(action: onConnect) {
-                Image(systemName: "arrow.up.right")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(ApexStyle.secondary)
-                    .frame(width: 22, height: 22)
-                    .contentShape(Rectangle())
+            ApexIconButton(
+                icon: "arrow.up.right",
+                label: "连接到 \(session.name)",
+                size: 22,
+                iconSize: 10
+            ) {
+                onConnect()
             }
-            .buttonStyle(.plain)
-            .help("连接到 \(session.name)")
         }
         .padding(.vertical, 3)
         .contentShape(Rectangle())

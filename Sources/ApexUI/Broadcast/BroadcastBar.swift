@@ -59,7 +59,8 @@ public struct BroadcastBar: View {
         .padding(.horizontal, ApexStyle.s4)
         .padding(.vertical, 7)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(isBroadcastActive ? ApexStyle.warning.opacity(0.12) : ApexStyle.surface)
+        .background(isBroadcastActive ? ApexStyle.warning.opacity(0.12) : ApexStyle.subtleSurface.opacity(0.6))
         .overlay(alignment: .bottom) { Divider() }
+        .animation(ApexStyle.springSnappy, value: isBroadcastActive)
     }
 }

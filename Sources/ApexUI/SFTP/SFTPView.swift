@@ -90,16 +90,16 @@ public struct SFTPView: View {
     private var pathControls: some View {
         HStack(spacing: 8) {
             // Folder icon & Path breadcrumbs
-            Button {
+            ApexIconButton(
+                icon: "folder.fill",
+                label: "前往文件夹 (⌘L)",
+                size: 24,
+                iconSize: 12
+            ) {
                 pathInput = currentPath
                 isPathFocused = true
-            } label: {
-                Label("前往文件夹", systemImage: "folder.fill")
             }
-            .labelStyle(.iconOnly)
-            .buttonStyle(.borderless)
             .keyboardShortcut("l", modifiers: .command)
-            .help("前往文件夹 (⌘L)")
 
             TextField(L10n.remotePath, text: $pathInput)
             .onSubmit {
@@ -167,14 +167,15 @@ public struct SFTPView: View {
             .fixedSize()
             .help("常用目录预设与书签快速跳转")
 
-            Button("复制当前路径", systemImage: "doc.on.doc") {
+            ApexIconButton(
+                icon: "doc.on.doc",
+                label: "复制当前路径",
+                size: 24,
+                iconSize: 11
+            ) {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(currentPath, forType: .string)
             }
-            .labelStyle(.iconOnly)
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .help("复制当前浏览目录的路径")
             .disabled(currentPath.isEmpty)
         }
     }
@@ -195,30 +196,30 @@ public struct SFTPView: View {
             Divider().frame(height: 16)
 
             // Actions
-            Button(action: navigateUp) {
-                Label(L10n.parentDirectory, systemImage: "arrow.up")
+            ApexIconButton(
+                icon: "arrow.up",
+                label: L10n.parentDirectory,
+                size: 24,
+                iconSize: 11
+            ) {
+                navigateUp()
             }
-            .labelStyle(.iconOnly)
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .help(L10n.parentDirectory)
 
-            Button(action: {
-                loadDirectory(path: currentPath)
-            }) {
-                if isLoading {
-                    ProgressView()
-                        .controlSize(.small)
-                        .scaleEffect(0.7)
-                        .frame(width: 14, height: 14)
-                } else {
-                    Label(L10n.refreshDirectory, systemImage: "arrow.clockwise")
-                        .labelStyle(.iconOnly)
+            if isLoading {
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.7)
+                    .frame(width: 24, height: 24)
+            } else {
+                ApexIconButton(
+                    icon: "arrow.clockwise",
+                    label: L10n.refreshDirectory,
+                    size: 24,
+                    iconSize: 11
+                ) {
+                    loadDirectory(path: currentPath)
                 }
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .help(L10n.refreshDirectory)
 
             Button(action: {
                 uploadAction()

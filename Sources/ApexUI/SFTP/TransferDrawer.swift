@@ -70,12 +70,14 @@ public struct TransferDrawer: View {
                             .controlSize(.small)
                         }
                         
-                        Button(action: { withAnimation(.spring(duration: 0.25)) { isExpanded = false } }) {
-                            Label("收起传输任务", systemImage: "xmark")
+                        ApexIconButton(
+                            icon: "xmark",
+                            label: "收起传输任务",
+                            size: 22,
+                            iconSize: 10
+                        ) {
+                            withAnimation(.spring(duration: 0.25)) { isExpanded = false }
                         }
-                        .labelStyle(.iconOnly)
-                        .buttonStyle(.borderless)
-                        .controlSize(.small)
                     }
                     .padding(.horizontal, ApexStyle.s4)
                     .padding(.vertical, 10)
@@ -143,14 +145,12 @@ public struct TransferDrawer: View {
                             .font(.system(size: 9, weight: .bold))
                             .foregroundColor(ApexStyle.secondary)
                     }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .background(ApexStyle.surface, in: Capsule())
-                    .overlay(Capsule().stroke(ApexStyle.secondary.opacity(0.25), lineWidth: 1))
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 6)
+                    .apexGlassCard(cornerRadius: 16, material: .regularMaterial, borderColor: ApexStyle.border.opacity(0.8), shadowRadius: 8)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(isExpanded ? "收起传输任务" : "展开传输任务")
-                .shadow(color: Color.black.opacity(0.12), radius: 6, x: 0, y: 2)
                 .padding(.trailing, 16)
                 .padding(.bottom, 8)
                 .frame(maxWidth: .infinity, alignment: .trailing)

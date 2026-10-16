@@ -493,25 +493,55 @@ public struct WorkspaceView: View {
                     )
                 }
             } else {
-                VStack(spacing: 14) {
+                VStack(spacing: 16) {
                     Spacer()
-                    Image(systemName: "terminal.fill")
-                        .font(.system(size: 48))
-                        .foregroundColor(ApexStyle.accent)
-                        .frame(width: 88, height: 88)
-                        .background(ApexStyle.accent.opacity(0.10), in: RoundedRectangle(cornerRadius: 22))
-                    Text("从会话开始")
-                        .font(.title2.weight(.semibold))
-                    Text("在左侧选择主机，或者直接新建本地终端")
-                        .font(.subheadline)
-                        .foregroundColor(ApexStyle.secondary.opacity(0.8))
-                    
-                    Button(action: { openLocalTerminal() }) {
-                        Label(L10n.openLocalTerminal, systemImage: "laptopcomputer")
+                    VStack(spacing: 16) {
+                        Image(systemName: "terminal.fill")
+                            .font(.system(size: 44))
+                            .foregroundColor(ApexStyle.accent)
+                            .frame(width: 84, height: 84)
+                            .background(ApexStyle.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 22))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 22)
+                                    .stroke(ApexStyle.accent.opacity(0.25), lineWidth: 1)
+                            )
+                            .shadow(color: ApexStyle.accent.opacity(0.18), radius: 12, x: 0, y: 4)
+                        
+                        VStack(spacing: 6) {
+                            Text("从会话开始")
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundColor(ApexStyle.primary)
+                            Text("在左侧选择主机连接，或者直接新建本地终端")
+                                .font(.system(size: 13))
+                                .foregroundColor(ApexStyle.secondary)
+                        }
+                        
+                        Button(action: { openLocalTerminal() }) {
+                            Label(L10n.openLocalTerminal, systemImage: "laptopcomputer")
+                        }
+                        .apexProminentButton()
+                        .controlSize(.regular)
+                        .padding(.top, 4)
                     }
-                    .apexProminentButton()
-                    .controlSize(.regular)
-                    .padding(.top, 4)
+                    .padding(.horizontal, 36)
+                    .padding(.vertical, 28)
+                    .apexGlassCard(cornerRadius: 20, material: .ultraThinMaterial, borderColor: ApexStyle.border.opacity(0.7), shadowRadius: 14)
+                    
+                    HStack(spacing: 16) {
+                        HStack(spacing: 5) {
+                            Text("⌘P").apexKeycap()
+                            Text("命令面板").font(.system(size: 11)).foregroundColor(ApexStyle.secondary)
+                        }
+                        HStack(spacing: 5) {
+                            Text("⌘⌥K").apexKeycap()
+                            Text("进程监视").font(.system(size: 11)).foregroundColor(ApexStyle.secondary)
+                        }
+                        HStack(spacing: 5) {
+                            Text("⌘⌥T").apexKeycap()
+                            Text("端口转发").font(.system(size: 11)).foregroundColor(ApexStyle.secondary)
+                        }
+                    }
+                    .padding(.top, 6)
                     
                     Spacer()
                 }
@@ -1214,8 +1244,7 @@ private struct WorkspaceBottomStatusBar: View {
             }
             
             Text("UTF-8")
-                .font(.caption.monospaced())
-                .foregroundColor(ApexStyle.secondary)
+                .apexKeycap()
             
             if showsDirectoryControls {
                 Divider().frame(height: 12)
@@ -1261,6 +1290,12 @@ private struct WorkspaceBottomStatusBar: View {
         .padding(.vertical, 8)
         .frame(minHeight: 32)
         .background(ApexStyle.surface)
+        .overlay(
+            Rectangle()
+                .frame(height: 0.75)
+                .foregroundColor(ApexStyle.border.opacity(0.6)),
+            alignment: .top
+        )
     }
 }
 
@@ -1271,7 +1306,10 @@ private struct ConnectionStatusView: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Circle().fill(statusColor).frame(width: 7, height: 7)
+            Circle()
+                .fill(statusColor)
+                .frame(width: 7, height: 7)
+                .shadow(color: statusColor.opacity(0.6), radius: 2)
             Text("\(statusText) · \(tab.session.username)@\(tab.session.host):\(tab.session.port)")
                 .font(.caption.monospaced())
                 .lineLimit(1)

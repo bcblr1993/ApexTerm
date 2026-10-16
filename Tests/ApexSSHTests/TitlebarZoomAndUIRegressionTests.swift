@@ -380,4 +380,76 @@ final class TitlebarZoomAndUIRegressionTests: XCTestCase {
         XCTAssertGreaterThan(hostingDock.subviews.count, 0, "QuickCommandBarView dock must lay out cleanly at 38pt height")
         XCTAssertEqual(executedCommand, "")
     }
+
+    func testWorkspaceEmptyStateAndBottomStatusBarLiquidClass() {
+        let store = SessionStore()
+        
+        // 1. Test empty state layout (activeTabs is empty)
+        let emptyWorkspace = WorkspaceView(
+            store: store,
+            activeTabs: .constant([]),
+            selectedTabId: .constant(nil)
+        )
+        let emptyHost = NSHostingView(rootView: emptyWorkspace.apexTheme())
+        emptyHost.frame = NSRect(x: 0, y: 0, width: 800, height: 600)
+        emptyHost.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(emptyHost.subviews.count, 0, "Workspace empty state view must render cleanly")
+
+        // 2. Test bottom status bar layout with active tab
+        let local = Session.local()
+        store.sessions = [local]
+        let client = SSHClientFactory.makeClient(for: local)
+        let tab = TerminalTabItem(session: local, sshClient: client)
+        let workspaceWithTab = WorkspaceView(
+            store: store,
+            activeTabs: .constant([tab]),
+            selectedTabId: .constant(tab.id)
+        )
+        let activeHost = NSHostingView(rootView: workspaceWithTab.apexTheme())
+        activeHost.frame = NSRect(x: 0, y: 0, width: 800, height: 600)
+        activeHost.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(activeHost.subviews.count, 0, "Workspace with active tab and bottom status bar must render cleanly")
+    }
+
+    func testModalsAndSheetsLiquidClassIntegration() {
+        let store = SessionStore()
+        
+        // 1. Test ShortcutsSheetView
+        let shortcutsSheet = ShortcutsSheetView()
+        let shortcutsHost = NSHostingView(rootView: shortcutsSheet.apexTheme())
+        shortcutsHost.frame = NSRect(x: 0, y: 0, width: 620, height: 480)
+        shortcutsHost.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(shortcutsHost.subviews.count, 0, "ShortcutsSheetView must lay out cleanly")
+
+        // 2. Test SessionEditModal
+        let sessionEdit = SessionEditModal(session: nil) { _ in }
+        let sessionEditHost = NSHostingView(rootView: sessionEdit.apexTheme())
+        sessionEditHost.frame = NSRect(x: 0, y: 0, width: 560, height: 560)
+        sessionEditHost.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(sessionEditHost.subviews.count, 0, "SessionEditModal must lay out cleanly")
+
+        // 3. Test SSHConfigImportSheet
+        let importSheet = SSHConfigImportSheet(store: store)
+        let importHost = NSHostingView(rootView: importSheet.apexTheme())
+        importHost.frame = NSRect(x: 0, y: 0, width: 540, height: 440)
+        importHost.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(importHost.subviews.count, 0, "SSHConfigImportSheet must lay out cleanly")
+
+        // 4. Test SSHTunnelModalView
+        let tunnelModal = SSHTunnelModalView(store: store)
+        let tunnelHost = NSHostingView(rootView: tunnelModal.apexTheme())
+        tunnelHost.frame = NSRect(x: 0, y: 0, width: 720, height: 480)
+        tunnelHost.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(tunnelHost.subviews.count, 0, "SSHTunnelModalView must lay out cleanly")
+
+        // 5. Test UpdateSheetView with status
+        let origStatus = UpdateManager.shared.status
+        UpdateManager.shared.status = .upToDate(currentVersion: "1.10.0")
+        defer { UpdateManager.shared.status = origStatus }
+        let updateSheet = UpdateSheetView()
+        let updateHost = NSHostingView(rootView: updateSheet.apexTheme())
+        updateHost.frame = NSRect(x: 0, y: 0, width: 440, height: 320)
+        updateHost.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(updateHost.subviews.count, 0, "UpdateSheetView must lay out cleanly")
+    }
 }

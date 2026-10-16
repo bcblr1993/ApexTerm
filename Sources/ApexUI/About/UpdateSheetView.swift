@@ -66,6 +66,7 @@ public struct UpdateSheetView: View {
                 Image(systemName: "arrow.down.circle.fill")
                     .font(.system(size: 42))
                     .foregroundColor(ApexStyle.accent)
+                    .shadow(color: ApexStyle.accent.opacity(0.3), radius: 8)
                 
                 VStack(alignment: .leading, spacing: 4) {
                     Text(L10n.updateAvailableTitle)
@@ -99,12 +100,7 @@ public struct UpdateSheetView: View {
                         .padding(10)
                 }
                 .frame(height: 130)
-                .background(ApexStyle.subtleSurface)
-                .cornerRadius(8)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(ApexStyle.border, lineWidth: 1)
-                )
+                .apexGlassCard(cornerRadius: 8, material: .ultraThinMaterial, borderColor: ApexStyle.border.opacity(0.75), shadowRadius: 3)
             }
             
             HStack {
@@ -217,6 +213,7 @@ public struct UpdateSheetView: View {
                 Image(systemName: "checkmark.circle.fill")
                     .font(.system(size: 44))
                     .foregroundColor(ApexStyle.success)
+                    .shadow(color: ApexStyle.success.opacity(0.3), radius: 8)
                 
                 VStack(alignment: .leading, spacing: 4) {
                     Text(L10n.readyToRestartTitle)
@@ -259,6 +256,7 @@ public struct UpdateSheetView: View {
             Image(systemName: "checkmark.seal.fill")
                 .font(.system(size: 42))
                 .foregroundColor(ApexStyle.success)
+                .shadow(color: ApexStyle.success.opacity(0.3), radius: 8)
             
             Text(L10n.upToDateTitle)
                 .font(.headline)

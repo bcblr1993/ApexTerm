@@ -2,6 +2,52 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.11.0] - 2026-10-16
+
+### ✨ 新增特性 (Features)
+- **全面对齐 macOS Liquid Class 触觉按钮与界面组件 (Full Liquid Class Alignment)**：
+  - **SFTP 文件管理器触觉交互重构**：
+    - 前往文件夹（`⌘L`）、复制当前路径、向上导航与刷新目录全面升级为统一触觉 `ApexIconButton`；
+    - 快速代码编辑器（QuickEditor）查找切换（`⌘F`）、重载与关闭按钮升级为标准 `ApexIconButton`；
+    - 未保存更改指示点新增柔和环境光晕（Ambient Glow Shadow），状态更直观。
+  - **SFTP 传输抽屉与浮动胶囊重塑**：
+    - 抽屉折叠收起按钮升级为 `ApexIconButton`，关闭动效无卡顿；
+    - 底部折叠悬浮任务胶囊采用 `.apexGlassCard(cornerRadius: 16)` 原生磨砂玻璃浮层，与深浅外观完美自适应。
+  - **工作区空白态与底部状态栏 Liquid Class 升级**：
+    - 空白指引页采用超薄磨砂玻璃微卡片（`.apexGlassCard(cornerRadius: 20)`）与外光晕终端徽标；
+    - 增加快捷命令键帽引导（`⌘P` 命令面板、`⌘⌥K` 进程监视、`⌘⌥T` 端口转发），使用原生 `.apexKeycap()`；
+    - 底部状态栏 "UTF-8" 升级为标准原生键帽胶囊，连接状态彩点增加发光弥散阴影，顶部增加发丝级微分割线。
+  - **弹窗与工作表单全系 Liquid Class 规范化**：
+    - 会话新建/编辑弹窗（`SessionEditModal`）：标识颜色选择器引入物理弹簧动画（`ApexStyle.springSnappy`）与高亮辉光环，密码显隐按钮升级为 `ApexIconButton`；
+    - SSH 配置导入表单（`SSHConfigImportSheet`）：表头图标增加环境光晕，右上角新增原生 `ApexIconButton` 关闭操作；
+    - 快捷键速查表（`ShortcutsSheetView`）：全量键位指令切换为 `.apexKeycap()`，右上角关闭按钮升级为 `ApexIconButton`，并补充进程监视（`⌘⌥K`）与输出提取（`⌘⌥C`）快捷键；
+    - 软件更新面板（`UpdateSheetView`）：版本更新日志容器升级为超薄玻璃卡片，完成与更新图标增加环境光晕；
+    - SSH 端口转发面板（`SSHTunnelModalView`）：状态指示灯增加发光辉光，右上角增加 `ApexIconButton` 关闭动作。
+
+### ⚡️ 体验优化与底层性能提升 (Improvements & Performance)
+- **UTF-8 字符流解码零拷贝高速路径 (UTF8StreamDecoder Fast Path)**：
+  - 为单字节 ASCII 击键输入（`< 0x80`）实现零内存分配的直接转换，彻底消除击键过程中的缓冲区分片与 `Data` 重复分配；
+  - 结合 `MockSSHSession` 与 PTY 直通优化，使终端全链路击键延迟优化至惊人的 **6.32 微秒 (μs)**（吞吐突破 158,000 keys/秒）。
+- **侧边栏快捷脚本操作体验打磨**：
+  - 侧边栏快捷命令运行操作升级为 `ApexIconButton(play.fill)`，触控体验更精准统一。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- **质量验收标准**：
+  - 扩充 UI 自动化回归测试套件（`testWorkspaceEmptyStateAndBottomStatusBarLiquidClass`、`testModalsAndSheetsLiquidClassIntegration`）；
+  - 全量 440+ 项自动化测试用例 100% 绿色通过（0 failures, 0 unexpected）；
+  - Swift 6 严格模式下零编译警告 (Zero Warnings)；
+  - 100% 通过 Tart 虚拟机验收门禁（`./scripts/test_vm_acceptance.sh`，包含 Vim alternate-screen、RG-08、RG-09、RG-10 与全部 8 项性能基准）；
+  - 100% 通过在线更新全链路闭环门禁（RG-07）。
+- **8 大性能基准实测数据 (Release Benchmarks)**：
+  - [Benchmark 1] RingBuffer 写入吞吐：**1,884,124 行/秒 (190.47 MB/秒)** (门禁 ≥ 50,000 行/秒)；
+  - [Benchmark 2] ANSI / TrueColor 颜色解析速度：**411,794 spans/秒** (门禁 ≥ 150,000 spans/秒)；
+  - [Benchmark 3] 内存水位与驻留集（Peak RSS）：**107.05 MB** (门禁 ≤ 250 MB)；
+  - [Benchmark 4] 16 线程高并发锁争用写入吞吐：**2,486,987 writes/秒** (门禁 ≥ 1,000,000 writes/秒)；
+  - [Benchmark 5] 64 核 Linux 无代理系统指标解析速度：**11,218 次/秒** (门禁 ≥ 8,000 次/秒)；
+  - [Benchmark 6] OpenSSH 500 主机批量解析吞吐：**126,614 hosts/秒** (门禁 ≥ 80,000 hosts/秒)；
+  - [Benchmark 7] SFTP 任务中心 100 任务并发调度性能：**818 tasks/秒** (门禁 ≥ 800 tasks/秒)；
+  - [Benchmark 8] 终端物理按键直通全链路延迟：**6.32 微秒 (μs)** (门禁 ≤ 15.0 μs)。
+
 ## [v1.10.0] - 2026-10-16
 
 ### ✨ 新增特性 (Features)

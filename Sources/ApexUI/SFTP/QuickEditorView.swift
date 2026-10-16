@@ -59,6 +59,7 @@ public struct QuickEditorView: View {
                             Circle()
                                 .fill(ApexStyle.warning)
                                 .frame(width: 7, height: 7)
+                                .shadow(color: ApexStyle.warning.opacity(0.6), radius: 2)
                                 .help("包含未保存更改 (按 ⌘S 保存)")
                         }
                     }
@@ -87,35 +88,43 @@ public struct QuickEditorView: View {
                 Divider().frame(height: 18)
                 
                 // Search toggle
-                Button(action: { withAnimation { isSearchVisible.toggle() } }) {
-                    Label("查找", systemImage: "magnifyingglass")
+                ApexIconButton(
+                    icon: "magnifyingglass",
+                    label: "查找 (⌘F)",
+                    size: 24,
+                    iconSize: 11,
+                    isSelected: isSearchVisible
+                ) {
+                    withAnimation { isSearchVisible.toggle() }
                 }
-                .labelStyle(.iconOnly)
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .help("查找 (⌘F)")
                 .keyboardShortcut("f", modifiers: .command)
                 
                 // Reload button
-                Button(action: requestReload) {
-                    if isReloading {
-                        ProgressView().controlSize(.small).scaleEffect(0.6)
-                    } else {
-                        Label("重新加载", systemImage: "arrow.clockwise")
-                            .labelStyle(.iconOnly)
+                if isReloading {
+                    ProgressView()
+                        .controlSize(.small)
+                        .scaleEffect(0.65)
+                        .frame(width: 24, height: 24)
+                } else {
+                    ApexIconButton(
+                        icon: "arrow.clockwise",
+                        label: "从服务器重新加载",
+                        size: 24,
+                        iconSize: 11
+                    ) {
+                        requestReload()
                     }
+                    .disabled(isReloading || isSaving)
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .help("从服务器重新加载")
-                .disabled(isReloading || isSaving)
                 
-                Button(action: requestClose) {
-                    Label("关闭编辑器", systemImage: "xmark")
+                ApexIconButton(
+                    icon: "xmark",
+                    label: "关闭编辑器 (Esc)",
+                    size: 24,
+                    iconSize: 11
+                ) {
+                    requestClose()
                 }
-                .labelStyle(.iconOnly)
-                .buttonStyle(.bordered)
-                .controlSize(.small)
                 .keyboardShortcut(.cancelAction)
                 .disabled(isSaving || isReloading)
             }

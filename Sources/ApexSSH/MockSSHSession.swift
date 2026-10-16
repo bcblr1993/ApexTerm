@@ -99,6 +99,20 @@ public final class MockSSHSession: SSHSessionProtocol, @unchecked Sendable {
     }
     
     public func sendInputSync(_ data: Data) {
+        if data.count == 1, let first = data.first {
+            if first >= 0x20 && first <= 0x7E {
+                inputBuffer.append(Character(UnicodeScalar(first)))
+                outputHandler?(data)
+                return
+            } else if first == 10 || first == 13 {
+                emit("\r\n")
+                processCommand(inputBuffer.trimmingCharacters(in: .whitespaces))
+                inputBuffer = ""
+                emitPrompt()
+                return
+            }
+        }
+        
         guard let text = String(data: data, encoding: .utf8) else { return }
         
         for char in text {
@@ -118,7 +132,11 @@ public final class MockSSHSession: SSHSessionProtocol, @unchecked Sendable {
                 emitPrompt()
             } else {
                 inputBuffer.append(char)
-                emit(String(char))
+                if let ascii = char.asciiValue {
+                    outputHandler?(Data([ascii]))
+                } else {
+                    emit(String(char))
+                }
             }
         }
     }

@@ -30,6 +30,7 @@ public struct SSHConfigImportSheet: View {
                     .foregroundColor(ApexStyle.accent)
                     .frame(width: 42, height: 42)
                     .background(ApexStyle.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+                    .shadow(color: ApexStyle.accent.opacity(0.2), radius: 6)
                 
                 VStack(alignment: .leading, spacing: 3) {
                     Text("从 ~/.ssh/config 导入主机")
@@ -44,6 +45,16 @@ public struct SSHConfigImportSheet: View {
                     Button("选择配置文件…", action: chooseConfigFile)
                         .controlSize(.small)
                 }
+                
+                ApexIconButton(
+                    icon: "xmark",
+                    label: "关闭 (Esc)",
+                    size: 24,
+                    iconSize: 11
+                ) {
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
             }
             .padding(18)
             .background(ApexStyle.surface)

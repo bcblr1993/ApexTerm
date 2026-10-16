@@ -33,15 +33,25 @@ public struct SSHTunnelModalView: View {
                     }
                 }
                 
-                Spacer()
-                
-                Button {
-                    editingTunnel = nil
-                    isAddSheetPresented = true
-                } label: {
-                    Label("新建隧道", systemImage: "plus")
+                HStack(spacing: ApexStyle.s2) {
+                    Button {
+                        editingTunnel = nil
+                        isAddSheetPresented = true
+                    } label: {
+                        Label("新建隧道", systemImage: "plus")
+                    }
+                    .apexProminentButton()
+                    
+                    ApexIconButton(
+                        icon: "xmark",
+                        label: "关闭 (Esc)",
+                        size: 26,
+                        iconSize: 11
+                    ) {
+                        dismiss()
+                    }
+                    .keyboardShortcut(.cancelAction)
                 }
-                .apexProminentButton()
             }
             .padding(ApexStyle.s5)
             .background(ApexStyle.surface)
@@ -224,7 +234,8 @@ private struct TunnelRowView: View {
             // Status Indicator Circle
             Circle()
                 .fill(statusColor)
-                .frame(width: 9, height: 9)
+                .frame(width: 8, height: 8)
+                .shadow(color: statusColor.opacity(state.isRunning ? 0.7 : 0.2), radius: state.isRunning ? 3 : 1)
                 .help(statusText)
             
             VStack(alignment: .leading, spacing: 3) {

@@ -203,13 +203,14 @@ public struct SidebarView: View {
                                         .foregroundColor(ApexStyle.accent)
                                     Text(snippet.title)
                                         .font(.system(size: 11))
-                                    Spacer()
-                                    Button(L10n.runCommandAction) {
+                                    ApexIconButton(
+                                        icon: "play.fill",
+                                        label: "运行 \(snippet.title)",
+                                        size: 20,
+                                        iconSize: 8
+                                    ) {
                                         onRunSnippet(snippet)
                                     }
-                                    .buttonStyle(.borderless)
-                                    .controlSize(.mini)
-                                    .font(.system(size: 10))
                                 }
                                 .padding(.vertical, 2)
                             }

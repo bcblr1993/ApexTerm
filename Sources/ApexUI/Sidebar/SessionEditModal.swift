@@ -125,14 +125,14 @@ public struct SessionEditModal: View {
                                     .font(.system(.body, design: .monospaced))
                             }
                             
-                            Button(action: { isPasswordVisible.toggle() }) {
-                                Label(isPasswordVisible ? "隐藏密码" : "显示密码",
-                                      systemImage: isPasswordVisible ? "eye.slash" : "eye")
+                            ApexIconButton(
+                                icon: isPasswordVisible ? "eye.slash" : "eye",
+                                label: isPasswordVisible ? "隐藏密码" : "显示明文密码",
+                                size: 22,
+                                iconSize: 11
+                            ) {
+                                isPasswordVisible.toggle()
                             }
-                            .labelStyle(.iconOnly)
-                            .buttonStyle(.borderless)
-                            .controlSize(.small)
-                            .help(isPasswordVisible ? "隐藏密码" : "显示明文密码")
                         }
                     } else if authType == .privateKey {
                         VStack(alignment: .leading, spacing: 8) {
@@ -198,17 +198,28 @@ public struct SessionEditModal: View {
                         Text("标识颜色")
                         Spacer()
                         ForEach(["#0A84FF", "#30D158", "#FF9F0A", "#FF453A", "#BF5AF2"], id: \.self) { hex in
-                            Button { colorHex = hex } label: {
+                            let isCur = colorHex == hex
+                            let color = Color(hex: hex) ?? ApexStyle.accent
+                            Button {
+                                withAnimation(ApexStyle.springSnappy) {
+                                    colorHex = hex
+                                }
+                            } label: {
                                 Circle()
-                                    .fill(Color(hex: hex) ?? ApexStyle.accent)
+                                    .fill(color)
                                     .frame(width: 18, height: 18)
+                                    .shadow(color: isCur ? color.opacity(0.6) : .clear, radius: 4)
                                     .padding(3)
-                                    .overlay(Circle().stroke(colorHex == hex ? ApexStyle.primary : .clear, lineWidth: 1.5))
+                                    .overlay(
+                                        Circle()
+                                            .stroke(isCur ? ApexStyle.primary : Color.clear, lineWidth: 1.6)
+                                    )
+                                    .scaleEffect(isCur ? 1.08 : 1.0)
                             }
                             .buttonStyle(.plain)
                             .accessibilityLabel("选择标识颜色：\(colorName(for: hex))")
-                            .accessibilityValue(colorHex == hex ? "已选中" : "未选中")
-                            .accessibilityAddTraits(colorHex == hex ? .isSelected : [])
+                            .accessibilityValue(isCur ? "已选中" : "未选中")
+                            .accessibilityAddTraits(isCur ? .isSelected : [])
                         }
                     }
                 }
@@ -240,6 +251,12 @@ public struct SessionEditModal: View {
             .padding(.horizontal, 20)
             .padding(.vertical, 14)
             .background(ApexStyle.surface)
+            .overlay(
+                Rectangle()
+                    .frame(height: 0.75)
+                    .foregroundColor(ApexStyle.border.opacity(0.5)),
+                alignment: .top
+            )
         }
         .frame(width: 560, height: 560)
         .onAppear {

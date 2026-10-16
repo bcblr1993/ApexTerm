@@ -7,6 +7,9 @@ public struct UTF8StreamDecoder: Sendable {
     public init() {}
 
     public mutating func decode(_ data: Data) -> String {
+        if pending.isEmpty && data.count == 1, let b = data.first, b < 0x80 {
+            return String(UnicodeScalar(b))
+        }
         pending.append(data)
         var completeCount = pending.count
         if !pending.isEmpty {

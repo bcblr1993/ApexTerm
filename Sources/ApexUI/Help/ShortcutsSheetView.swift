@@ -27,6 +27,8 @@ public struct ShortcutsSheetView: View {
             icon: "sparkle.magnifyingglass",
             items: [
                 ShortcutItem(keys: ["⌘", "P"], description: "全局快速搜索与命令面板 (Command Palette)"),
+                ShortcutItem(keys: ["⌘", "⌥", "K"], description: "远程进程与服务可视化监视控制中心 (Process Inspector)"),
+                ShortcutItem(keys: ["⌘", "⌥", "C"], description: "精准提取并复制上一条命令输出 (Copy Last Command Output)"),
                 ShortcutItem(keys: ["⌘", "⌥", "T"], description: "SSH 端口转发与隧道管理 (Port Forwarding)"),
                 ShortcutItem(keys: ["⌘", "⇧", "B"], description: "显示 / 隐藏底部快捷命令栏 (Quick Command Bar)")
             ]
@@ -114,14 +116,14 @@ public struct ShortcutsSheetView: View {
                 
                 Spacer()
                 
-                Button {
+                ApexIconButton(
+                    icon: "xmark",
+                    label: "关闭",
+                    size: 24,
+                    iconSize: 11
+                ) {
                     dismiss()
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 18))
-                        .foregroundColor(ApexStyle.secondary)
                 }
-                .buttonStyle(.plain)
                 .accessibilityIdentifier("shortcuts.close.header")
             }
             .padding()
@@ -152,16 +154,7 @@ public struct ShortcutsSheetView: View {
                                         HStack(spacing: 4) {
                                             ForEach(item.keys, id: \.self) { key in
                                                 Text(key)
-                                                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                                                    .padding(.horizontal, 6)
-                                                    .padding(.vertical, 3)
-                                                    .background(ApexStyle.subtleSurface)
-                                                    .cornerRadius(4)
-                                                    .overlay(
-                                                        RoundedRectangle(cornerRadius: 4)
-                                                            .stroke(ApexStyle.primary.opacity(0.15), lineWidth: 1)
-                                                    )
-                                                    .shadow(color: Color.black.opacity(0.05), radius: 1, x: 0, y: 1)
+                                                    .apexKeycap()
                                             }
                                         }
                                     }

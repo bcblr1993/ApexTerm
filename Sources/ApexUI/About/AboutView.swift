@@ -261,13 +261,12 @@ public struct AboutView: View {
                 .font(.system(size: 10, weight: .medium))
                 .foregroundColor(ApexStyle.primary.opacity(0.85))
         }
-        .padding(.horizontal, 7)
-        .padding(.vertical, 3)
-        .background(ApexStyle.subtleSurface)
-        .cornerRadius(6)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3.5)
+        .background(ApexStyle.subtleSurface, in: Capsule())
         .overlay(
-            RoundedRectangle(cornerRadius: 6)
-                .stroke(ApexStyle.border, lineWidth: 0.8)
+            Capsule()
+                .stroke(ApexStyle.border.opacity(0.7), lineWidth: 0.75)
         )
     }
 }

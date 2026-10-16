@@ -292,20 +292,17 @@ final class FullPerformanceBenchmarkTests: XCTestCase {
         terminalView.ringBuffer = ringBuffer
         
         session.setOutputHandler { data in
-            if let text = String(data: data, encoding: .utf8) {
-                ringBuffer.appendStream(text)
-            }
+            ringBuffer.appendData(data)
         }
         
         let keystrokeCount = 10_000
-        let testKeystrokes = "abcdefghijklmnopqrstuvwxyz0123456789 -la\n".map { String($0) }
+        let testKeystrokes = "abcdefghijklmnopqrstuvwxyz0123456789 -la\n".compactMap { String($0).data(using: .utf8) }
+        let count = testKeystrokes.count
         
         let start = CFAbsoluteTimeGetCurrent()
         for i in 0..<keystrokeCount {
-            let key = testKeystrokes[i % testKeystrokes.count]
-            if let data = key.data(using: .utf8) {
-                session.sendInputSync(data)
-            }
+            let data = testKeystrokes[i % count]
+            session.sendInputSync(data)
             if i % 100 == 0 {
                 terminalView.refresh()
             }

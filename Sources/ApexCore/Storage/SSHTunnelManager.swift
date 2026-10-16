@@ -101,6 +101,11 @@ public final class SSHTunnelManager: ObservableObject {
         saveTunnels()
     }
     
+    public func replaceAllTunnels(_ newTunnels: [SSHTunnel]) {
+        self.tunnels = newTunnels
+        saveTunnels()
+    }
+    
     public func tunnels(for sessionId: UUID) -> [SSHTunnel] {
         tunnels.filter { $0.sessionId == sessionId }
     }

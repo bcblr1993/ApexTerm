@@ -143,6 +143,14 @@ if ! grep -Fq "ProcessInspectorTests' passed" "${REPORT_DIR}/proc_vault_log_regr
     exit 1
 fi
 
+echo "🧪 [Release Regression RG-11] Verifying iCloud Multi-Device Sync & Cloud Vault (TC-ICLOUD-01 ~ TC-ICLOUD-08)..."
+swift test --jobs 2 --filter "iCloudSyncTests" \
+    2>&1 | tee "${REPORT_DIR}/icloud_sync_regression.log"
+if ! grep -Fq "iCloudSyncTests' passed" "${REPORT_DIR}/icloud_sync_regression.log"; then
+    echo "❌ Required iCloud Multi-Device Sync regression (RG-11: TC-ICLOUD-01~08) did not pass."
+    exit 1
+fi
+
 echo "======================================================="
 echo "🎉 [Tart VM Gate] Quality Gate Cleared! Ready for Release Build."
 echo "======================================================="

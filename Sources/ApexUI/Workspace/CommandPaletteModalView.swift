@@ -108,13 +108,14 @@ public struct CommandPaletteModalView: View {
                     }
                 
                 if !searchQuery.isEmpty {
-                    Button {
+                    ApexIconButton(
+                        icon: "xmark.circle.fill",
+                        label: "清空搜索",
+                        size: 20,
+                        iconSize: 11
+                    ) {
                         searchQuery = ""
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundColor(ApexStyle.secondary)
                     }
-                    .buttonStyle(.plain)
                 }
                 
                 Text("⎋ ESC")
@@ -174,20 +175,19 @@ public struct CommandPaletteModalView: View {
             // Footer Hints
             HStack(spacing: ApexStyle.s4) {
                 HStack(spacing: 4) {
-                    Text("↑↓").font(.caption2.monospaced()).bold()
-                    Text("选择").font(.caption2)
+                    Text("↑↓").apexKeycap()
+                    Text("选择").font(.caption2).foregroundColor(ApexStyle.secondary)
                 }
                 HStack(spacing: 4) {
-                    Text("↵").font(.caption2.monospaced()).bold()
-                    Text("确认执行").font(.caption2)
+                    Text("↵").apexKeycap()
+                    Text("确认执行").font(.caption2).foregroundColor(ApexStyle.secondary)
                 }
-                HStack(spacing: 4) {
-                    Text("> 功能").font(.caption2.monospaced())
-                    Text("@ 主机").font(.caption2.monospaced())
-                    Text("/ 目录").font(.caption2.monospaced())
-                    Text("# 命令").font(.caption2.monospaced())
+                HStack(spacing: 6) {
+                    Text("> 功能").apexKeycap()
+                    Text("@ 主机").apexKeycap()
+                    Text("/ 目录").apexKeycap()
+                    Text("# 命令").apexKeycap()
                 }
-                .foregroundColor(ApexStyle.secondary.opacity(0.8))
                 
                 Spacer()
                 
@@ -244,6 +244,7 @@ private struct ItemRowView: View {
     let item: CommandPaletteItem
     let isSelected: Bool
     let onSelect: () -> Void
+    @State private var isHovered: Bool = false
     
     var body: some View {
         Button(action: onSelect) {
@@ -254,6 +255,7 @@ private struct ItemRowView: View {
                     .foregroundColor(iconColor)
                     .frame(width: 26, height: 26)
                     .background(iconColor.opacity(0.12), in: RoundedRectangle(cornerRadius: ApexStyle.badgeRadius))
+                    .shadow(color: isSelected ? iconColor.opacity(0.35) : .clear, radius: 4)
                 
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
@@ -288,16 +290,19 @@ private struct ItemRowView: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
             .background(
-                isSelected ? ApexStyle.accent.opacity(0.14) : Color.clear,
+                isSelected ? ApexStyle.accent.opacity(0.15) : (isHovered ? ApexStyle.subtleSurface : Color.clear),
                 in: RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
                     .stroke(isSelected ? ApexStyle.accent.opacity(0.4) : Color.clear, lineWidth: 0.75)
             )
+            .offset(x: isSelected ? 2 : 0)
             .animation(ApexStyle.springSnappy, value: isSelected)
+            .animation(ApexStyle.hoverTransition, value: isHovered)
         }
         .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
     }
     
     private var iconColor: Color {

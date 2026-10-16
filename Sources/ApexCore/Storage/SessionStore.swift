@@ -148,6 +148,21 @@ public final class SessionStore: ObservableObject {
         return imported.count
     }
     
+    public func replaceAllSessions(_ newSessions: [Session]) {
+        self.sessions = newSessions
+        saveAll()
+    }
+    
+    public func replaceAllSnippets(_ newSnippets: [Snippet]) {
+        self.snippets = newSnippets
+        saveAll()
+    }
+    
+    public func replaceAllTriggers(_ newTriggers: [Trigger]) {
+        self.triggers = newTriggers
+        saveAll()
+    }
+    
     private func seedDefaultTriggers() {
         self.triggers = [
             Trigger(name: "Error Highlighter", regexPattern: "(?i)(error|failed|fatal|exception)", action: .highlight(colorHex: "#FF453A")),

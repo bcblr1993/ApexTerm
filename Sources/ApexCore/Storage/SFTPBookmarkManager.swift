@@ -62,6 +62,11 @@ public final class SFTPBookmarkManager: ObservableObject {
         saveCustomBookmarks()
     }
 
+    public func replaceCustomBookmarks(_ newBookmarks: [SFTPBookmark]) {
+        self.customBookmarks = newBookmarks
+        saveCustomBookmarks()
+    }
+
     public func isBookmarked(path: String) -> Bool {
         let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
         return allBookmarks.contains(where: { $0.path == trimmed })

@@ -105,6 +105,17 @@ swift test
      2. `SSHKeyVaultTests`（含 TC-KEY-01 ~ TC-KEY-08）：覆盖集中式 Ed25519/RSA/ECDSA 密钥保险库、SHA256 公钥指纹计算、Keychain 隔离存储私钥与口令、一键免密部署脚本（umask 077/chmod 700/600）生成与防重复导入；
      3. `SessionAuditLoggingTests`（含 TC-LOG-01 ~ TC-LOG-08）：覆盖异步全量 PTY 流录制、ANSI 转义序列与控制符过滤、50MB 日志自动切割轮转、上一条执行命令输出精准提取（`⌘⌥C`）与边缘提示符识别。
    - 任何单项未通过立即熔断打包流水线。
+9. **iCloud 云端多设备同步与容灾门禁 (RG-11: iCloud Multi-Device Sync & Cloud Vault Gate - 每版必测)**：
+   - 每次发布新版本前，**必须无条件通过 `iCloudSyncTests`（含 TC-ICLOUD-01 ~ TC-ICLOUD-08）**：
+     1. `TC-ICLOUD-01`：会话、命令片段、触发器、SFTP 书签与 SSH 隧道全量 Payload 序列化与 ISO8601 Roundtrip 校验；
+     2. `TC-ICLOUD-02`：安全红线校验，断言绝无明文密码与私钥 PEM 泄露至云端（严格基于钥匙串引用隔离）；
+     3. `TC-ICLOUD-03`：首次初始化云端上传链路；
+     4. `TC-ICLOUD-04`：跨设备（Mac A 与 Mac B）智能双向无损合并（Smart Merge）；
+     5. `TC-ICLOUD-05`：本地覆盖云端（Force Upload）策略生效校验；
+     6. `TC-ICLOUD-06`：云端覆盖本地（Force Download）策略生效校验；
+     7. `TC-ICLOUD-07`：云端损坏文件容灾防御与原子备份（`cloud_vault.backup.json`）回滚断言；
+     8. `TC-ICLOUD-08`：同步状态流转（idle -> syncing -> success/error）与响应式反馈。
+   - 任何单项未通过立即熔断打包流水线。
 
 ---
 

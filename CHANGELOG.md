@@ -2,6 +2,59 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.12.0] - 2026-10-16
+
+### ✨ 新增特性 (Features)
+- **iCloud 云端多设备自动同步与云端保险库 (iCloud Cloud Vault & Multi-Device Sync)**：
+  - **原生 iCloud Drive 容器接入**：深度适配 macOS 用户专属 iCloud Drive 容器（`Mobile Documents`），实现跨 Mac 设备无感双向配置同步；
+  - **全量多域数据同步覆盖**：
+    - SSH 与本地会话库（`[Session]`）：主机 IP、端口、用户名、分组目录、标签与外观配色；
+    - 运维常用快捷命令（`[Snippet]`）：分类命令片段与 `{{var}}` 动态变量参数；
+    - SFTP 远程工作目录书签（`[SFTPBookmark]`）：常用工作路径与自定义星标目录；
+    - SSH 端口转发隧道拓扑（`[SSHTunnel]`）：Local (-L)、Remote (-R)、SOCKS5 (-D) 拓扑与自启标记；
+    - 正则高亮触发器（`[Trigger]`）：错误高亮与控制台自定义关键字规则；
+  - **绝对安全隔离与零凭证泄露红线 (Zero-Bundle & Privacy Standard)**：
+    - 绝不在云端同步明文密码或私钥 PEM 文件。各端严格仅同步本地钥匙串引用（Keychain UUID Ref），私钥内容与密码始终牢固受限于每台 Mac 本地官方 Keychain / Secure Enclave 硬件保护；
+    - 内置云端预脱敏拦截器（`sanitizeForCloud`），彻底阻断任何可能的私钥或敏感字符流出；
+  - **智能三维冲突处理与双向无损合并**：
+    - 默认「智能双向合并 (Smart Merge)」：按 UUID 自动对齐并保留双端最新记录，各端独有会话与命令无损双向增量互补；
+    - 支持「本地覆盖云端 (Force Upload)」与「云端覆盖本地 (Force Download)」高级灾备模式；
+    - 写入具备原子性保护（`.atomic`）与自动镜像备份（`cloud_vault.backup.json`），故障自动兜底；
+  - **Liquid Class 偏好设置深度集成**：
+    - 在「系统设置」->「同步与备份」中提供实时呼吸状态光晕点（已连接/同步中/错误感知）；
+    - 实时显示上次同步时间戳、冲突策略切换器与即时触觉同步操作按钮（立即同步/覆盖上传/覆盖下载）。
+- **全面对齐 macOS Liquid Class 细节深度打磨 (Liquid Class Polish)**：
+  - **Spotlight 命令调色板 (Command Palette)**：
+    - 清空搜索输入框升级为原生 `ApexIconButton`；
+    - 结果行（`ItemRowView`）增加平滑弹性悬停微浮雕动效、外发光投影与选中横向位移；
+    - 底部操作指引栏（`↑↓`、`↵`、`> 功能`、`@ 主机`、`/ 目录`、`# 命令`）全系升级为原生 `.apexKeycap()` 键帽徽标；
+  - **分屏终端容器 (PaneContainerView)**：
+    - 分屏关闭按钮升级为标准 `ApexIconButton`，并消除子视图抖动；
+    - 激活分屏焦点圆点增加发光弥散阴影；
+    - 分屏放大悬浮胶囊升级为 `.apexGlassCard(cornerRadius: 16)` 与 `.apexKeycap()` 组合；
+  - **断开与异常浮动提醒**：会话断开与连接失败重连提示全面升级为 `.apexGlassCard(cornerRadius: 12)` 磨砂卡片与微光告警点；
+  - **工作区主操作栏**：快捷命令（`bolt` -> `bolt.fill`）与文件面板（`folder` -> `folder.fill`）切换按钮支持活动状态动态实心图标反馈；
+  - **偏好设置操作按钮**：软件更新、默认配置重置、日志目录、SFTP 下载路径及会话备份等按钮全系对齐原生边框触觉按钮规范（`.buttonStyle(.bordered).controlSize(.small)`）。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- **质量验收标准与门禁规范升级**：
+  - **正式确立发布质量门禁 RG-11 (iCloud Multi-Device Sync Gate - 每版必测)**：
+    - 新增 `iCloudSyncTests` 自动化套件（包含 TC-ICLOUD-01 ~ TC-ICLOUD-08 全量用例）；
+    - 脚本 `test_vm_acceptance.sh` 正式纳入 RG-11 门禁作为发版前硬性指标；
+  - 全量 450+ 项自动化测试用例 100% 绿色通过（0 failures, 0 unexpected）；
+  - Swift 6 严格模式下零编译警告 (Zero Warnings)；
+  - 100% 通过 Tart 虚拟机验收门禁（包含 RG-08 磁吸布局、RG-09 核心扩展、RG-10 深度运维、RG-11 云端同步 与全部 8 项性能基准）；
+  - 100% 通过在线更新全链路闭环门禁（RG-07）。
+- **8 大性能基准实测数据 (Release Benchmarks)**：
+  - [Benchmark 1] RingBuffer 写入吞吐：**1,509,253 行/秒 (152.57 MB/秒)** (门禁 ≥ 50,000 行/秒)；
+  - [Benchmark 2] ANSI / TrueColor 颜色解析速度：**300,856 spans/秒** (门禁 ≥ 150,000 spans/秒)；
+  - [Benchmark 3] 内存水位与驻留集（Peak RSS）：**107.39 MB** (门禁 ≤ 250 MB)；
+  - [Benchmark 4] 16 线程高并发锁争用写入吞吐：**1,389,676 writes/秒** (门禁 ≥ 1,000,000 writes/秒)；
+  - [Benchmark 5] 64 核 Linux 无代理系统指标解析速度：**9,350 次/秒** (门禁 ≥ 8,000 次/秒)；
+  - [Benchmark 6] OpenSSH 500 主机批量解析吞吐：**122,680 hosts/秒** (门禁 ≥ 80,000 hosts/秒)；
+  - [Benchmark 7] SFTP 任务中心 100 任务并发调度性能：**928 tasks/秒** (门禁 ≥ 800 tasks/秒)；
+  - [Benchmark 8] 终端物理按键直通全链路延迟：**6.85 微秒 (μs)** (门禁 ≤ 15.0 μs)。
+
 ## [v1.11.0] - 2026-10-16
 
 ### ✨ 新增特性 (Features)

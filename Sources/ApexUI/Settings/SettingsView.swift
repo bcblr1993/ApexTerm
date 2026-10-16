@@ -86,6 +86,8 @@ private struct GeneralSettingsTab: View {
                             }
                         }
                     }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
                     .disabled(updateManager.isChecking)
                 }
             } header: {
@@ -106,6 +108,8 @@ private struct GeneralSettingsTab: View {
                 Button("恢复所有默认设置", role: .destructive) {
                     settings.resetToDefaults()
                 }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
             }
         }
         .formStyle(.grouped)
@@ -277,6 +281,8 @@ private struct BehaviorSettingsTab: View {
                             try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
                             NSWorkspace.shared.open(url)
                         }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
                     }
                     
                     HStack {
@@ -322,6 +328,8 @@ private struct SFTPSettingsTab: View {
                     Button(L10n.choosePathButton) {
                         selectDownloadDirectory()
                     }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
                 }
                 
                 HStack {
@@ -359,14 +367,102 @@ private struct SFTPSettingsTab: View {
     }
 }
 
-// MARK: - Tab 5: Data Backup & Migration
+// MARK: - Tab 5: Data Backup & iCloud Sync
 private struct BackupSettingsTab: View {
     @ObservedObject private var themeSettings = AppSettings.shared
+    @ObservedObject private var syncManager = iCloudSyncManager.shared
     @State private var alertMessage: String?
     @State private var isShowingAlert = false
+    @State private var isSyncingAction = false
     
     var body: some View {
         Form {
+            // Section 1: iCloud Cloud Vault
+            Section {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "icloud.fill")
+                            .font(.system(size: 20))
+                            .foregroundColor(ApexStyle.accent)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("iCloud 云端多设备同步 (Cloud Vault)")
+                                .font(.headline)
+                            Text("将保存的 SSH 会话、快捷命令、SFTP 书签与端口转发拓扑安全同步至个人 iCloud Drive")
+                                .font(.caption)
+                                .foregroundColor(ApexStyle.secondary)
+                        }
+                    }
+                    
+                    Toggle("开启 iCloud 自动同步 (定时自动双向同步)", isOn: $syncManager.isAutoSyncEnabled)
+                        .padding(.top, 2)
+                    
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(statusIndicatorColor)
+                            .frame(width: 8, height: 8)
+                            .shadow(color: statusIndicatorColor.opacity(0.6), radius: 3)
+                        Text(statusDescription)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(ApexStyle.primary)
+                        
+                        Spacer()
+                        
+                        if let date = syncManager.lastSyncDate {
+                            Text("上次同步: \(formattedDate(date))")
+                                .font(.system(size: 10.5, design: .monospaced))
+                                .foregroundColor(ApexStyle.secondary)
+                        }
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(ApexStyle.subtleSurface, in: RoundedRectangle(cornerRadius: 6))
+                    
+                    Picker("冲突解决策略", selection: $syncManager.conflictStrategy) {
+                        ForEach(iCloudConflictStrategy.allCases, id: \.self) { strat in
+                            Text(strat.rawValue).tag(strat)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    
+                    HStack(spacing: 10) {
+                        Button {
+                            runManualSync()
+                        } label: {
+                            HStack(spacing: 4) {
+                                if isSyncingAction {
+                                    ProgressView().controlSize(.small)
+                                } else {
+                                    Image(systemName: "arrow.triangle.2.circlepath")
+                                }
+                                Text("立即同步")
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                        .disabled(isSyncingAction)
+                        
+                        Button("上传覆盖云端") {
+                            runForceUpload()
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .disabled(isSyncingAction)
+                        
+                        Button("下载覆盖本地") {
+                            runForceDownload()
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .disabled(isSyncingAction)
+                    }
+                    .padding(.top, 4)
+                }
+                .padding(.vertical, 4)
+            } header: {
+                Text("iCloud 云端同步")
+            }
+            
+            // Section 2: Local JSON Backup
             Section {
                 VStack(alignment: .leading, spacing: 10) {
                     Text(L10n.backupTitle)
@@ -385,6 +481,8 @@ private struct BackupSettingsTab: View {
                                 Text(L10n.exportButton)
                             }
                         }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
                         
                         Button {
                             importSessions()
@@ -394,17 +492,116 @@ private struct BackupSettingsTab: View {
                                 Text(L10n.importButton)
                             }
                         }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
                     }
                     .padding(.top, 4)
                 }
                 .padding(.vertical, 4)
             } header: {
-                Text("数据同步与备份")
+                Text("离线数据导入与导出")
             }
         }
         .formStyle(.grouped)
         .alert(alertMessage ?? "", isPresented: $isShowingAlert) {
             Button("好的", role: .cancel) {}
+        }
+    }
+    
+    private var statusIndicatorColor: Color {
+        switch syncManager.syncStatus {
+        case .idle: return .gray.opacity(0.7)
+        case .syncing: return ApexStyle.warning
+        case .success: return ApexStyle.success
+        case .unavailable: return ApexStyle.secondary
+        case .error: return ApexStyle.error
+        }
+    }
+    
+    private var statusDescription: String {
+        switch syncManager.syncStatus {
+        case .idle:
+            return "就绪 · 点击立即同步"
+        case .syncing(let step):
+            return step
+        case .success(_, let count):
+            return "同步成功 · 当前管理 \(count) 个会话配置"
+        case .unavailable(let reason):
+            return reason
+        case .error(let msg):
+            return "同步失败: \(msg)"
+        }
+    }
+    
+    private func formattedDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        return formatter.string(from: date)
+    }
+    
+    private func runManualSync() {
+        isSyncingAction = true
+        Task {
+            do {
+                let res = try await syncManager.syncNow()
+                await MainActor.run {
+                    isSyncingAction = false
+                    alertMessage = res.message
+                    isShowingAlert = true
+                }
+            } catch {
+                await MainActor.run {
+                    isSyncingAction = false
+                    alertMessage = error.localizedDescription
+                    isShowingAlert = true
+                }
+            }
+        }
+    }
+    
+    private func runForceUpload() {
+        isSyncingAction = true
+        Task {
+            do {
+                let old = syncManager.conflictStrategy
+                syncManager.conflictStrategy = .overwriteCloud
+                let res = try await syncManager.syncNow()
+                syncManager.conflictStrategy = old
+                await MainActor.run {
+                    isSyncingAction = false
+                    alertMessage = res.message
+                    isShowingAlert = true
+                }
+            } catch {
+                await MainActor.run {
+                    isSyncingAction = false
+                    alertMessage = error.localizedDescription
+                    isShowingAlert = true
+                }
+            }
+        }
+    }
+    
+    private func runForceDownload() {
+        isSyncingAction = true
+        Task {
+            do {
+                let old = syncManager.conflictStrategy
+                syncManager.conflictStrategy = .overwriteLocal
+                let res = try await syncManager.syncNow()
+                syncManager.conflictStrategy = old
+                await MainActor.run {
+                    isSyncingAction = false
+                    alertMessage = res.message
+                    isShowingAlert = true
+                }
+            } catch {
+                await MainActor.run {
+                    isSyncingAction = false
+                    alertMessage = error.localizedDescription
+                    isShowingAlert = true
+                }
+            }
         }
     }
     

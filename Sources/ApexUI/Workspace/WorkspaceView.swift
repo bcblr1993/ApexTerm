@@ -704,13 +704,13 @@ public struct WorkspaceView: View {
             }
             ToolbarItemGroup(placement: .primaryAction) {
                 Toggle(isOn: $isQuickCommandBarVisible) {
-                    Label("快捷命令", systemImage: "bolt")
+                    Label("快捷命令", systemImage: isQuickCommandBarVisible ? "bolt.fill" : "bolt")
                 }
                 .toggleStyle(.button)
                 .help(isQuickCommandBarVisible ? "隐藏底部快捷命令栏 (⌘⇧B)" : "显示底部快捷命令栏 (⌘⇧B)")
 
                 Toggle(isOn: $isSFTPVisible) {
-                    Label("文件面板", systemImage: "folder")
+                    Label("文件面板", systemImage: isSFTPVisible ? "folder.fill" : "folder")
                 }
                 .toggleStyle(.button)
                 .help(isSFTPVisible ? "隐藏文件面板" : "显示文件面板")
@@ -921,21 +921,21 @@ private struct WorkspaceActiveTabSplitView: View {
                                     Button {
                                         tab.toggleMaximizeActivePane()
                                     } label: {
-                                        HStack(spacing: 5) {
+                                        HStack(spacing: 6) {
                                             Image(systemName: "arrow.down.right.and.arrow.up.left")
                                                 .font(.system(size: 11, weight: .bold))
-                                            Text("分屏已放大 (⌘⇧Enter 还原)")
+                                                .foregroundColor(ApexStyle.accent)
+                                            Text("分屏已放大")
                                                 .font(.system(size: 11, weight: .medium))
+                                                .foregroundColor(ApexStyle.primary)
+                                            Text("⌘⇧Enter")
+                                                .apexKeycap()
                                         }
-                                        .foregroundColor(ApexStyle.primary)
                                         .padding(.horizontal, 10)
                                         .padding(.vertical, 5)
-                                        .background(ApexStyle.surface.opacity(0.92))
-                                        .clipShape(Capsule())
-                                        .overlay(Capsule().stroke(Color.accentColor.opacity(0.5), lineWidth: 1))
-                                        .shadow(color: .black.opacity(0.2), radius: 4, x: 0, y: 2)
                                     }
                                     .buttonStyle(.plain)
+                                    .apexGlassCard(cornerRadius: 16, material: .regularMaterial, borderColor: ApexStyle.accent.opacity(0.4), shadowRadius: 6)
                                     .padding(10)
                                     .help("还原分屏布局 (⌘⇧Enter)")
                                 }
@@ -1114,17 +1114,19 @@ private struct PaneContainerView: View {
                     Circle()
                         .fill(isFocused ? ApexStyle.accent : ApexStyle.secondary.opacity(0.5))
                         .frame(width: 6, height: 6)
+                        .shadow(color: isFocused ? ApexStyle.accent.opacity(0.6) : .clear, radius: 3)
                     Text(pane.title)
                         .font(.system(size: 11, weight: isFocused ? .semibold : .regular, design: .monospaced))
                         .foregroundColor(isFocused ? ApexStyle.primary : ApexStyle.secondary)
                     Spacer()
-                    Button(action: { tab.closePane(id: pane.id) }) {
-                        Label("关闭此分屏", systemImage: "xmark")
+                    ApexIconButton(
+                        icon: "xmark",
+                        label: "关闭此分屏",
+                        size: 18,
+                        iconSize: 8
+                    ) {
+                        tab.closePane(id: pane.id)
                     }
-                    .labelStyle(.iconOnly)
-                    .buttonStyle(.borderless)
-                    .controlSize(.small)
-                    .help("关闭此分屏")
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
@@ -1179,6 +1181,7 @@ private struct PaneContainerView: View {
                     VStack {
                         HStack(spacing: 8) {
                             Circle().fill(ApexStyle.secondary).frame(width: 8, height: 8)
+                                .shadow(color: ApexStyle.secondary.opacity(0.5), radius: 3)
                             Text("会话已断开")
                                 .font(.system(size: 12, weight: .medium))
                                 .foregroundColor(ApexStyle.primary)
@@ -1190,9 +1193,7 @@ private struct PaneContainerView: View {
                         }
                         .padding(.horizontal, 14)
                         .padding(.vertical, 8)
-                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
-                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(ApexStyle.secondary.opacity(0.3), lineWidth: 1))
-                        .shadow(color: .black.opacity(0.2), radius: 6, y: 2)
+                        .apexGlassCard(cornerRadius: 12, material: .regularMaterial, borderColor: ApexStyle.secondary.opacity(0.3), shadowRadius: 8)
                         .padding(.top, 12)
                         Spacer()
                     }
@@ -1201,6 +1202,7 @@ private struct PaneContainerView: View {
                     VStack {
                         HStack(spacing: 8) {
                             Circle().fill(ApexStyle.error).frame(width: 8, height: 8)
+                                .shadow(color: ApexStyle.error.opacity(0.6), radius: 4)
                             Text("连接失败：\(err)")
                                 .font(.system(size: 12, weight: .medium))
                                 .foregroundColor(ApexStyle.error)
@@ -1213,9 +1215,7 @@ private struct PaneContainerView: View {
                         }
                         .padding(.horizontal, 14)
                         .padding(.vertical, 8)
-                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
-                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(ApexStyle.error.opacity(0.4), lineWidth: 1))
-                        .shadow(color: .black.opacity(0.2), radius: 6, y: 2)
+                        .apexGlassCard(cornerRadius: 12, material: .regularMaterial, borderColor: ApexStyle.error.opacity(0.4), shadowRadius: 8)
                         .padding(.top, 12)
                         Spacer()
                     }

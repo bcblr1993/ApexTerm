@@ -452,4 +452,20 @@ final class TitlebarZoomAndUIRegressionTests: XCTestCase {
         updateHost.layoutSubtreeIfNeeded()
         XCTAssertGreaterThan(updateHost.subviews.count, 0, "UpdateSheetView must lay out cleanly")
     }
+
+    func testSettingsViewAndiCloudSyncLiquidClassIntegration() {
+        let settingsView = SettingsView(initialTab: 4)
+        let host = NSHostingView(rootView: settingsView.apexTheme())
+        let window = NSWindow(
+            contentRect: NSRect(x: 100, y: 100, width: 800, height: 600),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = host
+        window.makeKeyAndOrderFront(nil)
+        host.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(host.subviews.count, 0, "SettingsView Backup & iCloud Sync tab must lay out cleanly")
+        window.orderOut(nil)
+    }
 }

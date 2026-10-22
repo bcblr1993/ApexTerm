@@ -181,12 +181,14 @@ public struct ProcessInspectorView: View {
                     .textFieldStyle(.plain)
                     .font(.system(size: 11.5))
                 if !searchText.isEmpty {
-                    Button(action: { searchText = "" }) {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundColor(ApexStyle.secondary)
-                            .font(.system(size: 10))
+                    ApexIconButton(
+                        icon: "xmark.circle.fill",
+                        label: "清空搜索",
+                        size: 18,
+                        iconSize: 10
+                    ) {
+                        searchText = ""
                     }
-                    .buttonStyle(.plain)
                 }
             }
             .padding(.horizontal, 8)
@@ -209,13 +211,14 @@ public struct ProcessInspectorView: View {
             .pickerStyle(.segmented)
             .frame(width: 220)
             
-            Button(action: { sortAscending.toggle() }) {
-                Image(systemName: sortAscending ? "arrow.up" : "arrow.down")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(ApexStyle.secondary)
+            ApexIconButton(
+                icon: sortAscending ? "arrow.up" : "arrow.down",
+                label: sortAscending ? "切换为降序排列" : "切换为升序排列",
+                size: 24,
+                iconSize: 11
+            ) {
+                sortAscending.toggle()
             }
-            .buttonStyle(.plain)
-            .help(sortAscending ? "升序排列" : "降序排列")
         }
         .padding(.horizontal, ApexStyle.s4)
         .padding(.vertical, 8)

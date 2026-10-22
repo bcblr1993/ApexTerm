@@ -2,6 +2,25 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.13.1] - 2026-10-22
+
+### ⚡️ 体验优化与细节打磨 (Liquid Class Polish)
+- **全新分屏微光拖拽指示条 (`ApexSplitDividerHandle`)**：
+  - 为垂直/水平终端分屏以及终端与 SFTP 文件面板的中间分隔条增加 `ApexSplitDividerHandle`；
+  - 鼠标悬停时胶囊指示条平滑伸展加粗（34pt ➔ 42pt，3pt ➔ 4pt），颜色平滑过渡为主题强调色（`ApexStyle.accent`）并伴随柔和外发光弥散微阴影；
+  - 彻底淘汰旧版静态灰色固定色块，分屏拖拽感知更为直观丝滑。
+- **全应用图标按钮一致性闭环**：
+  - 进程与服务监视中心（`ProcessInspectorView`）：搜索栏清空按钮与列排序（升序/降序）切换按钮全面升级为触觉微弹动的 `ApexIconButton`；
+  - SSH 端口转发面板（`SSHTunnelModalView`）：错误告警横幅关闭按钮升级为标准 `ApexIconButton`；
+  - 性能监控胶囊（`MetricCapsuleView`）：顶栏 Top 进程跳转监视中心按钮升级为触觉微弹动的 `ApexIconButton`；
+  - 关于窗口（`AboutView`）：右上角关闭按钮统一升级为 `ApexIconButton`，底层科技特性徽标增加边缘动态微光与阴影微浮雕。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- `TitlebarZoomAndUIRegressionTests` 扩充对 `ApexSplitDividerHandle` 与 `AboutView` 完整视图树与渲染断言，13 项 UI 测试全部绿色通过；
+- 450+ 项全量自动化测试用例 100% 通过（0 failures, 0 unexpected）；
+- 8 大性能 Benchmark 全部优于门禁阈值（物理按键延迟 6.85 μs）；
+- Apple 官方公证（Notarized）与 Developer ID 签名（YanNan Chen）。
+
 ## [v1.13.0] - 2026-10-22
 
 ### ✨ 体验优化与深度打磨 (Liquid Class Polish)

@@ -225,17 +225,15 @@ public struct AboutView: View {
             .padding(24)
             
             // Top-right Close Button (X)
-            Button {
+            ApexIconButton(
+                icon: "xmark",
+                label: "关闭 (Esc / ⌘W)",
+                size: 24,
+                iconSize: 11
+            ) {
                 dismiss()
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 20))
-                    .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(ApexStyle.secondary)
             }
-            .buttonStyle(.plain)
             .padding(14)
-            .help("关闭 (Esc / ⌘W)")
         }
         .frame(width: 520)
         .background(ApexStyle.surface)
@@ -253,7 +251,7 @@ public struct AboutView: View {
     }
     
     private func techBadge(icon: String, title: String, color: Color) -> some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 5) {
             Image(systemName: icon)
                 .font(.system(size: 10, weight: .bold))
                 .foregroundColor(color)
@@ -261,12 +259,13 @@ public struct AboutView: View {
                 .font(.system(size: 10, weight: .medium))
                 .foregroundColor(ApexStyle.primary.opacity(0.85))
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 3.5)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 4)
         .background(ApexStyle.subtleSurface, in: Capsule())
         .overlay(
             Capsule()
-                .stroke(ApexStyle.border.opacity(0.7), lineWidth: 0.75)
+                .stroke(color.opacity(0.35), lineWidth: 0.75)
         )
+        .shadow(color: color.opacity(0.12), radius: 3, x: 0, y: 1)
     }
 }

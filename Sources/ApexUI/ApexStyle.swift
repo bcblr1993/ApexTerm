@@ -351,6 +351,51 @@ public struct ApexMenuTrigger: View {
     }
 }
 
+/// Tactile split divider handle with smooth hover expansion and accent glow conforming to macOS Liquid Class HIG
+public struct ApexSplitDividerHandle: View {
+    public let isVertical: Bool
+    
+    @State private var isHovered = false
+    
+    public init(isVertical: Bool) {
+        self.isVertical = isVertical
+    }
+    
+    public var body: some View {
+        Group {
+            if isVertical {
+                VStack {
+                    Spacer()
+                    Capsule()
+                        .fill(isHovered ? ApexStyle.accent : ApexStyle.secondary.opacity(0.45))
+                        .frame(width: isHovered ? 4 : 3, height: isHovered ? 38 : 30)
+                        .shadow(color: isHovered ? ApexStyle.accent.opacity(0.5) : Color.clear, radius: 4)
+                    Spacer()
+                }
+                .frame(width: 8)
+            } else {
+                HStack {
+                    Spacer()
+                    Capsule()
+                        .fill(isHovered ? ApexStyle.accent : ApexStyle.secondary.opacity(0.45))
+                        .frame(width: isHovered ? 42 : 34, height: isHovered ? 4 : 3)
+                        .shadow(color: isHovered ? ApexStyle.accent.opacity(0.5) : Color.clear, radius: 4)
+                    Spacer()
+                }
+                .frame(height: 8)
+            }
+        }
+        .background(ApexStyle.surface)
+        .contentShape(Rectangle())
+        .animation(ApexStyle.springSnappy, value: isHovered)
+        .onHover { hovering in
+            withAnimation(ApexStyle.hoverTransition) {
+                isHovered = hovering
+            }
+        }
+    }
+}
+
 private struct ApexThemeModifier: ViewModifier {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject private var settings = AppSettings.shared

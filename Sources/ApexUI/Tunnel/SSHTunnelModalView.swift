@@ -67,13 +67,14 @@ public struct SSHTunnelModalView: View {
                         .font(.caption)
                         .foregroundColor(ApexStyle.error)
                     Spacer()
-                    Button {
+                    ApexIconButton(
+                        icon: "xmark",
+                        label: "关闭提示",
+                        size: 20,
+                        iconSize: 9
+                    ) {
                         errorMessage = nil
-                    } label: {
-                        Image(systemName: "xmark")
-                            .foregroundColor(ApexStyle.secondary)
                     }
-                    .buttonStyle(.plain)
                 }
                 .padding(.horizontal, ApexStyle.s4)
                 .padding(.vertical, 8)

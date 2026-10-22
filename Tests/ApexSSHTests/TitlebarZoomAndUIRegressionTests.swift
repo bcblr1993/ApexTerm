@@ -387,6 +387,17 @@ final class TitlebarZoomAndUIRegressionTests: XCTestCase {
         hostingMenuTrigger.frame = NSRect(x: 0, y: 0, width: 24, height: 24)
         let menuTriggerSize = hostingMenuTrigger.fittingSize
         XCTAssertGreaterThan(menuTriggerSize.width, 0, "ApexMenuTrigger must compute valid layout width")
+
+        // 8. Verify ApexSplitDividerHandle rendering
+        let verticalHandle = ApexSplitDividerHandle(isVertical: true)
+        let hostingVHandle = NSHostingView(rootView: verticalHandle)
+        hostingVHandle.frame = NSRect(x: 0, y: 0, width: 8, height: 100)
+        XCTAssertGreaterThan(hostingVHandle.fittingSize.height, 0, "Vertical ApexSplitDividerHandle must lay out cleanly")
+
+        let horizontalHandle = ApexSplitDividerHandle(isVertical: false)
+        let hostingHHandle = NSHostingView(rootView: horizontalHandle)
+        hostingHHandle.frame = NSRect(x: 0, y: 0, width: 100, height: 8)
+        XCTAssertGreaterThan(hostingHHandle.fittingSize.width, 0, "Horizontal ApexSplitDividerHandle must lay out cleanly")
     }
 
     func testQuickCommandDockAndTabLiquidClassIntegration() {
@@ -478,6 +489,13 @@ final class TitlebarZoomAndUIRegressionTests: XCTestCase {
         updateHost.frame = NSRect(x: 0, y: 0, width: 440, height: 320)
         updateHost.layoutSubtreeIfNeeded()
         XCTAssertGreaterThan(updateHost.subviews.count, 0, "UpdateSheetView must lay out cleanly")
+
+        // 6. Test AboutView
+        let aboutView = AboutView()
+        let aboutHost = NSHostingView(rootView: aboutView.apexTheme())
+        aboutHost.frame = NSRect(x: 0, y: 0, width: 520, height: 420)
+        aboutHost.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(aboutHost.subviews.count, 0, "AboutView must lay out cleanly")
     }
 
     func testSettingsViewAndiCloudSyncLiquidClassIntegration() {

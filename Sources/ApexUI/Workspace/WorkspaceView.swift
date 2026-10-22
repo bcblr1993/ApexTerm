@@ -955,14 +955,7 @@ private struct WorkspaceActiveTabSplitView: View {
                                 }
                                 
                                 // Vertical draggable divider between panes
-                                VStack {
-                                    Spacer()
-                                    Capsule().fill(ApexStyle.secondary.opacity(0.4)).frame(width: 3, height: 32)
-                                    Spacer()
-                                }
-                                .frame(width: 8)
-                                .background(ApexStyle.surface)
-                                .contentShape(Rectangle())
+                                ApexSplitDividerHandle(isVertical: true)
                                 .accessibilityElement(children: .ignore)
                                 .accessibilityLabel("左右终端分屏比例")
                                 .accessibilityValue("\(Int(tab.paneSplitRatio * 100))%")
@@ -1006,14 +999,7 @@ private struct WorkspaceActiveTabSplitView: View {
                                 }
                                 
                                 // Horizontal draggable divider between panes
-                                HStack {
-                                    Spacer()
-                                    Capsule().fill(ApexStyle.secondary.opacity(0.4)).frame(width: 32, height: 3)
-                                    Spacer()
-                                }
-                                .frame(height: 8)
-                                .background(ApexStyle.surface)
-                                .contentShape(Rectangle())
+                                ApexSplitDividerHandle(isVertical: false)
                                 .accessibilityElement(children: .ignore)
                                 .accessibilityLabel("上下终端分屏比例")
                                 .accessibilityValue("\(Int(tab.paneSplitRatio * 100))%")
@@ -1049,14 +1035,7 @@ private struct WorkspaceActiveTabSplitView: View {
                 
                 if isSFTPVisible {
                     // Split Divider with draggable handle
-                    HStack {
-                        Spacer()
-                        Capsule().fill(ApexStyle.secondary.opacity(0.5)).frame(width: 36, height: 3)
-                        Spacer()
-                    }
-                    .frame(height: 8)
-                    .background(ApexStyle.surface)
-                    .contentShape(Rectangle())
+                    ApexSplitDividerHandle(isVertical: false)
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel("终端与文件面板比例")
                     .accessibilityValue("\(Int(splitRatio * 100))%")

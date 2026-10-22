@@ -407,15 +407,14 @@ public struct MetricDetailView: View {
                                 Text("Top 进程占用")
                                     .font(.system(size: 11, weight: .semibold))
                                     .foregroundColor(ApexStyle.secondary)
-                                Button(action: {
+                                ApexIconButton(
+                                    icon: "arrow.up.right.square",
+                                    label: "打开进程与服务监视中心 (⌘⌥K)",
+                                    size: 20,
+                                    iconSize: 10
+                                ) {
                                     NotificationCenter.default.post(name: NSNotification.Name("TriggerProcessInspector"), object: nil)
-                                }) {
-                                    Image(systemName: "arrow.up.right.square")
-                                        .font(.system(size: 10))
-                                        .foregroundColor(ApexStyle.accent)
                                 }
-                                .buttonStyle(.plain)
-                                .help("打开进程与服务监视中心 (⌘⌥K)")
                             }
                             Spacer()
                             if let l1 = latest?.loadAvg1m, let l5 = latest?.loadAvg5m, let l15 = latest?.loadAvg15m {

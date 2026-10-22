@@ -187,6 +187,8 @@ public struct ApexIconButton: View {
             }
         }
         .help(label ?? "")
+        .apexAccessibilityLabel(label)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
 
@@ -396,6 +398,7 @@ public struct ApexMenuTrigger: View {
             }
         }
         .help(label ?? "")
+        .apexAccessibilityLabel(label)
     }
 }
 
@@ -467,5 +470,18 @@ private struct ApexProminentModifier: ViewModifier {
         content.buttonStyle(.borderedProminent)
             .tint(ApexStyle.buttonAccent)
             .foregroundStyle(isEnabled ? Color.white : ApexStyle.secondary)
+    }
+}
+
+extension View {
+    /// Icon-only controls must announce their purpose, not the SF Symbol description
+    /// ("右上对角箭头"); `.help` alone only sets the tooltip.
+    @ViewBuilder
+    func apexAccessibilityLabel(_ label: String?) -> some View {
+        if let label, !label.isEmpty {
+            accessibilityLabel(label)
+        } else {
+            self
+        }
     }
 }

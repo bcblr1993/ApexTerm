@@ -159,11 +159,11 @@ if ! grep -Fq "SSHCertificateAuthenticationTests' passed" "${REPORT_DIR}/ssh_cer
     exit 1
 fi
 
-echo "🧪 [Release Regression RG-13] Verifying Code Review Regressions (TC-REV-01 ~ TC-REV-12)..."
+echo "🧪 [Release Regression RG-13] Verifying Code Review Regressions (TC-REV-01 ~ TC-REV-14)..."
 swift test --jobs 2 --filter "CodeReviewRegressionTests" \
     2>&1 | tee "${REPORT_DIR}/code_review_regression.log"
 if ! grep -Fq "CodeReviewRegressionTests' passed" "${REPORT_DIR}/code_review_regression.log"; then
-    echo "❌ Required Code Review regression (RG-13: TC-REV-01~12) did not pass."
+    echo "❌ Required Code Review regression (RG-13: TC-REV-01~14) did not pass."
     exit 1
 fi
 

@@ -3,7 +3,7 @@ import XCTest
 @testable import ApexSSH
 @testable import ApexUI
 
-/// Regression coverage for the v1.14.2 full code review (TC-REV-01 ~ TC-REV-12).
+/// Regression coverage for the v1.14.2 full code review (TC-REV-01 ~ TC-REV-14).
 final class CodeReviewRegressionTests: XCTestCase {
     private var tempDir: URL!
     private let sandboxHome = FileManager.default.temporaryDirectory.appendingPathComponent("apex-review-store-" + UUID().uuidString)
@@ -216,5 +216,29 @@ final class CodeReviewRegressionTests: XCTestCase {
         XCTAssertFalse(UpdateManager.isVersion("1.15.0-rc.1", higherThan: "1.15.0-beta.1"))
         XCTAssertTrue(UpdateManager.isVersion("1.15.1-beta", higherThan: "1.15.0"))
         XCTAssertFalse(UpdateManager.isVersion("1.15.0", higherThan: "1.15.0"))
+    }
+
+    // MARK: - TC-REV-13: Icon-only buttons announce their purpose, not the SF Symbol description
+    // SwiftUI does not populate its accessibility tree in a headless xctest process, so the live
+    // behaviour is asserted by UI acceptance; this guard keeps the shared components wired up.
+    func testIconButtonsExposeAccessibilityLabel() throws {
+        let styleURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/ApexUI/ApexStyle.swift")
+        let source = try String(contentsOf: styleURL, encoding: .utf8)
+        for component in ["public struct ApexIconButton", "public struct ApexMenuTrigger"] {
+            let start = try XCTUnwrap(source.range(of: component), component)
+            let rest = source[start.upperBound...]
+            let body = rest.range(of: "\npublic struct ").map { rest[..<$0.lowerBound] } ?? rest
+            XCTAssertTrue(body.contains(".apexAccessibilityLabel(label)"), "\(component) must expose its label to accessibility")
+        }
+        XCTAssertTrue(source.contains("accessibilityLabel(label)"))
+    }
+
+    // MARK: - TC-REV-14: Settings window keeps all six toolbar tabs visible
+    @MainActor
+    func testSettingsWindowFitsAllToolbarTabs() {
+        XCTAssertGreaterThanOrEqual(SettingsView.contentWidth, 700,
+                                    "six toolbar tabs overflow into 'more toolbar items' below ~700pt")
     }
 }

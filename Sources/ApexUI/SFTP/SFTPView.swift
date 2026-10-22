@@ -256,6 +256,8 @@ public struct SFTPView: View {
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
+            .accessibilityLabel("新建文件、文件夹及隐藏文件")
+            .accessibilityIdentifier("ellipsis")
 
             Toggle(isOn: $isFilterVisible) {
                 Label("筛选文件", systemImage: "line.3.horizontal.decrease")

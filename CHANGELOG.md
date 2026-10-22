@@ -14,6 +14,9 @@
 - **`~/.ssh/config` 导入语义偏差 (`SSHConfigParser`)**：对齐 OpenSSH「首个取值生效」规则（HostName/User/Port/IdentityFile/CertificateFile）；`Match` 条件块不再把其中指令错误叠加到上一个 Host；仅配置 `CertificateFile` 时按 `<key>-cert.pub` 约定推导私钥。
 - **证书自动发现对 `~/…pub` 路径失效**：`.pub` 回退分支未展开 `~`，现统一基于展开后的路径探测。
 - **在线更新预发布排序**：`1.15.0` 正式版此前不被视为高于 `1.15.0-beta`，预发布用户收不到正式版更新；现遵循 SemVer 规则。
+- **纯图标按钮无障碍标签缺失 (`ApexIconButton` / `ApexMenuTrigger`)**：v1.13 起的 Liquid 按钮组件只设置了 `.help` 悬浮提示，VoiceOver 与自动化测试读到的是系统符号描述（如「右上对角箭头」「笔记本电脑」），而非「连接到 xxx」「关闭此分屏」「添加新的 SSH 会话」等真实用途；现统一暴露 `label` 为无障碍标签，选中态同步 `isSelected` 特征。SFTP「更多」菜单补齐无障碍标签与标识。
+- **设置窗口标签页全部溢出不可见**：新增「密钥保险库」后共 6 个工具栏标签，窗口宽度不足导致全部标签被折叠进「more toolbar items」菜单；设置窗口内容宽度调整为 720pt。
+- **监控详情浮层遮挡与 Esc 关闭**：浮层内「打开进程监视中心」按钮先关闭浮层再弹出监视中心，避免两层叠放；浮层增加 Esc 关闭兜底。
 - **配置文件写盘非原子**：会话、命令片段、触发器、隧道与密钥保险库 JSON 改为原子写入，避免崩溃或断电时写出半截文件导致配置丢失。
 
 ### ⚡️ 体验优化 (Improvements)
@@ -22,8 +25,8 @@
 - 跳板机下拉列表过滤本地终端会话。
 
 ### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
-- 新增 `CodeReviewRegressionTests`（TC-REV-01 ~ TC-REV-12）12 项回归用例，并固化为 RG-13 质量门禁写入 `test_vm_acceptance.sh` 与 `AGENTS.md`；
-- Tart VM（macOS 27）实链门禁下全量 481 项自动化测试 0 failures（5 项公网/商店专属用例按条件跳过），Swift 6 模式零警告；
+- 新增 `CodeReviewRegressionTests`（TC-REV-01 ~ TC-REV-14）14 项回归用例，并固化为 RG-13 质量门禁写入 `test_vm_acceptance.sh` 与 `AGENTS.md`；
+- Tart VM（macOS 27）实链门禁下全量 483 项自动化测试 0 failures（5 项公网/商店专属用例按条件跳过），Swift 6 模式零警告；
 - 8 大性能 Benchmark 全部优于门禁阈值（Release 配置物理按键全链路延迟 6.38 μs、ANSI 单 Span 2.645 μs）。
 
 ## [v1.14.1] - 2026-10-22

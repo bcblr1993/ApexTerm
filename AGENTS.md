@@ -129,12 +129,13 @@ swift test
    - 任何单项未通过立即熔断打包流水线。
 
 11. **全量代码审查回归门禁 (RG-13: Code Review Regression Gate - 每版必测)**：
-   - 每次发布新版本前，**必须无条件通过 `CodeReviewRegressionTests`（含 TC-REV-01 ~ TC-REV-12）**：
+   - 每次发布新版本前，**必须无条件通过 `CodeReviewRegressionTests`（含 TC-REV-01 ~ TC-REV-14）**：
      1. `TC-REV-01 ~ 03`：证书/私钥会话口令类型判定（passphrase 而非 password）、sshpass `-P passphrase` 提示匹配与商店版桥接参数解析；
      2. `TC-REV-04 ~ 06`：隧道凭据统一解析（证书口令、历史内联密码、托管钥匙串引用防误用）与 sshpass 前缀构建；
      3. `TC-REV-07 ~ 09`：`~/.ssh/config` 首值优先语义、`Match` 块隔离、仅 `CertificateFile` 时私钥推导与 `.pub` 路径证书发现；
      4. `TC-REV-10 ~ 11`：会话编辑表单认证校验、标签解析、跳板机候选过滤与侧边栏文件夹归一化/搜索空组隐藏；
-     5. `TC-REV-12`：在线更新 SemVer 预发布版本排序。
+     5. `TC-REV-12`：在线更新 SemVer 预发布版本排序；
+     6. `TC-REV-13 ~ 14`：纯图标按钮/菜单触发器无障碍标签接线、设置窗口 6 个工具栏标签不溢出。
    - 任何单项未通过立即熔断打包流水线。
 
 ---

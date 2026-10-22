@@ -136,6 +136,19 @@ public struct MetricCapsuleView: View {
         .popover(isPresented: $showingDetail, arrowEdge: .bottom) {
             MetricDetailView(historyStore: historyStore, monitoringEnabled: monitoringEnabled, connectionActive: connectionActive, connectionConnecting: connectionConnecting)
                 .frame(width: 390)
+                // Escape must close the detail even when a control inside it holds focus;
+                // a lingering popover covers the disconnected banner's reconnect button.
+                .onExitCommand { showingDetail = false }
+        }
+        .background {
+            // The terminal can reclaim key focus while the popover is open (e.g. after a
+            // disconnect), so Escape may reach the main window instead of the popover.
+            if showingDetail {
+                Button("") { showingDetail = false }
+                    .keyboardShortcut(.cancelAction)
+                    .opacity(0)
+                    .accessibilityHidden(true)
+            }
         }
     }
 
@@ -194,6 +207,7 @@ public final class ObservableMetricsHistory: ObservableObject {
 /// Native metric details are rendered only while the popover is visible.
 public struct MetricDetailView: View {
     @ObservedObject private var themeSettings = AppSettings.shared
+    @Environment(\.dismiss) private var dismiss
     @ObservedObject var historyStore: ObservableMetricsHistory
     let monitoringEnabled: Bool
     let connectionActive: Bool
@@ -413,6 +427,8 @@ public struct MetricDetailView: View {
                                     size: 20,
                                     iconSize: 10
                                 ) {
+                                    // Close the popover first so the inspector sheet is not stacked under it.
+                                    dismiss()
                                     NotificationCenter.default.post(name: NSNotification.Name("TriggerProcessInspector"), object: nil)
                                 }
                             }

@@ -9,6 +9,9 @@ public struct SettingsView: View {
     
     @State private var selectedTab: Int
 
+    /// Wide enough for all six toolbar tabs to stay visible on macOS 14–27.
+    public static let contentWidth: CGFloat = 720
+
     public init(initialTab: Int = 0) {
         _selectedTab = State(initialValue: initialTab)
     }
@@ -51,7 +54,8 @@ public struct SettingsView: View {
                 }
                 .tag(5)
         }
-        .frame(width: 620, height: 480)
+        // Six toolbar tabs overflow into "more toolbar items" below ~700pt, hiding every tab.
+        .frame(width: SettingsView.contentWidth, height: 480)
         .padding()
     }
 }

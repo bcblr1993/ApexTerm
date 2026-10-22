@@ -104,27 +104,28 @@ public struct UpdateSheetView: View {
             }
             
             HStack {
-                Button(L10n.remindLater) {
+                ApexActionButton(
+                    L10n.remindLater,
+                    tint: ApexStyle.secondary,
+                    size: .regular
+                ) {
                     dismiss()
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.regular)
                 .keyboardShortcut(.cancelAction)
                 
                 Spacer()
                 
-                Button {
+                ApexActionButton(
+                    L10n.updateNow,
+                    icon: "arrow.down.to.line.compact",
+                    tint: ApexStyle.accent,
+                    size: .regular,
+                    isProminent: true
+                ) {
                     Task {
                         await updateManager.startInAppUpdate(release: release)
                     }
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "arrow.down.to.line.compact")
-                        Text(L10n.updateNow)
-                    }
                 }
-                .apexProminentButton()
-                .controlSize(.regular)
                 .keyboardShortcut(.defaultAction)
             }
         }
@@ -184,11 +185,13 @@ public struct UpdateSheetView: View {
             
             HStack {
                 Spacer()
-                Button(L10n.cancelDownload) {
+                ApexActionButton(
+                    L10n.cancelDownload,
+                    tint: ApexStyle.error,
+                    size: .regular
+                ) {
                     updateManager.cancelUpdate()
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.regular)
             }
         }
         .padding(24)
@@ -230,25 +233,26 @@ public struct UpdateSheetView: View {
             }
             
             HStack {
-                Button(L10n.restartLater) {
+                ApexActionButton(
+                    L10n.restartLater,
+                    tint: ApexStyle.secondary,
+                    size: .regular
+                ) {
                     dismiss()
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.regular)
                 .keyboardShortcut(.cancelAction)
                 
                 Spacer()
                 
-                Button {
+                ApexActionButton(
+                    L10n.restartAndInstall,
+                    icon: "arrow.clockwise.circle.fill",
+                    tint: ApexStyle.success,
+                    size: .regular,
+                    isProminent: true
+                ) {
                     updateManager.relaunchAndInstall()
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "arrow.clockwise.circle.fill")
-                        Text(L10n.restartAndInstall)
-                    }
                 }
-                .apexProminentButton()
-                .controlSize(.regular)
                 .keyboardShortcut(.defaultAction)
             }
             .padding(.top, 8)
@@ -274,11 +278,14 @@ public struct UpdateSheetView: View {
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 10)
             
-            Button("完成") {
+            ApexActionButton(
+                "完成",
+                tint: ApexStyle.accent,
+                size: .regular,
+                isProminent: true
+            ) {
                 dismiss()
             }
-            .apexProminentButton()
-            .controlSize(.regular)
             .keyboardShortcut(.defaultAction)
             .padding(.top, 6)
         }
@@ -303,31 +310,40 @@ public struct UpdateSheetView: View {
                 .padding(.horizontal, 10)
             
             HStack(spacing: 10) {
-                Button(L10n.closeWindow) {
+                ApexActionButton(
+                    L10n.closeWindow,
+                    tint: ApexStyle.secondary,
+                    size: .regular
+                ) {
                     dismiss()
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.regular)
                 .keyboardShortcut(.cancelAction)
                 
                 Spacer()
                 
                 if let release = updateManager.latestRelease, let url = URL(string: release.downloadUrl) {
-                    Button(L10n.openGitHubDownload) {
+                    ApexActionButton(
+                        L10n.openGitHubDownload,
+                        icon: "safari",
+                        tint: ApexStyle.accent,
+                        size: .regular
+                    ) {
                         NSWorkspace.shared.open(url)
                         dismiss()
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.regular)
                 }
                 
-                Button(L10n.retry) {
+                ApexActionButton(
+                    L10n.retry,
+                    icon: "arrow.clockwise",
+                    tint: ApexStyle.accent,
+                    size: .regular,
+                    isProminent: true
+                ) {
                     Task {
                         await updateManager.checkForUpdates(manual: true)
                     }
                 }
-                .apexProminentButton()
-                .controlSize(.regular)
                 .keyboardShortcut(.defaultAction)
             }
             .padding(.top, 8)

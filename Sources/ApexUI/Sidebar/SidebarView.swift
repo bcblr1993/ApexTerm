@@ -94,18 +94,25 @@ public struct SidebarView: View {
                             .padding(.horizontal, 20)
                     }
                     
-                    HStack(spacing: 8) {
-                        Button(action: { onConnect(Session.local()) }) {
-                            Label(L10n.openLocalTerminal, systemImage: "laptopcomputer")
+                    HStack(spacing: 10) {
+                        ApexActionButton(
+                            L10n.openLocalTerminal,
+                            icon: "laptopcomputer",
+                            tint: ApexStyle.secondary,
+                            size: .regular
+                        ) {
+                            onConnect(Session.local())
                         }
-                        .buttonStyle(.bordered)
-                        .controlSize(.regular)
                         
-                        Button(action: { showingAddSheet = true }) {
-                            Label(L10n.addFirstSessionButton, systemImage: "plus")
+                        ApexActionButton(
+                            L10n.addFirstSessionButton,
+                            icon: "plus",
+                            tint: ApexStyle.accent,
+                            size: .regular,
+                            isProminent: true
+                        ) {
+                            showingAddSheet = true
                         }
-                        .apexProminentButton()
-                        .controlSize(.regular)
                     }
                     
                     Spacer()
@@ -301,6 +308,8 @@ struct SessionRow: View {
     let session: Session
     let onConnect: () -> Void
     
+    @State private var isHovered = false
+    
     private var dotColor: Color {
         Color(hex: session.colorHex ?? (session.isLocal ? "#34C759" : "#0A84FF")) ?? .blue
     }
@@ -310,7 +319,8 @@ struct SessionRow: View {
             Circle()
                 .fill(dotColor)
                 .frame(width: 8, height: 8)
-                .shadow(color: dotColor.opacity(0.35), radius: 2)
+                .shadow(color: dotColor.opacity(isHovered ? 0.6 : 0.35), radius: isHovered ? 3.5 : 2)
+                .scaleEffect(isHovered ? 1.15 : 1.0)
             
             VStack(alignment: .leading, spacing: ApexStyle.sMicro) {
                 Text(session.name)
@@ -330,13 +340,25 @@ struct SessionRow: View {
                 icon: "arrow.up.right",
                 label: "连接到 \(session.name)",
                 size: 22,
-                iconSize: 10
+                iconSize: 10,
+                tint: isHovered ? ApexStyle.accent : nil
             ) {
                 onConnect()
             }
+            .opacity(isHovered ? 1.0 : 0.75)
         }
         .padding(.vertical, 3)
+        .padding(.horizontal, 4)
+        .background(
+            RoundedRectangle(cornerRadius: ApexStyle.badgeRadius)
+                .fill(isHovered ? ApexStyle.primary.opacity(0.04) : Color.clear)
+        )
         .contentShape(Rectangle())
+        .onHover { h in
+            withAnimation(ApexStyle.hoverTransition) {
+                isHovered = h
+            }
+        }
     }
 }
 

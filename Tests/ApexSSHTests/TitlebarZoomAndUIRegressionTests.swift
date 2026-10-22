@@ -361,7 +361,7 @@ final class TitlebarZoomAndUIRegressionTests: XCTestCase {
         XCTAssertGreaterThan(pillBtnSize.width, 0, "ApexPillButton must compute valid layout width")
         XCTAssertFalse(pillClicked)
 
-        // 6. Verify ApexActionButton rendering
+        // 6. Verify ApexActionButton rendering (standard, prominent, and loading)
         var actionClicked = false
         let actionButton = ApexActionButton(
             "一键部署",
@@ -375,6 +375,31 @@ final class TitlebarZoomAndUIRegressionTests: XCTestCase {
         let actionBtnSize = hostingActionBtn.fittingSize
         XCTAssertGreaterThan(actionBtnSize.width, 0, "ApexActionButton must compute valid layout width")
         XCTAssertFalse(actionClicked)
+
+        let prominentActionButton = ApexActionButton(
+            "立即保存",
+            icon: "checkmark",
+            tint: ApexStyle.accent,
+            size: .regular,
+            isProminent: true,
+            isLoading: false,
+            action: {}
+        )
+        let hostingProminentBtn = NSHostingView(rootView: prominentActionButton)
+        hostingProminentBtn.frame = NSRect(x: 0, y: 0, width: 120, height: 32)
+        XCTAssertGreaterThan(hostingProminentBtn.fittingSize.width, 0, "Prominent ApexActionButton must compute valid layout width")
+
+        let loadingActionButton = ApexActionButton(
+            "同步中",
+            tint: ApexStyle.accent,
+            size: .small,
+            isProminent: false,
+            isLoading: true,
+            action: {}
+        )
+        let hostingLoadingBtn = NSHostingView(rootView: loadingActionButton)
+        hostingLoadingBtn.frame = NSRect(x: 0, y: 0, width: 100, height: 26)
+        XCTAssertGreaterThan(hostingLoadingBtn.fittingSize.width, 0, "Loading ApexActionButton must compute valid layout width")
 
         // 7. Verify ApexMenuTrigger rendering
         let menuTrigger = ApexMenuTrigger(

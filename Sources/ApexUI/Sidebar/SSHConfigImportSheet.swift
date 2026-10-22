@@ -42,8 +42,7 @@ public struct SSHConfigImportSheet: View {
                 Spacer()
 
                 if DistributionChannel.current == .appStore {
-                    Button("选择配置文件…", action: chooseConfigFile)
-                        .controlSize(.small)
+                    ApexActionButton("选择配置文件…", icon: "doc.text", tint: ApexStyle.secondary, size: .small, action: chooseConfigFile)
                 }
                 
                 ApexIconButton(
@@ -73,10 +72,13 @@ public struct SSHConfigImportSheet: View {
                 Spacer()
                 
                 if !discoveredHosts.isEmpty {
-                    Button(selectedHostIds.count == discoveredHosts.count ? "取消全选" : "全选",
-                           action: toggleSelectAll)
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
+                    ApexActionButton(
+                        selectedHostIds.count == discoveredHosts.count ? "取消全选" : "全选",
+                        icon: selectedHostIds.count == discoveredHosts.count ? "checkmark.circle.fill" : "circle",
+                        tint: ApexStyle.accent,
+                        size: .small,
+                        action: toggleSelectAll
+                    )
                 }
             }
             .padding(.horizontal, 18)
@@ -162,18 +164,25 @@ public struct SSHConfigImportSheet: View {
                 
                 Spacer()
                 
-                Button("取消") { dismiss() }
-                    .buttonStyle(.bordered)
-                    .controlSize(.regular)
-                    .keyboardShortcut(.cancelAction)
+                ApexActionButton(
+                    "取消",
+                    tint: ApexStyle.secondary,
+                    size: .regular
+                ) {
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
                 
-                Button(action: performImport) {
-                    Text("导入选中的 \(selectedHostIds.count) 台主机")
+                ApexActionButton(
+                    "导入选中的 \(selectedHostIds.count) 台主机",
+                    icon: "square.and.arrow.down",
+                    tint: ApexStyle.accent,
+                    size: .regular,
+                    isProminent: true
+                ) {
+                    performImport()
                 }
                 .keyboardShortcut(.defaultAction)
-                .apexProminentButton()
-                .controlSize(.regular)
-                .tint(ApexStyle.accent)
                 .disabled(selectedHostIds.isEmpty)
             }
             .padding(16)

@@ -129,6 +129,7 @@ public struct ApexIconButton: View {
     let size: CGFloat
     let iconSize: CGFloat
     let isSelected: Bool
+    let tint: Color?
     let action: () -> Void
     
     @State private var isHovered = false
@@ -139,6 +140,7 @@ public struct ApexIconButton: View {
         size: CGFloat = 26,
         iconSize: CGFloat = 11,
         isSelected: Bool = false,
+        tint: Color? = nil,
         action: @escaping () -> Void
     ) {
         self.icon = icon
@@ -146,22 +148,31 @@ public struct ApexIconButton: View {
         self.size = size
         self.iconSize = iconSize
         self.isSelected = isSelected
+        self.tint = tint
         self.action = action
+    }
+    
+    private var effectiveColor: Color {
+        if let tint = tint {
+            return isHovered ? tint : tint.opacity(0.85)
+        }
+        return isSelected ? ApexStyle.accent : (isHovered ? ApexStyle.primary : ApexStyle.secondary)
     }
     
     public var body: some View {
         Button(action: action) {
             ZStack {
+                let activeTint = tint ?? (isSelected ? ApexStyle.accent : ApexStyle.primary)
                 RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
-                    .fill(isSelected ? ApexStyle.accent.opacity(0.18) : (isHovered ? ApexStyle.primary.opacity(0.08) : Color.clear))
+                    .fill(isSelected ? activeTint.opacity(0.18) : (isHovered ? activeTint.opacity(0.08) : Color.clear))
                     .overlay(
                         RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
-                            .stroke(isSelected ? ApexStyle.accent.opacity(0.35) : (isHovered ? ApexStyle.border.opacity(0.4) : Color.clear), lineWidth: 0.75)
+                            .stroke(isSelected ? activeTint.opacity(0.35) : (isHovered ? (tint?.opacity(0.3) ?? ApexStyle.border.opacity(0.4)) : Color.clear), lineWidth: 0.75)
                     )
                 
                 Image(systemName: icon)
                     .font(.system(size: iconSize, weight: isSelected ? .semibold : .medium))
-                    .foregroundColor(isSelected ? ApexStyle.accent : (isHovered ? ApexStyle.primary : ApexStyle.secondary))
+                    .foregroundColor(effectiveColor)
             }
             .frame(width: size, height: size)
             .scaleEffect(isHovered ? 1.04 : 1.0)
@@ -243,14 +254,17 @@ public struct ApexPillButton: View {
     }
 }
 
-/// Standardized tactile action button for list rows, card views, and toolbars conforming to macOS Liquid Class HIG
+/// Standardized tactile action button for list rows, card views, modals, and toolbars conforming to macOS Liquid Class HIG
 public struct ApexActionButton: View {
     let title: String
     let icon: String?
     let tint: Color
     let size: ControlSize
+    let isProminent: Bool
+    let isLoading: Bool
     let action: () -> Void
     
+    @Environment(\.isEnabled) private var isEnabled
     @State private var isHovered = false
     
     public init(
@@ -258,44 +272,78 @@ public struct ApexActionButton: View {
         icon: String? = nil,
         tint: Color = ApexStyle.accent,
         size: ControlSize = .small,
+        isProminent: Bool = false,
+        isLoading: Bool = false,
         action: @escaping () -> Void
     ) {
         self.title = title
         self.icon = icon
         self.tint = tint
         self.size = size
+        self.isProminent = isProminent
+        self.isLoading = isLoading
         self.action = action
     }
     
     public var body: some View {
-        Button(action: action) {
-            HStack(spacing: 4) {
-                if let icon = icon {
+        Button(action: {
+            if !isLoading && isEnabled {
+                action()
+            }
+        }) {
+            HStack(spacing: size == .small ? 4 : 6) {
+                if isLoading {
+                    ProgressView()
+                        .controlSize(size == .small ? .mini : .small)
+                        .scaleEffect(size == .small ? 0.7 : 0.85)
+                } else if let icon = icon {
                     Image(systemName: icon)
-                        .font(.system(size: size == .small ? 9.5 : 11, weight: .semibold))
+                        .font(.system(size: size == .small ? 9.5 : 12, weight: .semibold))
                 }
                 Text(title)
-                    .font(.system(size: size == .small ? 11 : 12, weight: .medium))
+                    .font(.system(size: size == .small ? 11 : 12.5, weight: isProminent ? .semibold : .medium))
             }
-            .padding(.horizontal, size == .small ? 8 : 10)
-            .padding(.vertical, size == .small ? 3.5 : 5)
+            .padding(.horizontal, size == .small ? 8 : 12)
+            .padding(.vertical, size == .small ? 4 : 6.5)
             .background(
                 RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
-                    .fill(isHovered ? tint.opacity(0.18) : tint.opacity(0.10))
+                    .fill(
+                        isProminent
+                            ? (isHovered && isEnabled ? tint.opacity(0.88) : tint)
+                            : (isHovered && isEnabled ? tint.opacity(0.18) : tint.opacity(0.10))
+                    )
             )
             .overlay(
                 RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
-                    .stroke(isHovered ? tint.opacity(0.45) : tint.opacity(0.20), lineWidth: 0.75)
+                    .stroke(
+                        isProminent
+                            ? Color.white.opacity(isHovered && isEnabled ? 0.35 : 0.15)
+                            : (isHovered && isEnabled ? tint.opacity(0.48) : tint.opacity(0.22)),
+                        lineWidth: 0.75
+                    )
             )
-            .foregroundColor(tint)
-            .scaleEffect(isHovered ? 1.02 : 1.0)
-            .shadow(color: isHovered ? tint.opacity(0.15) : Color.clear, radius: 3, x: 0, y: 1)
+            .foregroundColor(isProminent ? .white : tint)
+            .scaleEffect(isHovered && isEnabled ? 1.025 : 1.0)
+            .shadow(
+                color: (isHovered && isEnabled)
+                    ? tint.opacity(isProminent ? 0.35 : 0.18)
+                    : (isProminent ? tint.opacity(0.18) : Color.clear),
+                radius: isProminent ? 4 : 3,
+                x: 0,
+                y: 1
+            )
+            .opacity(isEnabled ? 1.0 : 0.45)
             .animation(ApexStyle.springSnappy, value: isHovered)
+            .animation(ApexStyle.springSnappy, value: isEnabled)
+            .animation(ApexStyle.springSnappy, value: isLoading)
         }
         .buttonStyle(.plain)
+        .disabled(!isEnabled || isLoading)
         .onHover { hovering in
-            withAnimation(ApexStyle.hoverTransition) {
-                isHovered = hovering
+            if isEnabled {
+                withAnimation(ApexStyle.hoverTransition) {
+                    isHovered = hovering
+                }
             }
         }
     }

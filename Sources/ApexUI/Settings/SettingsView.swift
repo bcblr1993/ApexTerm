@@ -77,7 +77,13 @@ private struct GeneralSettingsTab: View {
                     
                     Spacer()
                     
-                    Button(L10n.checkUpdatesNow) {
+                    ApexActionButton(
+                        L10n.checkUpdatesNow,
+                        icon: "arrow.triangle.2.circlepath",
+                        tint: ApexStyle.accent,
+                        size: .small,
+                        isLoading: updateManager.isChecking
+                    ) {
                         if updateManager.distributionChannel == .appStore {
                             NSWorkspace.shared.open(DistributionChannel.appStoreURL)
                         } else {
@@ -86,8 +92,6 @@ private struct GeneralSettingsTab: View {
                             }
                         }
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
                     .disabled(updateManager.isChecking)
                 }
             } header: {
@@ -105,11 +109,14 @@ private struct GeneralSettingsTab: View {
             }
             
             Section {
-                Button("恢复所有默认设置", role: .destructive) {
+                ApexActionButton(
+                    "恢复所有默认设置",
+                    icon: "arrow.counterclockwise",
+                    tint: ApexStyle.error,
+                    size: .small
+                ) {
                     settings.resetToDefaults()
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
             }
         }
         .formStyle(.grouped)
@@ -276,13 +283,16 @@ private struct BehaviorSettingsTab: View {
                                 .truncationMode(.middle)
                         }
                         Spacer()
-                        Button("打开目录") {
+                        ApexActionButton(
+                            "打开目录",
+                            icon: "folder",
+                            tint: ApexStyle.secondary,
+                            size: .small
+                        ) {
                             let url = URL(fileURLWithPath: settings.sessionLogDirectory, isDirectory: true)
                             try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
                             NSWorkspace.shared.open(url)
                         }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
                     }
                     
                     HStack {
@@ -325,11 +335,14 @@ private struct SFTPSettingsTab: View {
                     
                     Spacer()
                     
-                    Button(L10n.choosePathButton) {
+                    ApexActionButton(
+                        L10n.choosePathButton,
+                        icon: "folder.badge.gearshape",
+                        tint: ApexStyle.secondary,
+                        size: .small
+                    ) {
                         selectDownloadDirectory()
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
                 }
                 
                 HStack {
@@ -425,34 +438,36 @@ private struct BackupSettingsTab: View {
                     .pickerStyle(.menu)
                     
                     HStack(spacing: 10) {
-                        Button {
+                        ApexActionButton(
+                            "立即同步",
+                            icon: "arrow.triangle.2.circlepath",
+                            tint: ApexStyle.accent,
+                            size: .small,
+                            isProminent: true,
+                            isLoading: isSyncingAction
+                        ) {
                             runManualSync()
-                        } label: {
-                            HStack(spacing: 4) {
-                                if isSyncingAction {
-                                    ProgressView().controlSize(.small)
-                                } else {
-                                    Image(systemName: "arrow.triangle.2.circlepath")
-                                }
-                                Text("立即同步")
-                            }
                         }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.small)
                         .disabled(isSyncingAction)
                         
-                        Button("上传覆盖云端") {
+                        ApexActionButton(
+                            "上传覆盖云端",
+                            icon: "arrow.up.circle",
+                            tint: ApexStyle.accent,
+                            size: .small
+                        ) {
                             runForceUpload()
                         }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
                         .disabled(isSyncingAction)
                         
-                        Button("下载覆盖本地") {
+                        ApexActionButton(
+                            "下载覆盖本地",
+                            icon: "arrow.down.circle",
+                            tint: ApexStyle.accent,
+                            size: .small
+                        ) {
                             runForceDownload()
                         }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
                         .disabled(isSyncingAction)
                     }
                     .padding(.top, 4)
@@ -473,27 +488,23 @@ private struct BackupSettingsTab: View {
                         .foregroundColor(ApexStyle.secondary)
                     
                     HStack(spacing: 12) {
-                        Button {
+                        ApexActionButton(
+                            L10n.exportButton,
+                            icon: "square.and.arrow.up",
+                            tint: ApexStyle.secondary,
+                            size: .small
+                        ) {
                             exportSessions()
-                        } label: {
-                            HStack {
-                                Image(systemName: "square.and.arrow.up")
-                                Text(L10n.exportButton)
-                            }
                         }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
                         
-                        Button {
+                        ApexActionButton(
+                            L10n.importButton,
+                            icon: "square.and.arrow.down",
+                            tint: ApexStyle.secondary,
+                            size: .small
+                        ) {
                             importSessions()
-                        } label: {
-                            HStack {
-                                Image(systemName: "square.and.arrow.down")
-                                Text(L10n.importButton)
-                            }
                         }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
                     }
                     .padding(.top, 4)
                 }

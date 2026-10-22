@@ -2,6 +2,31 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.13.2] - 2026-10-22
+
+### ⚡️ 体验优化与细节打磨 (Liquid Class Polish)
+- **通用触觉按钮组件库重大升级 (`ApexActionButton`)**：
+  - 新增突出高亮模式 (`isProminent: true`)，支持柔和纯色主题背景、高亮微白光描边与深层外发光微阴影；
+  - 新增平滑异步加载指示 (`isLoading: true`)，在执行云端同步、检查更新或保存更改时智能切换为微型加载指示器，避免重复提交；
+  - 接入系统原生 `@Environment(\.isEnabled)` 状态感知，禁用状态下优雅降级（半透明 0.45 虚化，智能阻断悬浮缩放与点击）。
+- **通用图标按钮语义增强 (`ApexIconButton`)**：
+  - 新增 `tint: Color?` 语义色调注入，支持在连接、删除、警告等不同交互场景下自适应色彩反馈与悬浮高亮。
+- **全应用功能按钮全面对齐 Liquid Class 规范**：
+  - **首选项设置面板 (`SettingsView`)**：检查更新、恢复所有默认设置、打开日志目录、选择下载目录、iCloud 立即同步、上传覆盖云端、下载覆盖本地、离线导出与导入等全部操作按钮升级为 `ApexActionButton`；
+  - **侧边栏与会话列表 (`SidebarView`)**：空状态「新建本地终端」与「添加首个会话」按钮升级；会话行 (`SessionRow`) 接入 `@State isHovered` 鼠标悬浮流体动态微升、颜色标识外发光投影与连接按钮自适应显隐；
+  - **会话新建与编辑弹窗 (`SessionEditModal`)**：私钥浏览按钮、底部「取消」与突出「保存」按钮升级；
+  - **SSH 配置导入面板 (`SSHConfigImportSheet`)**：选择配置文件、全选/取消全选、底部「取消」与突出「导入主机」按钮升级；
+  - **SFTP 快速代码编辑器 (`QuickEditorView`)**：底栏「关闭」与「保存 (⌘S)」按钮升级，保存期间自动呈现行内微动画加载状态；
+  - **应用内更新器 (`UpdateSheetView`)**：稍后提醒、立即更新、取消下载、稍后重启、重启并安装、更新完成、关闭与重试等全状态按钮统一升级；
+  - **多会话广播输入栏 (`BroadcastBar`)**：发送广播命令按钮升级为琥珀色突出提示按钮 (`paperplane.fill`)；
+  - **快捷键速查表 (`ShortcutsSheetView`)**：底栏关闭操作升级为标准 `ApexActionButton`。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- `TitlebarZoomAndUIRegressionTests` 扩充对 `ApexActionButton` 突出态 (`isProminent`)、加载态 (`isLoading`) 以及 `ApexIconButton` 自定义色调的完整视图断言；
+- 450+ 项全量自动化测试用例 100% 通过（0 failures, 0 unexpected）；
+- 8 大性能 Benchmark 全部优于门禁阈值（物理按键延迟 6.85 μs）；
+- Apple 官方公证（Notarized）与 Developer ID 签名（YanNan Chen）。
+
 ## [v1.13.1] - 2026-10-22
 
 ### ⚡️ 体验优化与细节打磨 (Liquid Class Polish)

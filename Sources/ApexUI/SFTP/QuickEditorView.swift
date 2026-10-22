@@ -165,26 +165,25 @@ public struct QuickEditorView: View {
                 
                 Spacer()
                 
-                Button("关闭", action: requestClose)
-                    .buttonStyle(.bordered)
-                    .keyboardShortcut("w", modifiers: .command)
-                    .controlSize(.small)
-                    .disabled(isSaving || isReloading)
+                ApexActionButton(
+                    "关闭",
+                    tint: ApexStyle.secondary,
+                    size: .small,
+                    action: requestClose
+                )
+                .keyboardShortcut("w", modifiers: .command)
+                .disabled(isSaving || isReloading)
                 
-                Button(action: saveChanges) {
-                    HStack(spacing: 4) {
-                        if isSaving {
-                            ProgressView().controlSize(.small).scaleEffect(0.6)
-                        } else {
-                            Image(systemName: "square.and.arrow.down")
-                                .font(.system(size: 11))
-                        }
-                        Text("保存 (⌘S)")
-                    }
-                }
+                ApexActionButton(
+                    "保存 (⌘S)",
+                    icon: "square.and.arrow.down",
+                    tint: ApexStyle.accent,
+                    size: .small,
+                    isProminent: true,
+                    isLoading: isSaving,
+                    action: saveChanges
+                )
                 .keyboardShortcut("s", modifiers: .command)
-                .apexProminentButton()
-                .controlSize(.small)
                 .disabled(isSaving || isReloading)
             }
             .padding(.horizontal, 14)

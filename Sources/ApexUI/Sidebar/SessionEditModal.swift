@@ -155,7 +155,12 @@ public struct SessionEditModal: View {
                                     .accessibilityLabel("私钥路径")
                                     .accessibilityIdentifier("session.privateKeyPath")
                                     .font(.system(.body, design: .monospaced))
-                                Button("浏览...") {
+                                ApexActionButton(
+                                    "浏览...",
+                                    icon: "folder",
+                                    tint: ApexStyle.secondary,
+                                    size: .small
+                                ) {
                                     let panel = NSOpenPanel()
                                     panel.canChooseFiles = true
                                     panel.canChooseDirectories = false
@@ -241,15 +246,26 @@ public struct SessionEditModal: View {
                         .lineLimit(2)
                 }
                 Spacer()
-                Button(L10n.cancel) { dismiss() }
-                    .buttonStyle(.bordered)
-                    .controlSize(.regular)
-                    .keyboardShortcut(.cancelAction)
-                Button(L10n.save) { saveSession() }
-                    .apexProminentButton()
-                    .controlSize(.regular)
-                    .disabled(host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !isValidPort)
-                    .keyboardShortcut(.defaultAction)
+                ApexActionButton(
+                    L10n.cancel,
+                    tint: ApexStyle.secondary,
+                    size: .regular
+                ) {
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+                
+                ApexActionButton(
+                    L10n.save,
+                    icon: "checkmark",
+                    tint: ApexStyle.accent,
+                    size: .regular,
+                    isProminent: true
+                ) {
+                    saveSession()
+                }
+                .disabled(host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !isValidPort)
+                .keyboardShortcut(.defaultAction)
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 14)

@@ -175,13 +175,15 @@ public struct ShortcutsSheetView: View {
             
             HStack {
                 Spacer()
-                Button("关闭") {
+                ApexActionButton(
+                    "关闭",
+                    tint: ApexStyle.secondary,
+                    size: .regular
+                ) {
                     dismiss()
                 }
-                .buttonStyle(.bordered)
                 .keyboardShortcut(.cancelAction)
                 .keyboardShortcut(.defaultAction)
-                .controlSize(.regular)
                 .accessibilityIdentifier("shortcuts.close.footer")
             }
             .padding()

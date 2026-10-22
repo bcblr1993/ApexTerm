@@ -45,15 +45,19 @@ public struct BroadcastBar: View {
                 .font(.system(size: 12, design: .monospaced))
                 .accessibilityLabel("发送到所有已打开的会话")
                 
-                Button(L10n.broadcastSend) {
+                ApexActionButton(
+                    L10n.broadcastSend,
+                    icon: "paperplane.fill",
+                    tint: ApexStyle.warning,
+                    size: .small,
+                    isProminent: true
+                ) {
                     if !broadcastText.isEmpty {
                         onBroadcastSubmit(broadcastText + "\n")
                         broadcastText = ""
                     }
                 }
-                .apexProminentButton()
-                .tint(ApexStyle.warning)
-                .controlSize(.small)
+                .disabled(broadcastText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
         .padding(.horizontal, ApexStyle.s4)

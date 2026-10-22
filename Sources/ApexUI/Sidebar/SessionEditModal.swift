@@ -48,6 +48,35 @@ public struct SessionEditModal: View {
             guard self == .certificate, let method, case .certificate = method else { return nil }
             return method
         }
+
+        /// Blocks saving a key/certificate session that OpenSSH could never authenticate.
+        public func validationMessage(privateKeyPath: String, certificatePath: String) -> String? {
+            let key = privateKeyPath.trimmingCharacters(in: .whitespacesAndNewlines)
+            let cert = certificatePath.trimmingCharacters(in: .whitespacesAndNewlines)
+            switch self {
+            case .privateKey:
+                return key.isEmpty ? "请指定私钥路径或从密钥保险库选择" : nil
+            case .certificate:
+                if key.isEmpty { return "证书认证需要同时指定对应的私钥" }
+                if cert.isEmpty { return "请指定 OpenSSH 证书文件 (-cert.pub)" }
+                return nil
+            case .password, .agent:
+                return nil
+            }
+        }
+    }
+
+    /// Splits user tags on ASCII or full-width commas, trimming blanks and duplicates.
+    public static func parseTags(_ raw: String) -> [String] {
+        var seen = Set<String>()
+        return raw.split(whereSeparator: { $0 == "," || $0 == "，" })
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && seen.insert($0).inserted }
+    }
+
+    /// Sessions that may serve as this session's jump host: remote only, never itself.
+    public static func jumpHostCandidates(from sessions: [Session], excluding id: UUID?) -> [Session] {
+        sessions.filter { !$0.isLocal && $0.id != id }
     }
     
     public init(session: Session?, onSave: @escaping (Session) -> Void) {
@@ -96,7 +125,7 @@ public struct SessionEditModal: View {
                     TextField(L10n.usernameLabel, text: $username)
                     .accessibilityLabel(L10n.usernameLabel)
 
-                    let otherSessions = SessionStore.shared.sessions.filter { $0.id != initialSession?.id }
+                    let otherSessions = Self.jumpHostCandidates(from: SessionStore.shared.sessions, excluding: initialSession?.id)
                     if !otherSessions.isEmpty {
                         Picker("跳板机 (Jump Host)", selection: $jumpServerId) {
                             Text("无 (直连)").tag(UUID?.none)
@@ -333,11 +362,12 @@ public struct SessionEditModal: View {
 
             Divider()
             HStack {
-                if let saveError {
-                    Text(saveError)
+                if let message = saveError ?? authValidationMessage {
+                    Text(message)
                         .font(.caption)
-                        .foregroundStyle(ApexStyle.error)
+                        .foregroundStyle(saveError != nil ? ApexStyle.error : ApexStyle.warning)
                         .lineLimit(2)
+                        .accessibilityIdentifier("session.validationMessage")
                 }
                 Spacer()
                 ApexActionButton(
@@ -358,7 +388,7 @@ public struct SessionEditModal: View {
                 ) {
                     saveSession()
                 }
-                .disabled(host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !isValidPort)
+                .disabled(host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !isValidPort || authValidationMessage != nil)
                 .keyboardShortcut(.defaultAction)
             }
             .padding(.horizontal, 20)
@@ -411,6 +441,10 @@ public struct SessionEditModal: View {
         }
     }
 
+    private var authValidationMessage: String? {
+        authType.validationMessage(privateKeyPath: privateKeyPath, certificatePath: certificatePath)
+    }
+
     private var availableAuthTypes: [AuthType] {
         AuthType.availableTypes(for: initialSession?.authMethod, channel: .current)
     }
@@ -452,7 +486,8 @@ public struct SessionEditModal: View {
             Task {
                 if let saved = try? await KeychainStore.shared.get(key: ref) {
                     await MainActor.run { self.password = saved }
-                } else {
+                } else if !KeychainStore.isManagedReference(ref) {
+                    // Legacy sessions stored the password inline.
                     await MainActor.run { self.password = ref }
                 }
             }
@@ -463,7 +498,7 @@ public struct SessionEditModal: View {
                 Task {
                     if let saved = try? await KeychainStore.shared.get(key: ref) {
                         await MainActor.run { self.passphrase = saved }
-                    } else {
+                    } else if !KeychainStore.isManagedReference(ref) {
                         await MainActor.run { self.passphrase = ref }
                     }
                 }
@@ -476,7 +511,7 @@ public struct SessionEditModal: View {
                 Task {
                     if let saved = try? await KeychainStore.shared.get(key: ref) {
                         await MainActor.run { self.passphrase = saved }
-                    } else {
+                    } else if !KeychainStore.isManagedReference(ref) {
                         await MainActor.run { self.passphrase = ref }
                     }
                 }
@@ -544,13 +579,13 @@ public struct SessionEditModal: View {
         
         let newSession = Session(
             id: sessionId,
-            name: name.isEmpty ? host : name,
+            name: name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? host.trimmingCharacters(in: .whitespaces) : name.trimmingCharacters(in: .whitespacesAndNewlines),
             host: host.trimmingCharacters(in: .whitespaces),
             port: Int(port.trimmingCharacters(in: .whitespaces)) ?? 22,
             username: username.trimmingCharacters(in: .whitespaces).isEmpty ? "root" : username.trimmingCharacters(in: .whitespaces),
             authMethod: authMethod,
             folder: folder.trimmingCharacters(in: .whitespaces).isEmpty ? "常用会话" : folder.trimmingCharacters(in: .whitespaces),
-            tags: tags.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) },
+            tags: Self.parseTags(tags),
             colorHex: colorHex,
             jumpServerId: jumpServerId,
             agentlessMonitorEnabled: agentlessMonitor,

@@ -140,7 +140,8 @@ public final class UpdateManager: ObservableObject {
             if p1 > p2 { return true }
             if p1 < p2 { return false }
         }
-        return false
+        // SemVer: a final release outranks a pre-release of the same core (1.2.0 > 1.2.0-beta).
+        return !clean1.contains("-") && clean2.contains("-")
     }
     
     /// Trigger an update check. If `manual` is true, prompts sheet even when up-to-date.

@@ -64,8 +64,8 @@ public enum SSHCertificateHelper {
         }
         
         // Also check if clean path ends in .pub (unlikely for private key, but handle edge case)
-        if clean.hasSuffix(".pub") {
-            let withoutPub = String(clean.dropLast(4))
+        if expanded.hasSuffix(".pub") {
+            let withoutPub = String(expanded.dropLast(4))
             let certCandidate = withoutPub + "-cert.pub"
             if FileManager.default.fileExists(atPath: certCandidate) {
                 return certCandidate

@@ -136,6 +136,22 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         return args
     }
 
+    /// Key and certificate sessions resolve a key passphrase rather than a login password.
+    var usesKeyPassphrase: Bool {
+        switch session.authMethod {
+        case .privateKey, .certificate: return true
+        default: return false
+        }
+    }
+
+    /// sshpass only matches "assword" by default; OpenSSH asks "Enter passphrase for key".
+    func sshpassArguments(secret: String, tool: String) -> [String] {
+        var args = ["-p", secret]
+        if usesKeyPassphrase { args.append(contentsOf: ["-P", "passphrase"]) }
+        args.append(tool)
+        return args
+    }
+
     /// Every child operation owns its grant independently, including cancellation cleanup.
     func acquirePrivateKeyAccess() throws -> FileAccessLease? {
         guard distributionChannel == .appStore,
@@ -178,8 +194,11 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         if usesPasswordHelper {
             guard binaryPath == sshpassExecutablePath, arguments.count >= 3,
                   arguments[0] == "-p" else { throw CocoaError(.fileReadCorruptFile) }
-            toolPath = arguments[2]
-            toolArguments = Array(arguments.dropFirst(3))
+            // Optional `-P <prompt>` follows the secret for key passphrases.
+            let toolIndex = arguments[2] == "-P" ? 4 : 2
+            guard arguments.count > toolIndex else { throw CocoaError(.fileReadCorruptFile) }
+            toolPath = arguments[toolIndex]
+            toolArguments = Array(arguments.dropFirst(toolIndex + 1))
         }
         guard toolPath == "/usr/bin/ssh" || toolPath == "/usr/bin/scp" else { throw CocoaError(.fileReadNoPermission) }
         let tool = toolPath == "/usr/bin/scp" ? "scp" : "ssh"
@@ -189,7 +208,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         let authentication: ChildProcessAuthentication?
         if let secret = usesPasswordHelper ? arguments[1] : authenticationSecret ?? stateLock.withLock({ resolvedPassword }), !secret.isEmpty {
             let kind: ChildProcessAuthentication.Kind
-            if case .privateKey = session.authMethod { kind = .passphrase } else { kind = .password }
+            kind = usesKeyPassphrase ? .passphrase : .password
             authentication = ChildProcessAuthentication(kind: kind, secret: secret)
         } else { authentication = nil }
         let grants = try ChildProcessFileGrants(files: accesses.compactMap { try $0?.childProcessGrant() }, authentication: authentication)
@@ -234,25 +253,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             await resolveJumpServerIfNeeded()
             return
         }
-        var foundPassword: String? = nil
-        switch session.authMethod {
-        case .password(let ref):
-            if let pw = try? await KeychainStore.shared.get(key: ref) {
-                foundPassword = pw
-            } else {
-                foundPassword = ref
-            }
-        case .privateKey(_, let passphraseRef), .certificate(_, _, let passphraseRef):
-            if let ref = passphraseRef, !ref.isEmpty {
-                if let pw = try? await KeychainStore.shared.get(key: ref) {
-                    foundPassword = pw
-                } else {
-                    foundPassword = ref
-                }
-            }
-        default:
-            break
-        }
+        let foundPassword = await SSHTunnelManager.resolveSecret(for: session)
         stateLock.withLock { self.resolvedPassword = foundPassword }
         await resolveJumpServerIfNeeded()
     }
@@ -321,7 +322,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         
         if let pw = resolvedPassword, !pw.isEmpty, let sshpass = sshpassExecutablePath {
             binaryPath = sshpass
-            sshArgs = ["-p", pw, "/usr/bin/ssh"] + sshArgs
+            sshArgs = sshpassArguments(secret: pw, tool: "/usr/bin/ssh") + sshArgs
         }
         
         let storeCommand: PreparedStoreCommand?
@@ -618,6 +619,10 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         do { keyAccess = try acquirePrivateKeyAccess() }
         catch { return nil }
         defer { keyAccess?.close() }
+        let certAccess: FileAccessLease?
+        do { certAccess = try acquireCertificateAccess() }
+        catch { return nil }
+        defer { certAccess?.close() }
         let process = Process()
         let cmd = "printf '%s\\n' \"$HOME\""
         let ctrlArgs = [
@@ -625,13 +630,11 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             "-o", controlSocketOption,
             "-o", "ControlPersist=60s"
         ]
-        let authArgs = sshAuthArgs(privateKeyURL: keyAccess?.url)
+        let authArgs = sshAuthArgs(privateKeyURL: keyAccess?.url, certificateURL: certAccess?.url)
         let jumpArgs = jumpServerArgs()
         if let pw = resolvedPassword, !pw.isEmpty, let sshpass = sshpassExecutablePath {
             process.executableURL = URL(fileURLWithPath: sshpass)
-            process.arguments = [
-                "-p", pw,
-                "/usr/bin/ssh",
+            process.arguments = sshpassArguments(secret: pw, tool: "/usr/bin/ssh") + [
                 "-o", "StrictHostKeyChecking=accept-new",
                 "-o", "ConnectTimeout=5",
             ] + authArgs + jumpArgs + ctrlArgs + [
@@ -654,7 +657,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         process.standardOutput = pipe
         process.standardError = Pipe()
         do {
-            let grants = try configureStoreProcess(process, accesses: [keyAccess])
+            let grants = try configureStoreProcess(process, accesses: [keyAccess, certAccess])
             defer { grants?.close() }
             try process.run()
             let data = (try? pipe.fileHandleForReading.readToEnd()) ?? Data()
@@ -785,13 +788,18 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
                     continue
                 }
                 defer { keyAccess?.close() }
-                let authArgs = self.sshAuthArgs(privateKeyURL: keyAccess?.url)
+                let certAccess: FileAccessLease?
+                do { certAccess = try self.acquireCertificateAccess() }
+                catch {
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    continue
+                }
+                defer { certAccess?.close() }
+                let authArgs = self.sshAuthArgs(privateKeyURL: keyAccess?.url, certificateURL: certAccess?.url)
                 let jumpArgs = self.jumpServerArgs()
                 if let pw = self.resolvedPassword, !pw.isEmpty, let passBin = sshpass {
                     process.executableURL = URL(fileURLWithPath: passBin)
-                    process.arguments = [
-                        "-p", pw,
-                        "/usr/bin/ssh",
+                    process.arguments = sshpassArguments(secret: pw, tool: "/usr/bin/ssh") + [
                         "-o", "StrictHostKeyChecking=accept-new",
                         "-o", "ConnectTimeout=3",
                     ] + authArgs + jumpArgs + ctrlArgs + [
@@ -815,7 +823,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
                 process.standardError = FileHandle.nullDevice
                 
                 do {
-                    let grants = try self.configureStoreProcess(process, accesses: [keyAccess])
+                    let grants = try self.configureStoreProcess(process, accesses: [keyAccess, certAccess])
                     defer { grants?.close() }
                     let outData = try await Self.runProbeProcess(process)
                     
@@ -853,13 +861,13 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         let keyAccess: FileAccessLease?
         keyAccess = try? self.acquirePrivateKeyAccess()
         defer { keyAccess?.close() }
-        let authArgs = self.sshAuthArgs(privateKeyURL: keyAccess?.url)
+        let certAccess = try? self.acquireCertificateAccess()
+        defer { certAccess?.close() }
+        let authArgs = self.sshAuthArgs(privateKeyURL: keyAccess?.url, certificateURL: certAccess?.url)
         let jumpArgs = self.jumpServerArgs()
         if let pw = self.resolvedPassword, !pw.isEmpty, let passBin = sshpass {
             process.executableURL = URL(fileURLWithPath: passBin)
-            process.arguments = [
-                "-p", pw,
-                "/usr/bin/ssh",
+            process.arguments = sshpassArguments(secret: pw, tool: "/usr/bin/ssh") + [
                 "-o", "StrictHostKeyChecking=accept-new",
                 "-o", "ConnectTimeout=5",
             ] + authArgs + jumpArgs + ctrlArgs + [
@@ -881,7 +889,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         }
         
         process.standardError = FileHandle.nullDevice
-        let grants = try? self.configureStoreProcess(process, accesses: [keyAccess])
+        let grants = try? self.configureStoreProcess(process, accesses: [keyAccess, certAccess])
         defer { grants?.close() }
         let outData = try await Self.runProbeProcess(process)
         return String(data: outData, encoding: .utf8) ?? ""
@@ -892,6 +900,8 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         await resolvePasswordIfNeeded()
         let keyAccess = try acquirePrivateKeyAccess()
         defer { keyAccess?.close() }
+        let certAccess = try acquireCertificateAccess()
+        defer { certAccess?.close() }
         var path = path
         if path == "~" || path.hasPrefix("~/") {
             var home = remoteHomeDirectory
@@ -915,13 +925,11 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             "-o", "ControlPersist=60s"
         ]
         
-        let authArgs = sshAuthArgs(privateKeyURL: keyAccess?.url)
+        let authArgs = sshAuthArgs(privateKeyURL: keyAccess?.url, certificateURL: certAccess?.url)
         let jumpArgs = jumpServerArgs()
         if let pw = resolvedPassword, !pw.isEmpty, let passBin = sshpass {
             process.executableURL = URL(fileURLWithPath: passBin)
-            process.arguments = [
-                "-p", pw,
-                "/usr/bin/ssh",
+            process.arguments = sshpassArguments(secret: pw, tool: "/usr/bin/ssh") + [
                 "-o", "StrictHostKeyChecking=accept-new",
             ] + authArgs + jumpArgs + ctrlArgs + [
                 "-p", "\(session.port)",
@@ -943,7 +951,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         let errPipe = Pipe()
         process.standardOutput = pipe
         process.standardError = errPipe
-        let grants = try configureStoreProcess(process, accesses: [keyAccess])
+        let grants = try configureStoreProcess(process, accesses: [keyAccess, certAccess])
         defer { grants?.close() }
         try process.run()
         let data = (try? pipe.fileHandleForReading.readToEnd()) ?? Data()
@@ -1048,7 +1056,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         
         if let pw = resolvedPassword, !pw.isEmpty, let passBin = sshpass {
             process.executableURL = URL(fileURLWithPath: passBin)
-            process.arguments = ["-p", pw, "/usr/bin/scp"] + baseArgs
+            process.arguments = sshpassArguments(secret: pw, tool: "/usr/bin/scp") + baseArgs
         } else {
             process.executableURL = URL(fileURLWithPath: "/usr/bin/scp")
             process.arguments = baseArgs
@@ -1099,7 +1107,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         
         if let pw = resolvedPassword, !pw.isEmpty, let passBin = sshpass {
             process.executableURL = URL(fileURLWithPath: passBin)
-            process.arguments = ["-p", pw, "/usr/bin/scp"] + baseArgs
+            process.arguments = sshpassArguments(secret: pw, tool: "/usr/bin/scp") + baseArgs
         } else {
             process.executableURL = URL(fileURLWithPath: "/usr/bin/scp")
             process.arguments = baseArgs
@@ -1211,6 +1219,8 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         await resolvePasswordIfNeeded()
         let keyAccess = try acquirePrivateKeyAccess()
         defer { keyAccess?.close() }
+        let certAccess = try acquireCertificateAccess()
+        defer { certAccess?.close() }
         let process = Process()
         let sshpass = self.sshpassExecutablePath
         let ctrlArgs = [
@@ -1219,13 +1229,11 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             "-o", "ControlPersist=60s"
         ]
         
-        let authArgs = sshAuthArgs(privateKeyURL: keyAccess?.url)
+        let authArgs = sshAuthArgs(privateKeyURL: keyAccess?.url, certificateURL: certAccess?.url)
         let jumpArgs = jumpServerArgs()
         if let pw = resolvedPassword, !pw.isEmpty, let passBin = sshpass {
             process.executableURL = URL(fileURLWithPath: passBin)
-            process.arguments = [
-                "-p", pw,
-                "/usr/bin/ssh",
+            process.arguments = sshpassArguments(secret: pw, tool: "/usr/bin/ssh") + [
                 "-o", "StrictHostKeyChecking=accept-new",
             ] + authArgs + jumpArgs + ctrlArgs + [
                 "-p", "\(session.port)",
@@ -1245,7 +1253,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         
         let errPipe = Pipe()
         process.standardError = errPipe
-        let grants = try configureStoreProcess(process, accesses: [keyAccess])
+        let grants = try configureStoreProcess(process, accesses: [keyAccess, certAccess])
         defer { grants?.close() }
         try process.run()
         process.waitUntilExit()

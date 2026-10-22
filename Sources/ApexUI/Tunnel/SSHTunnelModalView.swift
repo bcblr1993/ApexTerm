@@ -183,26 +183,8 @@ public struct SSHTunnelModalView: View {
                 return
             }
             Task { @MainActor in
-                var pw: String? = nil
-                switch session.authMethod {
-                case .password(let ref):
-                    if let found = try? await KeychainStore.shared.get(key: ref) {
-                        pw = found
-                    } else {
-                        pw = ref
-                    }
-                case .privateKey(_, let passphraseRef):
-                    if let ref = passphraseRef, !ref.isEmpty {
-                        pw = try? await KeychainStore.shared.get(key: ref)
-                    }
-                default:
-                    break
-                }
-                
-                var keyPath: String? = nil
-                if case .privateKey(let ref, _) = session.authMethod {
-                    keyPath = ref
-                }
+                let pw = await SSHTunnelManager.resolveSecret(for: session)
+                let keyPath = session.privateKeyPath
                 let sshpassPath = (SSHClientFactory.makeClient(for: session) as? NativeSSHSession)?.sshpassExecutablePath
                 
                 do {

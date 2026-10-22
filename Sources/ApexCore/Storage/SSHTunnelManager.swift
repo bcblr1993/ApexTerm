@@ -64,7 +64,7 @@ public final class SSHTunnelManager: ObservableObject {
     
     public func saveTunnels() {
         if let data = try? JSONEncoder().encode(tunnels) {
-            try? data.write(to: tunnelsFileURL)
+            try? data.write(to: tunnelsFileURL, options: .atomic)
         }
     }
     
@@ -154,6 +154,36 @@ public final class SSHTunnelManager: ObservableObject {
         return args
     }
     
+    // MARK: - Credential Resolution
+
+    /// Resolves the login password or key passphrase used to unlock a tunnel's SSH process.
+    /// Mirrors the terminal connection: legacy inline passwords fall back to the stored reference.
+    nonisolated public static func resolveSecret(
+        for session: Session,
+        lookup: @Sendable (String) async -> String? = { try? await KeychainStore.shared.get(key: $0) }
+    ) async -> String? {
+        switch session.authMethod {
+        case .password(let ref):
+            guard !ref.isEmpty else { return nil }
+            if let found = await lookup(ref) { return found }
+            return KeychainStore.isManagedReference(ref) ? nil : ref
+        case .privateKey(_, let passphraseRef), .certificate(_, _, let passphraseRef):
+            guard let ref = passphraseRef, !ref.isEmpty else { return nil }
+            if let found = await lookup(ref) { return found }
+            return KeychainStore.isManagedReference(ref) ? nil : ref
+        default:
+            return nil
+        }
+    }
+
+    /// sshpass matches "assword" by default; key-based sessions answer the passphrase prompt instead.
+    nonisolated public static func sshpassArguments(secret: String, session: Session) -> [String] {
+        var args = ["-p", secret]
+        if session.privateKeyPath != nil { args.append(contentsOf: ["-P", "passphrase"]) }
+        args.append("/usr/bin/ssh")
+        return args
+    }
+
     // MARK: - Lifecycle Management
     
     public func startTunnel(
@@ -182,7 +212,7 @@ public final class SSHTunnelManager: ObservableObject {
         
         if let pw = password, !pw.isEmpty, let sshpass = sshpassPath, FileManager.default.isExecutableFile(atPath: sshpass) {
             binaryPath = sshpass
-            sshArgs = ["-p", pw, "/usr/bin/ssh"] + sshArgs
+            sshArgs = Self.sshpassArguments(secret: pw, session: session) + sshArgs
         }
         
         let process = Process()

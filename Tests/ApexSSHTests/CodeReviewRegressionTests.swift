@@ -1,0 +1,220 @@
+import XCTest
+@testable import ApexCore
+@testable import ApexSSH
+@testable import ApexUI
+
+/// Regression coverage for the v1.14.2 full code review (TC-REV-01 ~ TC-REV-12).
+final class CodeReviewRegressionTests: XCTestCase {
+    private var tempDir: URL!
+    private let sandboxHome = FileManager.default.temporaryDirectory.appendingPathComponent("apex-review-store-" + UUID().uuidString)
+
+    override func setUp() {
+        super.setUp()
+        tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("CodeReview_\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+    }
+
+    override func tearDown() {
+        try? FileManager.default.removeItem(at: tempDir)
+        try? FileManager.default.removeItem(at: sandboxHome)
+        super.tearDown()
+    }
+
+    private var bridge: URL {
+        Bundle(for: CodeReviewRegressionTests.self).bundleURL.deletingLastPathComponent().appendingPathComponent("ApexSSHBridge")
+    }
+
+    private func certSession(passphraseRef: String? = "passphrase_ref") -> Session {
+        Session(name: "ca", host: "bastion.example.test", username: "qa",
+                authMethod: .certificate(keychainRef: "/keys/id_ed25519", certificatePath: "/keys/id_ed25519-cert.pub", passphraseRef: passphraseRef))
+    }
+
+    // MARK: - TC-REV-01: Certificate sessions answer the key passphrase prompt, not the password prompt
+    func testCertificateSessionUsesPassphraseAuthenticationKind() throws {
+        let client = NativeSSHSession(session: certSession(), distributionChannel: .appStore,
+                                      bridgeExecutableURL: bridge, sandboxHomeURL: sandboxHome)
+        XCTAssertTrue(client.usesKeyPassphrase)
+        let command = try XCTUnwrap(client.prepareStoreCommand(binaryPath: "/usr/bin/ssh", arguments: ["example.test"],
+                                                               accesses: [], authenticationSecret: "non-credential fixture"))
+        defer { command.grants.close() }
+        XCTAssertEqual(try ChildProcessFileGrants.read(from: command.grants.fileURL).authentication?.kind, .passphrase)
+
+        let passwordClient = NativeSSHSession(session: Session(name: "pw", host: "h", username: "u", authMethod: .password(keychainRef: "x")))
+        XCTAssertFalse(passwordClient.usesKeyPassphrase)
+    }
+
+    // MARK: - TC-REV-02: sshpass matches the passphrase prompt for key-based sessions
+    func testSSHPassArgumentsMatchPassphrasePromptForKeySessions() {
+        let certClient = NativeSSHSession(session: certSession())
+        XCTAssertEqual(certClient.sshpassArguments(secret: "s", tool: "/usr/bin/ssh"), ["-p", "s", "-P", "passphrase", "/usr/bin/ssh"])
+
+        let keyClient = NativeSSHSession(session: Session(name: "k", host: "h", username: "u",
+                                                          authMethod: .privateKey(keychainRef: "/k", passphraseRef: "r")))
+        XCTAssertEqual(keyClient.sshpassArguments(secret: "s", tool: "/usr/bin/scp"), ["-p", "s", "-P", "passphrase", "/usr/bin/scp"])
+
+        let pwClient = NativeSSHSession(session: Session(name: "p", host: "h", username: "u", authMethod: .password(keychainRef: "r")))
+        XCTAssertEqual(pwClient.sshpassArguments(secret: "s", tool: "/usr/bin/ssh"), ["-p", "s", "/usr/bin/ssh"])
+    }
+
+    // MARK: - TC-REV-03: Store bridge still parses sshpass commands carrying a passphrase prompt
+    func testStoreCommandParsesSSHPassPromptOption() throws {
+        let client = NativeSSHSession(session: certSession(), distributionChannel: .appStore,
+                                      bridgeExecutableURL: bridge, sandboxHomeURL: sandboxHome)
+        guard let sshpass = client.sshpassExecutablePath else {
+            throw XCTSkip("store builds only use the sshpass bundled inside the app")
+        }
+        let secret = "non-credential fixture"
+        let args = client.sshpassArguments(secret: secret, tool: "/usr/bin/ssh") + ["-p", "22", "qa@example.test"]
+        let command = try XCTUnwrap(client.prepareStoreCommand(binaryPath: sshpass, arguments: args, accesses: []))
+        defer { command.grants.close() }
+        XCTAssertEqual(Array(command.arguments.prefix(2)), ["--tool", "ssh"])
+        XCTAssertFalse(command.arguments.contains(secret), "secret must travel through askpass, never argv")
+        XCTAssertFalse(command.arguments.contains("passphrase"))
+        XCTAssertEqual(Array(command.arguments.suffix(3)), ["-p", "22", "qa@example.test"])
+        XCTAssertEqual(try ChildProcessFileGrants.read(from: command.grants.fileURL).authentication?.kind, .passphrase)
+    }
+
+    // MARK: - TC-REV-04: Tunnel credential resolution covers certificate passphrases and legacy passwords
+    func testTunnelSecretResolution() async {
+        let store: [String: String] = ["passphrase_ref": "cert-pass", "ssh_ok": "login-pass"]
+        let lookup: @Sendable (String) async -> String? = { store[$0] }
+
+        let certSecret = await SSHTunnelManager.resolveSecret(for: certSession(), lookup: lookup)
+        XCTAssertEqual(certSecret, "cert-pass")
+        let noPassphrase = await SSHTunnelManager.resolveSecret(for: certSession(passphraseRef: nil), lookup: lookup)
+        XCTAssertNil(noPassphrase)
+
+        let pw = Session(name: "p", host: "h", username: "u", authMethod: .password(keychainRef: "ssh_ok"))
+        let found = await SSHTunnelManager.resolveSecret(for: pw, lookup: lookup)
+        XCTAssertEqual(found, "login-pass")
+
+        let legacy = Session(name: "l", host: "h", username: "u", authMethod: .password(keychainRef: "inline-legacy"))
+        let legacySecret = await SSHTunnelManager.resolveSecret(for: legacy, lookup: lookup)
+        XCTAssertEqual(legacySecret, "inline-legacy")
+
+        let managed = Session(name: "m", host: "h", username: "u", authMethod: .password(keychainRef: "ssh_\(UUID().uuidString)"))
+        let managedSecret = await SSHTunnelManager.resolveSecret(for: managed, lookup: lookup)
+        XCTAssertNil(managedSecret, "a missing managed keychain item must not be sent as the password")
+
+        let agent = await SSHTunnelManager.resolveSecret(for: Session(name: "a", host: "h", username: "u"), lookup: lookup)
+        XCTAssertNil(agent)
+    }
+
+    // MARK: - TC-REV-05: Tunnel sshpass prefix adapts to the authentication kind
+    func testTunnelSSHPassArguments() {
+        XCTAssertEqual(SSHTunnelManager.sshpassArguments(secret: "s", session: certSession()), ["-p", "s", "-P", "passphrase", "/usr/bin/ssh"])
+        let pw = Session(name: "p", host: "h", username: "u", authMethod: .password(keychainRef: "r"))
+        XCTAssertEqual(SSHTunnelManager.sshpassArguments(secret: "s", session: pw), ["-p", "s", "/usr/bin/ssh"])
+    }
+
+    // MARK: - TC-REV-06: Managed keychain reference detection
+    func testManagedKeychainReferenceDetection() {
+        let id = UUID().uuidString
+        XCTAssertTrue(KeychainStore.isManagedReference("ssh_\(id)"))
+        XCTAssertTrue(KeychainStore.isManagedReference("passphrase_\(id)"))
+        XCTAssertFalse(KeychainStore.isManagedReference("ssh_not-a-uuid"))
+        XCTAssertFalse(KeychainStore.isManagedReference("hunter2"))
+        XCTAssertFalse(KeychainStore.isManagedReference(""))
+    }
+
+    // MARK: - TC-REV-07: SSH config follows OpenSSH first-value-wins and isolates Match blocks
+    func testSSHConfigFirstValueWinsAndMatchIsolation() {
+        let config = """
+        Host web
+            HostName 10.0.0.1
+            User deploy
+            Port 2200
+            HostName 10.0.0.99
+            Port 2299
+            IdentityFile ~/.ssh/first
+            IdentityFile ~/.ssh/second
+
+        Match host web exec "true"
+            User attacker
+            Port 9999
+
+        Host db
+            HostName 10.0.0.2
+        """
+        let hosts = SSHConfigParser.parse(content: config)
+        XCTAssertEqual(hosts.map(\.hostPattern), ["web", "db"])
+        let web = hosts[0]
+        XCTAssertEqual(web.hostName, "10.0.0.1")
+        XCTAssertEqual(web.user, "deploy")
+        XCTAssertEqual(web.port, 2200)
+        XCTAssertEqual(web.identityFile, ("~/.ssh/first" as NSString).expandingTildeInPath)
+        XCTAssertEqual(hosts[1].hostName, "10.0.0.2")
+        XCTAssertEqual(hosts[1].port, 22)
+    }
+
+    // MARK: - TC-REV-08: CertificateFile without IdentityFile derives the paired private key
+    func testCertificateOnlyConfigDerivesPrivateKey() {
+        let hosts = SSHConfigParser.parse(content: """
+        Host ca
+            HostName ca.example.test
+            CertificateFile /keys/id_ed25519-cert.pub
+        """)
+        let session = hosts[0].toSession()
+        XCTAssertEqual(session.authMethod, .certificate(keychainRef: "/keys/id_ed25519", certificatePath: "/keys/id_ed25519-cert.pub", passphraseRef: nil))
+
+        let odd = SSHConfigParser.parse(content: "Host odd\n  CertificateFile /keys/custom.crt\n")[0].toSession()
+        XCTAssertEqual(odd.authMethod, .agent, "non-standard certificate names cannot be paired, fall back to agent")
+    }
+
+    // MARK: - TC-REV-09: Certificate discovery from a public key path
+    func testCertificateDiscoveryFromPublicKeyPath() throws {
+        let key = tempDir.appendingPathComponent("id_ed25519").path
+        let cert = key + "-cert.pub"
+        try Data("ssh-ed25519-cert-v01@openssh.com AAAA test".utf8).write(to: URL(fileURLWithPath: cert))
+        XCTAssertEqual(SSHCertificateHelper.discoverCertificate(forPrivateKeyPath: key), cert)
+        XCTAssertEqual(SSHCertificateHelper.discoverCertificate(forPrivateKeyPath: key + ".pub"), cert)
+        XCTAssertNil(SSHCertificateHelper.discoverCertificate(forPrivateKeyPath: tempDir.appendingPathComponent("missing").path))
+    }
+
+    // MARK: - TC-REV-10: Session editor validation, tags and jump host candidates
+    @MainActor
+    func testSessionEditorValidationTagsAndJumpHosts() {
+        typealias Auth = SessionEditModal.AuthType
+        XCTAssertNotNil(Auth.privateKey.validationMessage(privateKeyPath: "  ", certificatePath: ""))
+        XCTAssertNil(Auth.privateKey.validationMessage(privateKeyPath: "~/.ssh/id_ed25519", certificatePath: ""))
+        XCTAssertNotNil(Auth.certificate.validationMessage(privateKeyPath: "", certificatePath: "/c-cert.pub"))
+        XCTAssertNotNil(Auth.certificate.validationMessage(privateKeyPath: "/k", certificatePath: " "))
+        XCTAssertNil(Auth.certificate.validationMessage(privateKeyPath: "/k", certificatePath: "/k-cert.pub"))
+        XCTAssertNil(Auth.password.validationMessage(privateKeyPath: "", certificatePath: ""))
+        XCTAssertNil(Auth.agent.validationMessage(privateKeyPath: "", certificatePath: ""))
+
+        XCTAssertEqual(SessionEditModal.parseTags("prod, ,web，db,prod,"), ["prod", "web", "db"])
+        XCTAssertEqual(SessionEditModal.parseTags("   "), [])
+
+        let current = Session(name: "self", host: "a", username: "u")
+        let remote = Session(name: "bastion", host: "b", username: "u")
+        let candidates = SessionEditModal.jumpHostCandidates(from: [current, remote, Session.local()], excluding: current.id)
+        XCTAssertEqual(candidates.map(\.id), [remote.id])
+    }
+
+    // MARK: - TC-REV-11: Sidebar groups padded/blank folders and hides empty groups while searching
+    @MainActor
+    func testSidebarFolderNormalizationAndSearch() {
+        let padded = Session(name: "api", host: "10.0.0.1", username: "u", folder: "  Prod  ")
+        let blank = Session(name: "misc", host: "10.0.0.2", username: "u", folder: "")
+        let none = Session(name: "box", host: "10.0.0.3", username: "u", folder: nil, tags: ["edge"])
+        let all = [padded, blank, none]
+
+        XCTAssertEqual(SidebarView.folderNames(sessions: all, extraFolders: ["Empty"], searchFilter: ""),
+                       ["Empty", "Prod", L10n.generalFolder].sorted())
+        XCTAssertEqual(SidebarView.sessions(in: "Prod", from: all, searchFilter: "").map(\.id), [padded.id])
+        XCTAssertEqual(SidebarView.sessions(in: L10n.generalFolder, from: all, searchFilter: "").map(\.id), [blank.id, none.id])
+
+        XCTAssertEqual(SidebarView.folderNames(sessions: all, extraFolders: ["Empty"], searchFilter: "edge"), [L10n.generalFolder])
+        XCTAssertEqual(SidebarView.sessions(in: L10n.generalFolder, from: all, searchFilter: " edge ").map(\.id), [none.id])
+    }
+
+    // MARK: - TC-REV-12: Updater ranks a final release above its pre-release
+    func testUpdaterPrereleaseOrdering() {
+        XCTAssertTrue(UpdateManager.isVersion("1.15.0", higherThan: "1.15.0-beta.1"))
+        XCTAssertFalse(UpdateManager.isVersion("1.15.0-beta.1", higherThan: "1.15.0"))
+        XCTAssertFalse(UpdateManager.isVersion("1.15.0-rc.1", higherThan: "1.15.0-beta.1"))
+        XCTAssertTrue(UpdateManager.isVersion("1.15.1-beta", higherThan: "1.15.0"))
+        XCTAssertFalse(UpdateManager.isVersion("1.15.0", higherThan: "1.15.0"))
+    }
+}

@@ -56,7 +56,7 @@ public final class SSHKeyVaultManager: ObservableObject {
     
     public func saveKeys() {
         if let data = try? JSONEncoder().encode(keys) {
-            try? data.write(to: vaultFileURL)
+            try? data.write(to: vaultFileURL, options: .atomic)
         }
     }
     

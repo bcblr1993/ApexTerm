@@ -192,20 +192,9 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
                 let autoTunnels = SSHTunnelManager.shared.tunnels(for: self.session.id).filter { $0.autoStart }
                 for t in autoTunnels {
                     if !SSHTunnelManager.shared.state(for: t.id).isRunning {
-                        var pw: String? = nil
-                        switch self.session.authMethod {
-                        case .password(let ref):
-                            pw = try? await KeychainStore.shared.get(key: ref)
-                        case .privateKey(_, let passphraseRef):
-                            if let ref = passphraseRef, !ref.isEmpty {
-                                pw = try? await KeychainStore.shared.get(key: ref)
-                            }
-                        default: break
-                        }
-                        var keyPath: String? = nil
-                        if case .privateKey(let ref, _) = self.session.authMethod { keyPath = ref }
+                        let pw = await SSHTunnelManager.resolveSecret(for: self.session)
                         let sshpass = (self.sshClient as? NativeSSHSession)?.sshpassExecutablePath
-                        try? SSHTunnelManager.shared.startTunnel(id: t.id, session: self.session, password: pw, privateKeyPath: keyPath, sshpassPath: sshpass)
+                        try? SSHTunnelManager.shared.startTunnel(id: t.id, session: self.session, password: pw, privateKeyPath: self.session.privateKeyPath, sshpassPath: sshpass)
                     }
                 }
             } catch {

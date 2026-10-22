@@ -192,11 +192,7 @@ public struct SidebarView: View {
                         }
                     }
 
-                    if !searchFilter.isEmpty && !store.sessions.contains(where: {
-                        $0.name.localizedCaseInsensitiveContains(searchFilter) ||
-                        $0.host.localizedCaseInsensitiveContains(searchFilter) ||
-                        $0.tags.contains(where: { $0.localizedCaseInsensitiveContains(searchFilter) })
-                    }) {
+                    if !searchFilter.isEmpty && !store.sessions.contains(where: { Self.matchesSearch($0, filter: searchFilter) }) {
                         ContentUnavailableView("未找到匹配会话", systemImage: "magnifyingglass",
                                                description: Text("检查会话名称、标签或主机地址，或清空搜索重试。"))
                     }
@@ -241,33 +237,41 @@ public struct SidebarView: View {
     }
     
     private var groupedFolders: [String] {
-        var set = Set<String>()
-        for s in store.sessions {
-            let f = (s.folder ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            if !f.isEmpty {
-                set.insert(f)
-            } else {
-                set.insert(L10n.generalFolder)
-            }
-        }
-        for f in store.folders {
-            let trimmed = f.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
-                set.insert(trimmed)
+        Self.folderNames(sessions: store.sessions, extraFolders: store.folders, searchFilter: searchFilter)
+    }
+    
+    private func sessionsInFolder(_ folder: String) -> [Session] {
+        Self.sessions(in: folder, from: store.sessions, searchFilter: searchFilter)
+    }
+
+    /// Blank or padded folder names group under the same trimmed key the tree renders.
+    public static func normalizedFolder(of session: Session) -> String {
+        let trimmed = (session.folder ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? L10n.generalFolder : trimmed
+    }
+
+    public static func matchesSearch(_ session: Session, filter: String) -> Bool {
+        let query = filter.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return true }
+        return session.name.localizedCaseInsensitiveContains(query) ||
+            session.host.localizedCaseInsensitiveContains(query) ||
+            session.tags.contains(where: { $0.localizedCaseInsensitiveContains(query) })
+    }
+
+    /// While searching, folders without a matching session are hidden instead of rendering empty groups.
+    public static func folderNames(sessions: [Session], extraFolders: [String], searchFilter: String) -> [String] {
+        var set = Set(sessions.filter { matchesSearch($0, filter: searchFilter) }.map(normalizedFolder(of:)))
+        if searchFilter.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            for f in extraFolders {
+                let trimmed = f.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty { set.insert(trimmed) }
             }
         }
         return Array(set).sorted()
     }
-    
-    private func sessionsInFolder(_ folder: String) -> [Session] {
-        store.sessions.filter {
-            let matchesFolder = ($0.folder ?? L10n.generalFolder) == folder
-            if searchFilter.isEmpty { return matchesFolder }
-            let matchesSearch = $0.name.localizedCaseInsensitiveContains(searchFilter) ||
-                                $0.host.localizedCaseInsensitiveContains(searchFilter) ||
-                                $0.tags.contains(where: { $0.localizedCaseInsensitiveContains(searchFilter) })
-            return matchesFolder && matchesSearch
-        }
+
+    public static func sessions(in folder: String, from sessions: [Session], searchFilter: String) -> [Session] {
+        sessions.filter { normalizedFolder(of: $0) == folder && matchesSearch($0, filter: searchFilter) }
     }
     
     private func folderIcon(for folder: String) -> String {

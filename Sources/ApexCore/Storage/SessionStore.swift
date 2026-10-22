@@ -74,13 +74,13 @@ public final class SessionStore: ObservableObject {
     
     public func saveAll() {
         if let data = try? JSONEncoder().encode(sessions) {
-            try? data.write(to: sessionsFileURL)
+            try? data.write(to: sessionsFileURL, options: .atomic)
         }
         if let data = try? JSONEncoder().encode(snippets) {
-            try? data.write(to: snippetsFileURL)
+            try? data.write(to: snippetsFileURL, options: .atomic)
         }
         if let data = try? JSONEncoder().encode(triggers) {
-            try? data.write(to: triggersFileURL)
+            try? data.write(to: triggersFileURL, options: .atomic)
         }
     }
     

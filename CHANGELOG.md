@@ -2,6 +2,30 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.14.2] - 2026-10-22
+
+### 🐞 问题修复 (Bug Fixes)
+- **证书认证在商店版下的文件授权缺失 (`NativeSSHSession`)**：远程主目录探测、Agentless 指标采集、单次命令执行、SFTP 目录列表与远程文件操作此前仅向子进程传递私钥授权、漏传证书授权，导致证书会话连接成功后上述功能在 App Sandbox 内读取证书失败；现所有 SSH 子进程统一获取并传递私钥 + 证书双重授权。
+- **证书会话口令被误判为登录密码**：商店版 askpass 桥接以 `case .privateKey` 判定口令类型，证书会话落入 `password` 分支而拒答 `Enter passphrase for key` 提示；现私钥与证书会话统一按 `passphrase` 处理。
+- **带口令私钥/证书在直装版连接卡死**：sshpass 默认只匹配 `assword` 提示，无法应答 OpenSSH 的私钥口令提示；现对私钥/证书会话自动追加 `-P passphrase`，并同步兼容商店版桥接参数解析。
+- **SSH 隧道未读取证书口令**：工作区自动启动隧道与隧道面板手动启动各自维护一套凭据解析且遗漏证书分支（两处逻辑还不一致）；现收敛为 `SSHTunnelManager.resolveSecret` 单一实现，终端连接与隧道共用。
+- **钥匙串读取失败时把引用名当作密码**：钥匙串暂不可用时，编辑弹窗会把 `ssh_<UUID>` 引用名填入密码框，再次保存即覆盖真实密码；现通过 `KeychainStore.isManagedReference` 区分托管引用与历史内联密码，托管引用绝不回退为明文。
+- **侧边栏会话"消失"**：文件夹名带首尾空格或为空字符串的会话，分组标题按裁剪后名称生成、组内过滤却按原始名称匹配，导致会话不显示；现分组与过滤共用归一化规则，搜索时同时隐藏无匹配会话的空文件夹。
+- **`~/.ssh/config` 导入语义偏差 (`SSHConfigParser`)**：对齐 OpenSSH「首个取值生效」规则（HostName/User/Port/IdentityFile/CertificateFile）；`Match` 条件块不再把其中指令错误叠加到上一个 Host；仅配置 `CertificateFile` 时按 `<key>-cert.pub` 约定推导私钥。
+- **证书自动发现对 `~/…pub` 路径失效**：`.pub` 回退分支未展开 `~`，现统一基于展开后的路径探测。
+- **在线更新预发布排序**：`1.15.0` 正式版此前不被视为高于 `1.15.0-beta`，预发布用户收不到正式版更新；现遵循 SemVer 规则。
+- **配置文件写盘非原子**：会话、命令片段、触发器、隧道与密钥保险库 JSON 改为原子写入，避免崩溃或断电时写出半截文件导致配置丢失。
+
+### ⚡️ 体验优化 (Improvements)
+- **会话编辑弹窗表单校验**：「指定私钥」缺少路径、「指定证书」缺少私钥或证书时禁用保存并给出就地提示，杜绝保存无法认证的会话；
+- 标签输入支持中英文逗号分隔并自动去除空白与重复项；会话名称仅含空格时回退为主机地址；
+- 跳板机下拉列表过滤本地终端会话。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- 新增 `CodeReviewRegressionTests`（TC-REV-01 ~ TC-REV-12）12 项回归用例，并固化为 RG-13 质量门禁写入 `test_vm_acceptance.sh` 与 `AGENTS.md`；
+- Tart VM（macOS 27）实链门禁下全量 481 项自动化测试 0 failures（5 项公网/商店专属用例按条件跳过），Swift 6 模式零警告；
+- 8 大性能 Benchmark 全部优于门禁阈值（Release 配置物理按键全链路延迟 6.38 μs、ANSI 单 Span 2.645 μs）。
+
 ## [v1.14.1] - 2026-10-22
 
 ### ⚡️ 体验优化与细节打磨 (Liquid Class Polish)

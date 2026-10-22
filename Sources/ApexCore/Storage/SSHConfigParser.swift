@@ -31,7 +31,11 @@ public struct SSHConfigHost: Identifiable, Sendable, Equatable, Hashable {
     /// Converts this parsed config entry into a ready-to-use ApexTerm Session
     public func toSession(folder: String = "SSH Config") -> Session {
         let auth: SSHAuthMethod
-        if let certPath = certificateFile, !certPath.isEmpty, let keyPath = identityFile, !keyPath.isEmpty {
+        // OpenSSH pairs `<key>-cert.pub` with `<key>`; derive the key when only CertificateFile is given.
+        let derivedKeyPath = certificateFile.flatMap { cert -> String? in
+            cert.hasSuffix("-cert.pub") ? String(cert.dropLast("-cert.pub".count)) : nil
+        }
+        if let certPath = certificateFile, !certPath.isEmpty, let keyPath = identityFile ?? derivedKeyPath, !keyPath.isEmpty {
             auth = .certificate(keychainRef: keyPath, certificatePath: certPath, passphraseRef: nil)
         } else if let keyPath = identityFile, !keyPath.isEmpty {
             auth = .privateKey(keychainRef: keyPath, passphraseRef: nil)
@@ -87,6 +91,9 @@ public final class SSHConfigParser: Sendable {
         var currentPort = 22
         var currentIdentityFile: String? = nil
         var currentCertificateFile: String? = nil
+        var portWasSet = false
+        // `Match` blocks are conditional; their directives must not leak into the preceding Host.
+        var insideMatchBlock = false
         
         func flushCurrent() {
             guard !currentHostPatterns.isEmpty else { return }
@@ -114,6 +121,7 @@ public final class SSHConfigParser: Sendable {
             currentPort = 22
             currentIdentityFile = nil
             currentCertificateFile = nil
+            portWasSet = false
         }
         
         for rawLine in lines {
@@ -149,9 +157,18 @@ public final class SSHConfigParser: Sendable {
                 cleanValue = String(cleanValue.dropFirst().dropLast()).trimmingCharacters(in: .whitespaces)
             }
             
+            if directive == "match" {
+                flushCurrent()
+                insideMatchBlock = true
+                continue
+            }
+            if insideMatchBlock && directive != "host" { continue }
+            
+            // OpenSSH semantics: the first obtained value for each parameter wins.
             switch directive {
             case "host":
                 flushCurrent()
+                insideMatchBlock = false
                 let patterns: [String]
                 if (rawValue.hasPrefix("\"") && rawValue.hasSuffix("\"")) || (rawValue.hasPrefix("'") && rawValue.hasSuffix("'")) {
                     patterns = [cleanValue]
@@ -161,23 +178,26 @@ public final class SSHConfigParser: Sendable {
                 currentHostPatterns = patterns
                 
             case "hostname":
-                currentHostName = cleanValue
+                if currentHostName.isEmpty { currentHostName = cleanValue }
                 
             case "user":
-                currentUser = cleanValue
+                if currentUser.isEmpty { currentUser = cleanValue }
                 
             case "port":
-                if let p = Int(cleanValue), p > 0 && p <= 65535 {
+                if !portWasSet, let p = Int(cleanValue), p > 0 && p <= 65535 {
                     currentPort = p
+                    portWasSet = true
                 }
                 
             case "identityfile":
-                let expanded = (cleanValue as NSString).expandingTildeInPath
-                currentIdentityFile = expanded
+                if currentIdentityFile == nil {
+                    currentIdentityFile = (cleanValue as NSString).expandingTildeInPath
+                }
                 
             case "certificatefile":
-                let expanded = (cleanValue as NSString).expandingTildeInPath
-                currentCertificateFile = expanded
+                if currentCertificateFile == nil {
+                    currentCertificateFile = (cleanValue as NSString).expandingTildeInPath
+                }
                 
             default:
                 break

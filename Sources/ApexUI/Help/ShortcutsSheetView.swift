@@ -178,6 +178,7 @@ public struct ShortcutsSheetView: View {
                 Button("关闭") {
                     dismiss()
                 }
+                .buttonStyle(.bordered)
                 .keyboardShortcut(.cancelAction)
                 .keyboardShortcut(.defaultAction)
                 .controlSize(.regular)

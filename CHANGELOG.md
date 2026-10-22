@@ -2,7 +2,40 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
-## [v1.12.0] - 2026-10-16
+## [v1.13.0] - 2026-10-22
+
+### ✨ 体验优化与深度打磨 (Liquid Class Polish)
+- **全面对齐 macOS Liquid Class 设计规范与全功能按钮触觉打磨**：
+  - **全新标准化触觉交互组件库 (`ApexStyle.swift`)**：
+    - 新增 `ApexActionButton`：面向列表项、卡片行与工具条的统一触觉交互按钮，支持图标、标题、主题色调 (`tint`)、尺寸规格 (`.small` / `.regular`)、平滑悬浮位移微浮雕 (`hoverTransition`)、外发光投影与弹性缩放 (`springSnappy`)；
+    - 新增 `ApexMenuTrigger`：专为原生下拉菜单定制的 Liquid 触觉触发器，彻底消除旧版裸露图标，统一为柔和圆角微光触觉按钮；
+    - 升级 `ApexIconButton` & `ApexPillButton`：引入 `1.04x` 悬浮流体微动弹性响应与选中位移动画。
+  - **SFTP 远程文件管理器深度精修 (`SFTPView.swift` & `TransferDrawer.swift`)**：
+    - 常用目录预设与书签跳转按钮升级为带有动态微光指示的 `ApexMenuTrigger`；
+    - 更多文件操作下拉菜单（新建文件/文件夹/隐藏文件）升级为标准 Liquid 触觉菜单；
+    - 筛选输入框清空按钮升级为带触觉弹性的 `ApexIconButton`；
+    - 传输任务抽屉清空记录与取消任务按钮升级为 `ApexActionButton` 与 `ApexIconButton`，下载完成项快速定位访达按钮支持微浮雕悬浮反馈。
+  - **快捷命令栏与全局调色板深度精修 (`QuickCommandBarView.swift`)**：
+    - 底栏快捷命令「+ 添加」按钮全面重构为原生 `ApexPillButton`，统一胶囊圆角、自适应背景与平滑位移动画；
+    - 动态变量输入弹窗 (`VariableInputSheet`) 与命令新建弹窗 (`AddSnippetSheet`) 全系对齐系统规范操作按钮 (`.buttonStyle(.bordered).controlSize(.regular)` 与 `.apexProminentButton().controlSize(.regular)`)。
+  - **SSH 密钥保险库与端口转发深度精修 (`SSHKeyVaultSettingsView.swift` & `SSHTunnelModalView.swift`)**：
+    - 密钥保险库「复制公钥」与「一键部署」按钮全系重构为标准 `ApexActionButton`，获得实时外发光投影与微交互反馈；
+    - 端口转发列表启动/停止切换按钮重构为带安全状态色感知的 `ApexActionButton`；
+    - 密钥导入弹窗与隧道创建弹窗全系对齐原生边框触觉取消与突出保存规范。
+  - **远程进程监视中心 (`ProcessInspectorView.swift`)**：
+    - 终止进程危险操作按钮升级为受保护语义的 `ApexActionButton("终止", tint: ApexStyle.error, size: .small)`。
+  - **工作区标签栏与性能胶囊 (`WorkspaceView.swift` & `MetricCapsuleView.swift`)**：
+    - 顶部会话标签页增加鼠标移入悬停微升（`scaleEffect(1.015)`）与流体弹性过渡；
+    - 顶部实时监控指示胶囊引入鼠标悬停光晕边框高亮与柔和缩放。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- **全量自动化测试与回归门禁 100% 绿色通过**：
+  - `TitlebarZoomAndUIRegressionTests` 扩充对 `ApexActionButton` 与 `ApexMenuTrigger` 的自动化几何断言与触觉交互覆盖，13 项 UI 回归测试全部通过；
+  - 核心发版回归门禁 RG-08 (窗口分屏磁吸与 UI 对齐)、RG-09 (核心功能与隧道扩展)、RG-10 (运维深度监控与安全审计) 及 RG-11 (iCloud 云端多设备同步) 100% 通过；
+  - 全量自动化测试（涵盖 Core 核心、SSH 协议、Terminal 终端引擎、UI 状态、分屏与 ProductFeature）零失败（0 failures, 0 unexpected）；
+  - Swift 6 严格模式下零编译警告 (Zero Warnings)；
+  - 8 大性能 Benchmark 全部优于门禁阈值（物理按键延迟 6.85 μs）；
+  - Apple 官方公证（Notarized）与 Developer ID 签名（YanNan Chen）。
 
 ### ✨ 新增特性 (Features)
 - **iCloud 云端多设备自动同步与云端保险库 (iCloud Cloud Vault & Multi-Device Sync)**：

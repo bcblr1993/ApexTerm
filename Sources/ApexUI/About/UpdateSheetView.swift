@@ -107,6 +107,8 @@ public struct UpdateSheetView: View {
                 Button(L10n.remindLater) {
                     dismiss()
                 }
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
                 .keyboardShortcut(.cancelAction)
                 
                 Spacer()
@@ -122,6 +124,7 @@ public struct UpdateSheetView: View {
                     }
                 }
                 .apexProminentButton()
+                .controlSize(.regular)
                 .keyboardShortcut(.defaultAction)
             }
         }
@@ -185,6 +188,7 @@ public struct UpdateSheetView: View {
                     updateManager.cancelUpdate()
                 }
                 .buttonStyle(.bordered)
+                .controlSize(.regular)
             }
         }
         .padding(24)
@@ -229,6 +233,8 @@ public struct UpdateSheetView: View {
                 Button(L10n.restartLater) {
                     dismiss()
                 }
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
                 .keyboardShortcut(.cancelAction)
                 
                 Spacer()
@@ -242,6 +248,7 @@ public struct UpdateSheetView: View {
                     }
                 }
                 .apexProminentButton()
+                .controlSize(.regular)
                 .keyboardShortcut(.defaultAction)
             }
             .padding(.top, 8)
@@ -299,6 +306,8 @@ public struct UpdateSheetView: View {
                 Button(L10n.closeWindow) {
                     dismiss()
                 }
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
                 .keyboardShortcut(.cancelAction)
                 
                 Spacer()
@@ -309,6 +318,7 @@ public struct UpdateSheetView: View {
                         dismiss()
                     }
                     .buttonStyle(.bordered)
+                    .controlSize(.regular)
                 }
                 
                 Button(L10n.retry) {
@@ -317,6 +327,7 @@ public struct UpdateSheetView: View {
                     }
                 }
                 .apexProminentButton()
+                .controlSize(.regular)
                 .keyboardShortcut(.defaultAction)
             }
             .padding(.top, 8)

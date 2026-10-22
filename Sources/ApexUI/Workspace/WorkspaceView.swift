@@ -1412,6 +1412,8 @@ struct TabButton: View {
                 )
         )
         .shadow(color: isSelected ? Color.black.opacity(0.06) : Color.clear, radius: 3, x: 0, y: 1)
+        .scaleEffect(isHovered && !isSelected ? 1.015 : 1.0)
+        .animation(ApexStyle.springSnappy, value: isHovered)
         .contentShape(Rectangle())
         .onTapGesture {
             onSelect()

@@ -164,6 +164,9 @@ public struct ApexIconButton: View {
                     .foregroundColor(isSelected ? ApexStyle.accent : (isHovered ? ApexStyle.primary : ApexStyle.secondary))
             }
             .frame(width: size, height: size)
+            .scaleEffect(isHovered ? 1.04 : 1.0)
+            .animation(ApexStyle.springSnappy, value: isHovered)
+            .animation(ApexStyle.springSnappy, value: isSelected)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -237,6 +240,114 @@ public struct ApexPillButton: View {
         .onHover { hovering in
             isHovered = hovering
         }
+    }
+}
+
+/// Standardized tactile action button for list rows, card views, and toolbars conforming to macOS Liquid Class HIG
+public struct ApexActionButton: View {
+    let title: String
+    let icon: String?
+    let tint: Color
+    let size: ControlSize
+    let action: () -> Void
+    
+    @State private var isHovered = false
+    
+    public init(
+        _ title: String,
+        icon: String? = nil,
+        tint: Color = ApexStyle.accent,
+        size: ControlSize = .small,
+        action: @escaping () -> Void
+    ) {
+        self.title = title
+        self.icon = icon
+        self.tint = tint
+        self.size = size
+        self.action = action
+    }
+    
+    public var body: some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                if let icon = icon {
+                    Image(systemName: icon)
+                        .font(.system(size: size == .small ? 9.5 : 11, weight: .semibold))
+                }
+                Text(title)
+                    .font(.system(size: size == .small ? 11 : 12, weight: .medium))
+            }
+            .padding(.horizontal, size == .small ? 8 : 10)
+            .padding(.vertical, size == .small ? 3.5 : 5)
+            .background(
+                RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
+                    .fill(isHovered ? tint.opacity(0.18) : tint.opacity(0.10))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
+                    .stroke(isHovered ? tint.opacity(0.45) : tint.opacity(0.20), lineWidth: 0.75)
+            )
+            .foregroundColor(tint)
+            .scaleEffect(isHovered ? 1.02 : 1.0)
+            .shadow(color: isHovered ? tint.opacity(0.15) : Color.clear, radius: 3, x: 0, y: 1)
+            .animation(ApexStyle.springSnappy, value: isHovered)
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            withAnimation(ApexStyle.hoverTransition) {
+                isHovered = hovering
+            }
+        }
+    }
+}
+
+/// Standardized trigger view for native SwiftUI Menus adhering to macOS Liquid Class HIG
+public struct ApexMenuTrigger: View {
+    let icon: String
+    let label: String?
+    let size: CGFloat
+    let iconSize: CGFloat
+    let tint: Color?
+    
+    @State private var isHovered = false
+    
+    public init(
+        icon: String,
+        label: String? = nil,
+        size: CGFloat = 24,
+        iconSize: CGFloat = 11,
+        tint: Color? = nil
+    ) {
+        self.icon = icon
+        self.label = label
+        self.size = size
+        self.iconSize = iconSize
+        self.tint = tint
+    }
+    
+    public var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
+                .fill(isHovered ? ApexStyle.primary.opacity(0.08) : Color.clear)
+                .overlay(
+                    RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
+                        .stroke(isHovered ? ApexStyle.border.opacity(0.4) : Color.clear, lineWidth: 0.75)
+                )
+            
+            Image(systemName: icon)
+                .font(.system(size: iconSize, weight: .medium))
+                .foregroundColor(tint ?? (isHovered ? ApexStyle.primary : ApexStyle.secondary))
+        }
+        .frame(width: size, height: size)
+        .scaleEffect(isHovered ? 1.04 : 1.0)
+        .animation(ApexStyle.springSnappy, value: isHovered)
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            withAnimation(ApexStyle.hoverTransition) {
+                isHovered = hovering
+            }
+        }
+        .help(label ?? "")
     }
 }
 

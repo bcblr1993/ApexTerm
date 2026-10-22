@@ -7,6 +7,7 @@ public struct MetricCapsuleView: View {
     @ObservedObject private var themeSettings = AppSettings.shared
     @ObservedObject public var historyStore: ObservableMetricsHistory
     @State private var showingDetail = false
+    @State private var isCapsuleHovered = false
     private let compact: Bool
     private let monitoringEnabled: Bool
     private let connectionActive: Bool
@@ -118,14 +119,17 @@ public struct MetricCapsuleView: View {
             .padding(.vertical, compact ? 3 : 4)
             .background(
                 Capsule()
-                    .fill(ApexStyle.subtleSurface.opacity(0.75))
+                    .fill(isCapsuleHovered ? ApexStyle.subtleSurface : ApexStyle.subtleSurface.opacity(0.75))
             )
             .overlay(
                 Capsule()
-                    .stroke(ApexStyle.border.opacity(0.6), lineWidth: 0.75)
+                    .stroke(isCapsuleHovered ? ApexStyle.accent.opacity(0.5) : ApexStyle.border.opacity(0.6), lineWidth: 0.75)
             )
+            .scaleEffect(isCapsuleHovered ? 1.02 : 1.0)
+            .animation(ApexStyle.springSnappy, value: isCapsuleHovered)
         }
         .buttonStyle(.plain)
+        .onHover { isCapsuleHovered = $0 }
         .accessibilityIdentifier("metrics.summary")
         .controlSize(compact ? .regular : .small)
         .help(isStale ? "超过 30 秒未收到新指标，详情为最后一次采样" : "查看服务器性能")

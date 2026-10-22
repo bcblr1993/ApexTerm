@@ -282,23 +282,13 @@ private struct TunnelRowView: View {
             Spacer()
             
             // Toggle Start / Stop Button
-            Button(action: onToggle) {
-                HStack(spacing: 4) {
-                    Image(systemName: state.isRunning ? "stop.fill" : "play.fill")
-                        .font(.system(size: 9))
-                    Text(state.isRunning ? "停止" : "启动")
-                        .font(.system(size: 11, weight: .medium))
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .background(state.isRunning ? ApexStyle.error.opacity(0.15) : ApexStyle.success.opacity(0.15), in: RoundedRectangle(cornerRadius: ApexStyle.controlRadius))
-                .foregroundColor(state.isRunning ? ApexStyle.error : ApexStyle.success)
-                .overlay(
-                    RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
-                        .stroke((state.isRunning ? ApexStyle.error : ApexStyle.success).opacity(0.3), lineWidth: 0.75)
-                )
+            ApexActionButton(
+                state.isRunning ? "停止" : "启动",
+                icon: state.isRunning ? "stop.fill" : "play.fill",
+                tint: state.isRunning ? ApexStyle.error : ApexStyle.success
+            ) {
+                onToggle()
             }
-            .buttonStyle(.plain)
             
             // Edit Button
             ApexIconButton(
@@ -484,6 +474,8 @@ private struct AddOrEditTunnelSheet: View {
             HStack {
                 Spacer()
                 Button("取消") { onCancel() }
+                    .buttonStyle(.bordered)
+                    .controlSize(.regular)
                     .keyboardShortcut(.cancelAction)
                 Button("保存") {
                     let bPort = Int(bindPortString) ?? 0
@@ -502,6 +494,7 @@ private struct AddOrEditTunnelSheet: View {
                     onSave(tunnel)
                 }
                 .apexProminentButton()
+                .controlSize(.regular)
                 .disabled(sessions.isEmpty || Int(bindPortString) == nil || (type != .dynamic && Int(targetPortString) == nil))
                 .keyboardShortcut(.defaultAction)
             }

@@ -360,6 +360,33 @@ final class TitlebarZoomAndUIRegressionTests: XCTestCase {
         let pillBtnSize = hostingPillBtn.fittingSize
         XCTAssertGreaterThan(pillBtnSize.width, 0, "ApexPillButton must compute valid layout width")
         XCTAssertFalse(pillClicked)
+
+        // 6. Verify ApexActionButton rendering
+        var actionClicked = false
+        let actionButton = ApexActionButton(
+            "一键部署",
+            icon: "arrow.up.forward.app",
+            tint: ApexStyle.accent,
+            size: .small,
+            action: { actionClicked = true }
+        )
+        let hostingActionBtn = NSHostingView(rootView: actionButton)
+        hostingActionBtn.frame = NSRect(x: 0, y: 0, width: 100, height: 26)
+        let actionBtnSize = hostingActionBtn.fittingSize
+        XCTAssertGreaterThan(actionBtnSize.width, 0, "ApexActionButton must compute valid layout width")
+        XCTAssertFalse(actionClicked)
+
+        // 7. Verify ApexMenuTrigger rendering
+        let menuTrigger = ApexMenuTrigger(
+            icon: "ellipsis",
+            label: "更多文件操作",
+            size: 24,
+            iconSize: 11
+        )
+        let hostingMenuTrigger = NSHostingView(rootView: menuTrigger)
+        hostingMenuTrigger.frame = NSRect(x: 0, y: 0, width: 24, height: 24)
+        let menuTriggerSize = hostingMenuTrigger.fittingSize
+        XCTAssertGreaterThan(menuTriggerSize.width, 0, "ApexMenuTrigger must compute valid layout width")
     }
 
     func testQuickCommandDockAndTabLiquidClassIntegration() {

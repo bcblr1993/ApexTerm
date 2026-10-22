@@ -75,7 +75,7 @@ public struct SSHConfigImportSheet: View {
                 if !discoveredHosts.isEmpty {
                     Button(selectedHostIds.count == discoveredHosts.count ? "取消全选" : "全选",
                            action: toggleSelectAll)
-                        .buttonStyle(.borderless)
+                        .buttonStyle(.bordered)
                         .controlSize(.small)
                 }
             }
@@ -163,6 +163,8 @@ public struct SSHConfigImportSheet: View {
                 Spacer()
                 
                 Button("取消") { dismiss() }
+                    .buttonStyle(.bordered)
+                    .controlSize(.regular)
                     .keyboardShortcut(.cancelAction)
                 
                 Button(action: performImport) {
@@ -170,6 +172,7 @@ public struct SSHConfigImportSheet: View {
                 }
                 .keyboardShortcut(.defaultAction)
                 .apexProminentButton()
+                .controlSize(.regular)
                 .tint(ApexStyle.accent)
                 .disabled(selectedHostIds.isEmpty)
             }

@@ -63,11 +63,14 @@ public struct TransferDrawer: View {
                         .frame(width: 200)
                         
                         if manager.tasks.contains(where: { $0.status == .completed || $0.status == .cancelled }) {
-                            Button("清空记录") {
+                            ApexActionButton(
+                                "清空记录",
+                                icon: "trash",
+                                tint: ApexStyle.secondary,
+                                size: .small
+                            ) {
                                 manager.clearCompleted()
                             }
-                            .buttonStyle(.borderless)
-                            .controlSize(.small)
                         }
                         
                         ApexIconButton(
@@ -234,26 +237,27 @@ private struct TransferTaskRow: View {
                         .font(.system(size: 11, weight: .semibold, design: .monospaced))
                         .foregroundColor(ApexStyle.accent)
                     
-                    Button(action: onCancel) {
-                        Label("取消传输 \(task.fileName)", systemImage: "xmark")
+                    ApexIconButton(
+                        icon: "xmark",
+                        label: "取消传输 \(task.fileName)",
+                        size: 20,
+                        iconSize: 9
+                    ) {
+                        onCancel()
                     }
-                    .labelStyle(.iconOnly)
-                    .buttonStyle(.borderless)
-                    .controlSize(.small)
-                    .padding(.leading, 4)
+                    .padding(.leading, 2)
                 } else if task.status == .completed {
                     HStack(spacing: 6) {
                         // Reveal in Finder button for downloads
                         if task.direction == .download && FileManager.default.fileExists(atPath: task.localURL.path) {
-                            Button {
+                            ApexIconButton(
+                                icon: "magnifyingglass",
+                                label: "在访达中显示此文件",
+                                size: 20,
+                                iconSize: 10
+                            ) {
                                 NSWorkspace.shared.activateFileViewerSelecting([task.localURL])
-                            } label: {
-                                Image(systemName: "magnifyingglass")
-                                    .font(.system(size: 11))
                             }
-                            .buttonStyle(.borderless)
-                            .controlSize(.small)
-                            .help("在访达中显示此文件")
                         }
                         
                         Image(systemName: "checkmark.circle.fill")

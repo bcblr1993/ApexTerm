@@ -160,12 +160,16 @@ public struct SFTPView: View {
                     }
                 }
             } label: {
-                Image(systemName: bookmarkManager.isBookmarked(path: currentPath) ? "star.fill" : "bookmark")
-                    .foregroundColor(bookmarkManager.isBookmarked(path: currentPath) ? .yellow : ApexStyle.secondary)
+                ApexMenuTrigger(
+                    icon: bookmarkManager.isBookmarked(path: currentPath) ? "star.fill" : "bookmark",
+                    label: "常用目录预设与书签快速跳转",
+                    size: 24,
+                    iconSize: 11,
+                    tint: bookmarkManager.isBookmarked(path: currentPath) ? .yellow : nil
+                )
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
-            .help("常用目录预设与书签快速跳转")
 
             ApexIconButton(
                 icon: "doc.on.doc",
@@ -243,10 +247,15 @@ public struct SFTPView: View {
                 }
                 Toggle("显示隐藏文件", isOn: $showHiddenFiles)
             } label: {
-                Label("更多文件操作", systemImage: "ellipsis")
+                ApexMenuTrigger(
+                    icon: "ellipsis",
+                    label: "新建文件、文件夹及隐藏文件",
+                    size: 24,
+                    iconSize: 11
+                )
             }
-            .labelStyle(.iconOnly)
-            .help("新建文件、文件夹及隐藏文件")
+            .menuStyle(.borderlessButton)
+            .fixedSize()
 
             Toggle(isOn: $isFilterVisible) {
                 Label("筛选文件", systemImage: "line.3.horizontal.decrease")
@@ -323,12 +332,14 @@ public struct SFTPView: View {
                     .help(creationFailureNotice == notice ? "点击查看创建失败原因与完整远端错误" : "点击打开传输任务记录抽屉")
                     .transition(.opacity)
                     if notice.contains("失败") {
-                        Button(action: { transferNotice = nil }) {
-                            Label("关闭传输提示", systemImage: "xmark.circle")
+                        ApexIconButton(
+                            icon: "xmark.circle",
+                            label: "关闭传输提示",
+                            size: 18,
+                            iconSize: 10
+                        ) {
+                            transferNotice = nil
                         }
-                        .labelStyle(.iconOnly)
-                        .buttonStyle(.borderless)
-                        .controlSize(.small)
                     }
                 }
 
@@ -367,12 +378,14 @@ public struct SFTPView: View {
                     }
                     .textFieldStyle(.roundedBorder)
                 if !searchFilter.isEmpty {
-                    Button(action: { searchFilter = "" }) {
-                        Label("清除文件筛选", systemImage: "xmark.circle.fill")
+                    ApexIconButton(
+                        icon: "xmark.circle.fill",
+                        label: "清除文件筛选",
+                        size: 20,
+                        iconSize: 11
+                    ) {
+                        searchFilter = ""
                     }
-                    .labelStyle(.iconOnly)
-                    .buttonStyle(.borderless)
-                    .controlSize(.small)
                 }
             }
             .padding(.horizontal, ApexStyle.s4)

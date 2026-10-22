@@ -148,40 +148,16 @@ public struct SSHKeyVaultSettingsView: View {
             
             // Actions
             HStack(spacing: 8) {
-                Button(action: {
+                ApexActionButton("复制公钥", icon: "doc.on.doc", tint: ApexStyle.accent) {
                     copyPublicKey(key)
-                }) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "doc.on.doc")
-                            .font(.system(size: 10))
-                        Text("复制公钥")
-                            .font(.system(size: 11, weight: .medium))
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3.5)
-                    .background(ApexStyle.accent.opacity(0.1), in: RoundedRectangle(cornerRadius: ApexStyle.controlRadius))
-                    .foregroundColor(ApexStyle.accent)
                 }
-                .buttonStyle(.plain)
                 .help("复制 OpenSSH 公钥到剪贴板")
                 
-                Button(action: {
+                ApexActionButton("一键部署", icon: "arrow.up.forward.app", tint: ApexStyle.accent) {
                     selectedKeyForDeploy = key
                     generatedDeployCommand = key.generateDeployCommand()
                     showingDeploySheet = true
-                }) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "arrow.up.forward.app")
-                            .font(.system(size: 10))
-                        Text("一键部署")
-                            .font(.system(size: 11, weight: .medium))
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3.5)
-                    .background(ApexStyle.accent.opacity(0.1), in: RoundedRectangle(cornerRadius: ApexStyle.controlRadius))
-                    .foregroundColor(ApexStyle.accent)
                 }
-                .buttonStyle(.plain)
                 .help("一键免密分发公钥到远程服务器 (ssh-copy-id)")
                 
                 ApexIconButton(
@@ -264,12 +240,15 @@ public struct SSHKeyVaultSettingsView: View {
                 Button("取消") {
                     showingImportSheet = false
                 }
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
                 .keyboardShortcut(.cancelAction)
                 
                 Button("导入并安全保存") {
                     doImportKey()
                 }
-                .buttonStyle(.borderedProminent)
+                .apexProminentButton()
+                .controlSize(.regular)
                 .disabled(importPrivateKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
                           importPublicKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
@@ -310,13 +289,16 @@ public struct SSHKeyVaultSettingsView: View {
                     showingDeploySheet = false
                     showToast("已复制免密部署指令到剪贴板")
                 }
-                .buttonStyle(.borderedProminent)
+                .apexProminentButton()
+                .controlSize(.regular)
                 
                 Spacer()
                 
                 Button("完成") {
                     showingDeploySheet = false
                 }
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
             }
         }
         .padding(20)

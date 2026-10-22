@@ -498,15 +498,9 @@ private struct ProcessRowView: View {
                     .frame(width: 65, alignment: .center)
                     .help("受保护的核心系统进程，禁止终止")
             } else {
-                Button(action: onKill) {
-                    Text("终止")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundColor(ApexStyle.error)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 2.5)
-                        .background(ApexStyle.error.opacity(isHovered ? 0.16 : 0.08), in: RoundedRectangle(cornerRadius: 4))
+                ApexActionButton("终止", tint: ApexStyle.error, size: .small) {
+                    onKill()
                 }
-                .buttonStyle(.plain)
                 .frame(width: 65, alignment: .center)
                 .help("终止进程 (SIGTERM / SIGKILL)")
             }

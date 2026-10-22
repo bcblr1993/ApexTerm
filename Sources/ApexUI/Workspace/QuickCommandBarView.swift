@@ -87,28 +87,15 @@ public struct QuickCommandBarView: View {
                         }
                         
                         // + Add Custom Snippet Button
-                        Button {
+                        ApexPillButton(
+                            title: "添加",
+                            icon: "plus"
+                        ) {
                             newTitle = ""
                             newCommand = ""
                             newCategory = selectedCategory == "全部" ? "自定义" : selectedCategory
                             isAddSheetPresented = true
-                        } label: {
-                            HStack(spacing: 3) {
-                                Image(systemName: "plus")
-                                    .font(.system(size: 9, weight: .bold))
-                                Text("添加")
-                                    .font(.system(size: 11, weight: .medium))
-                            }
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .foregroundColor(ApexStyle.secondary)
-                            .background(ApexStyle.surface, in: RoundedRectangle(cornerRadius: ApexStyle.controlRadius))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
-                                    .stroke(ApexStyle.border.opacity(0.6), lineWidth: 0.75)
-                            )
                         }
-                        .buttonStyle(.plain)
                         .help("添加新的常用快捷命令")
                     }
                     .padding(.horizontal, ApexStyle.s4)
@@ -251,12 +238,15 @@ private struct VariableInputSheet: View {
                 Button("取消") {
                     onCancel()
                 }
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
                 .keyboardShortcut(.cancelAction)
                 
                 Button("执行 (↵)") {
                     submitIfValid()
                 }
                 .apexProminentButton()
+                .controlSize(.regular)
                 .keyboardShortcut(.defaultAction)
             }
         }
@@ -316,9 +306,12 @@ private struct AddSnippetSheet: View {
             HStack {
                 Spacer()
                 Button("取消") { onCancel() }
+                    .buttonStyle(.bordered)
+                    .controlSize(.regular)
                     .keyboardShortcut(.cancelAction)
                 Button("保存") { onSave() }
                     .apexProminentButton()
+                    .controlSize(.regular)
                     .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     .keyboardShortcut(.defaultAction)
             }

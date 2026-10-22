@@ -242,9 +242,12 @@ public struct SessionEditModal: View {
                 }
                 Spacer()
                 Button(L10n.cancel) { dismiss() }
+                    .buttonStyle(.bordered)
+                    .controlSize(.regular)
                     .keyboardShortcut(.cancelAction)
                 Button(L10n.save) { saveSession() }
                     .apexProminentButton()
+                    .controlSize(.regular)
                     .disabled(host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !isValidPort)
                     .keyboardShortcut(.defaultAction)
             }

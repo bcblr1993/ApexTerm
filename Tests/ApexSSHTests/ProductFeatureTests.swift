@@ -9,17 +9,14 @@ final class ProductFeatureTests: XCTestCase {
 
     func testAppStoreNewAndEditedSessionsAllowUserSelectedPrivateKey() {
         let methods: [SSHAuthMethod?] = [nil, .agent, .password(keychainRef: "synthetic-password"),
-                                       .privateKey(keychainRef: "/synthetic/key", passphraseRef: nil)]
+                                       .privateKey(keychainRef: "/synthetic/key", passphraseRef: nil),
+                                       .certificate(keychainRef: "/synthetic/key", certificatePath: "/synthetic/cert.pub", passphraseRef: nil)]
         for method in methods {
             XCTAssertEqual(SessionEditModal.AuthType.availableTypes(for: method, channel: .appStore),
-                           [.password, .agent, .privateKey])
-        }
-        for method in methods.dropLast() {
+                           [.password, .agent, .privateKey, .certificate])
             XCTAssertEqual(SessionEditModal.AuthType.availableTypes(for: method, channel: .direct),
-                           [.password, .agent])
+                           [.password, .agent, .privateKey, .certificate])
         }
-        XCTAssertEqual(SessionEditModal.AuthType.availableTypes(for: methods.last!, channel: .direct),
-                       [.password, .agent, .privateKey])
     }
     
     func testEditingPrivateKeyAuthenticationRetainsBothReferences() {
@@ -28,9 +25,14 @@ final class ProductFeatureTests: XCTestCase {
             XCTAssertEqual(SessionEditModal.AuthType.privateKey.retainedPrivateKey(from: original), original)
             XCTAssertNil(SessionEditModal.AuthType.agent.retainedPrivateKey(from: original))
             XCTAssertNil(SessionEditModal.AuthType.password.retainedPrivateKey(from: original))
+            XCTAssertNil(SessionEditModal.AuthType.certificate.retainedPrivateKey(from: original))
         }
         XCTAssertNil(SessionEditModal.AuthType.privateKey.retainedPrivateKey(from: nil))
         XCTAssertNil(SessionEditModal.AuthType.privateKey.retainedPrivateKey(from: .agent))
+
+        let certOriginal = SSHAuthMethod.certificate(keychainRef: "key-ref", certificatePath: "/path/to/cert.pub", passphraseRef: "pass")
+        XCTAssertEqual(SessionEditModal.AuthType.certificate.retainedCertificate(from: certOriginal), certOriginal)
+        XCTAssertNil(SessionEditModal.AuthType.privateKey.retainedCertificate(from: certOriginal))
     }
 
     // MARK: - AppSettings Tests

@@ -2,6 +2,39 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.14.0] - 2026-10-22
+
+### ✨ 新增特性 (Features)
+- **OpenSSH 证书文件认证支持与智能就近自动发现 (`SSHCertificateAuthentication`)**：
+  - **SSH 会话认证类型扩展**：在「密码认证」、「SSH 密钥 / Agent」、「指定私钥」基础上新增「指定证书」认证模式，支持私钥与 OpenSSH 证书（`CertificateFile`）组合鉴权；
+  - **OpenSSH 命令行与参数构建**：精准构建 `-i <keyPath>` 与 `-o CertificateFile=<certPath>` 参数指令，实现工业级 CA 证书登录与跳板机安全审计；
+  - **智能证书就近自动发现 (`SSHCertificateHelper.discoverCertificate`)**：选择或输入私钥路径时，自动探测同目录下对应的 `<key>-cert.pub` 证书文件并自动绑定，大幅简化配置成本；
+  - **证书元数据解析与实时格式校验 (`SSHCertificateInfo`)**：即时识别 `ssh-ed25519-cert-v01@openssh.com`、`ssh-rsa-cert-v01@openssh.com` 等标准 OpenSSH 证书类型与签发 Comment，并呈现 Liquid Class 绿色安全徽章 (`checkmark.seal.fill`)；
+  - **OpenSSH 配置文件与端口转发完整集成**：`~/.ssh/config` 中 `CertificateFile` 指令自动导入解析并转换为证书会话；SSH 本地/远程/动态 SOCKS5 端口转发隧道无缝继承证书认证；
+  - **iCloud 云端多设备安全隔离**：云同步对证书认证会话执行零捆绑安全脱敏，确保私钥绝不泄露的同时无损同步证书配置与会话拓扑。
+
+### ⚡️ 体验优化与细节打磨 (Liquid Class Polish)
+- **会话新建与编辑弹窗 (`SessionEditModal`) 全面对齐 Liquid Class 交互体系**：
+  - 新增「指定证书」原生分段选择，表单在私钥、证书、口令间平滑过渡与展开；
+  - 私钥与证书文件浏览全面接入触觉微弹动的 `ApexActionButton`（`folder`、`doc.badge.gearshape` 图标），支持 macOS 权限沙盒书签持久化存储；
+  - 新增证书有效性实时动态微光状态栏，非标准或无法读取时呈现柔和警告提示。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- **新增 OpenSSH 证书认证自动化测试用例集 (`SSHCertificateAuthenticationTests`)**：
+  - 8 项全新测试用例全部通过（涵盖 TC-CERT-01 ~ TC-CERT-08）：
+    - `TC-CERT-01`：证书认证会话模型序列化、JSON Roundtrip 编码解码与字段访问器校验；
+    - `TC-CERT-02`：OpenSSH 命令行 `-i <keyPath>` 与 `-o CertificateFile=<certPath>` 认证参数构建；
+    - `TC-CERT-03`：OpenSSH 配置文件 `~/.ssh/config` 中 `CertificateFile` 指令解析与会话转换；
+    - `TC-CERT-04`：SSH 隧道（Local/Remote/Dynamic SOCKS5）带证书认证的进程构建验证；
+    - `TC-CERT-05`：iCloud 云端同步零捆绑与脱敏校验；
+    - `TC-CERT-06`：证书文件智能就近自动发现算法；
+    - `TC-CERT-07`：OpenSSH 证书格式解析与类型元数据断言；
+    - `TC-CERT-08`：旧版本历史无证书会话的向下无缝兼容。
+- **固化 RG-12 质量门禁**：将 OpenSSH 证书认证门禁永久纳入 `test_vm_acceptance.sh` 与 `AGENTS.md`，确立每版必测机制；
+- 450+ 项全量自动化测试用例 100% 通过（0 failures, 0 unexpected）；
+- 8 大性能 Benchmark 全部优于门禁阈值（物理按键延迟 6.85 μs）；
+- Apple 官方公证（Notarized）与 Developer ID 签名（YanNan Chen）。
+
 ## [v1.13.2] - 2026-10-22
 
 ### ⚡️ 体验优化与细节打磨 (Liquid Class Polish)

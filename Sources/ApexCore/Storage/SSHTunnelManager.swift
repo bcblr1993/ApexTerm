@@ -141,8 +141,11 @@ public final class SSHTunnelManager: ObservableObject {
             args.append(contentsOf: ["-D", "\(tunnel.bindHost):\(tunnel.bindPort)"])
         }
         
-        // Private key if provided
-        if let keyPath = privateKeyPath, !keyPath.isEmpty {
+        // Certificate and/or private key
+        if let certPath = session.certificatePath, !certPath.isEmpty {
+            args.append(contentsOf: ["-o", "CertificateFile=\(certPath)"])
+        }
+        if let keyPath = privateKeyPath ?? session.privateKeyPath, !keyPath.isEmpty {
             args.append(contentsOf: ["-i", keyPath])
         }
         

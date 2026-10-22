@@ -4,8 +4,27 @@ import Foundation
 public enum SSHAuthMethod: Codable, Sendable, Equatable, Hashable {
     case password(keychainRef: String)
     case privateKey(keychainRef: String, passphraseRef: String?)
+    case certificate(keychainRef: String, certificatePath: String, passphraseRef: String?)
     case agent
     case none
+    
+    public var isCertificate: Bool {
+        if case .certificate = self { return true }
+        return false
+    }
+    
+    public var certificatePath: String? {
+        if case .certificate(_, let cert, _) = self { return cert }
+        return nil
+    }
+    
+    public var privateKeyPath: String? {
+        switch self {
+        case .privateKey(let keyPath, _): return keyPath
+        case .certificate(let keyPath, _, _): return keyPath
+        default: return nil
+        }
+    }
 }
 
 /// Type of terminal session: SSH remote or local system shell
@@ -42,6 +61,8 @@ public struct Session: Identifiable, Codable, Sendable, Equatable, Hashable {
     public var lastConnectedAt: Date?
     
     public var isLocal: Bool { sessionType == .local }
+    public var certificatePath: String? { authMethod.certificatePath }
+    public var privateKeyPath: String? { authMethod.privateKeyPath }
     
     public enum CodingKeys: String, CodingKey {
         case id, name, host, port, username, authMethod, sessionType

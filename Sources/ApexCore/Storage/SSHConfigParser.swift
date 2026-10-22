@@ -8,6 +8,7 @@ public struct SSHConfigHost: Identifiable, Sendable, Equatable, Hashable {
     public let user: String
     public let port: Int
     public let identityFile: String?
+    public let certificateFile: String?
     
     public init(
         id: UUID = UUID(),
@@ -15,7 +16,8 @@ public struct SSHConfigHost: Identifiable, Sendable, Equatable, Hashable {
         hostName: String,
         user: String,
         port: Int = 22,
-        identityFile: String? = nil
+        identityFile: String? = nil,
+        certificateFile: String? = nil
     ) {
         self.id = id
         self.hostPattern = hostPattern
@@ -23,12 +25,15 @@ public struct SSHConfigHost: Identifiable, Sendable, Equatable, Hashable {
         self.user = user
         self.port = port
         self.identityFile = identityFile
+        self.certificateFile = certificateFile
     }
     
     /// Converts this parsed config entry into a ready-to-use ApexTerm Session
     public func toSession(folder: String = "SSH Config") -> Session {
         let auth: SSHAuthMethod
-        if let keyPath = identityFile, !keyPath.isEmpty {
+        if let certPath = certificateFile, !certPath.isEmpty, let keyPath = identityFile, !keyPath.isEmpty {
+            auth = .certificate(keychainRef: keyPath, certificatePath: certPath, passphraseRef: nil)
+        } else if let keyPath = identityFile, !keyPath.isEmpty {
             auth = .privateKey(keychainRef: keyPath, passphraseRef: nil)
         } else {
             auth = .agent
@@ -81,6 +86,7 @@ public final class SSHConfigParser: Sendable {
         var currentUser = ""
         var currentPort = 22
         var currentIdentityFile: String? = nil
+        var currentCertificateFile: String? = nil
         
         func flushCurrent() {
             guard !currentHostPatterns.isEmpty else { return }
@@ -97,7 +103,8 @@ public final class SSHConfigParser: Sendable {
                     hostName: targetHost,
                     user: currentUser,
                     port: currentPort,
-                    identityFile: currentIdentityFile
+                    identityFile: currentIdentityFile,
+                    certificateFile: currentCertificateFile
                 )
                 results.append(entry)
             }
@@ -106,6 +113,7 @@ public final class SSHConfigParser: Sendable {
             currentUser = ""
             currentPort = 22
             currentIdentityFile = nil
+            currentCertificateFile = nil
         }
         
         for rawLine in lines {
@@ -166,6 +174,10 @@ public final class SSHConfigParser: Sendable {
             case "identityfile":
                 let expanded = (cleanValue as NSString).expandingTildeInPath
                 currentIdentityFile = expanded
+                
+            case "certificatefile":
+                let expanded = (cleanValue as NSString).expandingTildeInPath
+                currentCertificateFile = expanded
                 
             default:
                 break

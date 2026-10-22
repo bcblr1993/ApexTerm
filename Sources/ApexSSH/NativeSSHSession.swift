@@ -12,6 +12,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     private let distributionChannel: DistributionChannel
     private let fileAccessStore: FileAccessStore
     private var connectionKeyAccess: FileAccessLease?
+    private var connectionCertAccess: FileAccessLease?
     private var connectionGrantRequest: ChildProcessFileGrants?
     private let bridgeExecutableURL: URL
     private let sandboxPaths: SandboxSSHPaths
@@ -109,12 +110,28 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         return path
     }
 
-    public func sshAuthArgs(privateKeyURL: URL? = nil) -> [String] {
+    public func sshAuthArgs(privateKeyURL: URL? = nil, certificateURL: URL? = nil) -> [String] {
         var args: [String] = []
-        if case .privateKey(let keyPath, _) = session.authMethod, !keyPath.isEmpty {
-            let connectedURL = stateLock.withLock { connectionKeyAccess?.url }
-            let expanded = (privateKeyURL ?? connectedURL)?.path ?? Self.expandPath(keyPath)
-            args.append(contentsOf: ["-i", expanded])
+        switch session.authMethod {
+        case .privateKey(let keyPath, _):
+            if !keyPath.isEmpty {
+                let connectedURL = stateLock.withLock { connectionKeyAccess?.url }
+                let expanded = (privateKeyURL ?? connectedURL)?.path ?? Self.expandPath(keyPath)
+                args.append(contentsOf: ["-i", expanded])
+            }
+        case .certificate(let keyPath, let certPath, _):
+            if !keyPath.isEmpty {
+                let connectedURL = stateLock.withLock { connectionKeyAccess?.url }
+                let expanded = (privateKeyURL ?? connectedURL)?.path ?? Self.expandPath(keyPath)
+                args.append(contentsOf: ["-i", expanded])
+            }
+            if !certPath.isEmpty {
+                let connectedCertURL = stateLock.withLock { connectionCertAccess?.url }
+                let expandedCert = (certificateURL ?? connectedCertURL)?.path ?? Self.expandPath(certPath)
+                args.append(contentsOf: ["-o", "CertificateFile=\(expandedCert)"])
+            }
+        default:
+            break
         }
         return args
     }
@@ -122,12 +139,24 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     /// Every child operation owns its grant independently, including cancellation cleanup.
     func acquirePrivateKeyAccess() throws -> FileAccessLease? {
         guard distributionChannel == .appStore,
-              case .privateKey(let path, _) = session.authMethod, !path.isEmpty else { return nil }
+              let path = session.privateKeyPath, !path.isEmpty else { return nil }
         let access = try fileAccessStore.acquire(URL(fileURLWithPath: Self.expandPath(path)))
         guard FileManager.default.isReadableFile(atPath: access.url.path) else {
             access.close()
             throw NSError(domain: "ApexSSH", code: 1, userInfo: [NSLocalizedDescriptionKey:
                 "无法读取私钥，请在会话设置中通过「浏览」重新授权私钥文件。"])
+        }
+        return access
+    }
+
+    func acquireCertificateAccess() throws -> FileAccessLease? {
+        guard distributionChannel == .appStore,
+              let certPath = session.certificatePath, !certPath.isEmpty else { return nil }
+        let access = try fileAccessStore.acquire(URL(fileURLWithPath: Self.expandPath(certPath)))
+        guard FileManager.default.isReadableFile(atPath: access.url.path) else {
+            access.close()
+            throw NSError(domain: "ApexSSH", code: 1, userInfo: [NSLocalizedDescriptionKey:
+                "无法读取 SSH 证书，请在会话设置中通过「浏览」重新授权证书文件。"])
         }
         return access
     }
@@ -213,7 +242,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             } else {
                 foundPassword = ref
             }
-        case .privateKey(_, let passphraseRef):
+        case .privateKey(_, let passphraseRef), .certificate(_, _, let passphraseRef):
             if let ref = passphraseRef, !ref.isEmpty {
                 if let pw = try? await KeychainStore.shared.get(key: ref) {
                     foundPassword = pw
@@ -266,6 +295,15 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         var transferredKeyAccess = false
         defer { if !transferredKeyAccess { keyAccess?.close() } }
 
+        let certAccess: FileAccessLease?
+        do { certAccess = try acquireCertificateAccess() }
+        catch {
+            self.connectionState = .failed(error.localizedDescription)
+            throw error
+        }
+        var transferredCertAccess = false
+        defer { if !transferredCertAccess { certAccess?.close() } }
+
         // Setup command & arguments
         var binaryPath = "/usr/bin/ssh"
         var sshArgs = [
@@ -274,7 +312,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             "-o", "ServerAliveCountMax=3",
             "-o", "StrictHostKeyChecking=accept-new"
         ]
-        sshArgs.append(contentsOf: sshAuthArgs(privateKeyURL: keyAccess?.url))
+        sshArgs.append(contentsOf: sshAuthArgs(privateKeyURL: keyAccess?.url, certificateURL: certAccess?.url))
         sshArgs.append(contentsOf: jumpServerArgs())
         sshArgs.append(contentsOf: [
             "-p", "\(session.port)",
@@ -287,7 +325,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         }
         
         let storeCommand: PreparedStoreCommand?
-        do { storeCommand = try prepareStoreCommand(binaryPath: binaryPath, arguments: sshArgs, accesses: [keyAccess]) }
+        do { storeCommand = try prepareStoreCommand(binaryPath: binaryPath, arguments: sshArgs, accesses: [keyAccess, certAccess]) }
         catch {
             self.connectionState = .failed(error.localizedDescription)
             throw error
@@ -381,8 +419,13 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         }
         
         self.childPid = pid
-        stateLock.withLock { connectionKeyAccess = keyAccess; connectionGrantRequest = storeCommand?.grants }
+        stateLock.withLock {
+            connectionKeyAccess = keyAccess
+            connectionCertAccess = certAccess
+            connectionGrantRequest = storeCommand?.grants
+        }
         transferredKeyAccess = true
+        transferredCertAccess = true
         self.connectionState = .connected
         
         // Setup asynchronous kqueue read source
@@ -485,15 +528,15 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     /// Synchronous exit cleanup: SSH ignores ordinary termination signals while attached to a PTY.
     /// Each spawned connection owns a process group, so this cannot target another session.
     public func terminatePTYProcess() {
-        let access = stateLock.withLock { () -> FileAccessLease? in
-            defer { connectionKeyAccess = nil }
-            return connectionKeyAccess
+        let (keyAccess, certAccess) = stateLock.withLock { () -> (FileAccessLease?, FileAccessLease?) in
+            defer { connectionKeyAccess = nil; connectionCertAccess = nil }
+            return (connectionKeyAccess, connectionCertAccess)
         }
         let grants = stateLock.withLock { () -> ChildProcessFileGrants? in
             defer { connectionGrantRequest = nil }
             return connectionGrantRequest
         }
-        defer { grants?.close(); access?.close() }
+        defer { grants?.close(); keyAccess?.close(); certAccess?.close() }
         guard childPid > 0 else { return }
         let pid = childPid
         childPid = -1
@@ -976,6 +1019,8 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         await resolvePasswordIfNeeded()
         let keyAccess = try acquirePrivateKeyAccess()
         defer { keyAccess?.close() }
+        let certAccess = try acquireCertificateAccess()
+        defer { certAccess?.close() }
         let localAccess = distributionChannel == .appStore ? try fileAccessStore.acquire(localURL) : nil
         defer { localAccess?.close() }
         let accessibleURL = localAccess?.url ?? localURL
@@ -990,7 +1035,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             "-o", "ServerAliveInterval=15",
             "-o", "ServerAliveCountMax=3"
         ]
-        baseArgs.append(contentsOf: sshAuthArgs(privateKeyURL: keyAccess?.url))
+        baseArgs.append(contentsOf: sshAuthArgs(privateKeyURL: keyAccess?.url, certificateURL: certAccess?.url))
         baseArgs.append(contentsOf: jumpServerArgs())
         // Modern scp uses SFTP: the remote path is already one argv operand.
         // Shell quote characters would become part of the filename.
@@ -1011,7 +1056,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         let errPipe = Pipe()
         process.standardOutput = FileHandle.nullDevice
         process.standardError = errPipe
-        let grants = try configureStoreProcess(process, accesses: [keyAccess, localAccess])
+        let grants = try configureStoreProcess(process, accesses: [keyAccess, certAccess, localAccess])
         defer { grants?.close() }
         let errorOutput = try await Self.runSCPProcess(process, standardError: errPipe)
         guard process.terminationStatus == 0 else {
@@ -1025,6 +1070,8 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         await resolvePasswordIfNeeded()
         let keyAccess = try acquirePrivateKeyAccess()
         defer { keyAccess?.close() }
+        let certAccess = try acquireCertificateAccess()
+        defer { certAccess?.close() }
         let localAccess = distributionChannel == .appStore ? try fileAccessStore.acquire(localURL) : nil
         defer { localAccess?.close() }
         let accessibleURL = localAccess?.url ?? localURL
@@ -1039,7 +1086,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             "-o", "ServerAliveInterval=15",
             "-o", "ServerAliveCountMax=3"
         ]
-        baseArgs.append(contentsOf: sshAuthArgs(privateKeyURL: keyAccess?.url))
+        baseArgs.append(contentsOf: sshAuthArgs(privateKeyURL: keyAccess?.url, certificateURL: certAccess?.url))
         baseArgs.append(contentsOf: jumpServerArgs())
         // Modern scp uses SFTP: the remote path is already one argv operand.
         // Shell quote characters would become part of the filename.
@@ -1060,7 +1107,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         let errPipe = Pipe()
         process.standardOutput = FileHandle.nullDevice
         process.standardError = errPipe
-        let grants = try configureStoreProcess(process, accesses: [keyAccess, localAccess])
+        let grants = try configureStoreProcess(process, accesses: [keyAccess, certAccess, localAccess])
         defer { grants?.close() }
         let errorOutput = try await Self.runSCPProcess(process, standardError: errPipe)
         guard process.terminationStatus == 0 else {

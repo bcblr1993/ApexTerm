@@ -151,6 +151,14 @@ if ! grep -Fq "iCloudSyncTests' passed" "${REPORT_DIR}/icloud_sync_regression.lo
     exit 1
 fi
 
+echo "🧪 [Release Regression RG-12] Verifying OpenSSH Certificate Authentication (TC-CERT-01 ~ TC-CERT-08)..."
+swift test --jobs 2 --filter "SSHCertificateAuthenticationTests" \
+    2>&1 | tee "${REPORT_DIR}/ssh_certificate_regression.log"
+if ! grep -Fq "SSHCertificateAuthenticationTests' passed" "${REPORT_DIR}/ssh_certificate_regression.log"; then
+    echo "❌ Required OpenSSH Certificate Authentication regression (RG-12: TC-CERT-01~08) did not pass."
+    exit 1
+fi
+
 echo "======================================================="
 echo "🎉 [Tart VM Gate] Quality Gate Cleared! Ready for Release Build."
 echo "======================================================="

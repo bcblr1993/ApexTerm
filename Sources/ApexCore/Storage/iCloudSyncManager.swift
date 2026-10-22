@@ -93,6 +93,13 @@ public final class iCloudSyncManager: ObservableObject {
                 } else {
                     s.authMethod = .privateKey(keychainRef: keychainRef, passphraseRef: passphraseRef)
                 }
+            case .certificate(let keychainRef, let certPath, let passphraseRef):
+                // If keychainRef accidentally contains raw private key PEM markers, redact it to a safe reference
+                if keychainRef.contains("PRIVATE KEY") {
+                    s.authMethod = .certificate(keychainRef: "redacted_key_ref", certificatePath: certPath, passphraseRef: passphraseRef)
+                } else {
+                    s.authMethod = .certificate(keychainRef: keychainRef, certificatePath: certPath, passphraseRef: passphraseRef)
+                }
             default:
                 break
             }

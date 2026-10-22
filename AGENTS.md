@@ -116,6 +116,17 @@ swift test
      7. `TC-ICLOUD-07`：云端损坏文件容灾防御与原子备份（`cloud_vault.backup.json`）回滚断言；
      8. `TC-ICLOUD-08`：同步状态流转（idle -> syncing -> success/error）与响应式反馈。
    - 任何单项未通过立即熔断打包流水线。
+10. **OpenSSH 证书文件认证与自动发现门禁 (RG-12: SSH Certificate Authentication Gate - 每版必测)**：
+   - 每次发布新版本前，**必须无条件通过 `SSHCertificateAuthenticationTests`（含 TC-CERT-01 ~ TC-CERT-08）**：
+     1. `TC-CERT-01`：证书认证会话模型序列化、JSON Roundtrip 编码解码与字段访问器校验；
+     2. `TC-CERT-02`：OpenSSH 命令行 `-i <keyPath>` 与 `-o CertificateFile=<certPath>` 认证参数构建；
+     3. `TC-CERT-03`：OpenSSH 配置文件 `~/.ssh/config` 中 `CertificateFile` 指令解析与会话转换；
+     4. `TC-CERT-04`：SSH 隧道（Local/Remote/Dynamic SOCKS5）带证书认证的进程构建验证；
+     5. `TC-CERT-05`：iCloud 云端同步零捆绑与脱敏校验（私钥 PEM 阻断脱敏，证书路径与凭证引用保全）；
+     6. `TC-CERT-06`：证书文件智能就近自动发现算法（`<key>-cert.pub` 自动绑定与回退）；
+     7. `TC-CERT-07`：OpenSSH 证书格式解析与类型元数据断言（Ed25519/RSA/ECDSA 证书识别与普通公钥防误认）；
+     8. `TC-CERT-08`：旧版本历史无证书会话的向下无缝兼容。
+   - 任何单项未通过立即熔断打包流水线。
 
 ---
 

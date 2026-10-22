@@ -17,6 +17,7 @@ public struct SessionEditModal: View {
     @State private var password: String = ""
     @State private var isPasswordVisible: Bool = false
     @State private var privateKeyPath: String = ""
+    @State private var certificatePath: String = ""
     @State private var passphrase: String = ""
     @State private var selectedVaultKeyId: UUID? = nil
     @State private var jumpServerId: UUID? = nil
@@ -31,17 +32,20 @@ public struct SessionEditModal: View {
         case password = "密码认证"
         case agent = "SSH 密钥 / Agent"
         case privateKey = "指定私钥"
+        case certificate = "指定证书"
         public var id: String { rawValue }
 
         public static func availableTypes(for method: SSHAuthMethod?, channel: DistributionChannel) -> [Self] {
-            // Sandbox connections need a user-selected key file and its bookmark.
-            if channel == .appStore { return allCases }
-            if case .privateKey = method { return allCases }
-            return [.password, .agent]
+            return allCases
         }
 
         public func retainedPrivateKey(from method: SSHAuthMethod?) -> SSHAuthMethod? {
             guard self == .privateKey, let method, case .privateKey = method else { return nil }
+            return method
+        }
+
+        public func retainedCertificate(from method: SSHAuthMethod?) -> SSHAuthMethod? {
+            guard self == .certificate, let method, case .certificate = method else { return nil }
             return method
         }
     }
@@ -181,6 +185,96 @@ public struct SessionEditModal: View {
                             SecureField("私钥口令 Passphrase (可选)", text: $passphrase)
                                 .font(.system(.body, design: .monospaced))
                         }
+                    } else if authType == .certificate {
+                        VStack(alignment: .leading, spacing: 8) {
+                            if !SSHKeyVaultManager.shared.keys.isEmpty {
+                                Picker("密钥保险库", selection: $selectedVaultKeyId) {
+                                    Text("手动指定私钥文件").tag(UUID?.none)
+                                    ForEach(SSHKeyVaultManager.shared.keys) { vk in
+                                        Text("\(vk.name) [\(vk.algorithm.rawValue)]").tag(UUID?.some(vk.id))
+                                    }
+                                }
+                                .onChange(of: selectedVaultKeyId) { _, newId in
+                                    if let newId = newId, let vk = SSHKeyVaultManager.shared.key(for: newId) {
+                                        privateKeyPath = vk.keychainPrivateKeyRef
+                                        autoDiscoverCertificateIfNeeded()
+                                    }
+                                }
+                            }
+                            
+                            HStack {
+                                TextField("私钥路径 (如 ~/.ssh/id_ed25519)", text: $privateKeyPath)
+                                    .accessibilityLabel("私钥路径")
+                                    .accessibilityIdentifier("session.privateKeyPath")
+                                    .font(.system(.body, design: .monospaced))
+                                    .onChange(of: privateKeyPath) { _, _ in
+                                        autoDiscoverCertificateIfNeeded()
+                                    }
+                                ApexActionButton(
+                                    "浏览...",
+                                    icon: "folder",
+                                    tint: ApexStyle.secondary,
+                                    size: .small
+                                ) {
+                                    let panel = NSOpenPanel()
+                                    panel.canChooseFiles = true
+                                    panel.canChooseDirectories = false
+                                    panel.allowsMultipleSelection = false
+                                    if panel.runModal() == .OK, let url = panel.url {
+                                        do {
+                                            if DistributionChannel.current == .appStore {
+                                                try FileAccessStore.shared.remember(url, readOnly: true)
+                                            }
+                                            privateKeyPath = url.path
+                                            autoDiscoverCertificateIfNeeded()
+                                        } catch {
+                                            saveError = "无法保存私钥文件授权：\(error.localizedDescription)"
+                                        }
+                                    }
+                                }
+                                .controlSize(.small)
+                            }
+                            
+                            HStack {
+                                TextField("证书路径 (如 ~/.ssh/id_ed25519-cert.pub)", text: $certificatePath)
+                                    .accessibilityLabel("证书路径")
+                                    .accessibilityIdentifier("session.certificatePath")
+                                    .font(.system(.body, design: .monospaced))
+                                ApexActionButton(
+                                    "浏览...",
+                                    icon: "doc.badge.gearshape",
+                                    tint: ApexStyle.secondary,
+                                    size: .small
+                                ) {
+                                    let panel = NSOpenPanel()
+                                    panel.canChooseFiles = true
+                                    panel.canChooseDirectories = false
+                                    panel.allowsMultipleSelection = false
+                                    if panel.runModal() == .OK, let url = panel.url {
+                                        do {
+                                            if DistributionChannel.current == .appStore {
+                                                try FileAccessStore.shared.remember(url, readOnly: true)
+                                            }
+                                            certificatePath = url.path
+                                        } catch {
+                                            saveError = "无法保存证书文件授权：\(error.localizedDescription)"
+                                        }
+                                    }
+                                }
+                                .controlSize(.small)
+                            }
+                            
+                            if !certificatePath.isEmpty {
+                                certificateStatusBanner
+                            }
+                            
+                            SecureField("私钥口令 Passphrase (可选)", text: $passphrase)
+                                .font(.system(.body, design: .monospaced))
+                            
+                            Text("OpenSSH 证书通常由 CA 签发并以 -cert.pub 结尾，须与对应私钥配合使用。")
+                                .font(.caption2)
+                                .foregroundStyle(ApexStyle.secondary)
+                        }
                     } else {
                         HStack {
                             Image(systemName: "key.fill")
@@ -277,9 +371,43 @@ public struct SessionEditModal: View {
                 alignment: .top
             )
         }
-        .frame(width: 560, height: 560)
+        .frame(width: 580, height: 600)
         .onAppear {
             loadInitialSessionData()
+        }
+    }
+
+    @ViewBuilder
+    private var certificateStatusBanner: some View {
+        let certInfo: SSHCertificateInfo = {
+            let expandedPath = (certificatePath as NSString).expandingTildeInPath
+            if let content = try? String(contentsOfFile: expandedPath, encoding: .utf8) {
+                return SSHCertificateHelper.inspectCertificate(certContent: content)
+            }
+            return SSHCertificateInfo(isValid: false, keyType: nil, comment: nil)
+        }()
+        
+        HStack(spacing: 6) {
+            Image(systemName: certInfo.isValid ? "checkmark.seal.fill" : "exclamationmark.triangle")
+                .foregroundColor(certInfo.isValid ? ApexStyle.success : ApexStyle.warning)
+                .font(.caption)
+            if certInfo.isValid {
+                Text("有效 OpenSSH 证书 (\(certInfo.keyType ?? "OpenSSH Cert"))\(certInfo.comment != nil ? " · \(certInfo.comment!)" : "")")
+                    .font(.caption2)
+                    .foregroundStyle(ApexStyle.success)
+            } else {
+                Text("证书文件暂未读取或非标准 OpenSSH 证书格式")
+                    .font(.caption2)
+                    .foregroundStyle(ApexStyle.secondary)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func autoDiscoverCertificateIfNeeded() {
+        guard certificatePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        if let discovered = SSHCertificateHelper.discoverCertificate(forPrivateKeyPath: privateKeyPath) {
+            certificatePath = discovered
         }
     }
 
@@ -340,6 +468,19 @@ public struct SessionEditModal: View {
                     }
                 }
             }
+        case .certificate(let keyPath, let certPath, let passRef):
+            authType = .certificate
+            privateKeyPath = keyPath
+            certificatePath = certPath
+            if let ref = passRef, !ref.isEmpty {
+                Task {
+                    if let saved = try? await KeychainStore.shared.get(key: ref) {
+                        await MainActor.run { self.passphrase = saved }
+                    } else {
+                        await MainActor.run { self.passphrase = ref }
+                    }
+                }
+            }
         case .agent, .none:
             authType = .agent
         }
@@ -349,7 +490,24 @@ public struct SessionEditModal: View {
         let sessionId = initialSession?.id ?? UUID()
         let authMethod: SSHAuthMethod
         
-        if authType == .privateKey {
+        if authType == .certificate {
+            let keyPath = privateKeyPath.trimmingCharacters(in: .whitespacesAndNewlines)
+            let certPath = certificatePath.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !passphrase.isEmpty {
+                let key = "passphrase_\(sessionId.uuidString)"
+                do {
+                    try KeychainStore.shared.save(key: key, secret: passphrase)
+                } catch {
+                    saveError = "口令保存失败：\(error.localizedDescription)"
+                    return
+                }
+                authMethod = .certificate(keychainRef: keyPath, certificatePath: certPath, passphraseRef: key)
+            } else if case .certificate(_, _, let oldPassRef) = initialSession?.authMethod, passphrase.isEmpty {
+                authMethod = .certificate(keychainRef: keyPath, certificatePath: certPath, passphraseRef: oldPassRef)
+            } else {
+                authMethod = .certificate(keychainRef: keyPath, certificatePath: certPath, passphraseRef: nil)
+            }
+        } else if authType == .privateKey {
             let path = privateKeyPath.trimmingCharacters(in: .whitespacesAndNewlines)
             if !passphrase.isEmpty {
                 let key = "passphrase_\(sessionId.uuidString)"

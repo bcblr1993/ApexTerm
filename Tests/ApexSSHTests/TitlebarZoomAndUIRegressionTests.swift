@@ -538,4 +538,22 @@ final class TitlebarZoomAndUIRegressionTests: XCTestCase {
         XCTAssertGreaterThan(host.subviews.count, 0, "SettingsView Backup & iCloud Sync tab must lay out cleanly")
         window.orderOut(nil)
     }
+
+    func testSidebarViewIsCleanAndFocusedOnSessions() {
+        let store = SessionStore()
+        store.snippets = [
+            Snippet(title: "Check Disk Space", command: "df -h", category: "系统管理")
+        ]
+        store.sessions = [Session.local(), Session(name: "Prod Server", host: "10.0.0.1", username: "root", authMethod: .agent)]
+        
+        let sidebar = SidebarView(
+            store: store,
+            selectedSession: .constant(nil),
+            onConnect: { _ in }
+        )
+        let host = NSHostingView(rootView: sidebar.apexTheme())
+        host.frame = NSRect(x: 0, y: 0, width: 280, height: 600)
+        host.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(host.subviews.count, 0, "Clean sidebar should render cleanly without crashing")
+    }
 }

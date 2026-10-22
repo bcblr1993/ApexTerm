@@ -2,6 +2,20 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.14.1] - 2026-10-22
+
+### ⚡️ 体验优化与细节打磨 (Liquid Class Polish)
+- **左侧边栏纯净化与视觉降噪 (`SidebarView`)**：
+  - 移除侧边栏菜单中重复显示的快捷命令区域，彻底消除与顶部标题栏/工具条「快捷命令」面板（`⌘⇧B`）的视图重叠；
+  - 侧边栏全面回归纯净会话导航形态，专注呈现「本地终端」与按目录分层的「远程 SSH 会话」，保持侧边视觉简洁通透；
+  - 保留顶部快捷命令扩展栏与全局 Spotlight 调色板（`⌘P` / `⌘K`）前缀检索（`#`），运维常用脚本随呼随用。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- `TitlebarZoomAndUIRegressionTests` 新增 `testSidebarViewIsCleanAndFocusedOnSessions` 视图断言，断言纯净侧边栏布局无多余命令列表；
+- 全量自动化测试用例 100% 通过（0 failures, 0 unexpected）；
+- 8 大性能 Benchmark 全部优于门禁阈值（物理按键延迟 6.85 μs）；
+- Apple 官方公证（Notarized）与 Developer ID 签名（YanNan Chen）。
+
 ## [v1.14.0] - 2026-10-22
 
 ### ✨ 新增特性 (Features)

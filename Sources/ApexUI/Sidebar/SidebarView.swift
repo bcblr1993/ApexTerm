@@ -7,7 +7,7 @@ public struct SidebarView: View {
     @ObservedObject var store: SessionStore
     @Binding var selectedSession: Session?
     let onConnect: (Session) -> Void
-    let onRunSnippet: (Snippet) -> Void
+    let onRunSnippet: ((Snippet) -> Void)?
     
     @State private var searchFilter = ""
     @State private var showingAddSheet = false
@@ -20,7 +20,7 @@ public struct SidebarView: View {
         store: SessionStore,
         selectedSession: Binding<Session?>,
         onConnect: @escaping (Session) -> Void,
-        onRunSnippet: @escaping (Snippet) -> Void
+        onRunSnippet: ((Snippet) -> Void)? = nil
     ) {
         self.store = store
         self._selectedSession = selectedSession
@@ -199,29 +199,6 @@ public struct SidebarView: View {
                     }) {
                         ContentUnavailableView("未找到匹配会话", systemImage: "magnifyingglass",
                                                description: Text("检查会话名称、标签或主机地址，或清空搜索重试。"))
-                    }
-                    
-                    if !store.snippets.isEmpty {
-                        Section(header: Label(L10n.quickCommandsHeader, systemImage: "bolt.fill").font(.caption).fontWeight(.semibold)) {
-                            ForEach(store.snippets) { snippet in
-                                HStack {
-                                    Image(systemName: "terminal")
-                                        .font(.system(size: 10))
-                                        .foregroundColor(ApexStyle.accent)
-                                    Text(snippet.title)
-                                        .font(.system(size: 11))
-                                    ApexIconButton(
-                                        icon: "play.fill",
-                                        label: "运行 \(snippet.title)",
-                                        size: 20,
-                                        iconSize: 8
-                                    ) {
-                                        onRunSnippet(snippet)
-                                    }
-                                }
-                                .padding(.vertical, 2)
-                            }
-                        }
                     }
                 }
                 .listStyle(.sidebar)

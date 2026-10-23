@@ -1090,7 +1090,7 @@ public struct SFTPView: View {
             let localURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
             defer { try? FileManager.default.removeItem(at: localURL) }
             do {
-                try await session.downloadFile(remotePath: item.path, localURL: localURL, progress: { _ in })
+                try await session.downloadFile(remotePath: item.path, localURL: localURL, totalBytes: Int64(clamping: item.size), progress: { _ in })
                 let data = try Data(contentsOf: localURL)
                 let text = String(data: data, encoding: .utf8) ??
                            String(data: data, encoding: .windowsCP1252) ??
@@ -1120,7 +1120,7 @@ public struct SFTPView: View {
         guard let session else { return "" }
         let localURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: localURL) }
-        try await session.downloadFile(remotePath: item.path, localURL: localURL, progress: { _ in })
+        try await session.downloadFile(remotePath: item.path, localURL: localURL, totalBytes: Int64(clamping: item.size), progress: { _ in })
         let data = try Data(contentsOf: localURL)
         return String(data: data, encoding: .utf8) ??
                String(data: data, encoding: .windowsCP1252) ??
@@ -1434,7 +1434,7 @@ public enum SFTPDragExportHelper {
                     }
                 }
                 defer { progressMonitor.cancel() }
-                try await session.downloadFile(remotePath: item.path, localURL: localURL) { fraction in
+                try await session.downloadFile(remotePath: item.path, localURL: localURL, totalBytes: expectedBytes) { fraction in
                     Task { @MainActor in
                         TransferManager.shared.updateExternalProgress(taskId: taskId, fraction: fraction)
                     }

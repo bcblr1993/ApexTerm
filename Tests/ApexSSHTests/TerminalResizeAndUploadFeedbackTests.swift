@@ -17,7 +17,7 @@ private final class FailingMockSession: SSHSessionProtocol, @unchecked Sendable 
     func sendInput(_ data: Data) async throws {}
     func resizeTerminal(columns: Int, rows: Int) async throws {}
     func listDirectory(path: String) async throws -> [SFTPItem] { [] }
-    func downloadFile(remotePath: String, localURL: URL, progress: @Sendable @escaping (Double) -> Void) async throws {}
+    func downloadFile(remotePath: String, localURL: URL, totalBytes: Int64, progress: @Sendable @escaping (Double) -> Void) async throws {}
     func uploadFile(localURL: URL, remotePath: String, progress: @Sendable @escaping (Double) -> Void) async throws {
         throw NSError(domain: "ApexSSH", code: 1, userInfo: [NSLocalizedDescriptionKey: "scp: dest open \"/home/ubuntu/services/test.txt\": Permission denied"])
     }

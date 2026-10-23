@@ -311,7 +311,9 @@ private struct TransferTaskRow: View {
     }
     
     private func formattedBytes(_ bytes: Int64) -> String {
-        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+        // ByteCountFormatter localises zero as "Zero KB" in zh-Hans, which reads as a fault next to "0 B/s".
+        guard bytes > 0 else { return "0 B" }
+        return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }
     
     private func formatTime(_ date: Date) -> String {

@@ -30,8 +30,12 @@ public struct SSHTunnelModalView: View {
                         Text("配置与监控 Local (-L)、Remote (-R) 与 Dynamic SOCKS5 (-D) 隧道")
                             .font(.caption)
                             .foregroundColor(ApexStyle.secondary)
+                            .lineLimit(1)
                     }
                 }
+                
+                // Without this spacer the title and actions huddled in the middle of the sheet.
+                Spacer(minLength: ApexStyle.s4)
                 
                 HStack(spacing: ApexStyle.s2) {
                     Button {
@@ -53,7 +57,9 @@ public struct SSHTunnelModalView: View {
                     .keyboardShortcut(.cancelAction)
                 }
             }
-            .padding(ApexStyle.s5)
+            // Same horizontal inset as the footer so both rows share left/right edges.
+            .padding(.horizontal, ApexStyle.s4)
+            .padding(.vertical, ApexStyle.s5)
             .background(ApexStyle.surface)
             
             Divider()
@@ -98,6 +104,7 @@ public struct SSHTunnelModalView: View {
                         .frame(maxWidth: 400)
                     
                     Button("添加第一个隧道") {
+                        editingTunnel = nil
                         isAddSheetPresented = true
                     }
                     .apexProminentButton()

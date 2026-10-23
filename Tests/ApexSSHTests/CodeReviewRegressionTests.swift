@@ -5,7 +5,7 @@ import XCTest
 import AppKit
 import SwiftUI
 
-/// Regression coverage for the v1.14.2 full code review (TC-REV-01 ~ TC-REV-19).
+/// Regression coverage for the v1.14.2 full code review (TC-REV-01 ~ TC-REV-20).
 final class CodeReviewRegressionTests: XCTestCase {
     private var tempDir: URL!
     private let sandboxHome = FileManager.default.temporaryDirectory.appendingPathComponent("apex-review-store-" + UUID().uuidString)
@@ -344,5 +344,18 @@ final class CodeReviewRegressionTests: XCTestCase {
                                                         existing: .certificate(keychainRef: "/k", certificatePath: "/c", passphraseRef: pass)), pass)
         XCTAssertEqual(SessionEditModal.secretReference(prefix: "passphrase_", sessionId: session, existing: .password(keychainRef: moved)),
                        "passphrase_\(session.uuidString)", "a password reference is never reused for a passphrase")
+    }
+
+    // MARK: - TC-REV-20: Tunnel manager header pins title left and actions right
+    // Without a spacer the header HStack was centered, leaving 「新建隧道」 and close floating mid-sheet.
+    func testTunnelManagerHeaderIsEdgeAligned() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: root.appendingPathComponent("Sources/ApexUI/Tunnel/SSHTunnelModalView.swift"), encoding: .utf8)
+        let header = try XCTUnwrap(source.range(of: "// Header"))
+        let divider = try XCTUnwrap(source.range(of: "Divider()", range: header.upperBound..<source.endIndex))
+        let block = source[header.upperBound..<divider.lowerBound]
+        XCTAssertTrue(block.contains("Spacer(minLength: ApexStyle.s4)"), "title and actions must be pushed to opposite edges")
+        XCTAssertTrue(block.contains(".padding(.horizontal, ApexStyle.s4)"), "header inset must match the footer's ApexStyle.s4")
     }
 }

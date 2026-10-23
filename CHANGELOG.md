@@ -2,6 +2,22 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.14.3] - 2026-10-23
+
+### ✨ 新增特性 (Features)
+- **会话级终端类型 (TERM) 选项**：会话编辑弹窗「性能与增强特性」新增「终端类型 (TERM)」，可选 `xterm-256color`（默认）/ `xterm` / `vt100` / `linux`，连接时按会话设置注入远端 PTY；旧会话自动沿用 `xterm-256color`，设置随 iCloud 同步。
+
+### 🐞 问题修复 (Bug Fixes)
+- **部分主机长命令不自动换行、看不到命令开头和结尾**：此前固定以 `TERM=xterm-256color` 建立终端，精简发行版（如 Linx GNU/Linux）缺少该 terminfo 描述，bash/readline 退化为横向滚动。现连接成功后经一次性命令通道静默探测远端 terminfo（优先 `infocmp`，缺失时扫描标准 terminfo 目录），缺失时在终端顶部提示，并提供「切换为 xterm 并重连」一键保存会话设置并重连全部分屏；无法判定时不提示。
+- **编辑会话保存时报「密码保存失败：Keychain save failed with status: -25299」**：改名前由 `/Applications/ApexTerm.app` 创建的钥匙串条目不属于当前的 AetherTerm.app，旧的保存逻辑「先删除再新增」删不掉这些条目，且忽略了删除失败，随后新增撞上同名条目（`errSecDuplicateItem`）。现改为按账户原地更新、不存在再新增；若旧条目无权修改，会话密码/口令自动写入新的托管引用（`ssh_<UUID>` / `passphrase_<UUID>`），会话随之指向新引用，后续编辑持续更新该引用。
+- **SSH 隧道管理弹窗顶部未对齐**：头部缺少弹性占位，标题与「新建隧道」/关闭按钮被整体挤到弹窗中间；现标题居左、操作按钮居右，左右边距与底栏一致（16pt）。「添加第一个隧道」始终打开空白新建表单。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- `KeychainSecurityStoreTests` 新增原地更新与托管引用换新用例；`CodeReviewRegressionTests` 扩展至 TC-REV-20（新增 TC-REV-19 会话钥匙串引用沿用、TC-REV-20 隧道管理头部对齐）；
+- 新增 `TerminalTypeTests`（TC-TERM-01 ~ TC-TERM-08，纳入 RG-14 门禁），覆盖 TERM 注入、旧会话兼容、iCloud 同步保留、terminfo 探测脚本实跑（`infocmp` 与目录扫描两条路径）与输出解析；
+- 全量 499 项自动化测试 0 failures（15 项依赖外部环境的用例按条件跳过），Swift 6 模式零警告；
+- Tart VM（macOS 27）实链门禁、8 大性能 Benchmark 与 44 项窗口 UI 验收全部通过；Developer ID 签名与 Apple 公证。
+
 ## [v1.14.2] - 2026-10-22
 
 ### 🐞 问题修复 (Bug Fixes)

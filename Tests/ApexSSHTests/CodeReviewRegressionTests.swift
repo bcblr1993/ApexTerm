@@ -2,8 +2,10 @@ import XCTest
 @testable import ApexCore
 @testable import ApexSSH
 @testable import ApexUI
+import AppKit
+import SwiftUI
 
-/// Regression coverage for the v1.14.2 full code review (TC-REV-01 ~ TC-REV-17).
+/// Regression coverage for the v1.14.2 full code review (TC-REV-01 ~ TC-REV-18).
 final class CodeReviewRegressionTests: XCTestCase {
     private var tempDir: URL!
     private let sandboxHome = FileManager.default.temporaryDirectory.appendingPathComponent("apex-review-store-" + UUID().uuidString)
@@ -293,5 +295,37 @@ final class CodeReviewRegressionTests: XCTestCase {
         let style = try String(contentsOf: root.appendingPathComponent("Sources/ApexUI/ApexStyle.swift"), encoding: .utf8)
         XCTAssertTrue(style.contains("tint == ApexStyle.accent ? ApexStyle.buttonAccent : tint"))
         XCTAssertTrue(style.contains(".foregroundColor(isProminent ? prominentForeground : tint)"))
+    }
+
+    // MARK: - TC-REV-18: Tunnel editor fits its sheet and rejects out-of-range ports
+    @MainActor
+    func testTunnelEditorSegmentsAndPortValidation() {
+        // Long "本地端口转发 (Local -L)" segments overflowed the 520pt sheet and clipped both edges.
+        for type in SSHTunnelType.allCases {
+            XCTAssertLessThanOrEqual(type.shortLabel.count, 10, type.rawValue)
+        }
+        let host = NSHostingView(rootView: Picker("类型", selection: .constant(SSHTunnelType.local)) {
+            ForEach(SSHTunnelType.allCases) { Text($0.shortLabel).tag($0) }
+        }.pickerStyle(.segmented).labelsHidden())
+        XCTAssertLessThan(host.fittingSize.width, 472, "segments must fit the sheet's content width")
+
+        let session = UUID()
+        func draft(_ bind: String, _ target: String, _ type: SSHTunnelType = .local, name: String = "") -> SSHTunnel {
+            AddOrEditTunnelSheet.makeDraft(id: UUID(), name: name, type: type, sessionId: session,
+                                           bindHost: " 127.0.0.1 ", bindPort: bind, targetHost: " db ",
+                                           targetPort: target, autoStart: false)
+        }
+        let ok = draft(" 3306 ", "3306 ", name: "  MySQL  ")
+        XCTAssertEqual(ok.bindPort, 3306)
+        XCTAssertEqual(ok.targetHost, "db")
+        XCTAssertEqual(ok.name, "MySQL")
+        XCTAssertNil(AddOrEditTunnelSheet.validationMessage(for: ok, bindPort: " 3306 ", targetPort: "3306 "))
+        XCTAssertEqual(draft("8080", "80").name, "127.0.0.1:8080")
+
+        XCTAssertNotNil(AddOrEditTunnelSheet.validationMessage(for: draft("0", "3306"), bindPort: "0", targetPort: "3306"))
+        XCTAssertNotNil(AddOrEditTunnelSheet.validationMessage(for: draft("70000", "3306"), bindPort: "70000", targetPort: "3306"))
+        XCTAssertNotNil(AddOrEditTunnelSheet.validationMessage(for: draft("3306", ""), bindPort: "3306", targetPort: ""))
+        XCTAssertNil(AddOrEditTunnelSheet.validationMessage(for: draft("1080", "", .dynamic), bindPort: "1080", targetPort: ""),
+                     "dynamic SOCKS tunnels have no target port")
     }
 }

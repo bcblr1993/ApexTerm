@@ -343,7 +343,7 @@ private struct TunnelRowView: View {
 }
 
 /// Sheet to create or edit an SSH tunnel configuration
-private struct AddOrEditTunnelSheet: View {
+struct AddOrEditTunnelSheet: View {
     let existingTunnel: SSHTunnel?
     let sessions: [Session]
     let onSave: (SSHTunnel) -> Void
@@ -358,6 +358,40 @@ private struct AddOrEditTunnelSheet: View {
     @State private var targetPortString: String = "3306"
     @State private var autoStart: Bool = false
     
+    private var draft: SSHTunnel {
+        Self.makeDraft(id: existingTunnel?.id ?? UUID(), name: name, type: type, sessionId: selectedSessionId,
+                       bindHost: bindHost, bindPort: bindPortString, targetHost: targetHost,
+                       targetPort: targetPortString, autoStart: autoStart)
+    }
+
+    private var validationMessage: String? {
+        Self.validationMessage(for: draft, bindPort: bindPortString, targetPort: targetPortString)
+    }
+
+    /// Trims every field so pasted values such as " 3306" or "db " still save correctly.
+    static func makeDraft(id: UUID, name: String, type: SSHTunnelType, sessionId: UUID, bindHost: String,
+                          bindPort: String, targetHost: String, targetPort: String, autoStart: Bool) -> SSHTunnel {
+        let trim: (String) -> String = { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        let bPort = Int(trim(bindPort)) ?? 0
+        let host = trim(bindHost)
+        return SSHTunnel(id: id,
+                         name: trim(name).isEmpty ? "\(host.isEmpty ? "127.0.0.1" : host):\(bPort)" : trim(name),
+                         type: type, sessionId: sessionId,
+                         bindHost: host, bindPort: bPort,
+                         targetHost: trim(targetHost), targetPort: Int(trim(targetPort)) ?? 0,
+                         autoStart: autoStart)
+    }
+
+    static func validationMessage(for tunnel: SSHTunnel, bindPort: String, targetPort: String) -> String? {
+        if !(1...65535).contains(tunnel.bindPort) {
+            return bindPort.trimmingCharacters(in: .whitespaces).isEmpty ? "请填写监听端口" : "监听端口须为 1–65535"
+        }
+        if tunnel.type != .dynamic && !(1...65535).contains(tunnel.targetPort) {
+            return targetPort.trimmingCharacters(in: .whitespaces).isEmpty ? "请填写目标端口" : "目标端口须为 1–65535"
+        }
+        return tunnel.isValid ? nil : "隧道配置无效"
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: ApexStyle.s4) {
             HStack {
@@ -404,14 +438,17 @@ private struct AddOrEditTunnelSheet: View {
                     .foregroundColor(ApexStyle.secondary)
                 Picker("类型", selection: $type) {
                     ForEach(SSHTunnelType.allCases) { t in
-                        Text(t.displayName).tag(t)
+                        Text(t.shortLabel).tag(t)
                     }
                 }
                 .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(maxWidth: .infinity)
                 
-                Text(type.shortDescription)
+                Text("\(type.displayName)：\(type.shortDescription)")
                     .font(.caption2)
                     .foregroundColor(ApexStyle.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             
             // Forwarding Ports Configuration
@@ -455,30 +492,23 @@ private struct AddOrEditTunnelSheet: View {
             Divider()
             
             HStack {
+                if let validationMessage {
+                    Text(validationMessage)
+                        .font(.caption)
+                        .foregroundStyle(ApexStyle.warning)
+                        .accessibilityIdentifier("tunnel.validationMessage")
+                }
                 Spacer()
                 Button("取消") { onCancel() }
                     .buttonStyle(.bordered)
                     .controlSize(.regular)
                     .keyboardShortcut(.cancelAction)
                 Button("保存") {
-                    let bPort = Int(bindPortString) ?? 0
-                    let tPort = Int(targetPortString) ?? 0
-                    let tunnel = SSHTunnel(
-                        id: existingTunnel?.id ?? UUID(),
-                        name: name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "\(bindHost):\(bPort)" : name,
-                        type: type,
-                        sessionId: selectedSessionId,
-                        bindHost: bindHost,
-                        bindPort: bPort,
-                        targetHost: targetHost,
-                        targetPort: tPort,
-                        autoStart: autoStart
-                    )
-                    onSave(tunnel)
+                    onSave(draft)
                 }
                 .apexProminentButton()
                 .controlSize(.regular)
-                .disabled(sessions.isEmpty || Int(bindPortString) == nil || (type != .dynamic && Int(targetPortString) == nil))
+                .disabled(sessions.isEmpty || validationMessage != nil)
                 .keyboardShortcut(.defaultAction)
             }
         }

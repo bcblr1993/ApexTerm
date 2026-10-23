@@ -16,6 +16,16 @@ public enum SSHTunnelType: String, CaseIterable, Codable, Identifiable, Sendable
         }
     }
     
+    /// Compact segment title; the full name and description render below the picker.
+    /// The long display names overflowed a segmented control in the 520pt editor sheet.
+    public var shortLabel: String {
+        switch self {
+        case .local: return "本地 -L"
+        case .remote: return "远程 -R"
+        case .dynamic: return "SOCKS5 -D"
+        }
+    }
+
     public var shortDescription: String {
         switch self {
         case .local: return "将本地端口流量转发至远程内网服务（如访问内网数据库）"

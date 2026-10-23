@@ -388,7 +388,7 @@ public final class LocalTerminalSession: SSHSessionProtocol, @unchecked Sendable
         }
     }
     
-    public func downloadFile(remotePath: String, localURL: URL, progress: @Sendable @escaping (Double) -> Void) async throws {
+    public func downloadFile(remotePath: String, localURL: URL, totalBytes: Int64, progress: @Sendable @escaping (Double) -> Void) async throws {
         let sourcePath = Self.expandPath(remotePath)
         let fm = FileManager.default
         if fm.fileExists(atPath: localURL.path) {

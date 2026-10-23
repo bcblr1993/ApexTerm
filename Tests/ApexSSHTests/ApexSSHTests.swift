@@ -25,7 +25,7 @@ final class ApexSSHTests: XCTestCase {
 
         try "updated configuration\n".write(to: source, atomically: true, encoding: .utf8)
         try await client.uploadFile(localURL: source, remotePath: "/root/example.conf", progress: { _ in })
-        try await client.downloadFile(remotePath: "/root/example.conf", localURL: result, progress: { _ in })
+        try await client.downloadFile(remotePath: "/root/example.conf", localURL: result, totalBytes: 0, progress: { _ in })
         XCTAssertEqual(try String(contentsOf: result, encoding: .utf8), "updated configuration\n")
     }
     

@@ -287,6 +287,42 @@ public struct ApexActionButton: View {
         self.action = action
     }
     
+    private var isActiveHover: Bool { isHovered && isEnabled }
+
+    /// Prominent buttons carry white text, so the theme accent (pastel in many dark themes,
+    /// e.g. Everforest or Nord) is swapped for its white-readable variant, matching
+    /// `apexProminentButton()`. Explicit semantic tints are used as given.
+    private var prominentTint: Color {
+        tint == ApexStyle.accent ? ApexStyle.buttonAccent : tint
+    }
+
+    /// White unless the fill is too light for it (WCAG 4.5:1), e.g. pastel success/warning tints.
+    private var prominentForeground: Color {
+        guard let rgb = NSColor(prominentTint).usingColorSpace(.sRGB) else { return .white }
+        func channel(_ c: CGFloat) -> Double {
+            let v = Double(c)
+            return v <= 0.03928 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4)
+        }
+        let luminance = 0.2126 * channel(rgb.redComponent) + 0.7152 * channel(rgb.greenComponent) + 0.0722 * channel(rgb.blueComponent)
+        let contrastWithWhite = 1.05 / (luminance + 0.05)
+        return contrastWithWhite >= 4.5 ? .white : Color.black.opacity(0.85)
+    }
+
+    private var fillColor: Color {
+        if isProminent { return isActiveHover ? prominentTint.opacity(0.88) : prominentTint }
+        return tint.opacity(isActiveHover ? 0.18 : 0.10)
+    }
+
+    private var strokeColor: Color {
+        if isProminent { return Color.white.opacity(isActiveHover ? 0.35 : 0.15) }
+        return tint.opacity(isActiveHover ? 0.48 : 0.22)
+    }
+
+    private var shadowColor: Color {
+        if isActiveHover { return isProminent ? prominentTint.opacity(0.35) : tint.opacity(0.18) }
+        return isProminent ? prominentTint.opacity(0.18) : Color.clear
+    }
+
     public var body: some View {
         Button(action: {
             if !isLoading && isEnabled {
@@ -307,37 +343,18 @@ public struct ApexActionButton: View {
             }
             .padding(.horizontal, size == .small ? 8 : 12)
             .padding(.vertical, size == .small ? 4 : 6.5)
-            .background(
-                RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
-                    .fill(
-                        isProminent
-                            ? (isHovered && isEnabled ? tint.opacity(0.88) : tint)
-                            : (isHovered && isEnabled ? tint.opacity(0.18) : tint.opacity(0.10))
-                    )
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
-                    .stroke(
-                        isProminent
-                            ? Color.white.opacity(isHovered && isEnabled ? 0.35 : 0.15)
-                            : (isHovered && isEnabled ? tint.opacity(0.48) : tint.opacity(0.22)),
-                        lineWidth: 0.75
-                    )
-            )
-            .foregroundColor(isProminent ? .white : tint)
-            .scaleEffect(isHovered && isEnabled ? 1.025 : 1.0)
-            .shadow(
-                color: (isHovered && isEnabled)
-                    ? tint.opacity(isProminent ? 0.35 : 0.18)
-                    : (isProminent ? tint.opacity(0.18) : Color.clear),
-                radius: isProminent ? 4 : 3,
-                x: 0,
-                y: 1
-            )
-            .opacity(isEnabled ? 1.0 : 0.45)
-            .animation(ApexStyle.springSnappy, value: isHovered)
-            .animation(ApexStyle.springSnappy, value: isEnabled)
-            .animation(ApexStyle.springSnappy, value: isLoading)
+            // Scoped animation: only these visual modifiers animate. A value-based implicit
+            // animation would also animate the button's position, so a sheet whose save button
+            // becomes enabled during its first layout made the button fly from center to bottom.
+            .animation(ApexStyle.springSnappy) { content in
+                content
+                    .background(RoundedRectangle(cornerRadius: ApexStyle.controlRadius).fill(fillColor))
+                    .overlay(RoundedRectangle(cornerRadius: ApexStyle.controlRadius).stroke(strokeColor, lineWidth: 0.75))
+                    .foregroundColor(isProminent ? prominentForeground : tint)
+                    .scaleEffect(isActiveHover ? 1.025 : 1.0)
+                    .shadow(color: shadowColor, radius: isProminent ? 4 : 3, x: 0, y: 1)
+                    .opacity(isEnabled ? 1.0 : 0.45)
+            }
         }
         .buttonStyle(.plain)
         .disabled(!isEnabled || isLoading)

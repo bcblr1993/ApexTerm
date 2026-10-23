@@ -303,6 +303,10 @@ public struct WorkspaceView: View {
     @State private var isCommandPalettePresented: Bool = false
     @State private var isTunnelModalPresented: Bool = false
     @State private var isProcessInspectorPresented: Bool = false
+    /// Owned here, not by the toolbar-hosted capsule, so the popover survives toolbar rebuilds.
+    /// Held without observation: toggling it must not re-evaluate the toolbar, which would tear
+    /// down the popover's anchor and re-present it as a non-key window that ignores Escape.
+    @State private var metricsDetail = MetricsDetailPresentation()
     @State private var hudToastMessage: String?
     
     // Tab Rename
@@ -558,6 +562,14 @@ public struct WorkspaceView: View {
         .navigationTitle(currentTab?.displayTitle ?? L10n.appName)
         .navigationSubtitle(currentTab.map { $0.session.isLocal ? "本机 Shell (\($0.session.username))" : "\($0.session.username)@\($0.session.host)" } ?? "SSH 与文件工作台")
         .toolbar { workspaceToolbar }
+        .overlay(alignment: .topTrailing) {
+            if let tab = currentTab, let primaryPane = tab.panes.first {
+                MetricsDetailOverlay(presentation: metricsDetail, pane: primaryPane,
+                                     historyStore: tab.metricsHistory,
+                                     monitoringEnabled: tab.session.agentlessMonitorEnabled)
+            }
+        }
+        .onChange(of: selectedTabId) { _, _ in metricsDetail.isPresented = false }
         .onChange(of: activeTabs.count) { _, count in
             if count < 2 { isBroadcastActive = false }
         }
@@ -688,7 +700,8 @@ public struct WorkspaceView: View {
             }
             ToolbarItem(placement: .primaryAction) {
                 if let primaryPane = tab.panes.first {
-                    WorkspaceMetricsView(pane: primaryPane, historyStore: tab.metricsHistory, monitoringEnabled: tab.session.agentlessMonitorEnabled)
+                    WorkspaceMetricsView(pane: primaryPane, historyStore: tab.metricsHistory, monitoringEnabled: tab.session.agentlessMonitorEnabled,
+                                         presentation: metricsDetail)
                 }
             }
             ToolbarItemGroup(placement: .primaryAction) {
@@ -870,17 +883,114 @@ private struct WorkspaceMetricsView: View {
     @ObservedObject var pane: TerminalPaneItem
     let historyStore: ObservableMetricsHistory
     let monitoringEnabled: Bool
+    @ObservedObject var presentation: MetricsDetailPresentation
 
     var body: some View {
         MetricCapsuleView(historyStore: historyStore, compact: true,
                           monitoringEnabled: monitoringEnabled,
                           connectionActive: pane.connectionState == .connected,
-                          connectionConnecting: isConnecting)
+                          connectionConnecting: isConnecting,
+                          isDetailPresented: $presentation.isPresented)
     }
 
     private var isConnecting: Bool {
         if case .connecting = pane.connectionState { return true }
         return false
+    }
+}
+
+@MainActor
+final class MetricsDetailPresentation: ObservableObject {
+    @Published var isPresented = false
+}
+
+/// The metrics detail card, presented from the window content instead of a toolbar-anchored
+/// popover so its lifetime never depends on the toolbar item host. Clicking outside the card or
+/// pressing Escape closes it; the Escape interceptor exists only while the card is open so
+/// terminal programs such as vim keep receiving Escape otherwise.
+private struct MetricsDetailOverlay: View {
+    @ObservedObject var presentation: MetricsDetailPresentation
+    @ObservedObject var pane: TerminalPaneItem
+    let historyStore: ObservableMetricsHistory
+    let monitoringEnabled: Bool
+
+    var body: some View {
+        if presentation.isPresented {
+            ZStack(alignment: .topTrailing) {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onTapGesture { presentation.isPresented = false }
+                    .accessibilityHidden(true)
+                MetricDetailView(historyStore: historyStore, monitoringEnabled: monitoringEnabled,
+                                 connectionActive: pane.connectionState == .connected,
+                                 connectionConnecting: isConnecting,
+                                 onDismiss: { presentation.isPresented = false })
+                    .frame(width: 390)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(ApexStyle.border.opacity(0.6), lineWidth: 0.75))
+                    .shadow(color: .black.opacity(0.18), radius: 14, y: 6)
+                    .padding(.top, 6)
+                    .padding(.trailing, 12)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("metrics.detail")
+                // The terminal is usually first responder and consumes Escape in keyDown (it
+                // forwards ESC to the PTY), so a SwiftUI cancel shortcut never fires. Intercept
+                // Escape for this window only while the card is visible.
+                EscapeKeyInterceptor { presentation.isPresented = false }
+                    .frame(width: 0, height: 0)
+                    .accessibilityHidden(true)
+            }
+            .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .topTrailing)))
+        }
+    }
+
+    private var isConnecting: Bool {
+        if case .connecting = pane.connectionState { return true }
+        return false
+    }
+}
+
+/// Consumes a plain Escape key press in its own window while mounted.
+private struct EscapeKeyInterceptor: NSViewRepresentable {
+    let onEscape: () -> Void
+
+    func makeNSView(context: Context) -> InterceptorView {
+        let view = InterceptorView()
+        view.onEscape = onEscape
+        return view
+    }
+
+    func updateNSView(_ nsView: InterceptorView, context: Context) {
+        nsView.onEscape = onEscape
+    }
+
+    static func dismantleNSView(_ nsView: InterceptorView, coordinator: ()) {
+        nsView.removeMonitor()
+    }
+
+    final class InterceptorView: NSView {
+        var onEscape: (() -> Void)?
+        private var monitor: Any?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            removeMonitor()
+            guard window != nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                guard let self, let window = self.window, event.window === window,
+                      event.keyCode == 53,
+                      event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty else {
+                    return event
+                }
+                self.onEscape?()
+                return nil
+            }
+        }
+
+        func removeMonitor() {
+            if let monitor { NSEvent.removeMonitor(monitor) }
+            monitor = nil
+        }
     }
 }
 

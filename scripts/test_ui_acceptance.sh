@@ -102,7 +102,10 @@ source.write_bytes(plistlib.dumps(config))
 (reports / 'xctestrun-path.txt').write_text(str(source.resolve()))
 PY
 STAGE=ui-test-execution
-python3 scripts/run_ui_tests_remotely.py "$REPORT_DIR" 2>&1 | tee "$REPORT_DIR/remote-execution.log"
+# APEX_UI_ONLY_TESTING narrows a debugging run (space-separated test identifiers);
+# the result verification below still rejects partial runs, so releases need the full suite.
+read -r -a ONLY_TESTING <<< "${APEX_UI_ONLY_TESTING:-}"
+python3 scripts/run_ui_tests_remotely.py "$REPORT_DIR" ${ONLY_TESTING[@]+"${ONLY_TESTING[@]}"} 2>&1 | tee "$REPORT_DIR/remote-execution.log"
 STAGE=ui-result-verification
 xcrun xcresulttool get test-results summary --path "$REPORT_DIR/UI.xcresult" --compact \
     > "$REPORT_DIR/summary.json"

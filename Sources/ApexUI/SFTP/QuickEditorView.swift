@@ -40,6 +40,18 @@ public struct QuickEditorView: View {
     @State private var lineCount = 1
     @State private var contentByteCount = 0
 
+    /// The editing area follows the active theme like the header and footer around it.
+    private var editorPalette: NativeCodeEditor.EditorPalette? {
+        guard !themeSettings.followsSystemAppearance else { return nil }
+        return NativeCodeEditor.EditorPalette(
+            background: NSColor(ApexStyle.surface),
+            text: NSColor(ApexStyle.primary),
+            gutter: NSColor(ApexStyle.subtleSurface),
+            gutterText: NSColor(ApexStyle.secondary),
+            selection: NSColor(ApexStyle.selection)
+        )
+    }
+
     public var body: some View {
         VStack(spacing: 0) {
             // Header Bar
@@ -134,7 +146,7 @@ public struct QuickEditorView: View {
             
             Divider()
             
-            NativeCodeEditor(text: $content, showsFindBar: $isSearchVisible, isReloading: isReloading)
+            NativeCodeEditor(text: $content, showsFindBar: $isSearchVisible, isReloading: isReloading, palette: editorPalette)
                 .onChange(of: content) { _, newValue in
                     hasUnsavedChanges = newValue != initialContent
                     lineCount = 1 + newValue.utf8.reduce(0) { $0 + ($1 == 10 ? 1 : 0) }

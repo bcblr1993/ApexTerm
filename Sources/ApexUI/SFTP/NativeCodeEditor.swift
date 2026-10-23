@@ -6,6 +6,16 @@ struct NativeCodeEditor: NSViewRepresentable {
     @Binding var text: String
     @Binding var showsFindBar: Bool
     var isReloading: Bool
+    /// Theme colors; nil keeps the system text colors (used when following the system appearance).
+    var palette: EditorPalette? = nil
+
+    struct EditorPalette: Equatable {
+        let background: NSColor
+        let text: NSColor
+        let gutter: NSColor
+        let gutterText: NSColor
+        let selection: NSColor
+    }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -75,9 +85,17 @@ struct NativeCodeEditor: NSViewRepresentable {
             context.coordinator.ruler?.reindex()
         }
         editor.isEditable = !isReloading
-        editor.backgroundColor = .textBackgroundColor
-        editor.textColor = .textColor
-        editor.insertionPointColor = .textColor
+        editor.backgroundColor = palette?.background ?? .textBackgroundColor
+        editor.textColor = palette?.text ?? .textColor
+        editor.insertionPointColor = palette?.text ?? .textColor
+        editor.selectedTextAttributes = [.backgroundColor: palette?.selection ?? .selectedTextBackgroundColor]
+        scroll.backgroundColor = editor.backgroundColor
+        if let ruler = context.coordinator.ruler,
+           ruler.fillColor != palette?.gutter ?? .controlBackgroundColor || ruler.labelColor != palette?.gutterText ?? .secondaryLabelColor {
+            ruler.fillColor = palette?.gutter ?? .controlBackgroundColor
+            ruler.labelColor = palette?.gutterText ?? .secondaryLabelColor
+            ruler.needsDisplay = true
+        }
         if context.coordinator.lastFindVisibility != showsFindBar {
             context.coordinator.lastFindVisibility = showsFindBar
             let action = NSMenuItem()
@@ -106,6 +124,8 @@ final class CodeLineRuler: NSRulerView {
     override var wantsDefaultClipping: Bool { true }
     private weak var editor: NSTextView?
     private var lineStarts: [Int] = [0]
+    var fillColor: NSColor = .controlBackgroundColor
+    var labelColor: NSColor = .secondaryLabelColor
 
     init(editor: NSTextView) {
         self.editor = editor
@@ -133,7 +153,7 @@ final class CodeLineRuler: NSRulerView {
             x: bounds.minX, y: viewport.minY,
             width: bounds.width, height: viewport.height
         ))).addClip()
-        NSColor.controlBackgroundColor.setFill()
+        fillColor.setFill()
         bounds.fill()
         let visible = editor.visibleRect.offsetBy(dx: -editor.textContainerOrigin.x, dy: -editor.textContainerOrigin.y)
         let glyphs = layout.glyphRange(forBoundingRect: visible, in: container)
@@ -147,7 +167,7 @@ final class CodeLineRuler: NSRulerView {
         let start = max(0, low - 1)
         let attrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular),
-            .foregroundColor: NSColor.secondaryLabelColor
+            .foregroundColor: labelColor
         ]
         for index in start..<lineStarts.count {
             let offset = lineStarts[index]

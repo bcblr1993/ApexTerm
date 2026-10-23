@@ -243,7 +243,7 @@ struct ThemeVerificationApp: App {
                     }
                     tab.metricsHistory.append(ServerMetricsSnapshot(cpuUsagePercent: 24, cpuCores: 8, cpuModel: "示例服务器", memoryTotalBytes: 8_589_934_592, memoryUsedBytes: 3_221_225_472))
                 }
-                let sizes: [String: NSSize] = ["main": NSSize(width: 1100, height: 760), "settings": NSSize(width: 752, height: 512), "session": NSSize(width: 560, height: 560), "about": NSSize(width: 520, height: 650), "shortcuts": NSSize(width: 580, height: 590), "editor": NSSize(width: 900, height: 650), "transfers": NSSize(width: 900, height: 420), "metrics": NSSize(width: 500, height: 300), "import": NSSize(width: 620, height: 500)]
+                let sizes: [String: NSSize] = ["main": NSSize(width: 1100, height: 760), "settings": NSSize(width: 720, height: 512), "session": NSSize(width: 580, height: 600), "about": NSSize(width: 520, height: 650), "shortcuts": NSSize(width: 580, height: 590), "editor": NSSize(width: 900, height: 650), "transfers": NSSize(width: 900, height: 420), "metrics": NSSize(width: 500, height: 300), "import": NSSize(width: 620, height: 500)]
                 Task { @MainActor in
                     try? await Task.sleep(for: .milliseconds(100))
                     NSApplication.shared.windows.first(where: { $0.isVisible && $0.contentView != nil })?.setContentSize(sizes[page] ?? NSSize(width: 1100, height: 760))

@@ -3,7 +3,7 @@ import XCTest
 @testable import ApexSSH
 @testable import ApexUI
 
-/// Regression coverage for the v1.14.2 full code review (TC-REV-01 ~ TC-REV-14).
+/// Regression coverage for the v1.14.2 full code review (TC-REV-01 ~ TC-REV-17).
 final class CodeReviewRegressionTests: XCTestCase {
     private var tempDir: URL!
     private let sandboxHome = FileManager.default.temporaryDirectory.appendingPathComponent("apex-review-store-" + UUID().uuidString)
@@ -240,5 +240,58 @@ final class CodeReviewRegressionTests: XCTestCase {
     func testSettingsWindowFitsAllToolbarTabs() {
         XCTAssertGreaterThanOrEqual(SettingsView.contentWidth, 700,
                                     "six toolbar tabs overflow into 'more toolbar items' below ~700pt")
+    }
+
+    // MARK: - TC-REV-15: Session editor offers existing groups and reuses their spelling
+    @MainActor
+    func testSessionEditorExistingFolderSelection() {
+        let sessions = [
+            Session(name: "a", host: "h1", username: "u", folder: " Prod "),
+            Session(name: "b", host: "h2", username: "u", folder: "数据库"),
+            Session(name: "c", host: "h3", username: "u", folder: nil),
+            Session.local()
+        ]
+        let folders = SessionEditModal.existingFolders(sessions: sessions, extraFolders: ["空分组", "  "])
+        XCTAssertEqual(folders, ["Prod", "数据库", "空分组", L10n.generalFolder].sorted())
+
+        XCTAssertEqual(SessionEditModal.canonicalFolder("prod  ", existing: folders), "Prod")
+        XCTAssertEqual(SessionEditModal.canonicalFolder("数据库", existing: folders), "数据库")
+        XCTAssertEqual(SessionEditModal.canonicalFolder("  新分组 ", existing: folders), "新分组")
+        XCTAssertEqual(SessionEditModal.canonicalFolder("   ", existing: folders), L10n.generalFolder)
+    }
+
+    // MARK: - TC-REV-16: Action buttons never animate their own position
+    // A value-based `.animation(_:value: isEnabled)` animated the save button's frame when a sheet
+    // populated its form during the first layout, so the button flew from center to bottom.
+    func testActionButtonAnimationIsScopedToVisualModifiers() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let style = try String(contentsOf: root.appendingPathComponent("Sources/ApexUI/ApexStyle.swift"), encoding: .utf8)
+        let start = try XCTUnwrap(style.range(of: "public struct ApexActionButton"))
+        let rest = style[start.upperBound...]
+        let body = rest.range(of: "\npublic struct ").map { rest[..<$0.lowerBound] } ?? rest
+        XCTAssertFalse(body.contains(".animation(ApexStyle.springSnappy, value:"),
+                       "ApexActionButton must not use value-based implicit animations")
+        XCTAssertTrue(body.contains(".animation(ApexStyle.springSnappy) { content in"))
+
+        let modal = try String(contentsOf: root.appendingPathComponent("Sources/ApexUI/Sidebar/SessionEditModal.swift"), encoding: .utf8)
+        XCTAssertTrue(modal.contains("transaction.disablesAnimations = true"),
+                      "Populating the session form must not animate the first layout")
+    }
+
+    // MARK: - TC-REV-17: Prominent buttons keep readable text in every theme
+    // Pastel dark-theme accents (Everforest, Nord, Rosé Pine…) rendered white text at ~2:1.
+    func testProminentButtonTextContrastAcrossThemes() throws {
+        for preset in TerminalThemePreset.allCases {
+            let accent = preset.palette.accent
+            let readable = ThemePalette.readable(accent, on: ["#FFFFFF"])
+            XCTAssertGreaterThanOrEqual(ThemePalette.contrast("#FFFFFF", readable), 4.5,
+                                        "\(preset.rawValue) prominent fill must carry white text")
+        }
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let style = try String(contentsOf: root.appendingPathComponent("Sources/ApexUI/ApexStyle.swift"), encoding: .utf8)
+        XCTAssertTrue(style.contains("tint == ApexStyle.accent ? ApexStyle.buttonAccent : tint"))
+        XCTAssertTrue(style.contains(".foregroundColor(isProminent ? prominentForeground : tint)"))
     }
 }

@@ -21,6 +21,15 @@ public struct SSHConfigImportSheet: View {
         self._configPath = State(initialValue: savedPath ?? configURL.path)
     }
     
+    private var existingFolders: [String] {
+        SessionEditModal.existingFolders(sessions: store.sessions, extraFolders: store.folders)
+    }
+
+    /// Typed names that only differ from an existing group by case or padding join that group.
+    private var resolvedFolder: String {
+        SessionEditModal.canonicalFolder(targetFolder, existing: existingFolders)
+    }
+
     public var body: some View {
         VStack(spacing: 0) {
             // Header
@@ -68,6 +77,7 @@ public struct SSHConfigImportSheet: View {
                 TextField("目标文件夹", text: $targetFolder)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 140)
+                ExistingFolderMenu(folder: $targetFolder, folders: existingFolders)
                 
                 Spacer()
                 
@@ -249,7 +259,7 @@ public struct SSHConfigImportSheet: View {
         var importedCount = 0
         
         for host in toImport {
-            let session = host.toSession(folder: targetFolder)
+            let session = host.toSession(folder: resolvedFolder)
             if let existing = store.sessions.first(where: { $0.name == session.name && $0.host == session.host }) {
                 var updated = session
                 updated.id = existing.id
@@ -260,7 +270,7 @@ public struct SSHConfigImportSheet: View {
             importedCount += 1
         }
         
-        importResultNotice = "已成功导入 \(importedCount) 台主机到分组 [\(targetFolder)]！"
+        importResultNotice = "已成功导入 \(importedCount) 台主机到分组 [\(resolvedFolder)]！"
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
             dismiss()
         }

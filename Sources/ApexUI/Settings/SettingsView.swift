@@ -55,8 +55,9 @@ public struct SettingsView: View {
                 .tag(5)
         }
         // Six toolbar tabs overflow into "more toolbar items" below ~700pt, hiding every tab.
-        .frame(width: SettingsView.contentWidth, height: 480)
-        .padding()
+        // No outer padding: grouped forms inset themselves, and padding exposed the window
+        // background as a mismatched stripe around the form in dark themes.
+        .frame(width: SettingsView.contentWidth, height: 512)
     }
 }
 

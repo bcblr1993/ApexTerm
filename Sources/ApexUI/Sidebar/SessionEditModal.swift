@@ -74,6 +74,19 @@ public struct SessionEditModal: View {
             .filter { !$0.isEmpty && seen.insert($0).inserted }
     }
 
+    /// Every group already in use (or created empty), normalized the same way the sidebar renders them.
+    public static func existingFolders(sessions: [Session], extraFolders: [String]) -> [String] {
+        SidebarView.folderNames(sessions: sessions, extraFolders: extraFolders, searchFilter: "")
+    }
+
+    /// Reuses an existing group's spelling when the typed name only differs by case or padding,
+    /// so "prod " and "Prod" do not split one group into two sidebar entries.
+    public static func canonicalFolder(_ input: String, existing: [String]) -> String {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return L10n.generalFolder }
+        return existing.first { $0.caseInsensitiveCompare(trimmed) == .orderedSame } ?? trimmed
+    }
+
     /// Sessions that may serve as this session's jump host: remote only, never itself.
     public static func jumpHostCandidates(from sessions: [Session], excluding id: UUID?) -> [Session] {
         sessions.filter { !$0.isLocal && $0.id != id }
@@ -318,8 +331,13 @@ public struct SessionEditModal: View {
                 
                 // 3. 分组与组织
                 Section(L10n.organizationSection) {
-                    TextField(L10n.folderLabel, text: $folder)
-                    .accessibilityLabel(L10n.folderLabel)
+                    HStack(spacing: ApexStyle.sCompact) {
+                        TextField(L10n.folderLabel, text: $folder, prompt: Text("选择已有分组或输入新分组"))
+                            .accessibilityLabel(L10n.folderLabel)
+                            .accessibilityIdentifier("session.folder")
+                        ExistingFolderMenu(folder: $folder,
+                                           folders: Self.existingFolders(sessions: SessionStore.shared.sessions, extraFolders: SessionStore.shared.folders))
+                    }
                     TextField(L10n.tagsLabel, text: $tags, prompt: Text(L10n.tagsPlaceholder))
                     .accessibilityLabel(L10n.tagsLabel)
                     HStack(spacing: 9) {
@@ -403,7 +421,11 @@ public struct SessionEditModal: View {
         }
         .frame(width: 580, height: 600)
         .onAppear {
-            loadInitialSessionData()
+            // Populating the form flips the save button from disabled to enabled during the
+            // sheet's first layout; suppress implicit animations so nothing visibly jumps.
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { loadInitialSessionData() }
         }
     }
 
@@ -584,7 +606,7 @@ public struct SessionEditModal: View {
             port: Int(port.trimmingCharacters(in: .whitespaces)) ?? 22,
             username: username.trimmingCharacters(in: .whitespaces).isEmpty ? "root" : username.trimmingCharacters(in: .whitespaces),
             authMethod: authMethod,
-            folder: folder.trimmingCharacters(in: .whitespaces).isEmpty ? "常用会话" : folder.trimmingCharacters(in: .whitespaces),
+            folder: Self.canonicalFolder(folder, existing: Self.existingFolders(sessions: SessionStore.shared.sessions, extraFolders: SessionStore.shared.folders)),
             tags: Self.parseTags(tags),
             colorHex: colorHex,
             jumpServerId: jumpServerId,
@@ -596,5 +618,37 @@ public struct SessionEditModal: View {
         )
         onSave(newSession)
         dismiss()
+    }
+}
+
+/// Picks one of the groups already in use; free typing in the adjacent field still creates new ones.
+struct ExistingFolderMenu: View {
+    @Binding var folder: String
+    let folders: [String]
+
+    var body: some View {
+        if !folders.isEmpty {
+            Menu {
+                ForEach(folders, id: \.self) { name in
+                    Button {
+                        folder = name
+                    } label: {
+                        if SessionEditModal.canonicalFolder(folder, existing: folders) == name {
+                            Label(name, systemImage: "checkmark")
+                        } else {
+                            Text(name)
+                        }
+                    }
+                }
+            } label: {
+                ApexMenuTrigger(icon: "folder.badge.gearshape", label: "选择已有分组", size: 24, iconSize: 11)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .accessibilityLabel("选择已有分组")
+            .accessibilityIdentifier("session.folderPicker")
+            .help("选择已有分组")
+        }
     }
 }

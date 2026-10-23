@@ -6,19 +6,28 @@ import ApexCore
 public struct MetricCapsuleView: View {
     @ObservedObject private var themeSettings = AppSettings.shared
     @ObservedObject public var historyStore: ObservableMetricsHistory
-    @State private var showingDetail = false
+    @State private var localShowingDetail = false
     @State private var isCapsuleHovered = false
+    private let externalShowingDetail: Binding<Bool>?
     private let compact: Bool
     private let monitoringEnabled: Bool
     private let connectionActive: Bool
     private let connectionConnecting: Bool
 
-    public init(historyStore: ObservableMetricsHistory, compact: Bool = false, monitoringEnabled: Bool = true, connectionActive: Bool = true, connectionConnecting: Bool = false) {
+    /// Pass `isDetailPresented` when the capsule lives in a toolbar: the host then presents the
+    /// detail itself. SwiftUI rebuilds toolbar item hosts on unrelated state changes, which
+    /// tears down a popover anchored there (it closes or re-presents as a non-key window).
+    public init(historyStore: ObservableMetricsHistory, compact: Bool = false, monitoringEnabled: Bool = true, connectionActive: Bool = true, connectionConnecting: Bool = false, isDetailPresented: Binding<Bool>? = nil) {
         self.historyStore = historyStore
         self.compact = compact
         self.monitoringEnabled = monitoringEnabled
         self.connectionActive = connectionActive
         self.connectionConnecting = connectionConnecting
+        self.externalShowingDetail = isDetailPresented
+    }
+
+    private var showingDetail: Binding<Bool> {
+        externalShowingDetail ?? $localShowingDetail
     }
 
     public var body: some View {
@@ -29,7 +38,7 @@ public struct MetricCapsuleView: View {
 
     private func capsule(at date: Date) -> some View {
         let isStale = latest.map { date.timeIntervalSince($0.timestamp) > 30 } ?? false
-        return Button(action: { showingDetail.toggle() }) {
+        return Button(action: { showingDetail.wrappedValue.toggle() }) {
             HStack(spacing: 12) {
                 if monitoringEnabled && connectionConnecting {
                     ProgressView().controlSize(.mini)
@@ -133,23 +142,9 @@ public struct MetricCapsuleView: View {
         .accessibilityIdentifier("metrics.summary")
         .controlSize(compact ? .regular : .small)
         .help(isStale ? "超过 30 秒未收到新指标，详情为最后一次采样" : "查看服务器性能")
-        .popover(isPresented: $showingDetail, arrowEdge: .bottom) {
+        .modifier(InlineDetailPopover(isEnabled: externalShowingDetail == nil, isPresented: $localShowingDetail) {
             MetricDetailView(historyStore: historyStore, monitoringEnabled: monitoringEnabled, connectionActive: connectionActive, connectionConnecting: connectionConnecting)
-                .frame(width: 390)
-                // Escape must close the detail even when a control inside it holds focus;
-                // a lingering popover covers the disconnected banner's reconnect button.
-                .onExitCommand { showingDetail = false }
-        }
-        .background {
-            // The terminal can reclaim key focus while the popover is open (e.g. after a
-            // disconnect), so Escape may reach the main window instead of the popover.
-            if showingDetail {
-                Button("") { showingDetail = false }
-                    .keyboardShortcut(.cancelAction)
-                    .opacity(0)
-                    .accessibilityHidden(true)
-            }
-        }
+        })
     }
 
     private var latest: ServerMetricsSnapshot? {
@@ -204,6 +199,25 @@ public final class ObservableMetricsHistory: ObservableObject {
     }
 }
 
+/// Standalone capsules (outside a toolbar) keep presenting their own popover.
+private struct InlineDetailPopover<Detail: View>: ViewModifier {
+    let isEnabled: Bool
+    @Binding var isPresented: Bool
+    @ViewBuilder let detail: () -> Detail
+
+    func body(content: Content) -> some View {
+        if isEnabled {
+            content.popover(isPresented: $isPresented, arrowEdge: .bottom) {
+                detail()
+                    .frame(width: 390)
+                    .onExitCommand { isPresented = false }
+            }
+        } else {
+            content
+        }
+    }
+}
+
 /// Native metric details are rendered only while the popover is visible.
 public struct MetricDetailView: View {
     @ObservedObject private var themeSettings = AppSettings.shared
@@ -212,6 +226,8 @@ public struct MetricDetailView: View {
     let monitoringEnabled: Bool
     let connectionActive: Bool
     let connectionConnecting: Bool
+    /// Hosts that present the detail outside a popover supply their own close action.
+    var onDismiss: (() -> Void)? = nil
 
     public var body: some View {
         TimelineView(.periodic(from: .now, by: 10)) { context in
@@ -428,7 +444,7 @@ public struct MetricDetailView: View {
                                     iconSize: 10
                                 ) {
                                     // Close the popover first so the inspector sheet is not stacked under it.
-                                    dismiss()
+                                    if let onDismiss { onDismiss() } else { dismiss() }
                                     NotificationCenter.default.post(name: NSNotification.Name("TriggerProcessInspector"), object: nil)
                                 }
                             }

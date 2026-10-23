@@ -85,6 +85,9 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
         }
     }
     @Published public var customTitle: String? = nil
+    /// TERM the remote host lacks a terminfo entry for; drives the warning banner
+    @Published public var terminfoWarning: TerminalType? = nil
+    private var terminfoProbeTask: Task<Void, Never>? = nil
     @Published public var paneSplitRatio: CGFloat = 0.5
     
     public var displayTitle: String {
@@ -174,6 +177,11 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
     public func connect(pane: TerminalPaneItem? = nil) {
         let targetPane = pane ?? activePane ?? panes.first
         guard let p = targetPane else { return }
+        let isPrimaryPane = p.id == panes.first?.id
+        if isPrimaryPane {
+            terminfoProbeTask?.cancel()
+            terminfoWarning = nil
+        }
         p.connectionState = .connecting(step: "正在连接")
         if p.id == (activePane?.id ?? panes.first?.id) {
             self.connectionState = .connecting(step: "正在连接")
@@ -186,6 +194,9 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
                 p.connectionState = p.sshClient.connectionState
                 if p.id == (self.activePane?.id ?? self.panes.first?.id) {
                     self.connectionState = p.sshClient.connectionState
+                }
+                if isPrimaryPane {
+                    self.probeTerminfo(client: p.sshClient)
                 }
                 
                 // Auto-start configured tunnels for this session
@@ -210,6 +221,32 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
         connect(pane: pane)
     }
 
+    /// Silently checks the remote terminfo database over the one-shot command channel.
+    private func probeTerminfo(client: SSHSessionProtocol) {
+        guard !session.isLocal else { return }
+        let type = client.terminalType
+        terminfoProbeTask = Task { @MainActor [weak self] in
+            let result = await TerminfoProbe.run(on: client)
+            guard let self = self, !Task.isCancelled, result == .missing else { return }
+            self.terminfoWarning = type
+        }
+    }
+
+    /// Persists the fallback TERM for this session and reconnects every pane with it.
+    public func applyTerminfoFallback(store: SessionStore = .shared) {
+        guard let missing = terminfoWarning else { return }
+        let target = missing.fallback
+        terminfoWarning = nil
+        if var saved = store.sessions.first(where: { $0.id == session.id }) {
+            saved.terminalType = target
+            store.updateSession(saved)
+        }
+        for pane in panes {
+            pane.sshClient.setTerminalType(target)
+        }
+        reconnectAll()
+    }
+
     public func reconnectAll() {
         for pane in panes {
             connect(pane: pane)
@@ -222,6 +259,7 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
             return
         }
         let newClient = SSHClientFactory.makeClient(for: session)
+        newClient.setTerminalType(sshClient.terminalType)
         
         let newPane = TerminalPaneItem(session: session, sshClient: newClient, title: "\(session.name) (分屏)", initialState: .connecting(step: "连接中"))
         newPane.onConnectionStateChanged = { [weak self, weak newPane] newState in
@@ -1294,6 +1332,38 @@ private struct PaneContainerView: View {
                         .padding(.horizontal, 14)
                         .padding(.vertical, 8)
                         .apexGlassCard(cornerRadius: 12, material: .regularMaterial, borderColor: ApexStyle.error.opacity(0.4), shadowRadius: 8)
+                        .padding(.top, 12)
+                        Spacer()
+                    }
+                    .transition(.opacity)
+                } else if let missing = tab.terminfoWarning, pane.id == tab.panes.first?.id {
+                    VStack {
+                        HStack(spacing: 8) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundColor(ApexStyle.warning)
+                                .accessibilityHidden(true)
+                            Text("远端缺少 \(missing.rawValue) 终端描述，长命令无法自动换行")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundColor(ApexStyle.primary)
+                                .lineLimit(1)
+                            Button("切换为 \(missing.fallback.rawValue) 并重连") {
+                                tab.applyTerminfoFallback(store: store)
+                            }
+                            .apexProminentButton()
+                            .controlSize(.small)
+                            .accessibilityIdentifier("terminal.terminfoFallbackButton")
+                            Button {
+                                tab.terminfoWarning = nil
+                            } label: {
+                                Image(systemName: "xmark")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("关闭提示")
+                            .accessibilityLabel("关闭提示")
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .apexGlassCard(cornerRadius: 12, material: .regularMaterial, borderColor: ApexStyle.warning.opacity(0.4), shadowRadius: 8)
                         .padding(.top, 12)
                         Spacer()
                     }

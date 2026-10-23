@@ -57,6 +57,13 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     private var lastReportedDirectory: String?
     private var hasPendingCommandExecution = false
     private var remoteHomeDirectory: String?
+    private var storedTerminalType: TerminalType
+    
+    public var terminalType: TerminalType { stateLock.withLock { storedTerminalType } }
+    
+    public func setTerminalType(_ type: TerminalType) {
+        stateLock.withLock { storedTerminalType = type }
+    }
     
     /// Locate bundled sshpass first, then Homebrew/system locations
     public var sshpassExecutablePath: String? {
@@ -77,6 +84,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
                 fileAccessStore: FileAccessStore = .shared, bridgeExecutableURL: URL? = nil,
                 sandboxHomeURL: URL? = nil, sandboxTemporaryURL: URL? = nil) {
         self.session = session
+        self.storedTerminalType = session.terminalType
         self.distributionChannel = distributionChannel
         self.fileAccessStore = fileAccessStore
         self.bridgeExecutableURL = bridgeExecutableURL ?? URL(fileURLWithPath: Bundle.main.bundlePath + "/Contents/MacOS/ApexSSHBridge")
@@ -367,26 +375,11 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         }
         cArgs.append(nil)
         
-        var envVars = [
-            "TERM=xterm-256color",
-            "COLORTERM=truecolor",
-            "LANG=en_US.UTF-8",
-            "LC_ALL=en_US.UTF-8"
-        ]
-        let currentEnv = ProcessInfo.processInfo.environment
-        if let path = currentEnv["PATH"] {
-            envVars.append("PATH=\(path):/usr/local/bin:/opt/homebrew/bin")
-        } else {
-            envVars.append("PATH=/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin")
-        }
-        if let request = storeCommand?.grants {
-            envVars.append("\(ChildProcessFileGrants.environmentKey)=\(request.fileURL.path)")
-        }
-        for (k, v) in currentEnv {
-            if k != "TERM" && k != "COLORTERM" && k != "LANG" && k != "LC_ALL" && k != "PATH" && k != ChildProcessFileGrants.environmentKey {
-                envVars.append("\(k)=\(v)")
-            }
-        }
+        let envVars = Self.ptyEnvironment(
+            terminalType: terminalType,
+            inherited: ProcessInfo.processInfo.environment,
+            grantsPath: storeCommand?.grants.fileURL.path
+        )
         var cEnv: [UnsafeMutablePointer<CChar>?] = envVars.map { strdup($0) }
         cEnv.append(nil)
         
@@ -845,6 +838,29 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
                 try? await Task.sleep(nanoseconds: 2_000_000_000) // 2.0s interval
             }
         }
+    }
+    
+    /// Environment for the ssh child; ssh forwards TERM to the remote PTY request.
+    static func ptyEnvironment(terminalType: TerminalType, inherited: [String: String], grantsPath: String?) -> [String] {
+        var envVars = [
+            "TERM=\(terminalType.rawValue)",
+            "COLORTERM=truecolor",
+            "LANG=en_US.UTF-8",
+            "LC_ALL=en_US.UTF-8"
+        ]
+        if let path = inherited["PATH"] {
+            envVars.append("PATH=\(path):/usr/local/bin:/opt/homebrew/bin")
+        } else {
+            envVars.append("PATH=/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin")
+        }
+        if let grantsPath {
+            envVars.append("\(ChildProcessFileGrants.environmentKey)=\(grantsPath)")
+        }
+        let overridden: Set<String> = ["TERM", "COLORTERM", "LANG", "LC_ALL", "PATH", ChildProcessFileGrants.environmentKey]
+        for (k, v) in inherited where !overridden.contains(k) {
+            envVars.append("\(k)=\(v)")
+        }
+        return envVars
     }
     
     /// Executes a one-shot remote command over multiplexed SSH socket

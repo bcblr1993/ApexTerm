@@ -26,6 +26,7 @@ public struct SessionEditModal: View {
     @State private var colorHex: String = "#0A84FF"
     @State private var agentlessMonitor: Bool = true
     @State private var sftpAutoSync: Bool = true
+    @State private var terminalType: TerminalType = .default
     @State private var saveError: String?
     
     public enum AuthType: String, CaseIterable, Identifiable {
@@ -387,6 +388,15 @@ public struct SessionEditModal: View {
                 Section(L10n.performanceSection) {
                     Toggle(L10n.agentlessMonitorToggle, isOn: $agentlessMonitor)
                     Toggle(L10n.sftpAutoSyncToggle, isOn: $sftpAutoSync)
+                    Picker("终端类型 (TERM)", selection: $terminalType) {
+                        ForEach(TerminalType.allCases, id: \.self) { type in
+                            Text(type == .default ? "\(type.rawValue)（默认）" : type.rawValue).tag(type)
+                        }
+                    }
+                    .accessibilityIdentifier("session.terminalTypePicker")
+                    Text("远端缺少终端描述导致长命令不换行时，改为 xterm")
+                        .font(.caption)
+                        .foregroundStyle(ApexStyle.secondary)
                 }
             }
             .formStyle(.grouped)
@@ -510,6 +520,7 @@ public struct SessionEditModal: View {
         tags = s.tags.joined(separator: ", ")
         colorHex = s.colorHex ?? "#0A84FF"
         agentlessMonitor = s.agentlessMonitorEnabled
+        terminalType = s.terminalType
         sftpAutoSync = s.sftpAutoSyncEnabled
         
         jumpServerId = s.jumpServerId
@@ -626,6 +637,7 @@ public struct SessionEditModal: View {
             agentlessMonitorEnabled: agentlessMonitor,
             sftpAutoSyncEnabled: sftpAutoSync,
             keepAliveIntervalSeconds: initialSession?.keepAliveIntervalSeconds ?? 30,
+            terminalType: terminalType,
             createdAt: initialSession?.createdAt ?? Date(),
             lastConnectedAt: initialSession?.lastConnectedAt
         )

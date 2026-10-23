@@ -33,6 +33,26 @@ public enum SessionType: String, Codable, Sendable, Equatable, Hashable {
     case local = "local"
 }
 
+/// TERM value advertised to the remote PTY. Minimal distros may lack the
+/// `xterm-256color` terminfo entry, which makes readline fall back to
+/// horizontal scrolling, so sessions can pick a more widely available type.
+public enum TerminalType: String, Codable, Sendable, Equatable, Hashable, CaseIterable {
+    case xterm256Color = "xterm-256color"
+    case xterm = "xterm"
+    case vt100 = "vt100"
+    case linux = "linux"
+
+    public static let `default`: TerminalType = .xterm256Color
+
+    /// Safer type to switch to when the remote lacks the terminfo for `self`.
+    public var fallback: TerminalType {
+        switch self {
+        case .xterm256Color, .linux: return .xterm
+        case .xterm, .vt100: return .vt100
+        }
+    }
+}
+
 /// Represents a configured remote SSH host session or local terminal session
 public struct Session: Identifiable, Codable, Sendable, Equatable, Hashable {
     public var id: UUID
@@ -55,6 +75,7 @@ public struct Session: Identifiable, Codable, Sendable, Equatable, Hashable {
     public var agentlessMonitorEnabled: Bool
     public var sftpAutoSyncEnabled: Bool
     public var keepAliveIntervalSeconds: Int
+    public var terminalType: TerminalType
     
     // Timestamps
     public var createdAt: Date
@@ -67,7 +88,7 @@ public struct Session: Identifiable, Codable, Sendable, Equatable, Hashable {
     public enum CodingKeys: String, CodingKey {
         case id, name, host, port, username, authMethod, sessionType
         case folder, tags, colorHex, jumpServerId
-        case agentlessMonitorEnabled, sftpAutoSyncEnabled, keepAliveIntervalSeconds
+        case agentlessMonitorEnabled, sftpAutoSyncEnabled, keepAliveIntervalSeconds, terminalType
         case createdAt, lastConnectedAt
     }
     
@@ -86,6 +107,7 @@ public struct Session: Identifiable, Codable, Sendable, Equatable, Hashable {
         agentlessMonitorEnabled: Bool = true,
         sftpAutoSyncEnabled: Bool = true,
         keepAliveIntervalSeconds: Int = 30,
+        terminalType: TerminalType = .default,
         createdAt: Date = Date(),
         lastConnectedAt: Date? = nil
     ) {
@@ -103,6 +125,7 @@ public struct Session: Identifiable, Codable, Sendable, Equatable, Hashable {
         self.agentlessMonitorEnabled = agentlessMonitorEnabled
         self.sftpAutoSyncEnabled = sftpAutoSyncEnabled
         self.keepAliveIntervalSeconds = keepAliveIntervalSeconds
+        self.terminalType = terminalType
         self.createdAt = createdAt
         self.lastConnectedAt = lastConnectedAt
     }
@@ -123,6 +146,9 @@ public struct Session: Identifiable, Codable, Sendable, Equatable, Hashable {
         self.agentlessMonitorEnabled = try container.decodeIfPresent(Bool.self, forKey: .agentlessMonitorEnabled) ?? true
         self.sftpAutoSyncEnabled = try container.decodeIfPresent(Bool.self, forKey: .sftpAutoSyncEnabled) ?? true
         self.keepAliveIntervalSeconds = try container.decodeIfPresent(Int.self, forKey: .keepAliveIntervalSeconds) ?? 30
+        // Older builds never wrote this key; unknown values from newer builds also fall back.
+        let rawTerminalType = try? container.decodeIfPresent(String.self, forKey: .terminalType)
+        self.terminalType = rawTerminalType.flatMap { TerminalType(rawValue: $0) } ?? .default
         self.createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
         self.lastConnectedAt = try container.decodeIfPresent(Date.self, forKey: .lastConnectedAt)
     }
@@ -143,6 +169,7 @@ public struct Session: Identifiable, Codable, Sendable, Equatable, Hashable {
         try container.encode(agentlessMonitorEnabled, forKey: .agentlessMonitorEnabled)
         try container.encode(sftpAutoSyncEnabled, forKey: .sftpAutoSyncEnabled)
         try container.encode(keepAliveIntervalSeconds, forKey: .keepAliveIntervalSeconds)
+        try container.encode(terminalType, forKey: .terminalType)
         try container.encode(createdAt, forKey: .createdAt)
         try container.encodeIfPresent(lastConnectedAt, forKey: .lastConnectedAt)
     }

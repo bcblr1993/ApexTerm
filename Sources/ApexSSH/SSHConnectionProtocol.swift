@@ -43,6 +43,12 @@ public protocol SSHSessionProtocol: AnyObject, Sendable {
     /// Executes a one-shot command (remote over SSH or local shell)
     func executeCommand(_ command: String) async throws -> String
     
+    /// TERM advertised to the PTY on the next connect
+    var terminalType: TerminalType { get }
+    
+    /// Overrides the TERM used by subsequent connects without rebuilding the client
+    func setTerminalType(_ type: TerminalType)
+    
     // Callbacks
     func setOutputHandler(_ handler: @Sendable @escaping (Data) -> Void)
     func setMetricsHandler(_ handler: @Sendable @escaping (ServerMetricsSnapshot) -> Void)
@@ -61,6 +67,8 @@ public extension SSHSessionProtocol {
     }
     
     func setStateChangeHandler(_ handler: @Sendable @escaping (SSHConnectionState) -> Void) {}
+    var terminalType: TerminalType { session.terminalType }
+    func setTerminalType(_ type: TerminalType) {}
     func sendInputSync(_ data: Data) {
         Task { try? await sendInput(data) }
     }

@@ -144,6 +144,15 @@ swift test
      12. `TC-REV-20`：隧道管理弹窗头部标题居左、操作按钮居右，与底栏左右边距一致。
    - 任何单项未通过立即熔断打包流水线。
 
+12. **终端类型与 terminfo 兼容门禁 (RG-14: Terminal Type & Terminfo Compatibility Gate - 每版必测)**：
+   - 每次发布新版本前，**必须无条件通过 `TerminalTypeTests`（含 TC-TERM-01 ~ TC-TERM-08）**：
+     1. `TC-TERM-01 ~ 02`：PTY 环境按会话 `terminalType` 注入唯一 TERM，客户端级覆盖无需重建会话，本地终端不受影响；
+     2. `TC-TERM-03 ~ 05`：旧版会话 JSON 缺省回退 `xterm-256color`、未知值回退不抛错、编码往返与 iCloud 脱敏后字段保留；
+     3. `TC-TERM-06`：远端 terminfo 探测脚本在 `infocmp` 与无 `infocmp` 目录扫描（字母/十六进制两种布局）下均判定正确；
+     4. `TC-TERM-07`：探测输出解析容忍 motd 噪音与 CRLF，无法判定时静默不提示；
+     5. `TC-TERM-08`：「切换并重连」降级目标（`xterm-256color`/`linux`→`xterm`，`xterm`→`vt100`）不会回到缺失类型。
+   - 任何单项未通过立即熔断打包流水线。
+
 ---
 
 ## 🔏 五、构建、Apple 签名与安全公证规范 (Code Signing Standards)

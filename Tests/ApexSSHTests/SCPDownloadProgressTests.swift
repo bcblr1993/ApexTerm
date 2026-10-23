@@ -39,6 +39,11 @@ final class SCPDownloadProgressTests: XCTestCase {
         XCTAssertGreaterThan(fractions.count, 1, "Sampler must report intermediate progress, not just the terminal 1.0")
         XCTAssertEqual(fractions, fractions.sorted(), "Progress must never walk backwards")
         XCTAssertEqual(collector.maximum, 1.0, accuracy: 0.001, "A fully written destination must reach 100%")
+
+        // Cancel and join before returning. The defer above only signals; without the join a
+        // detached sampler can outlive the test and race the rest of the suite.
+        sampler.cancel()
+        await sampler.value
     }
 
     /// An unknown remote size cannot produce a meaningful fraction, so the sampler must stay silent

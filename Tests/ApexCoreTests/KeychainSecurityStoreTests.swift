@@ -43,6 +43,40 @@ final class KeychainSecurityStoreTests: XCTestCase {
         XCTAssertEqual(secondGet, secretV2)
     }
 
+    /// save() updates in place and reports the account it used; a legacy item created with
+    /// another accessibility class is overwritten rather than duplicated.
+    func testSaveUpdatesInPlaceAndReturnsAccount() async throws {
+        let key = createTestKey()
+        let legacy: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "com.apexterm.ssh.credentials",
+            kSecAttrAccount as String: key,
+            kSecValueData as String: Data("legacy-secret".utf8),
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlocked
+        ]
+        XCTAssertEqual(SecItemAdd(legacy as CFDictionary, nil), errSecSuccess)
+
+        XCTAssertEqual(try store.save(key: key, secret: "rotated-secret"), key)
+        let retrieved = try await store.get(key: key, promptTouchID: false)
+        XCTAssertEqual(retrieved, "rotated-secret")
+        XCTAssertEqual(try store.save(key: key, secret: "rotated-again"), key)
+        let again = try await store.get(key: key, promptTouchID: false)
+        XCTAssertEqual(again, "rotated-again")
+    }
+
+    /// Items owned by the pre-rename ApexTerm.app cannot be modified; managed references then
+    /// move to a fresh account with the same prefix, unmanaged ones fail loudly.
+    func testReplacementReferenceForUnmodifiableItems() throws {
+        let password = try XCTUnwrap(KeychainStore.replacementReference(for: "ssh_\(UUID().uuidString)"))
+        XCTAssertTrue(password.hasPrefix("ssh_"))
+        XCTAssertTrue(KeychainStore.isManagedReference(password))
+        let passphrase = try XCTUnwrap(KeychainStore.replacementReference(for: "passphrase_\(UUID().uuidString)"))
+        XCTAssertTrue(passphrase.hasPrefix("passphrase_"))
+        XCTAssertTrue(KeychainStore.isManagedReference(passphrase))
+        XCTAssertNil(KeychainStore.replacementReference(for: "vault.priv.\(UUID().uuidString)"))
+        XCTAssertNil(KeychainStore.replacementReference(for: "legacy-inline-password"))
+    }
+
     func testGetNonExistentSecretThrowsItemNotFound() async {
         let nonExistentKey = "non_existent_\(UUID().uuidString)"
         do {

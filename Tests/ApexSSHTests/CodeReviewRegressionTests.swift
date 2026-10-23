@@ -5,7 +5,7 @@ import XCTest
 import AppKit
 import SwiftUI
 
-/// Regression coverage for the v1.14.2 full code review (TC-REV-01 ~ TC-REV-18).
+/// Regression coverage for the v1.14.2 full code review (TC-REV-01 ~ TC-REV-19).
 final class CodeReviewRegressionTests: XCTestCase {
     private var tempDir: URL!
     private let sandboxHome = FileManager.default.temporaryDirectory.appendingPathComponent("apex-review-store-" + UUID().uuidString)
@@ -327,5 +327,22 @@ final class CodeReviewRegressionTests: XCTestCase {
         XCTAssertNotNil(AddOrEditTunnelSheet.validationMessage(for: draft("3306", ""), bindPort: "3306", targetPort: ""))
         XCTAssertNil(AddOrEditTunnelSheet.validationMessage(for: draft("1080", "", .dynamic), bindPort: "1080", targetPort: ""),
                      "dynamic SOCKS tunnels have no target port")
+    }
+
+    // MARK: - TC-REV-19: Session editor keeps writing to the session's current keychain reference
+    @MainActor
+    func testSessionEditorSecretReferenceFollowsCurrentAccount() {
+        let session = UUID()
+        let moved = "ssh_\(UUID().uuidString)"
+        XCTAssertEqual(SessionEditModal.secretReference(prefix: "ssh_", sessionId: session, existing: .password(keychainRef: moved)), moved,
+                       "after an ownership conflict the session points at a fresh account; later edits must update it")
+        XCTAssertEqual(SessionEditModal.secretReference(prefix: "ssh_", sessionId: session, existing: nil), "ssh_\(session.uuidString)")
+        XCTAssertEqual(SessionEditModal.secretReference(prefix: "ssh_", sessionId: session, existing: .password(keychainRef: "legacy-inline")),
+                       "ssh_\(session.uuidString)", "legacy inline passwords migrate to a managed account")
+        let pass = "passphrase_\(UUID().uuidString)"
+        XCTAssertEqual(SessionEditModal.secretReference(prefix: "passphrase_", sessionId: session,
+                                                        existing: .certificate(keychainRef: "/k", certificatePath: "/c", passphraseRef: pass)), pass)
+        XCTAssertEqual(SessionEditModal.secretReference(prefix: "passphrase_", sessionId: session, existing: .password(keychainRef: moved)),
+                       "passphrase_\(session.uuidString)", "a password reference is never reused for a passphrase")
     }
 }

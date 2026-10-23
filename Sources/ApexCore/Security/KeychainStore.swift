@@ -19,23 +19,51 @@ public final class KeychainStore: @unchecked Sendable {
         return false
     }
     
-    /// Save password or private key data securely
-    public func save(key: String, secret: String) throws {
-        guard let data = secret.data(using: .utf8) else { return }
-        
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: serviceName,
-            kSecAttrAccount as String: key,
+    /// Saves a secret and returns the account name it was stored under.
+    ///
+    /// Updates the existing item in place instead of delete-then-add: an item created by another
+    /// build (e.g. the pre-rename `/Applications/ApexTerm.app`) cannot be deleted by this app, so
+    /// the old code's ignored delete followed by SecItemAdd failed with errSecDuplicateItem
+    /// (-25299). When such an item cannot be modified either, a managed reference
+    /// (`ssh_<UUID>` / `passphrase_<UUID>`) moves to a fresh account the caller must persist.
+    @discardableResult
+    public func save(key: String, secret: String) throws -> String {
+        guard let data = secret.data(using: .utf8) else { return key }
+        let attributes: [String: Any] = [
             kSecValueData as String: data,
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         ]
-        
-        SecItemDelete(query as CFDictionary)
-        let status = SecItemAdd(query as CFDictionary, nil)
-        guard status == errSecSuccess else {
+        let status = SecItemUpdate(matchQuery(key) as CFDictionary, attributes as CFDictionary)
+        if status == errSecSuccess { return key }
+        if status == errSecItemNotFound {
+            try add(key: key, attributes: attributes)
+            return key
+        }
+        guard let replacement = Self.replacementReference(for: key) else {
             throw KeychainError.saveFailed(status)
         }
+        try add(key: replacement, attributes: attributes)
+        return replacement
+    }
+
+    /// A new managed account name with the same prefix, or nil for references we do not own.
+    static func replacementReference(for key: String) -> String? {
+        guard isManagedReference(key), let prefix = ["ssh_", "passphrase_"].first(where: { key.hasPrefix($0) }) else { return nil }
+        return prefix + UUID().uuidString
+    }
+
+    private func matchQuery(_ key: String) -> [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: serviceName,
+            kSecAttrAccount as String: key
+        ]
+    }
+
+    private func add(key: String, attributes: [String: Any]) throws {
+        let query = matchQuery(key).merging(attributes) { _, new in new }
+        let status = SecItemAdd(query as CFDictionary, nil)
+        guard status == errSecSuccess else { throw KeychainError.saveFailed(status) }
     }
     
     /// Retrieve password or private key with optional Touch ID biometric challenge
@@ -72,12 +100,7 @@ public final class KeychainStore: @unchecked Sendable {
     
     /// Delete a secret
     public func delete(key: String) throws {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: serviceName,
-            kSecAttrAccount as String: key
-        ]
-        let status = SecItemDelete(query as CFDictionary)
+        let status = SecItemDelete(matchQuery(key) as CFDictionary)
         if status != errSecSuccess && status != errSecItemNotFound {
             throw KeychainError.deleteFailed(status)
         }

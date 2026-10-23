@@ -74,6 +74,19 @@ public struct SessionEditModal: View {
             .filter { !$0.isEmpty && seen.insert($0).inserted }
     }
 
+    /// Keeps writing to the session's current managed reference (which may have moved to a fresh
+    /// `ssh_<UUID>` after a keychain ownership conflict) instead of always `ssh_<sessionId>`.
+    public static func secretReference(prefix: String, sessionId: UUID, existing: SSHAuthMethod?) -> String {
+        let current: String?
+        switch existing {
+        case .password(let ref): current = ref
+        case .privateKey(_, let ref), .certificate(_, _, let ref): current = ref
+        default: current = nil
+        }
+        if let current, current.hasPrefix(prefix), KeychainStore.isManagedReference(current) { return current }
+        return prefix + sessionId.uuidString
+    }
+
     /// Every group already in use (or created empty), normalized the same way the sidebar renders them.
     public static func existingFolders(sessions: [Session], extraFolders: [String]) -> [String] {
         SidebarView.folderNames(sessions: sessions, extraFolders: extraFolders, searchFilter: "")
@@ -551,9 +564,9 @@ public struct SessionEditModal: View {
             let keyPath = privateKeyPath.trimmingCharacters(in: .whitespacesAndNewlines)
             let certPath = certificatePath.trimmingCharacters(in: .whitespacesAndNewlines)
             if !passphrase.isEmpty {
-                let key = "passphrase_\(sessionId.uuidString)"
+                let key: String
                 do {
-                    try KeychainStore.shared.save(key: key, secret: passphrase)
+                    key = try KeychainStore.shared.save(key: Self.secretReference(prefix: "passphrase_", sessionId: sessionId, existing: initialSession?.authMethod), secret: passphrase)
                 } catch {
                     saveError = "口令保存失败：\(error.localizedDescription)"
                     return
@@ -567,9 +580,9 @@ public struct SessionEditModal: View {
         } else if authType == .privateKey {
             let path = privateKeyPath.trimmingCharacters(in: .whitespacesAndNewlines)
             if !passphrase.isEmpty {
-                let key = "passphrase_\(sessionId.uuidString)"
+                let key: String
                 do {
-                    try KeychainStore.shared.save(key: key, secret: passphrase)
+                    key = try KeychainStore.shared.save(key: Self.secretReference(prefix: "passphrase_", sessionId: sessionId, existing: initialSession?.authMethod), secret: passphrase)
                 } catch {
                     saveError = "口令保存失败：\(error.localizedDescription)"
                     return
@@ -581,9 +594,9 @@ public struct SessionEditModal: View {
                 authMethod = .privateKey(keychainRef: path, passphraseRef: nil)
             }
         } else if authType == .password && !password.isEmpty {
-            let key = "ssh_\(sessionId.uuidString)"
+            let key: String
             do {
-                try KeychainStore.shared.save(key: key, secret: password)
+                key = try KeychainStore.shared.save(key: Self.secretReference(prefix: "ssh_", sessionId: sessionId, existing: initialSession?.authMethod), secret: password)
             } catch {
                 saveError = "密码保存失败：\(error.localizedDescription)"
                 return

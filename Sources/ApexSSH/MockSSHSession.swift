@@ -403,7 +403,7 @@ public final class MockSSHSession: SSHSessionProtocol, @unchecked Sendable {
         }
     }
     
-    public func downloadFile(remotePath: String, localURL: URL, progress: @Sendable @escaping (Double) -> Void) async throws {
+    public func downloadFile(remotePath: String, localURL: URL, totalBytes: Int64, progress: @Sendable @escaping (Double) -> Void) async throws {
         for step in 1...5 {
             try await Task.sleep(nanoseconds: 10_000_000)
             progress(Double(step) / 5.0)

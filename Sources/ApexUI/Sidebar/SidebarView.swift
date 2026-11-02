@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import ApexCore
 
 /// Native macOS Sidebar with session tree, folders, tags, quick snippets, and full Chinese localization
@@ -15,6 +16,8 @@ public struct SidebarView: View {
     @State private var editingSession: Session?
     @State private var sessionToDelete: Session?
     @State private var collapsedFolders: Set<String> = []
+    @State private var toastMessage: String?
+    @State private var isToastSuccess = true
     
     public init(
         store: SessionStore,
@@ -161,6 +164,19 @@ public struct SidebarView: View {
                                                 editingSession = session
                                             }
                                             Divider()
+                                            Button(L10n.copyUsernameAction) {
+                                                copyUsername(session)
+                                            }
+                                            Button(L10n.copyPasswordAction) {
+                                                copyPassword(session)
+                                            }
+                                            Button(L10n.copyUsernameAndPasswordAction) {
+                                                copyUsernameAndPassword(session)
+                                            }
+                                            Button(L10n.copySessionInfoAction) {
+                                                copySessionInfo(session)
+                                            }
+                                            Divider()
                                             Button(L10n.duplicateSessionAction) {
                                                 var dup = session
                                                 dup.id = UUID()
@@ -226,6 +242,93 @@ public struct SidebarView: View {
             }
         } message: {
             Text("删除后无法从应用内恢复。")
+        }
+        .overlay(alignment: .bottom) {
+            if let toast = toastMessage {
+                HStack(spacing: 8) {
+                    Image(systemName: isToastSuccess ? "checkmark.circle.fill" : "info.circle.fill")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(isToastSuccess ? ApexStyle.success : ApexStyle.warning)
+                    Text(toast)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(ApexStyle.primary)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .apexGlassCard(cornerRadius: 14, material: .regularMaterial, borderColor: Color.primary.opacity(0.12), shadowRadius: 8)
+                .padding(.bottom, 16)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .allowsHitTesting(false)
+            }
+        }
+        .animation(.spring(response: 0.35, dampingFraction: 0.8), value: toastMessage)
+    }
+
+    // MARK: - Credential & Info Copy Actions
+
+    private func copyUsername(_ session: Session) {
+        let username = session.username.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !username.isEmpty else {
+            showToast(L10n.emptyUsernameToast, isSuccess: false)
+            return
+        }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(username, forType: .string)
+        showToast(L10n.copiedUsernameToast, isSuccess: true)
+    }
+
+    private func copyPassword(_ session: Session) {
+        Task {
+            let secret = await SessionCopyHelper.resolveSecret(for: session)
+            await MainActor.run {
+                if let secret, !secret.isEmpty {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(secret, forType: .string)
+                    showToast(L10n.copiedPasswordToast, isSuccess: true)
+                } else {
+                    showToast(L10n.noPasswordConfiguredToast, isSuccess: false)
+                }
+            }
+        }
+    }
+
+    private func copyUsernameAndPassword(_ session: Session) {
+        Task {
+            let secret = await SessionCopyHelper.resolveSecret(for: session)
+            let formatted = SessionCopyHelper.formatUserAndPassword(username: session.username, password: secret)
+            await MainActor.run {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(formatted, forType: .string)
+                if secret?.isEmpty == false {
+                    showToast(L10n.copiedUsernameAndPasswordToast, isSuccess: true)
+                } else {
+                    showToast("\(L10n.copiedUsernameAndPasswordToast) (\(L10n.noPasswordConfiguredToast))", isSuccess: false)
+                }
+            }
+        }
+    }
+
+    private func copySessionInfo(_ session: Session) {
+        Task {
+            let secret = await SessionCopyHelper.resolveSecret(for: session)
+            let formatted = SessionCopyHelper.formatSessionInfo(session: session, password: secret)
+            await MainActor.run {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(formatted, forType: .string)
+                showToast(L10n.copiedSessionInfoToast, isSuccess: true)
+            }
+        }
+    }
+
+    private func showToast(_ message: String, isSuccess: Bool = true) {
+        toastMessage = message
+        isToastSuccess = isSuccess
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            if self.toastMessage == message {
+                withAnimation(.easeOut(duration: 0.2)) {
+                    self.toastMessage = nil
+                }
+            }
         }
     }
 

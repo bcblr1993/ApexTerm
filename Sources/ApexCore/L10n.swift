@@ -24,10 +24,22 @@ public enum L10n {
     // 会话操作
     public static let connectAction = "连接会话"
     public static let editSessionAction = "编辑会话..."
+    public static let copyUsernameAction = "复制用户名"
+    public static let copyPasswordAction = "复制密码"
+    public static let copyUsernameAndPasswordAction = "复制用户名密码"
+    public static let copySessionInfoAction = "复制会话信息"
     public static let duplicateSessionAction = "复制会话"
     public static let deleteSessionAction = "删除会话"
     public static let copyTag = "(副本)"
     public static let runCommandAction = "运行"
+    
+    // 复制提示
+    public static let copiedUsernameToast = "已复制用户名"
+    public static let copiedPasswordToast = "已复制密码"
+    public static let copiedUsernameAndPasswordToast = "已复制用户名和密码"
+    public static let copiedSessionInfoToast = "已复制会话信息"
+    public static let noPasswordConfiguredToast = "未配置密码或口令"
+    public static let emptyUsernameToast = "用户名为空"
     
     // 工作台
     public static let noActiveSession = "未连接会话"

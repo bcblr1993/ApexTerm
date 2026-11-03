@@ -165,7 +165,7 @@ final class PublicServerIntegrationTests: XCTestCase {
         try await sshClient.uploadFile(localURL: localTempURL, remotePath: remotePath, progress: { _ in })
         
         // 4. Download file
-        try await sshClient.downloadFile(remotePath: remotePath, localURL: localDownloadedURL, progress: { _ in })
+        try await sshClient.downloadFile(remotePath: remotePath, localURL: localDownloadedURL, totalBytes: 0, progress: { _ in })
         
         // 5. Verify payload matches
         let downloadedContent = try String(contentsOf: localDownloadedURL, encoding: .utf8)

@@ -1039,7 +1039,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         return "\(username)@\(address):\(path)"
     }
 
-    public func downloadFile(remotePath: String, localURL: URL, progress: @Sendable @escaping (Double) -> Void) async throws {
+    public func downloadFile(remotePath: String, localURL: URL, totalBytes: Int64, progress: @Sendable @escaping (Double) -> Void) async throws {
         await resolvePasswordIfNeeded()
         let keyAccess = try acquirePrivateKeyAccess()
         defer { keyAccess?.close() }
@@ -1082,12 +1082,45 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         process.standardError = errPipe
         let grants = try configureStoreProcess(process, accesses: [keyAccess, certAccess, localAccess])
         defer { grants?.close() }
+        // scp streams straight into accessibleURL, so the destination size is the only byte-accurate
+        // progress available without owning the SFTP stream itself. Sampling the sandbox-relocated
+        // path matters: an App Store transfer would otherwise sample a file that never grows.
+        let sampler = Self.makeFileSizeSampler(path: accessibleURL.path, totalBytes: totalBytes, progress: progress)
+        defer { sampler.cancel() }
         let errorOutput = try await Self.runSCPProcess(process, standardError: errPipe)
+        // Retire the sampler before the terminal report so a late sample cannot walk the bar backwards.
+        sampler.cancel()
+        await sampler.value
         guard process.terminationStatus == 0 else {
             let errMsg = String(data: errorOutput, encoding: .utf8) ?? "scp download failed"
             throw NSError(domain: "ApexSSH", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: errMsg])
         }
         progress(1.0)
+    }
+
+    /// Report download progress by sampling the destination file size on a fixed cadence.
+    /// Returns an already-finished task when the total size is unknown.
+    static func makeFileSizeSampler(
+        path: String,
+        totalBytes: Int64,
+        progress: @Sendable @escaping (Double) -> Void
+    ) -> Task<Void, Never> {
+        guard totalBytes > 0 else { return Task {} }
+        return Task.detached(priority: .utility) {
+            while !Task.isCancelled {
+                if let sampled = Self.currentFileSize(atPath: path) {
+                    progress(min(max(Double(sampled) / Double(totalBytes), 0), 1))
+                }
+                do { try await Task.sleep(for: .milliseconds(200)) }
+                catch { return }
+            }
+        }
+    }
+
+    /// Current on-disk size in bytes, or nil while the destination does not exist yet.
+    static func currentFileSize(atPath path: String) -> Int64? {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: path)
+        return (attributes?[.size] as? NSNumber)?.int64Value
     }
     
     public func uploadFile(localURL: URL, remotePath: String, progress: @Sendable @escaping (Double) -> Void) async throws {

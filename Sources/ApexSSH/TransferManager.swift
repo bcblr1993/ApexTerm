@@ -315,13 +315,14 @@ public final class TransferManager: ObservableObject {
         onResult: (@Sendable (Result<URL, Error>) -> Void)? = nil
     ) async {
         guard let idx = tasks.firstIndex(where: { $0.id == taskId }) else { return }
+        let knownTotalBytes = tasks[idx].totalBytes
         tasks[idx].status = .transferring
         tasks[idx].startedAt = Date()
         lastSpeedSampleTime[taskId] = Date()
         lastSampledBytes[taskId] = 0
         
         do {
-            try await session.downloadFile(remotePath: remotePath, localURL: localURL) { [weak self] fraction in
+            try await session.downloadFile(remotePath: remotePath, localURL: localURL, totalBytes: knownTotalBytes) { [weak self] fraction in
                 Task { @MainActor [weak self] in
                     self?.updateProgress(taskId: taskId, fraction: fraction)
                 }

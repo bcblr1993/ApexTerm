@@ -35,6 +35,11 @@ public final class iCloudSyncManager: ObservableObject {
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
     
+    // Default arguments evaluate in a nonisolated context unless the initialiser is actor-isolated,
+    // so reading the MainActor-isolated stores here is a Swift 6 error. Swift 6.2+ infers this
+    // isolation for @MainActor types; state it explicitly so older toolchains report the error
+    // instead of crashing the compiler.
+    @MainActor
     public init(
         storageBackend: iCloudStorageBackend? = nil,
         sessionStore: SessionStore = .shared,

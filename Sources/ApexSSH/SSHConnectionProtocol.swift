@@ -31,7 +31,9 @@ public protocol SSHSessionProtocol: AnyObject, Sendable {
     
     // SFTP subsystem
     func listDirectory(path: String) async throws -> [SFTPItem]
-    func downloadFile(remotePath: String, localURL: URL, progress: @Sendable @escaping (Double) -> Void) async throws
+    /// `totalBytes` is the remote size known by the caller. It lets the session report intermediate
+    /// fractions while scp is still streaming; pass 0 when the size is unknown.
+    func downloadFile(remotePath: String, localURL: URL, totalBytes: Int64, progress: @Sendable @escaping (Double) -> Void) async throws
     func uploadFile(localURL: URL, remotePath: String, progress: @Sendable @escaping (Double) -> Void) async throws
     func removeFile(remotePath: String) async throws
     func removeDirectory(remotePath: String, recursive: Bool) async throws

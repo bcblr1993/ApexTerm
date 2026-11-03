@@ -87,7 +87,7 @@ final class VMIntegrationTests: XCTestCase {
             try await waitFor { !buffer.isInAlternateScreen }
             let local = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
             defer { try? FileManager.default.removeItem(at: local) }
-            try await client.downloadFile(remotePath: path, localURL: local, progress: { _ in })
+            try await client.downloadFile(remotePath: path, localURL: local, totalBytes: 0, progress: { _ in })
             XCTAssertEqual(try String(contentsOf: local, encoding: .utf8), "中文\ntwo\nthrxe\n")
             await client.disconnect()
             try await client.removeFile(remotePath: path)
@@ -118,7 +118,7 @@ final class VMIntegrationTests: XCTestCase {
             try await client.uploadFile(localURL: source, remotePath: path, progress: { _ in })
             let entries = try await client.listDirectory(path: directory)
             XCTAssertTrue(entries.contains(where: { $0.name == name }))
-            try await client.downloadFile(remotePath: path, localURL: downloaded, progress: { _ in })
+            try await client.downloadFile(remotePath: path, localURL: downloaded, totalBytes: 0, progress: { _ in })
             XCTAssertEqual(try Data(contentsOf: downloaded), payload)
         } catch {
             try? await client.removeFile(remotePath: path)
@@ -206,7 +206,7 @@ final class VMIntegrationTests: XCTestCase {
         try await sshClient.uploadFile(localURL: localTempURL, remotePath: remotePath, progress: { _ in })
         
         // 4. Download file
-        try await sshClient.downloadFile(remotePath: remotePath, localURL: localDownloadedURL, progress: { _ in })
+        try await sshClient.downloadFile(remotePath: remotePath, localURL: localDownloadedURL, totalBytes: 0, progress: { _ in })
         
         // 5. Verify contents & integrity
         let downloadedContent = try String(contentsOf: localDownloadedURL, encoding: .utf8)

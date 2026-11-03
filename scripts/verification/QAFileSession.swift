@@ -40,8 +40,8 @@ final class QAFileSession: SSHSessionProtocol {
         default: return try await base.listDirectory(path: path)
         }
     }
-    func downloadFile(remotePath: String, localURL: URL, progress: @Sendable @escaping (Double) -> Void) async throws {
-        try await base.downloadFile(remotePath: remotePath, localURL: localURL, progress: progress)
+    func downloadFile(remotePath: String, localURL: URL, totalBytes: Int64, progress: @Sendable @escaping (Double) -> Void) async throws {
+        try await base.downloadFile(remotePath: remotePath, localURL: localURL, totalBytes: totalBytes, progress: progress)
     }
     func uploadFile(localURL: URL, remotePath: String, progress: @Sendable @escaping (Double) -> Void) async throws {
         try await base.uploadFile(localURL: localURL, remotePath: remotePath, progress: progress)

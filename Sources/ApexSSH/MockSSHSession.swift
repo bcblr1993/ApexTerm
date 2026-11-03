@@ -27,6 +27,7 @@ public final class MockSSHSession: SSHSessionProtocol, @unchecked Sendable {
     private var directoryChangeHandler: (@Sendable (String) -> Void)?
     private var stateChangeHandler: (@Sendable (SSHConnectionState) -> Void)?
     public var customDownloadHandler: (@Sendable (String, URL, @Sendable @escaping (Double) -> Void) async throws -> Void)?
+    public var customTestConnectionHandler: (@Sendable () async -> SSHTestConnectionResult)?
     
     private var metricsTimer: Timer?
     private var currentDirectory = "/root"
@@ -425,5 +426,13 @@ public final class MockSSHSession: SSHSessionProtocol, @unchecked Sendable {
             progress(Double(step) / 5.0)
         }
         setMockFile(at: remotePath, data: data)
+    }
+
+    public func testConnection() async -> SSHTestConnectionResult {
+        if let customTestConnectionHandler {
+            return await customTestConnectionHandler()
+        }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        return SSHTestConnectionResult(isSuccess: true, latencyMs: 25, serverInfo: "Linux 6.8.0-45 x86_64")
     }
 }

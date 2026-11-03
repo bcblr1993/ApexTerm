@@ -1,5 +1,6 @@
 import SwiftUI
 import ApexCore
+import ApexSSH
 
 /// Modal sheet for creating or editing an SSH session with password/key authentication and Chinese localization
 public struct SessionEditModal: View {
@@ -28,6 +29,8 @@ public struct SessionEditModal: View {
     @State private var sftpAutoSync: Bool = true
     @State private var terminalType: TerminalType = .default
     @State private var saveError: String?
+    @State private var isTestingConnection: Bool = false
+    @State private var testResult: SSHTestConnectionResult?
     
     public enum AuthType: String, CaseIterable, Identifiable {
         case password = "密码认证"
@@ -402,15 +405,59 @@ public struct SessionEditModal: View {
             .formStyle(.grouped)
 
             Divider()
-            HStack {
-                if let message = saveError ?? authValidationMessage {
+            HStack(spacing: 10) {
+                ApexActionButton(
+                    isTestingConnection ? "正在测试..." : "测试连接",
+                    icon: isTestingConnection ? nil : "bolt.horizontal.circle",
+                    tint: ApexStyle.secondary,
+                    size: .regular
+                ) {
+                    runConnectionTest()
+                }
+                .disabled(isTestingConnection || host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !isValidPort || authValidationMessage != nil)
+                .accessibilityLabel("测试连接")
+                .accessibilityIdentifier("session.testConnectionButton")
+                .overlay(alignment: .leading) {
+                    if isTestingConnection {
+                        ProgressView()
+                            .controlSize(.small)
+                            .scaleEffect(0.65)
+                            .padding(.leading, 8)
+                    }
+                }
+                
+                if let result = testResult {
+                    HStack(spacing: 5) {
+                        Image(systemName: result.isSuccess ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                            .foregroundColor(result.isSuccess ? ApexStyle.success : ApexStyle.error)
+                            .font(.system(size: 13))
+                        
+                        if result.isSuccess {
+                            Text("连接成功 (\(result.latencyMs)ms)\(result.serverInfo != nil ? " · \(result.serverInfo!)" : "")")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(ApexStyle.success)
+                        } else {
+                            Text(result.errorMessage ?? "连接失败")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(ApexStyle.error)
+                        }
+                    }
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: 240, alignment: .leading)
+                    .help(result.isSuccess ? "连接正常" : (result.errorMessage ?? "连接失败"))
+                    .accessibilityIdentifier("session.testResultBanner")
+                    .transition(.opacity)
+                } else if let message = saveError ?? authValidationMessage {
                     Text(message)
                         .font(.caption)
                         .foregroundStyle(saveError != nil ? ApexStyle.error : ApexStyle.warning)
-                        .lineLimit(2)
+                        .lineLimit(1)
                         .accessibilityIdentifier("session.validationMessage")
                 }
+                
                 Spacer()
+                
                 ApexActionButton(
                     L10n.cancel,
                     tint: ApexStyle.secondary,
@@ -450,6 +497,15 @@ public struct SessionEditModal: View {
             transaction.disablesAnimations = true
             withTransaction(transaction) { loadInitialSessionData() }
         }
+        .onChange(of: host) { _, _ in testResult = nil }
+        .onChange(of: port) { _, _ in testResult = nil }
+        .onChange(of: username) { _, _ in testResult = nil }
+        .onChange(of: password) { _, _ in testResult = nil }
+        .onChange(of: authType) { _, _ in testResult = nil }
+        .onChange(of: privateKeyPath) { _, _ in testResult = nil }
+        .onChange(of: passphrase) { _, _ in testResult = nil }
+        .onChange(of: certificatePath) { _, _ in testResult = nil }
+        .onChange(of: jumpServerId) { _, _ in testResult = nil }
     }
 
     @ViewBuilder
@@ -508,6 +564,103 @@ public struct SessionEditModal: View {
     private var isValidPort: Bool {
         guard let value = Int(port) else { return false }
         return (1...65535).contains(value)
+    }
+
+    private func runConnectionTest() {
+        let trimmedHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedHost.isEmpty else {
+            testResult = SSHTestConnectionResult(isSuccess: false, latencyMs: 0, errorMessage: "请输入主机地址")
+            return
+        }
+        guard isValidPort else {
+            testResult = SSHTestConnectionResult(isSuccess: false, latencyMs: 0, errorMessage: "端口请输入 1–65535 之间的数字")
+            return
+        }
+        if let validation = authValidationMessage {
+            testResult = SSHTestConnectionResult(isSuccess: false, latencyMs: 0, errorMessage: validation)
+            return
+        }
+
+        let trimmedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        let effectiveUsername = trimmedUsername.isEmpty ? "root" : trimmedUsername
+        let portInt = Int(port.trimmingCharacters(in: .whitespaces)) ?? 22
+
+        var candidateAuthMethod: SSHAuthMethod = .agent
+        var effectiveSecret: String? = nil
+
+        switch authType {
+        case .password:
+            if !password.isEmpty {
+                candidateAuthMethod = .password(keychainRef: "")
+                effectiveSecret = password
+            } else if case .password(let ref) = initialSession?.authMethod {
+                candidateAuthMethod = .password(keychainRef: ref)
+                effectiveSecret = nil
+            } else {
+                testResult = SSHTestConnectionResult(isSuccess: false, latencyMs: 0, errorMessage: "请输入密码后再测试")
+                return
+            }
+        case .privateKey:
+            let keyPath = privateKeyPath.trimmingCharacters(in: .whitespacesAndNewlines)
+            let existingPassRef: String?
+            if case .privateKey(_, let passRef) = initialSession?.authMethod {
+                existingPassRef = passRef
+            } else {
+                existingPassRef = nil
+            }
+            if !passphrase.isEmpty {
+                effectiveSecret = passphrase
+                candidateAuthMethod = .privateKey(keychainRef: keyPath, passphraseRef: nil)
+            } else {
+                effectiveSecret = nil
+                candidateAuthMethod = .privateKey(keychainRef: keyPath, passphraseRef: existingPassRef)
+            }
+        case .certificate:
+            let keyPath = privateKeyPath.trimmingCharacters(in: .whitespacesAndNewlines)
+            let certPath = certificatePath.trimmingCharacters(in: .whitespacesAndNewlines)
+            let existingPassRef: String?
+            if case .certificate(_, _, let passRef) = initialSession?.authMethod {
+                existingPassRef = passRef
+            } else {
+                existingPassRef = nil
+            }
+            if !passphrase.isEmpty {
+                effectiveSecret = passphrase
+                candidateAuthMethod = .certificate(keychainRef: keyPath, certificatePath: certPath, passphraseRef: nil)
+            } else {
+                effectiveSecret = nil
+                candidateAuthMethod = .certificate(keychainRef: keyPath, certificatePath: certPath, passphraseRef: existingPassRef)
+            }
+        case .agent:
+            candidateAuthMethod = .agent
+            effectiveSecret = nil
+        }
+
+        let candidateSession = Session(
+            id: initialSession?.id ?? UUID(),
+            name: name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? trimmedHost : name.trimmingCharacters(in: .whitespacesAndNewlines),
+            host: trimmedHost,
+            port: portInt,
+            username: effectiveUsername,
+            authMethod: candidateAuthMethod,
+            jumpServerId: jumpServerId
+        )
+
+        isTestingConnection = true
+        testResult = nil
+
+        Task {
+            let result = await NativeSSHSession.testConnection(
+                session: candidateSession,
+                explicitPassword: effectiveSecret
+            )
+            await MainActor.run {
+                withAnimation(ApexStyle.springSnappy) {
+                    self.testResult = result
+                    self.isTestingConnection = false
+                }
+            }
+        }
     }
     
     private func loadInitialSessionData() {

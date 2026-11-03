@@ -49,6 +49,9 @@ public protocol SSHSessionProtocol: AnyObject, Sendable {
     /// Overrides the TERM used by subsequent connects without rebuilding the client
     func setTerminalType(_ type: TerminalType)
     
+    /// Tests connectivity and credential authentication to the target host
+    func testConnection() async -> SSHTestConnectionResult
+    
     // Callbacks
     func setOutputHandler(_ handler: @Sendable @escaping (Data) -> Void)
     func setMetricsHandler(_ handler: @Sendable @escaping (ServerMetricsSnapshot) -> Void)
@@ -71,6 +74,10 @@ public extension SSHSessionProtocol {
     func setTerminalType(_ type: TerminalType) {}
     func sendInputSync(_ data: Data) {
         Task { try? await sendInput(data) }
+    }
+    
+    func testConnection() async -> SSHTestConnectionResult {
+        SSHTestConnectionResult(isSuccess: false, latencyMs: 0, errorMessage: "Not implemented")
     }
     
     func removeFile(remotePath: String) async throws {}

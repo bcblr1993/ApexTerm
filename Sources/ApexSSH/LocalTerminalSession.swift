@@ -509,4 +509,8 @@ public final class LocalTerminalSession: SSHSessionProtocol, @unchecked Sendable
             }
         }
     }
+
+    public func testConnection() async -> SSHTestConnectionResult {
+        return SSHTestConnectionResult(isSuccess: true, latencyMs: 1, serverInfo: "Darwin local shell")
+    }
 }

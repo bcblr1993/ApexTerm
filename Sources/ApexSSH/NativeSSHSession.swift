@@ -911,6 +911,211 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         return String(data: outData, encoding: .utf8) ?? ""
     }
     
+    public func setExplicitPassword(_ password: String?) {
+        stateLock.withLock {
+            self.resolvedPassword = password
+        }
+    }
+
+    /// Tests connectivity and credential authentication to the remote SSH server
+    public func testConnection(explicitPassword: String? = nil, timeoutSeconds: Int = 5) async -> SSHTestConnectionResult {
+        if let explicitPassword {
+            stateLock.withLock { self.resolvedPassword = explicitPassword }
+            await resolveJumpServerIfNeeded()
+        } else {
+            await resolvePasswordIfNeeded()
+        }
+        
+        let start = Date()
+        
+        if let keyPath = self.session.privateKeyPath, !keyPath.isEmpty {
+            let expanded = Self.expandPath(keyPath)
+            if !FileManager.default.fileExists(atPath: expanded) {
+                return SSHTestConnectionResult(isSuccess: false, latencyMs: 0, errorMessage: "指定的私钥文件不存在: \(keyPath)")
+            }
+        }
+        if let certPath = self.session.certificatePath, !certPath.isEmpty {
+            let expanded = Self.expandPath(certPath)
+            if !FileManager.default.fileExists(atPath: expanded) {
+                return SSHTestConnectionResult(isSuccess: false, latencyMs: 0, errorMessage: "指定的证书文件不存在: \(certPath)")
+            }
+        }
+        
+        let process = Process()
+        let sshpass = self.sshpassExecutablePath
+        
+        let keyAccess: FileAccessLease?
+        do {
+            keyAccess = try self.acquirePrivateKeyAccess()
+        } catch {
+            return SSHTestConnectionResult(isSuccess: false, latencyMs: 0, errorMessage: "私钥文件无法读取或缺少权限: \(error.localizedDescription)")
+        }
+        defer { keyAccess?.close() }
+        
+        let certAccess: FileAccessLease?
+        do {
+            certAccess = try self.acquireCertificateAccess()
+        } catch {
+            return SSHTestConnectionResult(isSuccess: false, latencyMs: 0, errorMessage: "证书文件无法读取或缺少权限: \(error.localizedDescription)")
+        }
+        defer { certAccess?.close() }
+        
+        let authArgs = self.sshAuthArgs(privateKeyURL: keyAccess?.url, certificateURL: certAccess?.url)
+        let jumpArgs = self.jumpServerArgs()
+        
+        let probeCommand = "uname -s -m 2>/dev/null || echo ok"
+        let baseSSHArgs = [
+            "-o", "StrictHostKeyChecking=accept-new",
+            "-o", "ConnectTimeout=\(timeoutSeconds)",
+            "-o", "NumberOfPasswordPrompts=1",
+            "-o", "ControlMaster=no",
+        ] + authArgs + jumpArgs + [
+            "-p", "\(self.session.port)",
+            "\(self.session.username)@\(self.session.host)",
+            probeCommand
+        ]
+        
+        let pw = stateLock.withLock { self.resolvedPassword }
+        if let pw = pw, !pw.isEmpty, let passBin = sshpass {
+            process.executableURL = URL(fileURLWithPath: passBin)
+            process.arguments = sshpassArguments(secret: pw, tool: "/usr/bin/ssh") + baseSSHArgs
+        } else {
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+            process.arguments = ["-o", "BatchMode=yes"] + baseSSHArgs
+        }
+        
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = outPipe
+        process.standardError = errPipe
+        
+        let grants: ChildProcessFileGrants?
+        do {
+            grants = try self.configureStoreProcess(process, accesses: [keyAccess, certAccess])
+        } catch {
+            return SSHTestConnectionResult(isSuccess: false, latencyMs: 0, errorMessage: "沙盒安全授权配置失败: \(error.localizedDescription)")
+        }
+        defer { grants?.close() }
+        
+        do {
+            let (stdoutData, stderrData) = try await Self.runProcessWithOutput(process, outPipe: outPipe, errPipe: errPipe)
+            let elapsedMs = max(1, Int(Date().timeIntervalSince(start) * 1000))
+            
+            if process.terminationStatus == 0 {
+                let info = String(data: stdoutData, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let cleanInfo = (info == "ok" || info?.isEmpty == true) ? nil : info
+                return SSHTestConnectionResult(
+                    isSuccess: true,
+                    latencyMs: elapsedMs,
+                    serverInfo: cleanInfo,
+                    errorMessage: nil
+                )
+            } else {
+                let errString = String(data: stderrData, encoding: .utf8) ?? ""
+                let diagnostic = Self.parseSSHErrorMessage(exitCode: process.terminationStatus, stderr: errString)
+                return SSHTestConnectionResult(
+                    isSuccess: false,
+                    latencyMs: elapsedMs,
+                    serverInfo: nil,
+                    errorMessage: diagnostic
+                )
+            }
+        } catch {
+            let elapsedMs = max(1, Int(Date().timeIntervalSince(start) * 1000))
+            return SSHTestConnectionResult(
+                isSuccess: false,
+                latencyMs: elapsedMs,
+                serverInfo: nil,
+                errorMessage: "连接测试执行失败: \(error.localizedDescription)"
+            )
+        }
+    }
+    
+    public static func testConnection(
+        session: Session,
+        explicitPassword: String? = nil,
+        timeoutSeconds: Int = 5,
+        distributionChannel: DistributionChannel = .current
+    ) async -> SSHTestConnectionResult {
+        let client = NativeSSHSession(session: session, distributionChannel: distributionChannel)
+        return await client.testConnection(explicitPassword: explicitPassword, timeoutSeconds: timeoutSeconds)
+    }
+
+    public static func parseSSHErrorMessage(exitCode: Int32, stderr: String) -> String {
+        let cleanErr = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        if cleanErr.contains("Bad passphrase") || cleanErr.contains("passphrase") {
+            return "私钥口令 (Passphrase) 错误"
+        }
+        if cleanErr.contains("No such file or directory") || cleanErr.contains("not accessible") {
+            return "指定的私钥或证书文件不存在"
+        }
+        if cleanErr.contains("Host key verification failed") {
+            return "主机密钥校验冲突 (Host key verification failed)"
+        }
+        if exitCode == 5 {
+            return "认证失败：用户名或密码错误 (Invalid password)"
+        }
+        if cleanErr.contains("Permission denied (password)") {
+            return "认证失败：用户名或密码错误 (Permission denied)"
+        }
+        if cleanErr.contains("Permission denied (publickey)") {
+            return "认证失败：用户名、私钥或证书不匹配 (Permission denied: publickey)"
+        }
+        if cleanErr.contains("Permission denied") {
+            return "认证失败：用户名、密码或私钥/证书不匹配"
+        }
+        if cleanErr.contains("Connection refused") {
+            return "连接被拒绝：请确认主机上的 SSH 端口是否正确或服务是否运行"
+        }
+        if cleanErr.contains("timed out") || cleanErr.contains("Operation timed out") {
+            return "连接超时：无法在规定时间内连接至主机，请检查 IP 与网络"
+        }
+        if cleanErr.contains("Could not resolve hostname") || cleanErr.contains("nodename nor servname provided") {
+            return "主机域名解析失败：找不到该主机，请检查主机名拼写"
+        }
+        if cleanErr.contains("No route to host") {
+            return "网络不可达 (No route to host)"
+        }
+        if !cleanErr.isEmpty {
+            let lines = cleanErr.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+            if let first = lines.first {
+                return first
+            }
+        }
+        return "连接失败 (退出码 \(exitCode))"
+    }
+
+    /// Drain stdout and stderr while process runs without deadlocking on full pipe buffers
+    static func runProcessWithOutput(_ process: Process, outPipe: Pipe, errPipe: Pipe) async throws -> (Data, Data) {
+        let outReader = Task.detached(priority: .utility) { () -> Data in
+            (try? outPipe.fileHandleForReading.readToEnd()) ?? Data()
+        }
+        let errReader = Task.detached(priority: .utility) { () -> Data in
+            (try? errPipe.fileHandleForReading.readToEnd()) ?? Data()
+        }
+        do {
+            try await runTransferProcess(process)
+            try? outPipe.fileHandleForWriting.close()
+            try? errPipe.fileHandleForWriting.close()
+            let outData = await outReader.value
+            let errData = await errReader.value
+            try? outPipe.fileHandleForReading.close()
+            try? errPipe.fileHandleForReading.close()
+            return (outData, errData)
+        } catch {
+            try? outPipe.fileHandleForWriting.close()
+            try? errPipe.fileHandleForWriting.close()
+            _ = await outReader.value
+            _ = await errReader.value
+            try? outPipe.fileHandleForReading.close()
+            try? errPipe.fileHandleForReading.close()
+            throw error
+        }
+    }
+    
     // SFTP implementation
     public func listDirectory(path: String) async throws -> [SFTPItem] {
         await resolvePasswordIfNeeded()

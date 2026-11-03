@@ -2,6 +2,17 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.15.1] - 2026-11-03
+
+### 🐞 问题修复 (Bug Fixes)
+- **SFTP 文件下载实时进度与速率采样修复**：此前底层 `scp` 在非交互模式下不向标准流输出分块进度，`TransferManager` 在下载单文件或批量下载期间未做本地写入采样，导致大文件（如数百 MB 或数 GB 压缩包）下载时进度长时间停滞在 `0%`、速度显示 `0 KB/s` 出现视觉假死与卡顿现象，直至下载完全结束后才突然跳变至 100%。现引入脱离主线程（Utility 优先级）的高性能 150ms 本地文件写入大小采样器，实时计算已传输字节、瞬时传输速率并平滑驱动进度条与百分比更新；
+- **未知大小流式传输交互兼容**：针对远端未知文件大小（`totalBytes == 0`）场景，自动切换为 indeterminate 流式加载动画与已传输数据量展示，彻底消除卡死误解。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- 新增 `TransferManagerTests` 系列测试：`testCurrentTransferredBytesCalculation`、`testDownloadRealtimeProgressTracking` 与 `testZeroByteDownloadProgressHandling`，覆盖单文件、嵌套多级目录与流式分块写入监控；
+- 全量自动化测试用例（100+ 项）100% 绿色通过，Swift 6 模式零警告；
+- 8 大性能 Benchmark 全量达标，通过 Developer ID 官方签名与 Apple 生产级安全公证。
+
 ## [v1.15.0] - 2026-11-02
 
 ### ✨ 新增特性 (Features)

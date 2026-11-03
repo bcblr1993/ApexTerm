@@ -196,35 +196,41 @@ public final class TransferManager: ObservableObject {
         return id
     }
     
+    /// Safely calculate the current total bytes written to a file or directory
+    nonisolated public static func currentTransferredBytes(at url: URL) -> Int64 {
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) else {
+            return 0
+        }
+        if !isDir.boolValue {
+            if let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+               let size = attrs[.size] as? NSNumber {
+                return size.int64Value
+            }
+            return 0
+        } else {
+            guard let enumerator = FileManager.default.enumerator(
+                at: url,
+                includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            ) else {
+                return 0
+            }
+            var total: Int64 = 0
+            for case let fileURL as URL in enumerator {
+                if let resourceValues = try? fileURL.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey]),
+                   resourceValues.isRegularFile == true,
+                   let size = resourceValues.fileSize {
+                    total += Int64(size)
+                }
+            }
+            return total
+        }
+    }
+
     /// Update progress for an externally-driven transfer
     public func updateExternalProgress(taskId: UUID, fraction: Double, transferredBytes: Int64? = nil) {
-        guard let idx = tasks.firstIndex(where: { $0.id == taskId }),
-              tasks[idx].status == .transferring else { return }
-        let total = tasks[idx].totalBytes
-        let transferred: Int64
-        if let direct = transferredBytes {
-            transferred = direct
-        } else if total > 0 {
-            transferred = Int64(Double(total) * fraction)
-        } else {
-            transferred = Int64(fraction * 100)
-        }
-        tasks[idx].transferredBytes = transferred
-        
-        let now = Date()
-        if let lastTime = lastSpeedSampleTime[taskId], let lastBytes = lastSampledBytes[taskId] {
-            let elapsed = now.timeIntervalSince(lastTime)
-            if elapsed >= 0.25 {
-                let deltaBytes = Double(transferred - lastBytes)
-                let speed = deltaBytes / elapsed
-                tasks[idx].speedBytesPerSec = max(0, speed)
-                lastSpeedSampleTime[taskId] = now
-                lastSampledBytes[taskId] = transferred
-            }
-        } else {
-            lastSpeedSampleTime[taskId] = now
-            lastSampledBytes[taskId] = transferred
-        }
+        updateProgress(taskId: taskId, fraction: fraction, transferredBytes: transferredBytes)
     }
     
     /// Mark an externally-driven transfer as completed
@@ -319,6 +325,24 @@ public final class TransferManager: ObservableObject {
         tasks[idx].startedAt = Date()
         lastSpeedSampleTime[taskId] = Date()
         lastSampledBytes[taskId] = 0
+        let totalBytes = tasks[idx].totalBytes
+        
+        // Active file size poller off the main thread to ensure real-time progress & throughput updates
+        let progressMonitor = Task.detached(priority: .utility) { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 150_000_000) // 150ms sampling
+                if Task.isCancelled { break }
+                let bytes = Self.currentTransferredBytes(at: localURL)
+                if bytes > 0 {
+                    await MainActor.run { [weak self] in
+                        guard let self = self else { return }
+                        let fraction = totalBytes > 0 ? min(Double(bytes) / Double(totalBytes), 1.0) : 0.0
+                        self.updateProgress(taskId: taskId, fraction: fraction, transferredBytes: bytes)
+                    }
+                }
+            }
+        }
+        defer { progressMonitor.cancel() }
         
         do {
             try await session.downloadFile(remotePath: remotePath, localURL: localURL) { [weak self] fraction in
@@ -328,7 +352,11 @@ public final class TransferManager: ObservableObject {
             }
             
             try Task.checkCancellation()
+            progressMonitor.cancel()
             if let finalIdx = tasks.firstIndex(where: { $0.id == taskId }) {
+                let actualSize = Self.currentTransferredBytes(at: localURL)
+                let finalBytes = actualSize > 0 ? actualSize : tasks[finalIdx].totalBytes
+                tasks[finalIdx].totalBytes = max(tasks[finalIdx].totalBytes, finalBytes)
                 tasks[finalIdx].transferredBytes = tasks[finalIdx].totalBytes
                 tasks[finalIdx].status = .completed
                 tasks[finalIdx].completedAt = Date()
@@ -336,6 +364,7 @@ public final class TransferManager: ObservableObject {
             onResult?(.success(localURL))
             onCompleted?()
         } catch {
+            progressMonitor.cancel()
             if let finalIdx = tasks.firstIndex(where: { $0.id == taskId }) {
                 if Task.isCancelled {
                     tasks[finalIdx].status = .cancelled
@@ -352,10 +381,17 @@ public final class TransferManager: ObservableObject {
         lastSampledBytes.removeValue(forKey: taskId)
     }
     
-    private func updateProgress(taskId: UUID, fraction: Double) {
+    public func updateProgress(taskId: UUID, fraction: Double, transferredBytes: Int64? = nil) {
         guard let idx = tasks.firstIndex(where: { $0.id == taskId }), tasks[idx].status == .transferring else { return }
         let total = tasks[idx].totalBytes
-        let transferred = total > 0 ? Int64(Double(total) * fraction) : Int64(fraction * 100)
+        let transferred: Int64
+        if let direct = transferredBytes {
+            transferred = direct
+        } else if total > 0 {
+            transferred = Int64(Double(total) * fraction)
+        } else {
+            transferred = Int64(fraction * 100)
+        }
         tasks[idx].transferredBytes = transferred
         
         let now = Date()

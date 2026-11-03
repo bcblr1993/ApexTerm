@@ -26,6 +26,7 @@ public final class MockSSHSession: SSHSessionProtocol, @unchecked Sendable {
     private var metricsHandler: (@Sendable (ServerMetricsSnapshot) -> Void)?
     private var directoryChangeHandler: (@Sendable (String) -> Void)?
     private var stateChangeHandler: (@Sendable (SSHConnectionState) -> Void)?
+    public var customDownloadHandler: (@Sendable (String, URL, @Sendable @escaping (Double) -> Void) async throws -> Void)?
     
     private var metricsTimer: Timer?
     private var currentDirectory = "/root"
@@ -404,6 +405,10 @@ public final class MockSSHSession: SSHSessionProtocol, @unchecked Sendable {
     }
     
     public func downloadFile(remotePath: String, localURL: URL, progress: @Sendable @escaping (Double) -> Void) async throws {
+        if let customDownloadHandler {
+            try await customDownloadHandler(remotePath, localURL, progress)
+            return
+        }
         for step in 1...5 {
             try await Task.sleep(nanoseconds: 10_000_000)
             progress(Double(step) / 5.0)

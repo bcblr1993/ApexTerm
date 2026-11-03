@@ -208,14 +208,21 @@ private struct TransferTaskRow: View {
                                 .foregroundColor(ApexStyle.accent)
                             Text("·")
                                 .foregroundColor(ApexStyle.secondary)
-                            Text("\(formattedBytes(task.transferredBytes)) / \(formattedBytes(task.totalBytes))")
-                                .font(.system(size: 10, design: .monospaced))
-                                .foregroundColor(ApexStyle.secondary)
-                        } else {
                             if task.totalBytes > 0 {
+                                Text("\(formattedBytes(task.transferredBytes)) / \(formattedBytes(task.totalBytes))")
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundColor(ApexStyle.secondary)
+                            } else {
+                                Text(formattedBytes(task.transferredBytes))
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundColor(ApexStyle.secondary)
+                            }
+                        } else {
+                            let displayBytes = max(task.totalBytes, task.transferredBytes)
+                            if displayBytes > 0 {
                                 Text("·")
                                     .foregroundColor(ApexStyle.secondary)
-                                Text(formattedBytes(task.totalBytes))
+                                Text(formattedBytes(displayBytes))
                                     .font(.system(size: 10, design: .monospaced))
                                     .foregroundColor(ApexStyle.secondary)
                             }
@@ -233,9 +240,19 @@ private struct TransferTaskRow: View {
                 Spacer()
                 
                 if task.status == .transferring || task.status == .queued {
-                    Text(task.formattedProgress)
-                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                        .foregroundColor(ApexStyle.accent)
+                    if task.totalBytes > 0 {
+                        Text(task.formattedProgress)
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            .foregroundColor(ApexStyle.accent)
+                    } else if task.transferredBytes > 0 {
+                        Text(formattedBytes(task.transferredBytes))
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            .foregroundColor(ApexStyle.accent)
+                    } else {
+                        Text(task.status == .queued ? "等待中" : "准备中...")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(ApexStyle.secondary)
+                    }
                     
                     ApexIconButton(
                         icon: "xmark",
@@ -272,9 +289,15 @@ private struct TransferTaskRow: View {
             }
             
             if task.status == .transferring || task.status == .queued {
-                ProgressView(value: task.progress)
-                    .progressViewStyle(.linear)
-                    .tint(ApexStyle.accent)
+                if task.totalBytes > 0 {
+                    ProgressView(value: task.progress)
+                        .progressViewStyle(.linear)
+                        .tint(ApexStyle.accent)
+                } else {
+                    ProgressView()
+                        .progressViewStyle(.linear)
+                        .tint(ApexStyle.accent)
+                }
             }
         }
         .padding(8)

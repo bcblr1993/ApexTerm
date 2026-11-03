@@ -1419,9 +1419,8 @@ public enum SFTPDragExportHelper {
                 let expectedBytes = Int64(clamping: item.size)
                 let progressMonitor = Task.detached(priority: .utility) {
                     while !Task.isCancelled {
-                        if let attributes = try? FileManager.default.attributesOfItem(atPath: localURL.path),
-                           let size = attributes[.size] as? NSNumber {
-                            let bytes = size.int64Value
+                        let bytes = TransferManager.currentTransferredBytes(at: localURL)
+                        if bytes > 0 {
                             Task { @MainActor in
                                 TransferManager.shared.updateExternalProgress(
                                     taskId: taskId,
@@ -1430,7 +1429,7 @@ public enum SFTPDragExportHelper {
                                 )
                             }
                         }
-                        try? await Task.sleep(for: .milliseconds(250))
+                        try? await Task.sleep(for: .milliseconds(150))
                     }
                 }
                 defer { progressMonitor.cancel() }

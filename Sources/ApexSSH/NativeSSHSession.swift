@@ -90,6 +90,12 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         self.bridgeExecutableURL = bridgeExecutableURL ?? URL(fileURLWithPath: Bundle.main.bundlePath + "/Contents/MacOS/ApexSSHBridge")
         self.sandboxPaths = SandboxSSHPaths(home: sandboxHomeURL ?? URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true),
             temporary: sandboxTemporaryURL ?? FileManager.default.temporaryDirectory)
+        if let jumpId = session.jumpServerId, Thread.isMainThread {
+            self.resolvedJumpServer = MainActor.assumeIsolated {
+                SessionStore.shared.sessions.first(where: { $0.id == jumpId })
+            }
+            self.didResolveJumpServer = true
+        }
     }
     
     public func setOutputHandler(_ handler: @Sendable @escaping (Data) -> Void) {
@@ -243,9 +249,15 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     }
 
     private var resolvedJumpServer: Session?
+    private var didResolveJumpServer = false
     public var customJumpSession: Session? {
         get { stateLock.withLock { resolvedJumpServer } }
-        set { stateLock.withLock { resolvedJumpServer = newValue } }
+        set {
+            stateLock.withLock {
+                resolvedJumpServer = newValue
+                didResolveJumpServer = true
+            }
+        }
     }
 
     public func jumpServerArgs() -> [String] {
@@ -267,12 +279,35 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     }
 
     private func resolveJumpServerIfNeeded() async {
-        if stateLock.withLock({ resolvedJumpServer != nil }) { return }
-        guard let jumpId = session.jumpServerId else { return }
-        let found = await MainActor.run {
-            SessionStore.shared.sessions.first(where: { $0.id == jumpId })
+        if stateLock.withLock({ resolvedJumpServer != nil || didResolveJumpServer }) { return }
+        guard let jumpId = session.jumpServerId else {
+            stateLock.withLock { didResolveJumpServer = true }
+            return
         }
-        stateLock.withLock { self.resolvedJumpServer = found }
+        let found: Session? = await withCheckedContinuation { continuation in
+            let resumed = OSAllocatedUnfairLock(initialState: false)
+            @Sendable func resumeOnce(_ value: Session?) {
+                let shouldResume = resumed.withLock { state -> Bool in
+                    guard !state else { return false }
+                    state = true
+                    return true
+                }
+                if shouldResume {
+                    continuation.resume(returning: value)
+                }
+            }
+            Task { @MainActor in
+                let matched = SessionStore.shared.sessions.first(where: { $0.id == jumpId })
+                resumeOnce(matched)
+            }
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + .milliseconds(25)) {
+                resumeOnce(nil)
+            }
+        }
+        stateLock.withLock {
+            if let found { self.resolvedJumpServer = found }
+            self.didResolveJumpServer = true
+        }
     }
     
     public func connect() async throws {
@@ -646,15 +681,13 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
                 cmd
             ]
         }
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = Pipe()
+        process.standardInput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
         do {
             let grants = try configureStoreProcess(process, accesses: [keyAccess, certAccess])
             defer { grants?.close() }
-            try process.run()
-            let data = (try? pipe.fileHandleForReading.readToEnd()) ?? Data()
-            process.waitUntilExit()
+            let data = try await Self.runProbeProcess(process)
+            guard process.terminationStatus == 0 else { return nil }
             if let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines), output.hasPrefix("/") {
                 return output
             }
@@ -1141,6 +1174,9 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         let quotedPath = Self.quoteRemotePath(targetPath)
         let cmd = "LC_ALL=C ls -la --time-style=+%s \(quotedPath) 2>/dev/null || LC_ALL=C ls -la -D '%s' \(quotedPath) 2>/dev/null || LC_ALL=C ls -la \(quotedPath)"
         let ctrlArgs = [
+            "-o", "ConnectTimeout=10",
+            "-o", "ServerAliveInterval=15",
+            "-o", "ServerAliveCountMax=3",
             "-o", "ControlMaster=auto",
             "-o", controlSocketOption,
             "-o", "ControlPersist=60s"
@@ -1170,16 +1206,32 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         
         let pipe = Pipe()
         let errPipe = Pipe()
+        process.standardInput = FileHandle.nullDevice
         process.standardOutput = pipe
         process.standardError = errPipe
         let grants = try configureStoreProcess(process, accesses: [keyAccess, certAccess])
         defer { grants?.close() }
-        try process.run()
-        let data = (try? pipe.fileHandleForReading.readToEnd()) ?? Data()
-        process.waitUntilExit()
+        let outReader = Task.detached(priority: .utility) { (try? pipe.fileHandleForReading.readToEnd()) ?? Data() }
+        let errReader = Task.detached(priority: .utility) { (try? errPipe.fileHandleForReading.readToEnd()) ?? Data() }
+        do {
+            try await Self.runTransferProcess(process)
+        } catch {
+            try? pipe.fileHandleForWriting.close()
+            try? errPipe.fileHandleForWriting.close()
+            _ = await outReader.value
+            _ = await errReader.value
+            try? pipe.fileHandleForReading.close()
+            try? errPipe.fileHandleForReading.close()
+            throw error
+        }
+        try? pipe.fileHandleForWriting.close()
+        try? errPipe.fileHandleForWriting.close()
+        let data = await outReader.value
+        let errorData = await errReader.value
+        try? pipe.fileHandleForReading.close()
+        try? errPipe.fileHandleForReading.close()
         
         guard process.terminationStatus == 0 else {
-            let errorData = (try? errPipe.fileHandleForReading.readToEnd()) ?? Data()
             let message = String(decoding: errorData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
             throw NSError(domain: "ApexSSH", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey:
                 message.isEmpty ? "无法读取远程目录（退出码 \(process.terminationStatus)）" : String(message.prefix(512))])
@@ -1445,6 +1497,9 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         let process = Process()
         let sshpass = self.sshpassExecutablePath
         let ctrlArgs = [
+            "-o", "ConnectTimeout=10",
+            "-o", "ServerAliveInterval=15",
+            "-o", "ServerAliveCountMax=3",
             "-o", "ControlMaster=auto",
             "-o", controlSocketOption,
             "-o", "ControlPersist=60s"
@@ -1473,14 +1528,14 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         }
         
         let errPipe = Pipe()
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
         process.standardError = errPipe
         let grants = try configureStoreProcess(process, accesses: [keyAccess, certAccess])
         defer { grants?.close() }
-        try process.run()
-        process.waitUntilExit()
+        let errData = try await Self.runSCPProcess(process, standardError: errPipe)
         
         guard process.terminationStatus == 0 else {
-            let errData = (try? errPipe.fileHandleForReading.readToEnd()) ?? Data()
             let errMsg = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "Remote command execution failed"
             throw NSError(domain: "ApexSSH", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: errMsg.isEmpty ? "Operation failed with exit code \(process.terminationStatus)" : errMsg])
         }

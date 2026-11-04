@@ -472,12 +472,13 @@ public final class LocalTerminalSession: SSHSessionProtocol, @unchecked Sendable
                 process.executableURL = URL(fileURLWithPath: "/bin/sh")
                 process.arguments = ["-c", AgentlessMonitor.macosProbeCommand]
                 let pipe = Pipe()
+                process.standardInput = FileHandle.nullDevice
                 process.standardOutput = pipe
                 process.standardError = FileHandle.nullDevice
                 do {
                     try process.run()
-                    process.waitUntilExit()
                     let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                    process.waitUntilExit()
                     let output = String(data: data, encoding: .utf8) ?? ""
                     continuation.resume(returning: output)
                 } catch {
@@ -495,12 +496,13 @@ public final class LocalTerminalSession: SSHSessionProtocol, @unchecked Sendable
                 process.executableURL = URL(fileURLWithPath: "/bin/sh")
                 process.arguments = ["-c", command]
                 let pipe = Pipe()
+                process.standardInput = FileHandle.nullDevice
                 process.standardOutput = pipe
                 process.standardError = FileHandle.nullDevice
                 do {
                     try process.run()
-                    process.waitUntilExit()
                     let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                    process.waitUntilExit()
                     let output = String(data: data, encoding: .utf8) ?? ""
                     continuation.resume(returning: output)
                 } catch {

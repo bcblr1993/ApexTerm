@@ -3,6 +3,7 @@ import AppKit
 import UniformTypeIdentifiers
 import ApexCore
 import ApexSSH
+import os
 
 private final class SFTPBatchTracker: @unchecked Sendable {
     private let lock = NSLock()
@@ -439,7 +440,11 @@ public struct SFTPView: View {
                         }.width(min: 125, ideal: 145, max: 180)
                     } rows: {
                         ForEach(filteredItems) { item in
-                            TableRow(item).itemProvider { handleDragDownload(for: item) }
+                            if item.name == ".." {
+                                TableRow(item)
+                            } else {
+                                TableRow(item).itemProvider { handleDragDownload(for: item) }
+                            }
                         }
                     }
                     // Keep the system's semantic selection foreground instead of inheriting a theme's fixed text color.
@@ -1405,7 +1410,7 @@ public enum SFTPDragExportHelper {
                 throw NSError(domain: "SFTPDragExport", code: 404,
                               userInfo: [NSLocalizedDescriptionKey: "No active SSH session"])
             }
-            await MainActor.run {
+            await Self.dispatchMainActorNonBlocking {
                 TransferManager.shared.beginExternalTransfer(
                     id: taskId, fileName: item.name, remotePath: item.path,
                     localURL: localURL, direction: .download, totalBytes: Int64(item.size))
@@ -1439,7 +1444,7 @@ public enum SFTPDragExportHelper {
                     }
                 }
                 try Task.checkCancellation()
-                await MainActor.run {
+                await Self.dispatchMainActorNonBlocking {
                     TransferManager.shared.completeExternalTransfer(taskId: taskId)
                     onStatusChange?("拖拽导出完成: \(item.name)")
                 }
@@ -1447,7 +1452,7 @@ public enum SFTPDragExportHelper {
             } catch {
                 try? FileManager.default.removeItem(at: localURL)
                 try? FileManager.default.removeItem(at: tempDir)
-                await MainActor.run {
+                await Self.dispatchMainActorNonBlocking {
                     if error is CancellationError {
                         TransferManager.shared.cancelExternalTransfer(taskId: taskId)
                         onStatusChange?("拖拽下载已取消: \(item.name)")
@@ -1461,15 +1466,18 @@ public enum SFTPDragExportHelper {
         }
         let loadHandler: @Sendable (@escaping @Sendable (URL?, Bool, (any Error)?) -> Void) -> Progress? = { completion in
             let progress = Progress(totalUnitCount: Int64(max(item.size, 1)))
-            progress.cancellationHandler = { Task { await export.cancel() } }
             let progressMonitor = Task.detached(priority: .utility) {
                 while !Task.isCancelled {
-                    if let attributes = try? FileManager.default.attributesOfItem(atPath: localURL.path),
-                       let size = attributes[.size] as? NSNumber {
-                        progress.completedUnitCount = min(size.int64Value, progress.totalUnitCount)
+                    let bytes = TransferManager.currentTransferredBytes(at: localURL)
+                    if bytes > 0 {
+                        progress.completedUnitCount = min(bytes, progress.totalUnitCount)
                     }
                     try? await Task.sleep(for: .milliseconds(250))
                 }
+            }
+            progress.cancellationHandler = {
+                progressMonitor.cancel()
+                Task { await export.cancel() }
             }
             Task {
                 defer { progressMonitor.cancel() }
@@ -1498,6 +1506,37 @@ public enum SFTPDragExportHelper {
         }
 
         return provider
+    }
+
+    /// Dispatches a `@MainActor` closure in FIFO order without deadlocking when AppKit/SwiftUI
+    /// synchronously blocks the main thread inside `NSItemProvider.loadURLSynchronously(for:)`.
+    /// When the main actor is free (e.g., async file promise loading or unit tests), this awaits
+    /// completion deterministically; when the main thread is blocked on a semaphore waiting for
+    /// the `NSItemProvider` load handler, the timeout expires so the export finishes and unblocks
+    /// the main thread semaphore, after which the queued `@MainActor` task runs immediately.
+    private static func dispatchMainActorNonBlocking(
+        _ operation: @escaping @Sendable @MainActor () -> Void
+    ) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let resumed = OSAllocatedUnfairLock(initialState: false)
+            @Sendable func resumeOnce() {
+                let shouldResume = resumed.withLock { state -> Bool in
+                    guard !state else { return false }
+                    state = true
+                    return true
+                }
+                if shouldResume {
+                    continuation.resume()
+                }
+            }
+            Task { @MainActor in
+                operation()
+                resumeOnce()
+            }
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + .milliseconds(25)) {
+                resumeOnce()
+            }
+        }
     }
 }
 

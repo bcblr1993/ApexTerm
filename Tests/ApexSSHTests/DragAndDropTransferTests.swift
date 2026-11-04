@@ -358,4 +358,60 @@ final class DragAndDropTransferTests: XCTestCase {
         }
         XCTAssertFalse(process.isRunning)
     }
+
+    // MARK: - 9. Main-Thread Synchronous NSItemProvider Load Deadlock Regression
+
+    private func loadURLSynchronouslyOnMainThread(_ provider: NSItemProvider) -> (String?, (any Error)?, DispatchTimeoutResult) {
+        let semaphore = DispatchSemaphore(value: 0)
+        nonisolated(unsafe) var exportedContent: String?
+        nonisolated(unsafe) var exportedError: (any Error)?
+        _ = provider.loadFileRepresentation(forTypeIdentifier: UTType.fileURL.identifier) { url, error in
+            exportedError = error
+            if let url {
+                exportedContent = try? String(contentsOf: url, encoding: .utf8)
+            }
+            semaphore.signal()
+        }
+        let waitResult = semaphore.wait(timeout: .now() + .seconds(3))
+        return (exportedContent, exportedError, waitResult)
+    }
+
+    func testSynchronousMainThreadLoadURLDoesNotDeadlock() async throws {
+        let fileName = "sync_pasteboard_drag.txt"
+        let remotePath = "/tmp/\(fileName)"
+        let content = "Synchronous main-thread pasteboard load payload"
+        let prepURL = tempDir.appendingPathComponent("prep_\(fileName)")
+        try content.write(to: prepURL, atomically: true, encoding: .utf8)
+        try await mockSession.uploadFile(localURL: prepURL, remotePath: remotePath, progress: { _ in })
+
+        let item = SFTPItem(
+            name: fileName,
+            path: remotePath,
+            isDirectory: false,
+            size: UInt64(content.utf8.count),
+            permissions: 0o644,
+            modificationDate: Date()
+        )
+
+        var lastNotice: String?
+        let provider = SFTPDragExportHelper.makeItemProvider(for: item, session: mockSession) { notice in
+            lastNotice = notice
+        }
+
+        // Simulate SwiftUI's ItemProviderWrapper.pasteboardPropertyList(forType:) -> NSItemProvider.loadURLSynchronously(for:)
+        // which blocks the Main Thread on a DispatchSemaphore during beginDraggingSessionWithItems:.
+        let (exportedContent, exportedError, waitResult) = loadURLSynchronouslyOnMainThread(provider)
+        XCTAssertEqual(waitResult, .success, "Main-thread synchronous NSItemProvider load must never deadlock on MainActor.run")
+        XCTAssertNil(exportedError)
+        XCTAssertEqual(exportedContent, content)
+
+        // Allow queued @MainActor lifecycle updates to drain once the main thread unblocks
+        let deadline = Date().addingTimeInterval(2.0)
+        while !TransferManager.shared.tasks.contains(where: { $0.fileName == fileName && $0.status == .completed }),
+              Date() < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(TransferManager.shared.tasks.contains { $0.fileName == fileName && $0.status == .completed })
+        XCTAssertEqual(lastNotice, "拖拽导出完成: \(fileName)")
+    }
 }

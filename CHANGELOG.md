@@ -2,6 +2,21 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.16.1] - 2026-11-04
+
+### 🐞 问题修复 (Bug Fixes)
+- **彻底根治 SFTP 行拖拽导出触发主线程信号量与 `MainActor` 互锁卡死（Beachball 无响应）**：
+  - **排查根因**：当用户在 SFTP 文件表格中触发行拖拽时，SwiftUI 的 `ItemProviderWrapper.pasteboardPropertyList(forType:)` 会在主线程同步调用 `NSItemProvider.loadURLSynchronously(for:)` 并阻塞在 `_dispatch_semaphore_wait_slow` 信号量上等待 `loadHandler` 完成；而 `SFTPDragExportHelper` 后台导出任务及跳板机解析内部使用了阻塞式 `await MainActor.run`，导致主线程与后台导出协程互相等待而永久死锁，且死锁后后台进度轮询协程无法取消而持续空转消耗 CPU；
+  - **修复方案**：新增非阻塞 FIFO 主线程调度器 `dispatchMainActorNonBlocking`，当主线程空闲时微秒级同步落盘状态，当主线程被 `loadURLSynchronously` 信号量阻塞时自动超时放行后台传输并回调 `completion` 释放主线程信号量；同时在 `progress.cancellationHandler` 中联动取消进度采样协程，并禁用上级目录项 `..` 的拖拽导出。
+- **消除 SSH 远程目录列举、主目录探测与远端命令执行的同步阻塞及管道死锁隐患**：
+  - 将 `NativeSSHSession` 中的 `listDirectory`、`probeRemoteHome` 与 `executeRemoteCommand` 统一改造为基于 `runTransferProcess` / `runSCPProcess` 的纯异步可取消执行，补齐 `standardInput = FileHandle.nullDevice` 与 `-o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=3`，并并发排空 `stdout`/`stderr` 管道；
+  - 修复 `LocalTerminalSession` 本地命令执行中先 `waitUntilExit()` 后读取管道导致的 >64KB 管道缓冲区死锁隐患。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- 新增 `DragAndDropTransferTests.testSynchronousMainThreadLoadURLDoesNotDeadlock` 主线程同步信号量拖拽防死锁回归测试，完整复现 SwiftUI `NSItemProvider.loadURLSynchronously(for:)` 场景并断言零死锁；
+- 全量自动化测试用例 100% 绿色通过（0 failures），Swift 6 模式零警告；
+- 8 大性能 Benchmark 与 Tart VM 真实集成质量门禁全量达标，通过 Developer ID 官方签名与 Apple 生产级安全公证。
+
 ## [v1.16.0] - 2026-11-03
 
 ### ✨ 新增特性 (Features)

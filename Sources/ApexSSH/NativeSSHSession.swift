@@ -6,6 +6,32 @@ import os
 import Darwin
 #endif
 
+/// Serializes ControlMaster socket establishment per session so concurrent probes/SFTP commands
+/// never spawn duplicate `[mux]` processes that overwrite and later unlink the active socket.
+actor ControlSocketGate {
+    private var isLocked = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func acquire() async {
+        if !isLocked {
+            isLocked = true
+            return
+        }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func release() {
+        if !waiters.isEmpty {
+            let next = waiters.removeFirst()
+            next.resume()
+        } else {
+            isLocked = false
+        }
+    }
+}
+
 /// Real native SSH session implementation using Darwin POSIX PTY, bundled standalone sshpass, and real-time probe
 public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     public let session: Session
@@ -41,11 +67,19 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     
     private var ptyMasterFd: Int32 = -1
     private let controlSocketIdentifier = UUID().uuidString
+    private let controlSocketGate = ControlSocketGate()
     private let inputQueue = DispatchQueue(label: "com.apexterm.pty-input", qos: .userInteractive)
     private var childPid: pid_t = -1
     private var currentDimensions: (columns: Int, rows: Int) = (120, 35)
     private var readSource: DispatchSourceRead?
     private var probeTask: Task<Void, Never>?
+    private var keepAliveTask: Task<Void, Never>?
+    private var processActivityToken: NSObjectProtocol?
+    private var lastPTYActivityTime: TimeInterval = ProcessInfo.processInfo.systemUptime
+    private var keepAlivePixelToggle: UInt16 = 0
+    private var explicitDisconnectRequested = false
+    private var recentInputLineBuffer = ""
+    private var lastUserExitCommandAt: Date = .distantPast
     
     private let monitor = AgentlessMonitor()
     private var prevCpu: AgentlessMonitor.CpuTickState?
@@ -63,6 +97,95 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     
     public func setTerminalType(_ type: TerminalType) {
         stateLock.withLock { storedTerminalType = type }
+    }
+    
+    public var wasUserInitiatedDisconnect: Bool {
+        stateLock.withLock {
+            if explicitDisconnectRequested { return true }
+            return Date().timeIntervalSince(lastUserExitCommandAt) < 4.0
+        }
+    }
+
+    /// Evaluates the return value of `read(ptyMasterFd, ...)` on a Darwin PTY.
+    /// Returns `true` when the read source must stay active (either data was read or the read was
+    /// transiently interrupted by `EINTR`/`EAGAIN`/`EWOULDBLOCK`, e.g. `SIGCHLD` from background probes),
+    /// and `false` only on genuine EOF (`bytesRead == 0`) or terminal hangup (`EIO`, `EBADF`, `ENXIO`).
+    public static func shouldKeepReadingAfterReadResult(bytesRead: Int, errnoValue: Int32) -> Bool {
+        if bytesRead > 0 { return true }
+        if bytesRead == 0 { return false }
+        return errnoValue == EINTR || errnoValue == EAGAIN || errnoValue == EWOULDBLOCK
+    }
+
+    /// Effective keep-alive interval in seconds (clamped to 5...60s; defaults to 15s when <= 0).
+    public static func effectiveKeepAliveInterval(configured: Int) -> Int {
+        guard configured > 0 else { return 15 }
+        return min(max(configured, 5), 60)
+    }
+
+    /// Standard OpenSSH transport keep-alive options for interactive PTY sessions.
+    /// Sends an encrypted SSH global keep-alive request every `interval` seconds and tolerates up to
+    /// 10 consecutive missed responses so brief Wi-Fi roams or VPN blips do not drop the session.
+    public static func sshKeepAliveArguments(configuredInterval: Int) -> [String] {
+        let interval = effectiveKeepAliveInterval(configured: configuredInterval)
+        return [
+            "-o", "TCPKeepAlive=yes",
+            "-o", "ServerAliveInterval=\(interval)",
+            "-o", "ServerAliveCountMax=10"
+        ]
+    }
+
+    /// Detects whether user input represents an intentional shell exit (`Ctrl+D`, `exit`, `logout`).
+    public static func recordExitIntent(data: Data, lineBuffer: inout String) -> Bool {
+        if data.contains(4) && lineBuffer.trimmingCharacters(in: .whitespaces).isEmpty {
+            return true
+        }
+        guard let str = String(data: data, encoding: .utf8) else { return false }
+        var detected = false
+        for ch in str {
+            if ch == "\r" || ch == "\n" {
+                let cmd = lineBuffer.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                if cmd == "exit" || cmd == "logout" || cmd.hasPrefix("exit ") {
+                    detected = true
+                }
+                lineBuffer = ""
+            } else if ch == "\u{7F}" || ch == "\u{08}" {
+                if !lineBuffer.isEmpty { lineBuffer.removeLast() }
+            } else if ch == "\u{03}" || ch == "\u{15}" {
+                lineBuffer = ""
+            } else if !ch.isNewline {
+                lineBuffer.append(ch)
+                if lineBuffer.count > 128 {
+                    lineBuffer = String(lineBuffer.suffix(64))
+                }
+            }
+        }
+        return detected
+    }
+
+    private func beginSessionActivityAssertion() {
+        stateLock.withLock {
+            if processActivityToken == nil {
+                processActivityToken = ProcessInfo.processInfo.beginActivity(
+                    options: [.userInitiatedAllowingIdleSystemSleep, .latencyCritical],
+                    reason: "Active SSH Terminal Session (\(session.host))"
+                )
+            }
+        }
+    }
+
+    private func endSessionActivityAssertion() {
+        stateLock.withLock {
+            if let token = processActivityToken {
+                ProcessInfo.processInfo.endActivity(token)
+                processActivityToken = nil
+            }
+        }
+    }
+
+    private func recordPTYActivity() {
+        stateLock.withLock {
+            lastPTYActivityTime = ProcessInfo.processInfo.systemUptime
+        }
     }
     
     /// Locate bundled sshpass first, then Homebrew/system locations
@@ -317,6 +440,9 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         }
         
         // A peer disconnect may leave the previous probe finishing cancellation.
+        let previousKeepAlive = keepAliveTask
+        previousKeepAlive?.cancel()
+        keepAliveTask = nil
         let previousProbe = probeTask
         previousProbe?.cancel()
         probeTask = nil
@@ -326,6 +452,12 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         directoryStream = DirectoryChangeStreamParser()
         recentPromptBuffer = ""
         lastReportedDirectory = ""
+        stateLock.withLock {
+            explicitDisconnectRequested = false
+            recentInputLineBuffer = ""
+            lastUserExitCommandAt = .distantPast
+            lastPTYActivityTime = ProcessInfo.processInfo.systemUptime
+        }
         self.connectionState = .connecting(step: "Initializing native Darwin PTY...")
         self.passwordFeedSent = false
         
@@ -350,10 +482,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
 
         // Setup command & arguments
         var binaryPath = "/usr/bin/ssh"
-        var sshArgs = [
-            "-tt",
-            "-o", "ServerAliveInterval=\(session.keepAliveIntervalSeconds)",
-            "-o", "ServerAliveCountMax=3",
+        var sshArgs = ["-tt"] + Self.sshKeepAliveArguments(configuredInterval: session.keepAliveIntervalSeconds) + [
             "-o", "StrictHostKeyChecking=accept-new"
         ]
         sshArgs.append(contentsOf: sshAuthArgs(privateKeyURL: keyAccess?.url, certificateURL: certAccess?.url))
@@ -389,6 +518,11 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         guard openpty(&master, &slave, nil, nil, &win) == 0 else {
             self.connectionState = .failed("Failed to allocate Darwin PTY")
             throw NSError(domain: "ApexSSH", code: 1, userInfo: [NSLocalizedDescriptionKey: "openpty failed"])
+        }
+
+        let masterFlags = fcntl(master, F_GETFL, 0)
+        if masterFlags >= 0 {
+            _ = fcntl(master, F_SETFL, masterFlags | O_NONBLOCK)
         }
 
         stateLock.withLock { self.ptyMasterFd = master }
@@ -455,6 +589,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         }
         transferredKeyAccess = true
         transferredCertAccess = true
+        beginSessionActivityAssertion()
         self.connectionState = .connected
         
         // Setup asynchronous kqueue read source
@@ -464,6 +599,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             var buffer = [UInt8](repeating: 0, count: 8192)
             let bytesRead = read(master, &buffer, buffer.count)
             if bytesRead > 0 {
+                self.recordPTYActivity()
                 let data = Data(buffer.prefix(bytesRead))
                 self.outputHandler?(data)
                 self.parseOSC7DirectoryChange(data: data)
@@ -484,14 +620,21 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
                         }
                     }
                 }
-            } else if bytesRead <= 0 {
-                self.connectionState = .disconnected
+            } else {
+                let err = errno
+                if Self.shouldKeepReadingAfterReadResult(bytesRead: bytesRead, errnoValue: err) {
+                    return
+                }
+                self.keepAliveTask?.cancel()
                 self.probeTask?.cancel()
+                self.endSessionActivityAssertion()
+                self.connectionState = .disconnected
                 source.cancel()
             }
         }
         source.setCancelHandler { [weak self] in
             if let self {
+                self.endSessionActivityAssertion()
                 self.stateLock.withLock {
                     if self.ptyMasterFd == master { self.ptyMasterFd = -1 }
                     close(master)
@@ -502,6 +645,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         }
         source.resume()
         self.readSource = source
+        startChannelKeepAliveLoop()
         
         // Probe user's real home directory after connection
         Task { [weak self] in
@@ -520,7 +664,12 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     }
     
     public func disconnect() async {
+        stateLock.withLock { explicitDisconnectRequested = true }
         self.connectionState = .disconnected
+        endSessionActivityAssertion()
+        let pendingKeepAlive = keepAliveTask
+        pendingKeepAlive?.cancel()
+        keepAliveTask = nil
         let pendingProbe = probeTask
         pendingProbe?.cancel()
         probeTask = nil
@@ -568,6 +717,10 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     /// Synchronous exit cleanup: SSH ignores ordinary termination signals while attached to a PTY.
     /// Each spawned connection owns a process group, so this cannot target another session.
     public func terminatePTYProcess() {
+        stateLock.withLock { explicitDisconnectRequested = true }
+        endSessionActivityAssertion()
+        keepAliveTask?.cancel()
+        keepAliveTask = nil
         probeTask?.cancel()
         probeTask = nil
         try? FileManager.default.removeItem(atPath: controlSocketPath)
@@ -608,7 +761,13 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
 
     public func sendInputSync(_ data: Data) {
         guard !data.isEmpty else { return }
-        let descriptor = stateLock.withLock { ptyMasterFd >= 0 ? dup(ptyMasterFd) : -1 }
+        let descriptor = stateLock.withLock { () -> Int32 in
+            lastPTYActivityTime = ProcessInfo.processInfo.systemUptime
+            if Self.recordExitIntent(data: data, lineBuffer: &recentInputLineBuffer) {
+                lastUserExitCommandAt = Date()
+            }
+            return ptyMasterFd >= 0 ? dup(ptyMasterFd) : -1
+        }
         guard descriptor >= 0 else { return }
         if data.contains(13) || data.contains(10) { hasPendingCommandExecution = true }
         // A duplicated descriptor prevents queued input from reaching a reused fd after reconnect.
@@ -660,8 +819,22 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         distributionChannel == .appStore ? sandboxPaths.controlSocketOption : "ControlPath=" + controlSocketPath
     }
 
+    public var controlMasterArguments: [String] {
+        [
+            "-o", "TCPKeepAlive=yes",
+            "-o", "ServerAliveInterval=15",
+            "-o", "ServerAliveCountMax=6",
+            "-o", "ControlMaster=auto",
+            "-o", controlSocketOption,
+            "-o", "ControlPersist=4h"
+        ]
+    }
+
     public func probeRemoteHome() async -> String? {
         await resolvePasswordIfNeeded()
+        let needsGate = !FileManager.default.fileExists(atPath: controlSocketPath)
+        if needsGate { await controlSocketGate.acquire() }
+        defer { if needsGate { Task { await controlSocketGate.release() } } }
         let keyAccess: FileAccessLease?
         do { keyAccess = try acquirePrivateKeyAccess() }
         catch { return nil }
@@ -672,11 +845,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         defer { certAccess?.close() }
         let process = Process()
         let cmd = "printf '%s\\n' \"$HOME\""
-        let ctrlArgs = [
-            "-o", "ControlMaster=auto",
-            "-o", controlSocketOption,
-            "-o", "ControlPersist=60s"
-        ]
+        let ctrlArgs = controlMasterArguments
         let authArgs = sshAuthArgs(privateKeyURL: keyAccess?.url, certificateURL: certAccess?.url)
         let jumpArgs = jumpServerArgs()
         if let pw = resolvedPassword, !pw.isEmpty, let sshpass = sshpassExecutablePath {
@@ -813,18 +982,53 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         return path
     }
     
+    /// Periodically sends a zero-character PTY channel window-change keep-alive when idle
+    /// so intermediate firewalls, bastion hosts, and remote PTY channels stay active without
+    /// injecting any bytes into the user's shell or editor.
+    private func startChannelKeepAliveLoop() {
+        let intervalSeconds = max(15, Self.effectiveKeepAliveInterval(configured: session.keepAliveIntervalSeconds))
+        keepAliveTask = Task.detached(priority: .utility) { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: UInt64(intervalSeconds) * 1_000_000_000)
+                guard let self = self, !Task.isCancelled, self.connectionState == .connected else { break }
+                let now = ProcessInfo.processInfo.systemUptime
+                let shouldPulse: (fd: Int32, pid: pid_t, cols: Int, rows: Int, pixel: UInt16)? = self.stateLock.withLock {
+                    guard self.ptyMasterFd >= 0, self.childPid > 0 else { return nil }
+                    guard now - self.lastPTYActivityTime >= Double(intervalSeconds - 1) else { return nil }
+                    self.keepAlivePixelToggle = self.keepAlivePixelToggle == 0 ? 1 : 0
+                    return (self.ptyMasterFd, self.childPid, self.currentDimensions.columns, self.currentDimensions.rows, self.keepAlivePixelToggle)
+                }
+                if let pulse = shouldPulse {
+                    var win = winsize(
+                        ws_row: UInt16(max(3, pulse.rows)),
+                        ws_col: UInt16(max(10, pulse.cols)),
+                        ws_xpixel: pulse.pixel,
+                        ws_ypixel: 0
+                    )
+                    _ = ioctl(pulse.fd, TIOCSWINSZ, &win)
+                    kill(pulse.pid, SIGWINCH)
+                    kill(-pulse.pid, SIGWINCH)
+                    for child in Self.ptyDescendants(of: pulse.pid) {
+                        kill(child, SIGWINCH)
+                    }
+                }
+            }
+        }
+    }
+
     private func startAgentlessProbeLoop() {
         probeTask = Task.detached(priority: .background) { [weak self] in
+            try? await Task.sleep(nanoseconds: 600_000_000)
             while !Task.isCancelled {
                 guard let self = self, self.connectionState == .connected else { break }
                 
+                let needsGate = !FileManager.default.fileExists(atPath: self.controlSocketPath)
+                if needsGate { await self.controlSocketGate.acquire() }
+                defer { if needsGate { Task { await self.controlSocketGate.release() } } }
+                
                 let process = Process()
                 let sshpass = self.sshpassExecutablePath
-                let ctrlArgs = [
-                    "-o", "ControlMaster=auto",
-                    "-o", self.controlSocketOption,
-                    "-o", "ControlPersist=60s"
-                ]
+                let ctrlArgs = self.controlMasterArguments
                 
                 let keyAccess: FileAccessLease?
                 do { keyAccess = try self.acquirePrivateKeyAccess() }
@@ -918,13 +1122,12 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     /// Executes a one-shot remote command over multiplexed SSH socket
     public func executeCommand(_ command: String) async throws -> String {
         await resolvePasswordIfNeeded()
+        let needsGate = !FileManager.default.fileExists(atPath: controlSocketPath)
+        if needsGate { await controlSocketGate.acquire() }
+        defer { if needsGate { Task { await controlSocketGate.release() } } }
         let process = Process()
         let sshpass = self.sshpassExecutablePath
-        let ctrlArgs = [
-            "-o", "ControlMaster=auto",
-            "-o", self.controlSocketOption,
-            "-o", "ControlPersist=60s"
-        ]
+        let ctrlArgs = controlMasterArguments
         
         let keyAccess: FileAccessLease?
         keyAccess = try? self.acquirePrivateKeyAccess()
@@ -1186,6 +1389,9 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             path = path == "~" ? home : home + "/" + String(path.dropFirst(2))
             directoryChangeHandler?(path)
         }
+        let needsGate = !FileManager.default.fileExists(atPath: controlSocketPath)
+        if needsGate { await controlSocketGate.acquire() }
+        defer { if needsGate { Task { await controlSocketGate.release() } } }
         let process = Process()
         let sshpass = self.sshpassExecutablePath
         // Ensure trailing slash so that symbolic links pointing to directories are properly traversed by ls
@@ -1193,13 +1399,8 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         let quotedPath = Self.quoteRemotePath(targetPath)
         let cmd = "LC_ALL=C ls -la --time-style=+%s \(quotedPath) 2>/dev/null || LC_ALL=C ls -la -D '%s' \(quotedPath) 2>/dev/null || LC_ALL=C ls -la \(quotedPath)"
         let ctrlArgs = [
-            "-o", "ConnectTimeout=10",
-            "-o", "ServerAliveInterval=15",
-            "-o", "ServerAliveCountMax=3",
-            "-o", "ControlMaster=auto",
-            "-o", controlSocketOption,
-            "-o", "ControlPersist=60s"
-        ]
+            "-o", "ConnectTimeout=10"
+        ] + controlMasterArguments
         
         let authArgs = sshAuthArgs(privateKeyURL: keyAccess?.url, certificateURL: certAccess?.url)
         let jumpArgs = jumpServerArgs()
@@ -1509,6 +1710,9 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
 
     private func executeRemoteCommand(_ cmd: String) async throws {
         await resolvePasswordIfNeeded()
+        let needsGate = !FileManager.default.fileExists(atPath: controlSocketPath)
+        if needsGate { await controlSocketGate.acquire() }
+        defer { if needsGate { Task { await controlSocketGate.release() } } }
         let keyAccess = try acquirePrivateKeyAccess()
         defer { keyAccess?.close() }
         let certAccess = try acquireCertificateAccess()
@@ -1516,13 +1720,8 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         let process = Process()
         let sshpass = self.sshpassExecutablePath
         let ctrlArgs = [
-            "-o", "ConnectTimeout=10",
-            "-o", "ServerAliveInterval=15",
-            "-o", "ServerAliveCountMax=3",
-            "-o", "ControlMaster=auto",
-            "-o", controlSocketOption,
-            "-o", "ControlPersist=60s"
-        ]
+            "-o", "ConnectTimeout=10"
+        ] + controlMasterArguments
         
         let authArgs = sshAuthArgs(privateKeyURL: keyAccess?.url, certificateURL: certAccess?.url)
         let jumpArgs = jumpServerArgs()

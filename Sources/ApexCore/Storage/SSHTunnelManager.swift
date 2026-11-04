@@ -126,12 +126,14 @@ public final class SSHTunnelManager: ObservableObject {
         session: Session,
         privateKeyPath: String? = nil
     ) -> [String] {
+        let interval = session.keepAliveIntervalSeconds > 0 ? min(max(session.keepAliveIntervalSeconds, 5), 60) : 15
         var args = [
             "-N", // Do not execute remote command
             "-T", // Disable pseudo-terminal allocation
             "-o", "ExitOnForwardFailure=yes",
-            "-o", "ServerAliveInterval=\(session.keepAliveIntervalSeconds)",
-            "-o", "ServerAliveCountMax=3",
+            "-o", "TCPKeepAlive=yes",
+            "-o", "ServerAliveInterval=\(interval)",
+            "-o", "ServerAliveCountMax=10",
             "-o", "StrictHostKeyChecking=accept-new"
         ]
         

@@ -270,6 +270,24 @@ private struct BehaviorSettingsTab: View {
             }
             
             Section {
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle("意外断线自动重连", isOn: $settings.isAutoReconnectEnabled)
+                    Text("当网络波动、Wi-Fi 切换或远端空闲超时导致连接非正常断开时，自动发起平滑重连（手动输入 exit / Ctrl+D 退出时不会误重连）。")
+                        .font(.caption)
+                        .foregroundColor(ApexStyle.secondary)
+                }
+                
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle("增强型双层心跳保活（防止后台休眠与 NAT 空闲断连）", isOn: $settings.isKeepAliveEnhanced)
+                    Text("同时维持 SSH 传输层心跳、PTY 通道级保活与 macOS 防休眠断言，确保切换窗口或长时间静置不断线。")
+                        .font(.caption)
+                        .foregroundColor(ApexStyle.secondary)
+                }
+            } header: {
+                Text("连接保活与防断线")
+            }
+            
+            Section {
                 Toggle("启用终端会话自动审计记录", isOn: $settings.isSessionLoggingEnabled)
                 if settings.isSessionLoggingEnabled {
                     Picker("记录格式", selection: $settings.sessionLogFormat) {

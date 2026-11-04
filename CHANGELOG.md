@@ -2,6 +2,30 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.17.1] - 2026-11-04
+
+### ✨ 新增特性 (Features)
+- **新增智能「意外断线自动重连」与按会话自定义心跳保活间隔**：
+  - 在「设置 -> 行为」中新增「**意外断线自动重连**」（默认开启）：当因网络波动、Wi-Fi 漫游切换、防火墙超时或远端 `TMOUT` 强制注销导致非正常断开时，自动执行指数退避平滑重连（1.5s ~ 12s，最多 5 次）；若用户主动输入 `exit`、`logout` 或按 `Ctrl+D` 退出，则精准识别并不会误触发重连；
+  - 在新建/编辑会话弹窗中新增「**心跳保活间隔 (Keep-Alive)**」选择器（支持 10 秒高频 / 15 秒推荐 / 30 秒标准 / 60 秒宽松）。
+
+### ⚡️ 体验优化 (Improvements)
+- **SSH 传输层 + PTY 通道层双层心跳保活与防休眠增强**：
+  - 传输层统一启用 `-o TCPKeepAlive=yes`、`-o ServerAliveInterval=<interval>` 与 `-o ServerAliveCountMax=10`，大幅提升在复杂 NAT 网关、VPN 与弱网抖动下的容错能力；
+  - 新增 PTY 通道级静置保活循环（`startChannelKeepAliveLoop`）：在终端静置期间定期触发零字符的 `TIOCSWINSZ` 通道级窗口刷新请求（不改变终端行列、不向 `stdin` 写入任何字符，绝不干扰 `vim` 或正在编辑的命令），保持防火墙与堡垒机交互通道持续活跃；
+  - 会话连接期间持有 macOS `ProcessInfo.processInfo.beginActivity` 防休眠与低延迟断言，防止应用切至后台时被 macOS App Nap 节流挂起。
+
+### 🐞 问题修复 (Bug Fixes)
+- **修复 Darwin PTY `read()` 未过滤信号中断 (`EINTR` / `EAGAIN`) 导致客户端误杀会话的问题**：
+  - 为 PTY 主描述符启用 `O_NONBLOCK`，并在 `NativeSSHSession` 与 `LocalTerminalSession` 中通过 `shouldKeepReadingAfterReadResult` 严格过滤后台探针子进程退出触发的 `SIGCHLD` (`EINTR`) 及非阻塞 `EAGAIN`/`EWOULDBLOCK`，仅在真实 EOF 或终端挂起 (`EIO`/`EBADF`) 时断开；
+- **修复后台多路复用 (`ControlMaster`) 并发建连竞争导致每 60 秒循环删除 Socket 重连风暴的问题**：
+  - 新增 `ControlSocketGate` 异步互斥门控序列化首次 `ControlMaster` 建连，确保单会话全局仅创建唯一一个 `[mux]` 主进程，并将 `ControlPersist` 提升至 `4h` 且附带 `ServerAliveInterval=15`，彻底消除多个 `[mux]` 进程每 60 秒超时互相 `unlink` 活跃控制套接字的问题。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- 新增 `MainstreamParityTests.testPTYReadEINTRAndEAGAINResilienceAndKeepAliveArguments` 单元测试，覆盖 PTY `EINTR`/`EAGAIN` 容错、SSH 保活参数构建、`ControlMaster` 持久化参数与主动退出意图识别；
+- 全量自动化测试用例 100% 绿色通过（0 failures），Swift 6 模式零警告；
+- 8 大性能 Benchmark 与 Tart VM 真实集成质量门禁全量达标，通过 Developer ID 官方签名与 Apple 生产级安全公证。
+
 ## [v1.17.0] - 2026-11-04
 
 ### ✨ 新增特性 (Features)

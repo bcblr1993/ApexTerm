@@ -49,6 +49,9 @@ public protocol SSHSessionProtocol: AnyObject, Sendable {
     /// Overrides the TERM used by subsequent connects without rebuilding the client
     func setTerminalType(_ type: TerminalType)
     
+    /// Whether the most recent disconnect was intentionally initiated by the user (e.g. typing `exit`/`logout`/`Ctrl+D` or closing the tab)
+    var wasUserInitiatedDisconnect: Bool { get }
+    
     /// Tests connectivity and credential authentication to the target host
     func testConnection() async -> SSHTestConnectionResult
     
@@ -72,6 +75,7 @@ public extension SSHSessionProtocol {
     func setStateChangeHandler(_ handler: @Sendable @escaping (SSHConnectionState) -> Void) {}
     var terminalType: TerminalType { session.terminalType }
     func setTerminalType(_ type: TerminalType) {}
+    var wasUserInitiatedDisconnect: Bool { false }
     func sendInputSync(_ data: Data) {
         Task { try? await sendInput(data) }
     }

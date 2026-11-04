@@ -16,8 +16,20 @@ public final class TerminalPaneItem: Identifiable, ObservableObject {
     public let sshClient: SSHSessionProtocol
     public let ringBuffer = TerminalRingBuffer(maxLines: AppSettings.shared.scrollbackMaxLines)
     @Published public var title: String
+    @Published public var hasEverConnected: Bool = false
+    @Published public var isAutoReconnecting: Bool = false
+    @Published public var autoReconnectAttempt: Int = 0
+    private var autoReconnectTask: Task<Void, Never>?
+    public var onAutoReconnectRequested: ((TerminalPaneItem) -> Void)?
     @Published public var connectionState: SSHConnectionState {
         didSet {
+            if case .connected = connectionState {
+                hasEverConnected = true
+                isAutoReconnecting = false
+                autoReconnectAttempt = 0
+                autoReconnectTask?.cancel()
+                autoReconnectTask = nil
+            }
             if oldValue != connectionState {
                 onConnectionStateChanged?(connectionState)
             }
@@ -25,6 +37,27 @@ public final class TerminalPaneItem: Identifiable, ObservableObject {
     }
     public var onConnectionStateChanged: ((SSHConnectionState) -> Void)?
     public private(set) var logger: SessionLogger?
+    
+    public func cancelAutoReconnect() {
+        autoReconnectTask?.cancel()
+        autoReconnectTask = nil
+        isAutoReconnecting = false
+        autoReconnectAttempt = 0
+    }
+    
+    private func scheduleAutoReconnect() {
+        autoReconnectTask?.cancel()
+        autoReconnectAttempt += 1
+        isAutoReconnecting = true
+        let attempt = autoReconnectAttempt
+        let delays: [UInt64] = [1_500_000_000, 3_000_000_000, 5_000_000_000, 8_000_000_000, 12_000_000_000]
+        let delayNs = delays[min(max(attempt - 1, 0), delays.count - 1)]
+        autoReconnectTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: delayNs)
+            guard let self = self, !Task.isCancelled, self.isAutoReconnecting else { return }
+            self.onAutoReconnectRequested?(self)
+        }
+    }
     
     public init(session: Session, sshClient: SSHSessionProtocol, title: String, initialState: SSHConnectionState = .connecting(step: "正在连接")) {
         self.session = session
@@ -61,6 +94,14 @@ public final class TerminalPaneItem: Identifiable, ObservableObject {
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
                 self.connectionState = state
+                if case .disconnected = state,
+                   self.hasEverConnected,
+                   !self.session.isLocal,
+                   !self.sshClient.wasUserInitiatedDisconnect,
+                   AppSettings.shared.isAutoReconnectEnabled,
+                   self.autoReconnectAttempt < 5 {
+                    self.scheduleAutoReconnect()
+                }
             }
         }
     }
@@ -132,6 +173,9 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
             if self.activePaneId == primaryPane.id && self.connectionState != newState {
                 self.connectionState = newState
             }
+        }
+        primaryPane.onAutoReconnectRequested = { [weak self] pane in
+            self?.connect(pane: pane)
         }
 
         let metricsHistory = self.metricsHistory
@@ -218,6 +262,7 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
     }
     
     public func reconnect(pane: TerminalPaneItem) {
+        pane.cancelAutoReconnect()
         connect(pane: pane)
     }
 
@@ -267,6 +312,9 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
             if self.activePaneId == newPane.id && self.connectionState != newState {
                 self.connectionState = newState
             }
+        }
+        newPane.onAutoReconnectRequested = { [weak self] pane in
+            self?.connect(pane: pane)
         }
         self.panes.append(newPane)
         self.activePaneId = newPane.id
@@ -1297,20 +1345,28 @@ private struct PaneContainerView: View {
                 if case .disconnected = pane.connectionState {
                     VStack {
                         HStack(spacing: 8) {
-                            Circle().fill(ApexStyle.secondary).frame(width: 8, height: 8)
-                                .shadow(color: ApexStyle.secondary.opacity(0.5), radius: 3)
-                            Text("会话已断开")
+                            Circle().fill(pane.isAutoReconnecting ? ApexStyle.warning : ApexStyle.secondary).frame(width: 8, height: 8)
+                                .shadow(color: (pane.isAutoReconnecting ? ApexStyle.warning : ApexStyle.secondary).opacity(0.5), radius: 3)
+                            Text(pane.isAutoReconnecting ? "连接中断，正在自动重连 (\(pane.autoReconnectAttempt)/5)..." : "会话已断开")
                                 .font(.system(size: 12, weight: .medium))
                                 .foregroundColor(ApexStyle.primary)
-                            Button("重新连接 (⌘R)") {
+                            Button(pane.isAutoReconnecting ? "立即重连" : "重新连接 (⌘R)") {
                                 tab.reconnect(pane: pane)
                             }
                             .apexProminentButton()
                             .controlSize(.small)
+                            if pane.isAutoReconnecting {
+                                Button("停止") {
+                                    pane.cancelAutoReconnect()
+                                }
+                                .buttonStyle(.borderless)
+                                .font(.system(size: 11))
+                                .foregroundColor(ApexStyle.secondary)
+                            }
                         }
                         .padding(.horizontal, 14)
                         .padding(.vertical, 8)
-                        .apexGlassCard(cornerRadius: 12, material: .regularMaterial, borderColor: ApexStyle.secondary.opacity(0.3), shadowRadius: 8)
+                        .apexGlassCard(cornerRadius: 12, material: .regularMaterial, borderColor: (pane.isAutoReconnecting ? ApexStyle.warning : ApexStyle.secondary).opacity(0.35), shadowRadius: 8)
                         .padding(.top, 12)
                         Spacer()
                     }

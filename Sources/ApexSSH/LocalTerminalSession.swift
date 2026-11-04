@@ -47,6 +47,8 @@ public final class LocalTerminalSession: SSHSessionProtocol, @unchecked Sendable
         self.session = session
     }
     
+    public var wasUserInitiatedDisconnect: Bool { true }
+    
     public func setOutputHandler(_ handler: @Sendable @escaping (Data) -> Void) {
         self.outputHandler = handler
     }
@@ -193,7 +195,11 @@ public final class LocalTerminalSession: SSHSessionProtocol, @unchecked Sendable
                 for path in parsed.paths {
                     self.directoryChangeHandler?(path)
                 }
-            } else if bytesRead == 0 {
+            } else {
+                let err = errno
+                if NativeSSHSession.shouldKeepReadingAfterReadResult(bytesRead: bytesRead, errnoValue: err) {
+                    return
+                }
                 source?.cancel()
             }
         }

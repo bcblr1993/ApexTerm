@@ -27,6 +27,7 @@ public struct SessionEditModal: View {
     @State private var colorHex: String = "#0A84FF"
     @State private var agentlessMonitor: Bool = true
     @State private var sftpAutoSync: Bool = true
+    @State private var keepAliveInterval: Int = 15
     @State private var terminalType: TerminalType = .default
     @State private var saveError: String?
     @State private var isTestingConnection: Bool = false
@@ -391,6 +392,13 @@ public struct SessionEditModal: View {
                 Section(L10n.performanceSection) {
                     Toggle(L10n.agentlessMonitorToggle, isOn: $agentlessMonitor)
                     Toggle(L10n.sftpAutoSyncToggle, isOn: $sftpAutoSync)
+                    Picker("心跳保活间隔 (Keep-Alive)", selection: $keepAliveInterval) {
+                        Text("10 秒（高频防断连）").tag(10)
+                        Text("15 秒（推荐）").tag(15)
+                        Text("30 秒（标准）").tag(30)
+                        Text("60 秒（宽松）").tag(60)
+                    }
+                    .accessibilityIdentifier("session.keepAlivePicker")
                     Picker("终端类型 (TERM)", selection: $terminalType) {
                         ForEach(TerminalType.allCases, id: \.self) { type in
                             Text(type == .default ? "\(type.rawValue)（默认）" : type.rawValue).tag(type)
@@ -675,6 +683,7 @@ public struct SessionEditModal: View {
         agentlessMonitor = s.agentlessMonitorEnabled
         terminalType = s.terminalType
         sftpAutoSync = s.sftpAutoSyncEnabled
+        keepAliveInterval = [10, 15, 30, 60].contains(s.keepAliveIntervalSeconds) ? s.keepAliveIntervalSeconds : 15
         
         jumpServerId = s.jumpServerId
         
@@ -789,7 +798,7 @@ public struct SessionEditModal: View {
             jumpServerId: jumpServerId,
             agentlessMonitorEnabled: agentlessMonitor,
             sftpAutoSyncEnabled: sftpAutoSync,
-            keepAliveIntervalSeconds: initialSession?.keepAliveIntervalSeconds ?? 30,
+            keepAliveIntervalSeconds: keepAliveInterval,
             terminalType: terminalType,
             createdAt: initialSession?.createdAt ?? Date(),
             lastConnectedAt: initialSession?.lastConnectedAt

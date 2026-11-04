@@ -93,6 +93,8 @@ public final class AppSettings: ObservableObject {
         static let sessionLogFormat = "settings.logging.format"
         static let sessionLogDirectory = "settings.logging.directory"
         static let sessionLogMaxFileSizeMB = "settings.logging.maxFileSizeMB"
+        static let isAutoReconnectEnabled = "settings.ssh.autoReconnect"
+        static let isKeepAliveEnhanced = "settings.ssh.keepAliveEnhanced"
     }
     
     // MARK: - Notification
@@ -195,6 +197,14 @@ public final class AppSettings: ObservableObject {
         didSet { defaults.set(sessionLogMaxFileSizeMB, forKey: Keys.sessionLogMaxFileSizeMB) }
     }
     
+    // Connection Keep-Alive & Auto-Reconnect
+    @Published public var isAutoReconnectEnabled: Bool {
+        didSet { defaults.set(isAutoReconnectEnabled, forKey: Keys.isAutoReconnectEnabled) }
+    }
+    @Published public var isKeepAliveEnhanced: Bool {
+        didSet { defaults.set(isKeepAliveEnhanced, forKey: Keys.isKeepAliveEnhanced) }
+    }
+    
     // MARK: - Init
     public init() {
         let defaultDownloadPath = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first?.path ?? "~/Downloads"
@@ -264,6 +274,14 @@ public final class AppSettings: ObservableObject {
         self.checkForUpdatesOnLaunch = defaults.object(forKey: Keys.checkForUpdatesOnLaunch) != nil
             ? defaults.bool(forKey: Keys.checkForUpdatesOnLaunch)
             : true
+            
+        self.isAutoReconnectEnabled = defaults.object(forKey: Keys.isAutoReconnectEnabled) != nil
+            ? defaults.bool(forKey: Keys.isAutoReconnectEnabled)
+            : true
+            
+        self.isKeepAliveEnhanced = defaults.object(forKey: Keys.isKeepAliveEnhanced) != nil
+            ? defaults.bool(forKey: Keys.isKeepAliveEnhanced)
+            : true
     }
     
     /// Reset all settings to factory default
@@ -285,5 +303,7 @@ public final class AppSettings: ObservableObject {
         defaultDownloadDirectory = defaultDownloadPath
         maxConcurrentTransfers = 3
         checkForUpdatesOnLaunch = true
+        isAutoReconnectEnabled = true
+        isKeepAliveEnhanced = true
     }
 }

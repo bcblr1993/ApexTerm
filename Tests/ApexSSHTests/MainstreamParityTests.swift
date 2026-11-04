@@ -433,4 +433,38 @@ final class MainstreamParityTests: XCTestCase {
         store.deleteSession(id: session.id)
         XCTAssertTrue(store.sessions.isEmpty)
     }
+
+    func testPTYReadEINTRAndEAGAINResilienceAndKeepAliveArguments() {
+        // Transient signal interruptions (e.g. SIGCHLD from background metrics probe) and non-blocking retries must NOT disconnect PTY
+        XCTAssertTrue(NativeSSHSession.shouldKeepReadingAfterReadResult(bytesRead: 64, errnoValue: 0))
+        XCTAssertTrue(NativeSSHSession.shouldKeepReadingAfterReadResult(bytesRead: -1, errnoValue: EINTR))
+        XCTAssertTrue(NativeSSHSession.shouldKeepReadingAfterReadResult(bytesRead: -1, errnoValue: EAGAIN))
+        XCTAssertTrue(NativeSSHSession.shouldKeepReadingAfterReadResult(bytesRead: -1, errnoValue: EWOULDBLOCK))
+
+        // Genuine EOF (0) and slave hangup (EIO/EBADF) must close the read source
+        XCTAssertFalse(NativeSSHSession.shouldKeepReadingAfterReadResult(bytesRead: 0, errnoValue: 0))
+        XCTAssertFalse(NativeSSHSession.shouldKeepReadingAfterReadResult(bytesRead: -1, errnoValue: EIO))
+        XCTAssertFalse(NativeSSHSession.shouldKeepReadingAfterReadResult(bytesRead: -1, errnoValue: EBADF))
+
+        // Keep-alive arguments enforce TCPKeepAlive, clamped ServerAliveInterval, and ServerAliveCountMax=10
+        let kaDefault = NativeSSHSession.sshKeepAliveArguments(configuredInterval: 0)
+        XCTAssertEqual(kaDefault, ["-o", "TCPKeepAlive=yes", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=10"])
+        let kaCustom = NativeSSHSession.sshKeepAliveArguments(configuredInterval: 30)
+        XCTAssertEqual(kaCustom, ["-o", "TCPKeepAlive=yes", "-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=10"])
+
+        // ControlMaster arguments must persist for 4h with ServerAliveInterval=15 so background probes never trigger a 60s unlink storm
+        let session = Session(name: "MuxCheck", host: "10.0.0.8", username: "root")
+        let client = NativeSSHSession(session: session)
+        let muxArgs = client.controlMasterArguments
+        XCTAssertTrue(muxArgs.contains("ControlMaster=auto"))
+        XCTAssertTrue(muxArgs.contains("ControlPersist=4h"))
+        XCTAssertTrue(muxArgs.contains("ServerAliveInterval=15"))
+        XCTAssertTrue(muxArgs.contains("TCPKeepAlive=yes"))
+
+        // User-initiated exit detection distinguishes `exit`/`logout`/Ctrl+D from unexpected network drops
+        var lineBuf = ""
+        XCTAssertFalse(NativeSSHSession.recordExitIntent(data: Data("ls -la\r".utf8), lineBuffer: &lineBuf))
+        XCTAssertTrue(NativeSSHSession.recordExitIntent(data: Data("exit\r".utf8), lineBuffer: &lineBuf))
+        XCTAssertTrue(NativeSSHSession.recordExitIntent(data: Data([4]), lineBuffer: &lineBuf))
+    }
 }

@@ -538,25 +538,40 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         // Closing twice can close an unrelated descriptor reused by another connection.
         if source == nil, master >= 0 { close(master) }
 
-        // Clean up multiplex socket
+        // Clean up multiplex socket without blocking the caller if the socket is wedged
         let socket = controlSocketPath
         if FileManager.default.fileExists(atPath: socket) {
-            let proc = Process()
-            proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-            proc.arguments = ["-O", "exit", "-o", controlSocketOption, "\(session.username)@\(session.host)"]
-            do {
-                let grants = try configureStoreProcess(proc, accesses: [])
+            let controlOpt = controlSocketOption
+            let destination = "\(session.username)@\(session.host)"
+            DispatchQueue.global(qos: .utility).async { [weak self] in
+                let proc = Process()
+                proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+                proc.arguments = ["-O", "exit", "-o", controlOpt, destination]
+                proc.standardInput = FileHandle.nullDevice
+                proc.standardOutput = FileHandle.nullDevice
+                proc.standardError = FileHandle.nullDevice
+                let grants = try? self?.configureStoreProcess(proc, accesses: [])
                 defer { grants?.close() }
-                try proc.run()
-                proc.waitUntilExit()
-            } catch { /* The control master may already have exited. */ }
-            try? FileManager.default.removeItem(atPath: socket)
+                if (try? proc.run()) != nil {
+                    for _ in 0..<20 where proc.isRunning {
+                        usleep(10_000)
+                    }
+                    if proc.isRunning {
+                        kill(proc.processIdentifier, SIGKILL)
+                    }
+                }
+                try? FileManager.default.removeItem(atPath: socket)
+            }
         }
     }
     
     /// Synchronous exit cleanup: SSH ignores ordinary termination signals while attached to a PTY.
     /// Each spawned connection owns a process group, so this cannot target another session.
     public func terminatePTYProcess() {
+        probeTask?.cancel()
+        probeTask = nil
+        try? FileManager.default.removeItem(atPath: controlSocketPath)
+
         let (keyAccess, certAccess) = stateLock.withLock { () -> (FileAccessLease?, FileAccessLease?) in
             defer { connectionKeyAccess = nil; connectionCertAccess = nil }
             return (connectionKeyAccess, connectionCertAccess)
@@ -576,7 +591,11 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         kill(-pid, SIGKILL)
         kill(pid, SIGKILL)
         var status: Int32 = 0
-        while waitpid(pid, &status, 0) == -1 && errno == EINTR {}
+        for _ in 0..<25 {
+            let waited = waitpid(pid, &status, WNOHANG)
+            if waited != 0 { break }
+            usleep(2_000)
+        }
     }
 
     private static func ptyDescendants(of parent: pid_t) -> [pid_t] {

@@ -2,6 +2,24 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.16.2] - 2026-11-04
+
+### 🐞 问题修复 (Bug Fixes)
+- **修复 macOS Dock 栏多实例并存与临时构建包残留问题**：
+  - **排查根因**：当从构建目录（如 `.build/AetherTerm.app`）启动并执行应用内更新时，`UpdateManager` 会将更新包安装并重定向启动至 `/Applications/AetherTerm.app`，但旧版替换脚本仅清理名为 `ApexTerm.app` 的旧包而遗留了 `.build/AetherTerm.app`，且 `ApexTermAppDelegate` 缺少全局单实例互斥检查，导致点击 Dock 旧图标时 `LaunchServices` 同时运行两个实例；
+  - **修复方案**：
+    1. 在 `ApexTermAppDelegate.applicationWillFinishLaunching` 中新增基于 `com.apexterm.app` 的全局单实例互斥守卫：检测到已有运行实例时，立即设置 `NSApp.setActivationPolicy(.prohibited)` 阻止生成第二个 Dock 图标，通过 `DistributedNotificationCenter` 唤醒并置顶已有实例主窗口后立即退出；
+    2. 新增临时构建目录（`.build/`、`DerivedData/`）自动重定向：当 `/Applications/AetherTerm.app` 已安装时，自动转发启动正式应用包；
+    3. 完善 `UpdateManager.replacementScript`，当 `$CURRENT != $TARGET` 且原包名为 `ApexTerm.app` 或 `AetherTerm.app` 时统一迁入回滚目录，彻底消除多路径 `.app` 残留。
+- **修复应用退出、连接断开及 SSH 隧道停止时的子进程残留与主线程阻塞隐患**：
+  - 修复 `SSHTunnelManager` 在进程退出回调中于 `@MainActor` 同步调用 `readDataToEndOfFile()` 可能因 `sshpass` 子进程持有管道而阻塞主线程的问题，并在 `stopTunnel` / `stopAll` 中递归清理 `sshpass` 派生的全部子进程树，在应用退出通知中联动调用 `SSHTunnelManager.shared.stopAll()`；
+  - 修复 `NativeSSHSession.disconnect()` 中 `ssh -O exit` 同步 `waitUntilExit()` 在多路复用 Socket 假死时阻塞调用方的问题，改为后台异步限时清理，并在 `terminatePTYProcess()` 中采用非阻塞 `WNOHANG` 有界等待及清理 `probeTask` 与控制套接字。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- 新增 `UpdateCheckTests.testSingleInstanceEnforcementAndCanonicalRedirect` 与 `testReplacementMovesTransientBuildAetherTermBundleOutOfLaunchServices` 单元测试；
+- 全量自动化测试用例 100% 绿色通过（0 failures），Swift 6 模式零警告；
+- 8 大性能 Benchmark 与 Tart VM 真实集成质量门禁全量达标，通过 Developer ID 官方签名与 Apple 生产级安全公证。
+
 ## [v1.16.1] - 2026-11-04
 
 ### 🐞 问题修复 (Bug Fixes)

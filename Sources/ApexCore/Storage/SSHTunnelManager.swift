@@ -1,4 +1,8 @@
 import Foundation
+import Darwin
+
+@_silgen_name("proc_listchildpids")
+private func tunnel_proc_listchildpids(_ ppid: pid_t, _ buffer: UnsafeMutableRawPointer?, _ buffersize: Int32) -> Int32
 
 public enum SSHTunnelError: LocalizedError, Equatable {
     case invalidConfiguration(String)
@@ -227,10 +231,10 @@ public final class SSHTunnelManager: ObservableObject {
         processes[id] = process
         
         process.terminationHandler = { [weak self] proc in
+            let stderrData = pipe.fileHandleForReading.availableData
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
                 self.processes.removeValue(forKey: id)
-                let stderrData = self.stderrPipes[id]?.fileHandleForReading.readDataToEndOfFile() ?? Data()
                 self.stderrPipes.removeValue(forKey: id)
                 
                 let errString = String(data: stderrData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -258,9 +262,7 @@ public final class SSHTunnelManager: ObservableObject {
     public func stopTunnel(id: UUID) {
         if let proc = processes.removeValue(forKey: id) {
             proc.terminationHandler = nil
-            if proc.isRunning {
-                proc.terminate()
-            }
+            Self.terminateTunnelProcessTree(proc)
         }
         stderrPipes.removeValue(forKey: id)
         activeStates[id] = .stopped
@@ -269,13 +271,32 @@ public final class SSHTunnelManager: ObservableObject {
     public func stopAll() {
         for (id, proc) in processes {
             proc.terminationHandler = nil
-            if proc.isRunning {
-                proc.terminate()
-            }
+            Self.terminateTunnelProcessTree(proc)
             activeStates[id] = .stopped
         }
         processes.removeAll()
         stderrPipes.removeAll()
+    }
+
+    nonisolated private static func terminateTunnelProcessTree(_ proc: Process) {
+        guard proc.isRunning else { return }
+        let pid = proc.processIdentifier
+        guard pid > 0 else {
+            proc.terminate()
+            return
+        }
+        for child in childPIDs(of: pid).reversed() {
+            kill(child, SIGTERM)
+        }
+        proc.terminate()
+    }
+
+    nonisolated private static func childPIDs(of parent: pid_t) -> [pid_t] {
+        var children = [pid_t](repeating: 0, count: 64)
+        let count = tunnel_proc_listchildpids(parent, &children, Int32(children.count * MemoryLayout<pid_t>.stride))
+        guard count > 0 else { return [] }
+        let direct = children.prefix(Int(count)).filter { $0 > 0 }
+        return direct.flatMap { [$0] + childPIDs(of: $0) }
     }
     
     /// Test helper to simulate state updates

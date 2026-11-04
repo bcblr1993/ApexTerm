@@ -2,6 +2,32 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.17.0] - 2026-11-04
+
+### ✨ 新增特性 (Features)
+- **新增交换内存（Swap）实时监控与分级状态展示**：
+  - Linux 端直接从 `/proc/meminfo` 零额外开销解析 `SwapTotal` 与 `SwapFree`；macOS 端通过 `sysctl -n vm.swapusage` 采集交换区总量与已用容量；
+  - 在服务器实时性能监控面板「内存」下方新增「**交换**」行与进度条，支持根据占用水位自动切换告警色（>50% 预警、>80% 告警），并在未配置 Swap 的服务器上清晰标识 `0.0/0G (未启用)`。
+- **新增「网络实时吞吐」双曲线图表与高精度防抖速率引擎**：
+  - Linux 端速率计算引入远端 `/proc/uptime` 内核单调时钟差分 $\Delta t$ 与 EMA 指数滑动平均滤波，彻底消除 SSH 网络 RTT 抖动导致的吞吐率跳变；同时采样周期加密至 `1.5s`，完整覆盖 `eth*`/`ens*`/`enp*`/`eno*`/`em*`/`bond*`/`vmbr*`/`venet*` 等物理与虚拟化网卡；
+  - 新增「网络实时吞吐」独立卡片与下行（`↓`）/上行（`↑`）双序列实时曲线（`metrics.network.chart`），采用 Catmull-Rom 样条平滑插值（`.interpolationMethod(.catmullRom)`）、柔和渐变面积填充（`AreaMark`）、最新采样发光锚点（`PointMark`）及自适应 Y 轴量纲刻度。
+
+### ⚡️ 体验优化 (Improvements)
+- **监控面板 UI 与丝滑动效全面升级**：
+  - 新增定制高对比度胶囊进度条 `ApexMetricProgressBar`，在浅色与深色主题下均具备清晰轨道边界与 `ApexStyle.springSmooth` 弹性过渡；
+  - 全量指标数值、上下行速率胶囊、系统负载及秒级实时采样时间（`实时采样 · HH:mm:ss`）接入 `.monospacedDigit()` 与 `.contentTransition(.numericText())` 数字滚动动画；
+  - 「CPU / 内存 / 交换 历史 (%)」图表同步升级为 Catmull-Rom 平滑曲线与渐变填充。
+
+### 🐞 问题修复 (Bug Fixes)
+- **修复性能监控面板磁盘容量与 7 位大 PID 折行排版问题**：
+  - 面板宽度对齐至标准网格 `416pt`，优化右侧数值列宽度与单行约束，彻底解决「`HDD 机械` + 大容量磁盘数值」折成两行的问题；
+  - 修复「Top 进程占用」中 Linux 7 位大 PID（如 `2153744`）出现千分位逗号并折行的问题，改为无逗号等宽单行排版并补齐 `PID / CPU / 内存` 表头。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- 新增 `ApexSSHTests.testSwapAndSmoothRemoteUptimeNetworkRateParsing` 单元测试，覆盖 Linux/macOS 交换内存解析与远端内核时钟差网络吞吐计算；
+- 全量自动化测试用例 100% 绿色通过（0 failures），Swift 6 模式零警告；
+- 8 大性能 Benchmark 与 Tart VM 真实集成质量门禁全量达标，通过 Developer ID 官方签名与 Apple 生产级安全公证。
+
 ## [v1.16.2] - 2026-11-04
 
 ### 🐞 问题修复 (Bug Fixes)

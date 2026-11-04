@@ -234,20 +234,20 @@ public final class LocalTerminalSession: SSHSessionProtocol, @unchecked Sendable
         startLocalMetricsCollector()
     }
     
-    public func disconnect() async {
+    public func terminatePTYProcess() {
         metricsTimer?.cancel()
         metricsTimer = nil
-        
+
         if let procSource = processSource {
             procSource.cancel()
             processSource = nil
         }
-        
+
         if let readSource = readSource {
             readSource.cancel()
             self.readSource = nil
         }
-        
+
         let pid = stateLock.withLock { self.childPid }
         if pid > 0 {
             kill(-pid, SIGHUP)
@@ -264,14 +264,18 @@ public final class LocalTerminalSession: SSHSessionProtocol, @unchecked Sendable
             waitpid(pid, &status, WNOHANG)
             stateLock.withLock { self.childPid = -1 }
         }
-        
+
         let fd = stateLock.withLock { self.ptyMasterFd }
         if fd != -1 {
             close(fd)
             stateLock.withLock { self.ptyMasterFd = -1 }
         }
-        
+
         connectionState = .disconnected
+    }
+
+    public func disconnect() async {
+        terminatePTYProcess()
     }
     
     deinit {

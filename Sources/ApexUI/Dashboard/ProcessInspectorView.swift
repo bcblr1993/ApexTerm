@@ -386,26 +386,38 @@ public struct ProcessInspectorView: View {
         }
     }
     
-    private func sendKillSignal(to proc: ProcessDetailItem, signal: ProcessSignal) {
-        guard let client = sshClient, client.isConnected else {
-            statusFeedback = "连接未就绪，无法发送信号"
-            return
+    public static func performKillSignal(to proc: ProcessDetailItem, signal: ProcessSignal, client: SSHSessionProtocol?) async -> String {
+        guard let client = client, client.isConnected else {
+            return "连接未就绪，无法发送信号"
         }
-        
+
         let validation = proc.canKill()
         guard validation.allowed else {
-            statusFeedback = validation.reason ?? "禁止终止该进程"
-            return
+            return validation.reason ?? "禁止终止该进程"
         }
-        
+
+        let killCmd = "kill -\(signal.rawValue) \(proc.pid) 2>&1"
+        do {
+            let output = try await client.executeCommand(killCmd).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !output.isEmpty && (output.localizedCaseInsensitiveContains("not permitted") ||
+                                   output.localizedCaseInsensitiveContains("permission denied") ||
+                                   output.localizedCaseInsensitiveContains("no such process") ||
+                                   output.localizedCaseInsensitiveContains("kill:")) {
+                return "发送信号失败: \(output)"
+            }
+            return "已向 PID \(proc.pid) (\(proc.command)) 发送 \(signal.name)"
+        } catch {
+            return "发送信号失败: \(error.localizedDescription)"
+        }
+    }
+
+    private func sendKillSignal(to proc: ProcessDetailItem, signal: ProcessSignal) {
         Task {
-            let killCmd = "kill -\(signal.rawValue) \(proc.pid)\n"
-            if let data = killCmd.data(using: .utf8) {
-                try? await client.sendInput(data)
-                await MainActor.run {
-                    self.statusFeedback = "已向 PID \(proc.pid) (\(proc.command)) 发送 \(signal.name)"
-                }
-                // Refresh after 1 second
+            let feedback = await Self.performKillSignal(to: proc, signal: signal, client: sshClient)
+            await MainActor.run {
+                self.statusFeedback = feedback
+            }
+            if feedback.hasPrefix("已向 PID") {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
                 fetchProcessData()
             }

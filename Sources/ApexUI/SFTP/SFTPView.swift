@@ -5,16 +5,44 @@ import ApexCore
 import ApexSSH
 import os
 
-private final class SFTPBatchTracker: @unchecked Sendable {
+public final class SFTPBatchTracker: @unchecked Sendable {
     private let lock = NSLock()
     private var completed = 0
-    let total: Int
-    init(total: Int) { self.total = total }
-    func advance() -> (completed: Int, isDone: Bool) {
+    private var didFireCompletion = false
+    private var completionHandlers: [@Sendable () -> Void] = []
+    public let total: Int
+    public init(total: Int) { self.total = total }
+    public func addCompletionHandler(_ handler: @escaping @Sendable () -> Void) {
+        var shouldRunImmediately = false
         lock.lock()
-        defer { lock.unlock() }
-        completed += 1
-        return (completed, completed >= total)
+        if didFireCompletion || total <= 0 {
+            shouldRunImmediately = true
+        } else {
+            completionHandlers.append(handler)
+        }
+        lock.unlock()
+        if shouldRunImmediately {
+            handler()
+        }
+    }
+    public func advance() -> (completed: Int, isDone: Bool) {
+        var handlersToRun: [@Sendable () -> Void] = []
+        let result: (Int, Bool) = {
+            lock.lock()
+            defer { lock.unlock() }
+            completed += 1
+            let done = completed >= total
+            if done && !didFireCompletion {
+                didFireCompletion = true
+                handlersToRun = completionHandlers
+                completionHandlers.removeAll()
+            }
+            return (completed, done)
+        }()
+        for handler in handlersToRun {
+            handler()
+        }
+        return result
     }
 }
 
@@ -62,7 +90,7 @@ public struct SFTPView: View {
     @State private var loadTask: Task<Void, Never>?
     
     // Sort and visibility
-    @State private var showHiddenFiles = false
+    @State private var showHiddenFiles = AppSettings.shared.showHiddenFiles
     @ObservedObject private var bookmarkManager = SFTPBookmarkManager.shared
     
     // File operations state
@@ -549,10 +577,21 @@ public struct SFTPView: View {
         }
         .onChange(of: items) { _, _ in updateDisplayItems() }
         .onChange(of: searchFilter) { _, _ in updateDisplayItems() }
-        .onChange(of: showHiddenFiles) { _, _ in updateDisplayItems() }
+        .onChange(of: showHiddenFiles) { _, newValue in
+            if themeSettings.showHiddenFiles != newValue {
+                themeSettings.showHiddenFiles = newValue
+            }
+            updateDisplayItems()
+        }
+        .onChange(of: themeSettings.showHiddenFiles) { _, newValue in
+            if showHiddenFiles != newValue {
+                showHiddenFiles = newValue
+            }
+        }
         .onChange(of: tableSortOrder) { _, _ in updateDisplayItems() }
         .onDisappear { loadTask?.cancel() }
         .onAppear {
+            showHiddenFiles = themeSettings.showHiddenFiles
             pathInput = currentPath
             updateDisplayItems()
             loadDirectory(path: currentPath)
@@ -817,13 +856,15 @@ public struct SFTPView: View {
             transferNotice = "无法访问下载目录：\(error.localizedDescription)"
             return
         }
-        defer { access.close() }
         let downloads = access.url
         transferNotice = "正在下载 \(targetItems.count) 个项目…"
         withAnimation(.spring(duration: 0.25)) {
             isTransferDrawerExpanded = true
         }
         let tracker = SFTPBatchTracker(total: targetItems.count)
+        tracker.addCompletionHandler {
+            access.close()
+        }
         for item in targetItems {
             let localURL = TransferManager.shared.availableDownloadURL(in: downloads, fileName: item.name)
             TransferManager.shared.enqueueDownload(
@@ -831,21 +872,17 @@ public struct SFTPView: View {
                 remotePath: item.path,
                 localURL: localURL,
                 totalBytes: Int64(item.size),
-                onCompleted: {
-                    let status = tracker.advance()
-                    Task { @MainActor in
-                        if status.isDone {
-                            self.transferNotice = "批量下载完成 (\(tracker.total) 个文件)"
-                        } else {
-                            self.transferNotice = "下载完成: \(item.name)"
-                        }
-                    }
-                },
+                onCompleted: nil,
                 onResult: { result in
+                    let status = tracker.advance()
                     Task { @MainActor in
                         switch result {
                         case .success:
-                            break
+                            if status.isDone {
+                                self.transferNotice = "批量下载完成 (\(tracker.total) 个文件)"
+                            } else {
+                                self.transferNotice = "下载完成: \(item.name)"
+                            }
                         case .failure(let error):
                             self.transferNotice = error is CancellationError
                                 ? "已取消下载: \(item.name)"
@@ -1173,9 +1210,14 @@ public struct SFTPView: View {
     private func requestBatchUpload(_ urls: [URL], targetDirectory: String) {
         guard let session, !urls.isEmpty else { return }
         Task { @MainActor in
+            var accesses: [FileAccessLease] = []
+            var handedOffToTracker = false
+            defer {
+                if !handedOffToTracker {
+                    accesses.forEach { $0.close() }
+                }
+            }
             do {
-                var accesses: [FileAccessLease] = []
-                defer { accesses.forEach { $0.close() } }
                 if DistributionChannel.current == .appStore {
                     for url in urls { accesses.append(try FileAccessStore.shared.acquire(url)) }
                 }
@@ -1223,6 +1265,11 @@ public struct SFTPView: View {
                 }
                 
                 let tracker = SFTPBatchTracker(total: filesToUpload.count)
+                let retainedAccesses = accesses
+                handedOffToTracker = true
+                tracker.addCompletionHandler {
+                    retainedAccesses.forEach { $0.close() }
+                }
                 for localURL in filesToUpload {
                     let destination = targetDirectory.hasSuffix("/")
                         ? "\(targetDirectory)\(localURL.lastPathComponent)"

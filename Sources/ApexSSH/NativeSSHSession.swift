@@ -162,7 +162,13 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         return detected
     }
 
+    /// Reads user preference for enhanced dual-layer PTY & App Nap keep-alive (defaults to true).
+    public static func isEnhancedKeepAliveEnabled(defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: "settings.ssh.keepAliveEnhanced") as? Bool ?? true
+    }
+
     private func beginSessionActivityAssertion() {
+        guard Self.isEnhancedKeepAliveEnabled() else { return }
         stateLock.withLock {
             if processActivityToken == nil {
                 processActivityToken = ProcessInfo.processInfo.beginActivity(
@@ -991,6 +997,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: UInt64(intervalSeconds) * 1_000_000_000)
                 guard let self = self, !Task.isCancelled, self.connectionState == .connected else { break }
+                guard Self.isEnhancedKeepAliveEnabled() else { continue }
                 let now = ProcessInfo.processInfo.systemUptime
                 let shouldPulse: (fd: Int32, pid: pid_t, cols: Int, rows: Int, pixel: UInt16)? = self.stateLock.withLock {
                     guard self.ptyMasterFd >= 0, self.childPid > 0 else { return nil }
@@ -1610,12 +1617,75 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         process.standardError = errPipe
         let grants = try configureStoreProcess(process, accesses: [keyAccess, certAccess, localAccess])
         defer { grants?.close() }
+        let totalBytes = max(1, TransferManager.currentTransferredBytes(at: accessibleURL))
+        let progressMonitor = Task.detached(priority: .utility) {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 150_000_000)
+                guard !Task.isCancelled, process.isRunning else { continue }
+                let pid = process.processIdentifier
+                if pid > 0 {
+                    let readBytes = Self.currentUploadReadBytes(forPid: pid, targetURL: accessibleURL)
+                    if readBytes > 0 {
+                        let fraction = min(0.99, Double(readBytes) / Double(totalBytes))
+                        progress(fraction)
+                    }
+                }
+            }
+        }
+        defer { progressMonitor.cancel() }
         let errorOutput = try await Self.runSCPProcess(process, standardError: errPipe)
+        progressMonitor.cancel()
         guard process.terminationStatus == 0 else {
             let errMsg = String(data: errorOutput, encoding: .utf8) ?? "scp upload failed"
             throw NSError(domain: "ApexSSH", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: errMsg])
         }
         progress(1.0)
+    }
+
+    /// Inspects open vnode file descriptors of `rootPid` (and any child processes like `scp` under `sshpass`)
+    /// to determine the current read offset of `targetURL` during an active upload.
+    public static func currentUploadReadBytes(forPid rootPid: pid_t, targetURL: URL) -> Int64 {
+        guard rootPid > 0 else { return 0 }
+        let resolvedTarget = targetURL.resolvingSymlinksInPath().path
+        let candidatePids = [rootPid] + ptyDescendants(of: rootPid)
+        var maxOffset: Int64 = 0
+
+        for pid in candidatePids where pid > 0 {
+            let bufSize = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0)
+            guard bufSize > 0 else { continue }
+            let count = Int(bufSize) / MemoryLayout<proc_fdinfo>.stride
+            guard count > 0 else { continue }
+            var fds = [proc_fdinfo](repeating: proc_fdinfo(), count: count)
+            let actual = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, &fds, bufSize)
+            guard actual > 0 else { continue }
+            let actualCount = Int(actual) / MemoryLayout<proc_fdinfo>.stride
+
+            for i in 0..<actualCount where fds[i].proc_fdtype == PROX_FDTYPE_VNODE {
+                var vinfo = vnode_fdinfowithpath()
+                let sz = proc_pidfdinfo(
+                    pid,
+                    fds[i].proc_fd,
+                    PROC_PIDFDVNODEPATHINFO,
+                    &vinfo,
+                    Int32(MemoryLayout<vnode_fdinfowithpath>.size)
+                )
+                guard sz == MemoryLayout<vnode_fdinfowithpath>.size else { continue }
+                let openPath = withUnsafePointer(to: &vinfo.pvip.vip_path) {
+                    $0.withMemoryRebound(to: CChar.self, capacity: Int(MAXPATHLEN)) {
+                        String(cString: $0)
+                    }
+                }
+                guard !openPath.isEmpty else { continue }
+                let resolvedOpen = URL(fileURLWithPath: openPath).resolvingSymlinksInPath().path
+                if resolvedOpen == resolvedTarget || resolvedOpen.hasPrefix(resolvedTarget + "/") {
+                    let offset = Int64(vinfo.pfi.fi_offset)
+                    if offset > maxOffset {
+                        maxOffset = offset
+                    }
+                }
+            }
+        }
+        return maxOffset
     }
     
     /// Drain probe output while SSH runs, rather than waiting with a full pipe.

@@ -73,6 +73,14 @@ public final class iCloudSyncManager: ObservableObject {
         }
     }
     
+    public nonisolated static var resolvedAppVersion: String {
+        if let bundleVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String,
+           !bundleVersion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return bundleVersion
+        }
+        return "1.17.2"
+    }
+
     // MARK: - Zero-Bundle & Security Sanitization
     
     /// Sanitizes sync payload to strictly ensure NO plaintext passwords or raw private keys are exported to the cloud
@@ -288,7 +296,7 @@ public final class iCloudSyncManager: ObservableObject {
             lastModified: Date(),
             deviceId: self.deviceId,
             deviceName: self.deviceName,
-            appVersion: "1.12.0",
+            appVersion: Self.resolvedAppVersion,
             sessions: finalSessions,
             snippets: finalSnippets,
             triggers: finalTriggers,
@@ -321,7 +329,7 @@ public final class iCloudSyncManager: ObservableObject {
             lastModified: Date(),
             deviceId: self.deviceId,
             deviceName: self.deviceName,
-            appVersion: "1.12.0",
+            appVersion: Self.resolvedAppVersion,
             sessions: sessionStore.sessions,
             snippets: sessionStore.snippets,
             triggers: sessionStore.triggers,

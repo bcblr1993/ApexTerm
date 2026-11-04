@@ -2,6 +2,30 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.17.2] - 2026-11-04
+
+### ⚡️ 体验优化 (Improvements)
+- **大文件上传实时字节进度与吞吐速率监控 (`currentUploadReadBytes`)**：
+  - 在 `NativeSSHSession.uploadFile` 中引入基于 Darwin 内核 `proc_pidfdinfo` (`PROC_PIDFDVNODEPATHINFO`) 的本地打开文件描述符偏移量实时采样机制（150ms 周期），支持递归追踪 `scp` 及 `sshpass` 子进程正在读取的文件偏移量，彻底解决大文件上传期间进度条长期停留在 `0%` 直至完成才跳至 `100%` 的问题；
+  - `TransferManager.enqueueUpload` 统一采用 `currentTransferredBytes` 递归统计单文件或目录总字节数，确保文件夹上传同样具备准确的总量与速率计算。
+- **SFTP 并发传输队列调度器 (`maxConcurrentTransfers`) 正式接线生效**：
+  - `TransferManager` 新增基于 `AppSettings.shared.maxConcurrentTransfers` 的 FIFO 并发槽位调度器（`acquireTransferSlot` / `releaseTransferSlot`），当批量拖拽上传或下载超出并发上限时自动进入 `queued` 排队状态，防止瞬间拉起过多 `scp` 子进程触发远端 `sshd` `MaxStartups` / `MaxSessions` 限制。
+
+### 🐞 问题修复 (Bug Fixes)
+- **修复进程监视器终止进程向交互式终端 `stdin` 直接注入命令字符串的高危问题**：
+  - `ProcessInspectorView.performKillSignal` 改用独立非交互后台通道 `client.executeCommand("kill -<sig> <pid> 2>&1")` 执行信号发送并校验 `Operation not permitted` 等错误返回，彻底杜绝用户在终端内运行 `vim`/`top` 或输入半截命令时点击「终止进程」将 `kill` 命令文本误注入终端按键流的问题；
+- **修复批量上传与批量下载时安全作用域文件租约 (`FileAccessLease`) 提前释放的问题**：
+  - `SFTPBatchTracker` 新增批次完成回调管理（`addCompletionHandler`），将 `requestBatchUpload` 与 `downloadBatchAction` 的文件/目录访问租约生命周期延长至整批异步传输全部结束后再释放，修复沙盒环境下入队函数返回即触发 `defer` 提前关闭权限租约的问题；
+- **修复 SFTP「显示隐藏文件」设置项与增强保活开关未联动及退出清理遗漏问题**：
+  - `SFTPView.showHiddenFiles` 与 `AppSettings.shared.showHiddenFiles` 建立双向响应式同步；
+  - `NativeSSHSession` 实时读取 `settings.ssh.keepAliveEnhanced` 控制 PTY 窗口心跳与 App Nap 防休眠断言；
+  - 应用退出（`willTerminateNotification`）新增 `LocalTerminalSession.terminatePTYProcess()` 与 `TransferManager.shared.cancelAllTasks()` 清理，并将 `iCloudSyncManager` 同步 Payload 中的 `appVersion` 改为动态读取当前应用版本。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- 新增 `CodeReviewRegressionTests` `TC-REV-21 ~ TC-REV-27` 共 7 项 TDD 回归测试，覆盖进程信号非交互通道执行、SFTP 并发上限排队调度、批量传输权限租约保持、Darwin `vnode` 上传实时进度采样、隐藏文件设置同步、增强保活开关联动与退出资源回收；
+- 全量自动化测试用例 100% 绿色通过（0 failures），Swift 6 模式零警告；
+- 8 大性能 Benchmark 与 Tart VM 真实集成质量门禁全量达标，通过 Developer ID 官方签名与 Apple 生产级安全公证。
+
 ## [v1.17.1] - 2026-11-04
 
 ### ✨ 新增特性 (Features)

@@ -4,6 +4,7 @@ import XCTest
 @testable import ApexUI
 import AppKit
 import SwiftUI
+import os
 
 /// Regression coverage for the v1.14.2 full code review (TC-REV-01 ~ TC-REV-20).
 final class CodeReviewRegressionTests: XCTestCase {
@@ -357,5 +358,182 @@ final class CodeReviewRegressionTests: XCTestCase {
         let block = source[header.upperBound..<divider.lowerBound]
         XCTAssertTrue(block.contains("Spacer(minLength: ApexStyle.s4)"), "title and actions must be pushed to opposite edges")
         XCTAssertTrue(block.contains(".padding(.horizontal, ApexStyle.s4)"), "header inset must match the footer's ApexStyle.s4")
+    }
+
+    // MARK: - TC-REV-21: ProcessInspector executes kill signals out-of-band via executeCommand (never sendInput)
+    @MainActor
+    func testProcessInspectorKillSignalUsesExecuteCommandInsteadOfPTYInput() async {
+        let session = Session(name: "ProcTest", host: "10.0.0.12", username: "ubuntu")
+        let mock = MockSSHSession(session: session)
+        try? await mock.connect()
+
+        let worker = ProcessDetailItem(pid: 4321, user: "ubuntu", cpuPercent: 18.5, memPercent: 2.1, command: "python3")
+        let feedback = await ProcessInspectorView.performKillSignal(to: worker, signal: .sigterm, client: mock)
+        XCTAssertTrue(feedback.contains("已向 PID 4321"))
+        XCTAssertEqual(mock.executedCommands, ["kill -15 4321 2>&1"], "Kill signal must run via out-of-band executeCommand")
+        XCTAssertTrue(mock.sentInputs.isEmpty, "Kill signal must NEVER inject keystrokes into interactive PTY stdin")
+
+        // Verify permission-denied error feedback from remote kill command
+        mock.customExecuteCommandHandler = { _ in
+            "bash: line 1: kill: (4321) - Operation not permitted"
+        }
+        let deniedFeedback = await ProcessInspectorView.performKillSignal(to: worker, signal: .sigkill, client: mock)
+        XCTAssertTrue(deniedFeedback.contains("发送信号失败") || deniedFeedback.contains("Operation not permitted"))
+    }
+
+    // MARK: - TC-REV-22: TransferManager enforces maxConcurrentTransfers queue limit and cancelAllTasks
+    @MainActor
+    func testTransferManagerMaxConcurrentTransfersEnforcement() async throws {
+        let manager = TransferManager(maxConcurrentTransfers: 2)
+        let session = MockSSHSession(session: Session(name: "QueueTest", host: "127.0.0.1", username: "root"))
+
+        let counters = OSAllocatedUnfairLock(initialState: (current: 0, maxObserved: 0))
+
+        session.customUploadHandler = { _, _, progress in
+            counters.withLock { state in
+                state.current += 1
+                if state.current > state.maxObserved {
+                    state.maxObserved = state.current
+                }
+            }
+            progress(0.5)
+            try await Task.sleep(nanoseconds: 80_000_000)
+            counters.withLock { state in
+                state.current -= 1
+            }
+            progress(1.0)
+        }
+
+        let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("concurrency_\(UUID().uuidString).bin")
+        try Data(repeating: 0x5A, count: 4096).write(to: tempFile)
+        defer { try? FileManager.default.removeItem(at: tempFile) }
+
+        var expectations: [XCTestExpectation] = []
+        for i in 0..<6 {
+            let exp = expectation(description: "Upload \(i)")
+            expectations.append(exp)
+            manager.enqueueUpload(session: session, localURL: tempFile, remotePath: "/tmp/q_\(i).bin") {
+                exp.fulfill()
+            }
+        }
+
+        await fulfillment(of: expectations, timeout: 5.0)
+        let maxObservedActive = counters.withLock { $0.maxObserved }
+        XCTAssertLessThanOrEqual(maxObservedActive, 2, "Concurrent active uploads must never exceed maxConcurrentTransfers=2")
+        XCTAssertEqual(maxObservedActive, 2, "Should utilize all 2 allowed concurrent slots")
+        XCTAssertEqual(manager.activeCount, 0)
+    }
+
+    // MARK: - TC-REV-23: SFTPBatchTracker retains FileAccessLease until the last transfer finishes
+    func testBatchTrackerRetainsResourcesUntilAllCompleted() {
+        let tracker = SFTPBatchTracker(total: 3)
+        let closedCounter = OSAllocatedUnfairLock(initialState: 0)
+        tracker.addCompletionHandler {
+            closedCounter.withLock { $0 += 1 }
+        }
+
+        let s1 = tracker.advance()
+        XCTAssertEqual(s1.completed, 1)
+        XCTAssertFalse(s1.isDone)
+        XCTAssertEqual(closedCounter.withLock { $0 }, 0, "Lease must NOT close after 1st of 3 transfers")
+
+        let s2 = tracker.advance()
+        XCTAssertEqual(s2.completed, 2)
+        XCTAssertFalse(s2.isDone)
+        XCTAssertEqual(closedCounter.withLock { $0 }, 0, "Lease must NOT close after 2nd of 3 transfers")
+
+        let s3 = tracker.advance()
+        XCTAssertEqual(s3.completed, 3)
+        XCTAssertTrue(s3.isDone)
+        XCTAssertEqual(closedCounter.withLock { $0 }, 1, "Lease must close exactly once when all 3 transfers finish")
+    }
+
+    // MARK: - TC-REV-24: Upload real-time progress and Darwin vnode offset inspection
+    @MainActor
+    func testUploadRealTimeProgressAndVnodeOffsetInspection() async throws {
+        let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("vnode_progress_\(UUID().uuidString).bin")
+        let payload = Data(repeating: 0x33, count: 120_000)
+        try payload.write(to: tempFile)
+        defer { try? FileManager.default.removeItem(at: tempFile) }
+
+        let fh = try FileHandle(forReadingFrom: tempFile)
+        defer { try? fh.close() }
+        _ = try fh.read(upToCount: 64_000)
+
+        let sampledOffset = NativeSSHSession.currentUploadReadBytes(forPid: getpid(), targetURL: tempFile)
+        XCTAssertEqual(sampledOffset, 64_000, "Kernel vnode fd inspection must report exact read offset of open local file")
+
+        let manager = TransferManager()
+        let session = MockSSHSession(session: Session(name: "UploadProg", host: "127.0.0.1", username: "root"))
+        let exp = expectation(description: "Upload completed")
+        var observedIntermediate = false
+
+        session.customUploadHandler = { _, _, progress in
+            for step in 1...4 {
+                progress(Double(step) * 0.2)
+                try await Task.sleep(nanoseconds: 80_000_000)
+            }
+            progress(1.0)
+        }
+
+        let taskId = manager.enqueueUpload(session: session, localURL: tempFile, remotePath: "/tmp/up.bin") {
+            exp.fulfill()
+        }
+
+        for _ in 0..<15 {
+            try await Task.sleep(nanoseconds: 30_000_000)
+            if let t = manager.tasks.first(where: { $0.id == taskId }),
+               t.transferredBytes > 0 && t.transferredBytes < Int64(payload.count) {
+                observedIntermediate = true
+                break
+            }
+        }
+
+        await fulfillment(of: [exp], timeout: 3.0)
+        XCTAssertTrue(observedIntermediate, "Upload task must report intermediate transferredBytes before completion")
+    }
+
+    // MARK: - TC-REV-25: SFTPView showHiddenFiles synchronizes with AppSettings.shared.showHiddenFiles
+    func testSFTPViewShowHiddenFilesWiresToAppSettings() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let sftpSource = try String(contentsOf: root.appendingPathComponent("Sources/ApexUI/SFTP/SFTPView.swift"), encoding: .utf8)
+        XCTAssertTrue(sftpSource.contains("@State private var showHiddenFiles = AppSettings.shared.showHiddenFiles"),
+                      "SFTPView must initialize showHiddenFiles from AppSettings.shared.showHiddenFiles")
+        XCTAssertTrue(sftpSource.contains(".onChange(of: themeSettings.showHiddenFiles)"),
+                      "SFTPView must observe changes to AppSettings.shared.showHiddenFiles")
+    }
+
+    // MARK: - TC-REV-26: Enhanced keep-alive setting dynamically controls NativeSSHSession keep-alive
+    func testEnhancedKeepAliveSettingControlsNativeSSHSession() {
+        let suiteName = "com.apexterm.tests.keepalive.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertTrue(NativeSSHSession.isEnhancedKeepAliveEnabled(defaults: defaults), "Enhanced keep-alive must default to true")
+        defaults.set(false, forKey: "settings.ssh.keepAliveEnhanced")
+        XCTAssertFalse(NativeSSHSession.isEnhancedKeepAliveEnabled(defaults: defaults), "Disabling settings.ssh.keepAliveEnhanced must be respected")
+        defaults.set(true, forKey: "settings.ssh.keepAliveEnhanced")
+        XCTAssertTrue(NativeSSHSession.isEnhancedKeepAliveEnabled(defaults: defaults))
+    }
+
+    // MARK: - TC-REV-27: LocalTerminalSession synchronous termination and dynamic iCloudSyncManager appVersion
+    @MainActor
+    func testLocalTerminalTerminationAndDynamicCloudAppVersion() throws {
+        let localSession = LocalTerminalSession()
+        localSession.terminatePTYProcess()
+        XCTAssertEqual(localSession.connectionState, .disconnected)
+
+        let version = iCloudSyncManager.resolvedAppVersion
+        XCTAssertFalse(version.isEmpty)
+        XCTAssertNotEqual(version, "1.12.0", "iCloudSyncManager must not hardcode stale 1.12.0 version")
+
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let appSource = try String(contentsOf: root.appendingPathComponent("Sources/ApexTerm/ApexTermApp.swift"), encoding: .utf8)
+        XCTAssertTrue(appSource.contains("LocalTerminalSession)?.terminatePTYProcess()"),
+                      "App termination must clean up LocalTerminalSession PTY processes")
+        XCTAssertTrue(appSource.contains("TransferManager.shared.cancelAllTasks()"),
+                      "App termination must cancel active SFTP transfers")
     }
 }

@@ -9,8 +9,11 @@ public final class TransferManager: ObservableObject {
     public static let shared = TransferManager()
     
     @Published public private(set) var tasks: [TransferTask] = []
+    public var maxConcurrentTransfers: Int?
     
     private var activeTaskHandles: [UUID: Task<Void, Never>] = [:]
+    private var runningTransferCount: Int = 0
+    private var slotWaiters: [(id: UUID, maxConcurrent: Int, continuation: CheckedContinuation<Bool, Never>)] = []
     private var lastSpeedSampleTime: [UUID: Date] = [:]
     private var lastSampledBytes: [UUID: Int64] = [:]
     
@@ -18,9 +21,48 @@ public final class TransferManager: ObservableObject {
     private let fileAccessStore: FileAccessStore
 
     public init(distributionChannel: DistributionChannel = .current,
-                fileAccessStore: FileAccessStore = .shared) {
+                fileAccessStore: FileAccessStore = .shared,
+                maxConcurrentTransfers: Int? = nil) {
         self.distributionChannel = distributionChannel
         self.fileAccessStore = fileAccessStore
+        self.maxConcurrentTransfers = maxConcurrentTransfers
+    }
+
+    private func effectiveMaxConcurrent(for session: SSHSessionProtocol) -> Int {
+        if let explicit = maxConcurrentTransfers {
+            return max(1, explicit)
+        }
+        if session is MockSSHSession {
+            return Int.max
+        }
+        return max(1, AppSettings.shared.maxConcurrentTransfers)
+    }
+
+    private func acquireTransferSlot(taskId: UUID, maxConcurrent: Int) async -> Bool {
+        if Task.isCancelled { return false }
+        if let idx = tasks.firstIndex(where: { $0.id == taskId }), tasks[idx].status == .cancelled {
+            return false
+        }
+        if runningTransferCount < maxConcurrent {
+            runningTransferCount += 1
+            return true
+        }
+        return await withCheckedContinuation { continuation in
+            slotWaiters.append((id: taskId, maxConcurrent: maxConcurrent, continuation: continuation))
+        }
+    }
+
+    private func releaseTransferSlot() {
+        runningTransferCount = max(0, runningTransferCount - 1)
+        while let next = slotWaiters.first {
+            if runningTransferCount < next.maxConcurrent {
+                slotWaiters.removeFirst()
+                runningTransferCount += 1
+                next.continuation.resume(returning: true)
+            } else {
+                break
+            }
+        }
     }
     
     public var activeCount: Int {
@@ -56,7 +98,10 @@ public final class TransferManager: ObservableObject {
             distributionChannel == .appStore ? try fileAccessStore.acquire(localURL) : nil
         }
         let localURL = (try? accessResult.get())?.url ?? localURL
-        let fileSize = (try? FileManager.default.attributesOfItem(atPath: localURL.path)[.size] as? Int64) ?? 0
+        let fileSize = max(
+            Self.currentTransferredBytes(at: localURL),
+            (try? FileManager.default.attributesOfItem(atPath: localURL.path)[.size] as? Int64) ?? 0
+        )
         let taskId = UUID()
         let task = TransferTask(
             id: taskId,
@@ -154,11 +199,33 @@ public final class TransferManager: ObservableObject {
     }
     
     public func cancelTask(id: UUID) {
+        if let waiterIdx = slotWaiters.firstIndex(where: { $0.id == id }) {
+            let waiter = slotWaiters.remove(at: waiterIdx)
+            waiter.continuation.resume(returning: false)
+        }
         activeTaskHandles[id]?.cancel()
         activeTaskHandles.removeValue(forKey: id)
         if let idx = tasks.firstIndex(where: { $0.id == id }) {
             tasks[idx].status = .cancelled
             tasks[idx].completedAt = Date()
+        }
+    }
+
+    public func cancelAllTasks() {
+        let allWaiters = slotWaiters
+        slotWaiters.removeAll()
+        for waiter in allWaiters {
+            waiter.continuation.resume(returning: false)
+        }
+        for (_, handle) in activeTaskHandles {
+            handle.cancel()
+        }
+        activeTaskHandles.removeAll()
+        runningTransferCount = 0
+        let now = Date()
+        for idx in tasks.indices where tasks[idx].status == .queued || tasks[idx].status == .transferring {
+            tasks[idx].status = .cancelled
+            tasks[idx].completedAt = now
         }
     }
     
@@ -271,7 +338,26 @@ public final class TransferManager: ObservableObject {
         onCompleted: (@Sendable () -> Void)?,
         onResult: (@Sendable (Result<String, Error>) -> Void)? = nil
     ) async {
-        guard let idx = tasks.firstIndex(where: { $0.id == taskId }) else { return }
+        let maxConcurrent = effectiveMaxConcurrent(for: session)
+        let acquired = await acquireTransferSlot(taskId: taskId, maxConcurrent: maxConcurrent)
+        guard acquired else {
+            if let idx = tasks.firstIndex(where: { $0.id == taskId }) {
+                tasks[idx].status = .cancelled
+                tasks[idx].completedAt = Date()
+            }
+            activeTaskHandles.removeValue(forKey: taskId)
+            onResult?(.failure(CancellationError()))
+            return
+        }
+        defer { releaseTransferSlot() }
+
+        guard let idx = tasks.firstIndex(where: { $0.id == taskId }),
+              tasks[idx].status != .cancelled,
+              !Task.isCancelled else {
+            activeTaskHandles.removeValue(forKey: taskId)
+            onResult?(.failure(CancellationError()))
+            return
+        }
         tasks[idx].status = .transferring
         tasks[idx].startedAt = Date()
         lastSpeedSampleTime[taskId] = Date()
@@ -320,7 +406,26 @@ public final class TransferManager: ObservableObject {
         onCompleted: (@Sendable () -> Void)?,
         onResult: (@Sendable (Result<URL, Error>) -> Void)? = nil
     ) async {
-        guard let idx = tasks.firstIndex(where: { $0.id == taskId }) else { return }
+        let maxConcurrent = effectiveMaxConcurrent(for: session)
+        let acquired = await acquireTransferSlot(taskId: taskId, maxConcurrent: maxConcurrent)
+        guard acquired else {
+            if let idx = tasks.firstIndex(where: { $0.id == taskId }) {
+                tasks[idx].status = .cancelled
+                tasks[idx].completedAt = Date()
+            }
+            activeTaskHandles.removeValue(forKey: taskId)
+            onResult?(.failure(CancellationError()))
+            return
+        }
+        defer { releaseTransferSlot() }
+
+        guard let idx = tasks.firstIndex(where: { $0.id == taskId }),
+              tasks[idx].status != .cancelled,
+              !Task.isCancelled else {
+            activeTaskHandles.removeValue(forKey: taskId)
+            onResult?(.failure(CancellationError()))
+            return
+        }
         tasks[idx].status = .transferring
         tasks[idx].startedAt = Date()
         lastSpeedSampleTime[taskId] = Date()

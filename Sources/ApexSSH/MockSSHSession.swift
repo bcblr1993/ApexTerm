@@ -27,7 +27,11 @@ public final class MockSSHSession: SSHSessionProtocol, @unchecked Sendable {
     private var directoryChangeHandler: (@Sendable (String) -> Void)?
     private var stateChangeHandler: (@Sendable (SSHConnectionState) -> Void)?
     public var customDownloadHandler: (@Sendable (String, URL, @Sendable @escaping (Double) -> Void) async throws -> Void)?
+    public var customUploadHandler: (@Sendable (URL, String, @Sendable @escaping (Double) -> Void) async throws -> Void)?
+    public var customExecuteCommandHandler: (@Sendable (String) async throws -> String)?
     public var customTestConnectionHandler: (@Sendable () async -> SSHTestConnectionResult)?
+    public private(set) var executedCommands: [String] = []
+    public private(set) var sentInputs: [Data] = []
     
     private var metricsTimer: Timer?
     private var currentDirectory = "/root"
@@ -101,6 +105,7 @@ public final class MockSSHSession: SSHSessionProtocol, @unchecked Sendable {
     }
     
     public func sendInputSync(_ data: Data) {
+        stateLock.withLock { sentInputs.append(data) }
         if data.count == 1, let first = data.first {
             if first >= 0x20 && first <= 0x7E {
                 inputBuffer.append(Character(UnicodeScalar(first)))
@@ -420,12 +425,24 @@ public final class MockSSHSession: SSHSessionProtocol, @unchecked Sendable {
     }
     
     public func uploadFile(localURL: URL, remotePath: String, progress: @Sendable @escaping (Double) -> Void) async throws {
+        if let customUploadHandler {
+            try await customUploadHandler(localURL, remotePath, progress)
+            return
+        }
         let data = try Data(contentsOf: localURL)
         for step in 1...5 {
             try await Task.sleep(nanoseconds: 10_000_000)
             progress(Double(step) / 5.0)
         }
         setMockFile(at: remotePath, data: data)
+    }
+
+    public func executeCommand(_ cmd: String) async throws -> String {
+        stateLock.withLock { executedCommands.append(cmd) }
+        if let customExecuteCommandHandler {
+            return try await customExecuteCommandHandler(cmd)
+        }
+        return ""
     }
 
     public func testConnection() async -> SSHTestConnectionResult {

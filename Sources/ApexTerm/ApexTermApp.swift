@@ -126,9 +126,11 @@ struct ApexTermApp: App {
             .focusedSceneValue(\.isWorkspaceWindow, true)
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
                 SSHTunnelManager.shared.stopAll()
+                TransferManager.shared.cancelAllTasks()
                 for tab in activeTabs {
                     for pane in tab.panes {
                         (pane.sshClient as? NativeSSHSession)?.terminatePTYProcess()
+                        (pane.sshClient as? LocalTerminalSession)?.terminatePTYProcess()
                     }
                 }
             }

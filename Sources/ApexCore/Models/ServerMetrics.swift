@@ -20,6 +20,15 @@ public struct ServerMetricsSnapshot: Sendable, Codable, Equatable, Identifiable 
         return Double(memoryUsedBytes) / Double(memoryTotalBytes) * 100.0
     }
     
+    // Swap Memory
+    public var swapTotalBytes: UInt64
+    public var swapUsedBytes: UInt64
+    
+    public var swapUsagePercent: Double {
+        guard swapTotalBytes > 0 else { return 0.0 }
+        return Double(swapUsedBytes) / Double(swapTotalBytes) * 100.0
+    }
+    
     // Network (instantaneous rate in bytes per second)
     public var networkRxBytesPerSec: Double
     public var networkTxBytesPerSec: Double
@@ -72,6 +81,8 @@ public struct ServerMetricsSnapshot: Sendable, Codable, Equatable, Identifiable 
         memoryTotalBytes: UInt64 = 0,
         memoryUsedBytes: UInt64 = 0,
         memoryCachedBytes: UInt64 = 0,
+        swapTotalBytes: UInt64 = 0,
+        swapUsedBytes: UInt64 = 0,
         networkRxBytesPerSec: Double = 0.0,
         networkTxBytesPerSec: Double = 0.0,
         diskTotalBytes: UInt64 = 0,
@@ -95,6 +106,8 @@ public struct ServerMetricsSnapshot: Sendable, Codable, Equatable, Identifiable 
         self.memoryTotalBytes = memoryTotalBytes
         self.memoryUsedBytes = memoryUsedBytes
         self.memoryCachedBytes = memoryCachedBytes
+        self.swapTotalBytes = swapTotalBytes
+        self.swapUsedBytes = swapUsedBytes
         self.networkRxBytesPerSec = networkRxBytesPerSec
         self.networkTxBytesPerSec = networkTxBytesPerSec
         self.diskTotalBytes = diskTotalBytes

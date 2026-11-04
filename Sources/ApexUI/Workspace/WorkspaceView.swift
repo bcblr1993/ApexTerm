@@ -962,8 +962,9 @@ private struct MetricsDetailOverlay: View {
                 MetricDetailView(historyStore: historyStore, monitoringEnabled: monitoringEnabled,
                                  connectionActive: pane.connectionState == .connected,
                                  connectionConnecting: isConnecting,
-                                 onDismiss: { presentation.isPresented = false })
-                    .frame(width: 390)
+                                 onDismiss: { withAnimation(ApexStyle.springSnappy) { presentation.isPresented = false } })
+                    .frame(width: 416)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                     .overlay(RoundedRectangle(cornerRadius: 12).stroke(ApexStyle.border.opacity(0.6), lineWidth: 0.75))
                     .shadow(color: .black.opacity(0.18), radius: 14, y: 6)

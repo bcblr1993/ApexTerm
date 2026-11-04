@@ -460,7 +460,7 @@ public final class LocalTerminalSession: SSHSessionProtocol, @unchecked Sendable
                     self.prevNet = net
                     self.metricsHandler?(snapshot)
                 }
-                try? await Task.sleep(nanoseconds: 3_000_000_000) // 3s interval
+                try? await Task.sleep(nanoseconds: 1_500_000_000) // 1.5s smooth sampling interval
             }
         }
     }

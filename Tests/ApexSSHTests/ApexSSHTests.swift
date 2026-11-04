@@ -96,6 +96,74 @@ final class ApexSSHTests: XCTestCase {
         XCTAssertEqual(snapshot.loadAvg15m, 1.15)
         XCTAssertEqual(snapshot.uptimeSeconds, 6 * 86400)
     }
+
+    func testSwapAndSmoothRemoteUptimeNetworkRateParsing() {
+        let monitor = AgentlessMonitor()
+        var prevCpu: AgentlessMonitor.CpuTickState? = nil
+        var prevNet: AgentlessMonitor.NetTickState? = nil
+
+        let linuxTick1 = """
+        cpu  1000 0 500 8500 0 0 0 0
+        cpu0 1000 0 500 8500 0 0 0 0
+        MemTotal:       16384000 kB
+        MemAvailable:   12288000 kB
+        SwapTotal:       8388608 kB
+        SwapFree:        6291456 kB
+        eth0: 1000000 1000 0 0 0 0 0 0 500000 500 0 0 0 0 0 0
+        ---DF---
+        /dev/sda1 104857600 26214400 78643200 25% /
+        ---UPTIME---
+        1000.00 5000.00
+        ---LOAD---
+        0.10 0.20 0.30
+        """
+
+        let linuxTick2 = """
+        cpu  1200 0 600 9200 0 0 0 0
+        cpu0 1200 0 600 9200 0 0 0 0
+        MemTotal:       16384000 kB
+        MemAvailable:   12288000 kB
+        SwapTotal:       8388608 kB
+        SwapFree:        6291456 kB
+        eth0: 1300000 1200 0 0 0 0 0 0 650000 600 0 0 0 0 0 0
+        ---DF---
+        /dev/sda1 104857600 26214400 78643200 25% /
+        ---UPTIME---
+        1001.50 5001.50
+        ---LOAD---
+        0.12 0.21 0.30
+        """
+
+        _ = monitor.parseLinuxOutput(linuxTick1, prevCpu: &prevCpu, prevNet: &prevNet)
+        let snap2 = monitor.parseLinuxOutput(linuxTick2, prevCpu: &prevCpu, prevNet: &prevNet)
+
+        XCTAssertEqual(snap2.swapTotalBytes, 8388608 * 1024)
+        XCTAssertEqual(snap2.swapUsedBytes, 2097152 * 1024)
+        XCTAssertEqual(snap2.swapUsagePercent, 25.0, accuracy: 0.01)
+        // Remote uptime delta is exactly 1.50s: (1,300,000 - 1,000,000) / 1.5 = 200,000 B/s
+        XCTAssertEqual(snap2.networkRxBytesPerSec, 200_000, accuracy: 1.0)
+        XCTAssertEqual(snap2.networkTxBytesPerSec, 100_000, accuracy: 1.0)
+
+        var macPrevNet: AgentlessMonitor.NetTickState? = nil
+        let macSample = """
+        CPU usage: 10.0% user, 5.0% sys, 85.0% idle
+        PhysMem: 16G used, 16G unused.
+        ---SWAP---
+        total = 4096.00M  used = 1024.00M  free = 3072.00M  (encrypted)
+        ---CORES---
+        10
+        ---DF---
+        /dev/disk3s1s1 100000000 50000000 50000000 50% /
+        ---UPTIME---
+        10:00 up 2 days, 1:00, 2 users, load averages: 1.00 1.00 1.00
+        ---NET---
+        en0 1500 <Link#1> 00:00:00:00:00:00 0 0 5000000 0 0 2000000 0
+        """
+        let macSnap = monitor.parseMacOSOutput(macSample, prevNet: &macPrevNet)
+        XCTAssertEqual(macSnap.swapTotalBytes, 4096 * 1024 * 1024)
+        XCTAssertEqual(macSnap.swapUsedBytes, 1024 * 1024 * 1024)
+        XCTAssertEqual(macSnap.swapUsagePercent, 25.0, accuracy: 0.01)
+    }
     
     func testVTParserANSISequence() {
         let parser = VTParser()

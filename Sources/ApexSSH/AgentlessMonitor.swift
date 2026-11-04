@@ -12,7 +12,7 @@ public final class AgentlessMonitor: Sendable {
     
     /// Script payload sent to remote macOS host
     public static let macosProbeCommand = """
-    top -l 1 -n 0 -s 0 | grep -E "CPU usage|PhysMem"; echo "---CORES---"; sysctl -n hw.ncpu 2>/dev/null || echo "8"; echo "---DF---"; df -k / | tail -1; echo "---UPTIME---"; uptime; echo "---NET---"; netstat -ib -n -I en0 2>/dev/null | grep -E "en0" | head -1; echo "---TOP---"; ps -eo pid,user,%cpu,%mem,comm -r 2>/dev/null | head -6; echo "---CPUMODEL---"; sysctl -n machdep.cpu.brand_string 2>/dev/null || sysctl -n hw.model; echo "---DISKTYPE---"; if diskutil info / 2>/dev/null | grep -q "Solid State: *Yes"; then if diskutil info / 2>/dev/null | grep -E -q "Apple Fabric|PCI-Express|NVMe"; then echo "NVMe SSD"; else echo "SSD"; fi; else echo "HDD"; fi
+    top -l 1 -n 0 -s 0 | grep -E "CPU usage|PhysMem"; echo "---SWAP---"; sysctl -n vm.swapusage 2>/dev/null; echo "---CORES---"; sysctl -n hw.ncpu 2>/dev/null || echo "8"; echo "---DF---"; df -k / | tail -1; echo "---UPTIME---"; uptime; echo "---NET---"; netstat -ib -n 2>/dev/null | awk '$1 ~ /^en[0-9]+$/ && $3 ~ /^<Link#/ { rx += $(NF-4); tx += $(NF-1) } END { printf "en0 1500 <Link#1> 00:00:00:00:00:00 0 0 %.0f 0 0 %.0f 0\\n", rx, tx }'; echo "---TOP---"; ps -eo pid,user,%cpu,%mem,comm -r 2>/dev/null | head -6; echo "---CPUMODEL---"; sysctl -n machdep.cpu.brand_string 2>/dev/null || sysctl -n hw.model; echo "---DISKTYPE---"; if diskutil info / 2>/dev/null | grep -q "Solid State: *Yes"; then if diskutil info / 2>/dev/null | grep -E -q "Apple Fabric|PCI-Express|NVMe"; then echo "NVMe SSD"; else echo "SSD"; fi; else echo "HDD"; fi
     """
     
     /// Auto-detecting multi-OS probe command
@@ -53,15 +53,28 @@ public final class AgentlessMonitor: Sendable {
         }
     }
     
-    // Previous Network state for calculating deltas: (rxBytes, txBytes, timestamp)
+    // Previous Network state for calculating deltas: (rxBytes, txBytes, timestamp, remoteUptime, smoothedRates)
     public struct NetTickState: Sendable {
         public let rx: UInt64
         public let tx: UInt64
         public let timestamp: Date
-        public init(rx: UInt64 = 0, tx: UInt64 = 0, timestamp: Date = Date()) {
+        public let remoteUptime: Double
+        public let smoothedRxRate: Double
+        public let smoothedTxRate: Double
+        public init(
+            rx: UInt64 = 0,
+            tx: UInt64 = 0,
+            timestamp: Date = Date(),
+            remoteUptime: Double = 0,
+            smoothedRxRate: Double = 0,
+            smoothedTxRate: Double = 0
+        ) {
             self.rx = rx
             self.tx = tx
             self.timestamp = timestamp
+            self.remoteUptime = remoteUptime
+            self.smoothedRxRate = smoothedRxRate
+            self.smoothedTxRate = smoothedTxRate
         }
     }
     
@@ -88,6 +101,8 @@ public final class AgentlessMonitor: Sendable {
         var cpuModel = ""
         var memTotal: UInt64 = 0
         var memUsed: UInt64 = 0
+        var swapTotal: UInt64 = 0
+        var swapUsed: UInt64 = 0
         var netRxTotal: UInt64 = 0
         var netTxTotal: UInt64 = 0
         var diskTotal: UInt64 = 0
@@ -145,6 +160,10 @@ public final class AgentlessMonitor: Sendable {
                 memUsed = parseMemUnit(trimmed, keyword: "used")
                 let unused = parseMemUnit(trimmed, keyword: "unused")
                 memTotal = memUsed + unused
+            } else if currentSection == "---SWAP---" || (trimmed.contains("total =") && trimmed.contains("used =")) {
+                // Example: total = 2048.00M  used = 512.25M  free = 1535.75M  (encrypted)
+                swapTotal = parseSwapKeyword(trimmed, keyword: "total =")
+                swapUsed = parseSwapKeyword(trimmed, keyword: "used =")
             } else if currentSection == "---CORES---" {
                 if let c = Int(trimmed), c > 0 {
                     cpuCores = c
@@ -177,8 +196,10 @@ public final class AgentlessMonitor: Sendable {
                 // Example: en0 1500 <Link#6> 14:98:77:5a:b4:d5 48176988 0 46142541246 20691726 0 5206320117 0
                 let parts = trimmed.split(whereSeparator: { $0.isWhitespace })
                 if parts.count >= 10 {
-                    netRxTotal = UInt64(parts[6]) ?? 0
-                    netTxTotal = UInt64(parts[9]) ?? 0
+                    let rxIdx = parts.count >= 11 ? parts.count - 5 : 6
+                    let txIdx = parts.count >= 11 ? parts.count - 2 : 9
+                    netRxTotal = UInt64(parts[rxIdx]) ?? 0
+                    netTxTotal = UInt64(parts[txIdx]) ?? 0
                 }
             } else if currentSection == "---TOP---" {
                 let parts = trimmed.split(whereSeparator: { $0.isWhitespace })
@@ -195,18 +216,27 @@ public final class AgentlessMonitor: Sendable {
             }
         }
         
-        // Calculate network rate
+        // Calculate network rate with smooth EMA filter
         var rxRate = 0.0
         var txRate = 0.0
         let now = Date()
         if let prevN = prevNet {
             let dt = now.timeIntervalSince(prevN.timestamp)
             if dt > 0.1 && netRxTotal >= prevN.rx && netTxTotal >= prevN.tx {
-                rxRate = Double(netRxTotal - prevN.rx) / dt
-                txRate = Double(netTxTotal - prevN.tx) / dt
+                let rawRx = Double(netRxTotal - prevN.rx) / dt
+                let rawTx = Double(netTxTotal - prevN.tx) / dt
+                rxRate = prevN.smoothedRxRate > 0 ? (rawRx * 0.72 + prevN.smoothedRxRate * 0.28) : rawRx
+                txRate = prevN.smoothedTxRate > 0 ? (rawTx * 0.72 + prevN.smoothedTxRate * 0.28) : rawTx
             }
         }
-        prevNet = NetTickState(rx: netRxTotal, tx: netTxTotal, timestamp: now)
+        prevNet = NetTickState(
+            rx: netRxTotal,
+            tx: netTxTotal,
+            timestamp: now,
+            remoteUptime: 0,
+            smoothedRxRate: rxRate,
+            smoothedTxRate: txRate
+        )
         
         if cpuModel.isEmpty {
             cpuModel = "Apple Silicon"
@@ -233,6 +263,8 @@ public final class AgentlessMonitor: Sendable {
             memoryTotalBytes: memTotal,
             memoryUsedBytes: memUsed,
             memoryCachedBytes: 0,
+            swapTotalBytes: swapTotal,
+            swapUsedBytes: swapUsed,
             networkRxBytesPerSec: rxRate,
             networkTxBytesPerSec: txRate,
             diskTotalBytes: diskTotal,
@@ -307,6 +339,8 @@ public final class AgentlessMonitor: Sendable {
         var memFree: UInt64 = 0
         var memBuffers: UInt64 = 0
         var memCached: UInt64 = 0
+        var swapTotal: UInt64 = 0
+        var swapFree: UInt64 = 0
         var netRxTotal: UInt64 = 0
         var netTxTotal: UInt64 = 0
         var diskTotal: UInt64 = 0
@@ -319,6 +353,7 @@ public final class AgentlessMonitor: Sendable {
         var load5 = 0.0
         var load15 = 0.0
         var uptime: UInt64 = 0
+        var uptimeExact: Double = 0.0
         var topProcesses: [ProcessMetricItem] = []
         
         let lines = raw.components(separatedBy: "\n")
@@ -383,6 +418,7 @@ public final class AgentlessMonitor: Sendable {
                 let parts = trimmed.split(whereSeparator: { $0.isWhitespace })
                 if let upSec = parts.first, let val = Double(upSec) {
                     uptime = UInt64(val)
+                    uptimeExact = val
                 }
                 continue
             }
@@ -435,7 +471,11 @@ public final class AgentlessMonitor: Sendable {
                 memBuffers = parseMeminfoKb(trimmed)
             } else if trimmed.hasPrefix("Cached:") {
                 memCached = parseMeminfoKb(trimmed)
-            } else if trimmed.contains(":") && (trimmed.contains("eth") || trimmed.contains("ens") || trimmed.contains("enp") || trimmed.contains("eno") || trimmed.contains("bond") || trimmed.contains("wlan")) {
+            } else if trimmed.hasPrefix("SwapTotal:") {
+                swapTotal = parseMeminfoKb(trimmed)
+            } else if trimmed.hasPrefix("SwapFree:") {
+                swapFree = parseMeminfoKb(trimmed)
+            } else if trimmed.contains(":") && Self.isTrackedLinuxNetworkInterfaceLine(trimmed) {
                 // Network interface line
                 let parts = trimmed.split(whereSeparator: { $0 == ":" || $0.isWhitespace })
                 if parts.count >= 10 {
@@ -453,19 +493,30 @@ public final class AgentlessMonitor: Sendable {
         } else {
             memUsed = memTotal > (memFree + memBuffers + memCached) ? (memTotal - memFree - memBuffers - memCached) : 0
         }
+        let swapUsed: UInt64 = swapTotal >= swapFree ? (swapTotal - swapFree) : 0
         
-        // Calculate network rate
+        // Calculate network rate using remote monotonic kernel uptime delta when available to eliminate SSH RTT jitter
         var rxRate = 0.0
         var txRate = 0.0
         let now = Date()
         if let prevN = prevNet {
-            let dt = now.timeIntervalSince(prevN.timestamp)
-            if dt > 0.1 && netRxTotal >= prevN.rx && netTxTotal >= prevN.tx {
-                rxRate = Double(netRxTotal - prevN.rx) / dt
-                txRate = Double(netTxTotal - prevN.tx) / dt
+            let remoteDt = (uptimeExact > 0 && prevN.remoteUptime > 0) ? (uptimeExact - prevN.remoteUptime) : 0
+            let dt = (remoteDt > 0.05 && remoteDt < 60.0) ? remoteDt : now.timeIntervalSince(prevN.timestamp)
+            if dt > 0.05 && netRxTotal >= prevN.rx && netTxTotal >= prevN.tx {
+                let rawRx = Double(netRxTotal - prevN.rx) / dt
+                let rawTx = Double(netTxTotal - prevN.tx) / dt
+                rxRate = prevN.smoothedRxRate > 0 ? (rawRx * 0.72 + prevN.smoothedRxRate * 0.28) : rawRx
+                txRate = prevN.smoothedTxRate > 0 ? (rawTx * 0.72 + prevN.smoothedTxRate * 0.28) : rawTx
             }
         }
-        prevNet = NetTickState(rx: netRxTotal, tx: netTxTotal, timestamp: now)
+        prevNet = NetTickState(
+            rx: netRxTotal,
+            tx: netTxTotal,
+            timestamp: now,
+            remoteUptime: uptimeExact,
+            smoothedRxRate: rxRate,
+            smoothedTxRate: txRate
+        )
         
         if cpuModel.isEmpty {
             cpuModel = "Linux Server"
@@ -496,6 +547,8 @@ public final class AgentlessMonitor: Sendable {
             memoryTotalBytes: memTotal,
             memoryUsedBytes: memUsed,
             memoryCachedBytes: memCached,
+            swapTotalBytes: swapTotal,
+            swapUsedBytes: swapUsed,
             networkRxBytesPerSec: rxRate,
             networkTxBytesPerSec: txRate,
             diskTotalBytes: diskTotal,
@@ -519,5 +572,53 @@ public final class AgentlessMonitor: Sendable {
             return kb * 1024
         }
         return 0
+    }
+
+    private func parseSwapKeyword(_ text: String, keyword: String) -> UInt64 {
+        guard let range = text.range(of: keyword) else { return 0 }
+        let after = text[range.upperBound...].trimmingCharacters(in: .whitespaces)
+        var numStr = ""
+        var unit = "M"
+        for char in after {
+            if char.isNumber || char == "." {
+                numStr.append(char)
+            } else if char == "G" || char == "g" {
+                unit = "G"
+                break
+            } else if char == "M" || char == "m" {
+                unit = "M"
+                break
+            } else if char == "K" || char == "k" {
+                unit = "K"
+                break
+            } else if !numStr.isEmpty {
+                break
+            }
+        }
+        guard let val = Double(numStr) else { return 0 }
+        switch unit {
+        case "G": return UInt64(val * 1024 * 1024 * 1024)
+        case "M": return UInt64(val * 1024 * 1024)
+        case "K": return UInt64(val * 1024)
+        default: return UInt64(val)
+        }
+    }
+
+    private static func isTrackedLinuxNetworkInterfaceLine(_ trimmed: String) -> Bool {
+        guard let colon = trimmed.firstIndex(of: ":") else { return false }
+        let iface = trimmed[..<colon].trimmingCharacters(in: .whitespaces)
+        guard !iface.isEmpty else { return false }
+        return iface.hasPrefix("eth")
+            || iface.hasPrefix("ens")
+            || iface.hasPrefix("enp")
+            || iface.hasPrefix("eno")
+            || iface.hasPrefix("enx")
+            || iface.hasPrefix("em")
+            || iface.hasPrefix("bond")
+            || iface.hasPrefix("wlan")
+            || iface.hasPrefix("wlp")
+            || iface.hasPrefix("venet")
+            || iface.hasPrefix("vmbr")
+            || iface.hasPrefix("ib")
     }
 }

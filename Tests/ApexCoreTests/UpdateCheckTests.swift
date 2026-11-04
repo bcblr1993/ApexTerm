@@ -366,6 +366,82 @@ final class UpdateCheckTests: XCTestCase {
         try? FileManager.default.removeItem(at: tempRoot)
         try? FileManager.default.removeItem(at: extractedApp.deletingLastPathComponent())
     }
+
+    func testSingleInstanceEnforcementAndCanonicalRedirect() {
+        XCTAssertTrue(UpdateManager.shouldEnforceSingleInstance(environment: [:]))
+        XCTAssertFalse(UpdateManager.shouldEnforceSingleInstance(environment: ["XCTestConfigurationFilePath": "/tmp/test.xctestconfiguration"]))
+        XCTAssertFalse(UpdateManager.shouldEnforceSingleInstance(environment: ["APEX_UI_TEST_REOPEN": "1"]))
+        XCTAssertFalse(UpdateManager.shouldEnforceSingleInstance(environment: ["APEX_ALLOW_MULTIPLE_INSTANCES": "1"]))
+        XCTAssertFalse(UpdateManager.shouldEnforceSingleInstance(environment: ["APEX_QA_UI_RUN_ID": UUID().uuidString]))
+
+        let buildBundle = URL(fileURLWithPath: "/Users/demo/ApexTerm/.build/AetherTerm.app")
+        let installedBundle = URL(fileURLWithPath: "/Applications/AetherTerm.app")
+        XCTAssertTrue(UpdateManager.isTransientBuildBundleURL(buildBundle))
+        XCTAssertFalse(UpdateManager.isTransientBuildBundleURL(installedBundle))
+        XCTAssertEqual(
+            UpdateManager.canonicalRedirectAppURL(
+                currentBundleURL: buildBundle,
+                installedAppURL: installedBundle,
+                installedExists: true
+            ),
+            installedBundle
+        )
+        XCTAssertNil(
+            UpdateManager.canonicalRedirectAppURL(
+                currentBundleURL: buildBundle,
+                installedAppURL: installedBundle,
+                installedExists: false
+            )
+        )
+        XCTAssertNil(
+            UpdateManager.canonicalRedirectAppURL(
+                currentBundleURL: installedBundle,
+                installedAppURL: installedBundle,
+                installedExists: true
+            )
+        )
+
+        let pids = UpdateManager.otherRunningInstancePIDs(
+            bundleIdentifier: "com.apexterm.app",
+            currentPID: 1002,
+            runningApps: [
+                (pid: 1001, bundleIdentifier: "com.apexterm.app", isTerminated: false),
+                (pid: 1002, bundleIdentifier: "com.apexterm.app", isTerminated: false),
+                (pid: 1003, bundleIdentifier: "com.apexterm.app", isTerminated: true),
+                (pid: 1004, bundleIdentifier: "com.apple.Finder", isTerminated: false)
+            ]
+        )
+        XCTAssertEqual(pids, [1001])
+    }
+
+    func testReplacementMovesTransientBuildAetherTermBundleOutOfLaunchServices() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("transient-replace-" + UUID().uuidString)
+        defer { try? fm.removeItem(at: root) }
+
+        let current = root.appendingPathComponent(".build/AetherTerm.app")
+        let target = root.appendingPathComponent("Applications/AetherTerm.app")
+        let stage = root.appendingPathComponent("staged/AetherTerm.app")
+        try fm.createDirectory(at: current.appendingPathComponent("Contents"), withIntermediateDirectories: true)
+        try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try fm.createDirectory(at: stage, withIntermediateDirectories: true)
+
+        let info = try PropertyListSerialization.data(fromPropertyList: ["CFBundleIdentifier": "com.apexterm.app"], format: .xml, options: 0)
+        try info.write(to: current.appendingPathComponent("Contents/Info.plist"))
+        try Data("old-build".utf8).write(to: current.appendingPathComponent("version"))
+        try Data("new-release".utf8).write(to: stage.appendingPathComponent("version"))
+
+        let shell = Process()
+        shell.executableURL = URL(fileURLWithPath: "/bin/bash")
+        shell.arguments = ["-c", UpdateManager.replacementScript(staging: stage, current: current, destination: target)
+            + "\nrm -rf \"$BACKUP\""]
+        try shell.run()
+        shell.waitUntilExit()
+
+        XCTAssertEqual(shell.terminationStatus, 0)
+        XCTAssertFalse(fm.fileExists(atPath: current.path), "Transient .build/AetherTerm.app must be moved out so Dock cannot launch a duplicate instance")
+        XCTAssertEqual(try String(contentsOf: target.appendingPathComponent("version"), encoding: .utf8), "new-release")
+    }
 }
 
 private actor UpdateRequestGate {

@@ -295,10 +295,65 @@ public final class UpdateManager: ObservableObject {
         }
     }
     
+    /// Distributed notification name used to wake and focus an already-running instance.
+    nonisolated public static let activateMainWindowNotificationName = "com.apexterm.app.ActivateMainWindow"
+
+    /// Determines whether single-instance enforcement should be active for the current launch environment.
+    nonisolated public static func shouldEnforceSingleInstance(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+        if environment["XCTestConfigurationFilePath"] != nil || environment["XCTestBundlePath"] != nil {
+            return false
+        }
+        if environment["APEX_UI_TEST_REOPEN"] == "1"
+            || environment["APEX_ALLOW_MULTIPLE_INSTANCES"] == "1"
+            || environment["APEX_QA_UI_RUN_ID"] != nil {
+            return false
+        }
+        return true
+    }
+
+    /// Returns true when the app bundle resides inside a transient build directory (`.build` or `DerivedData`).
+    nonisolated public static func isTransientBuildBundleURL(_ bundleURL: URL) -> Bool {
+        guard bundleURL.pathExtension == "app" else { return false }
+        let path = bundleURL.path
+        return path.contains("/.build/") || path.contains("/DerivedData/")
+    }
+
+    /// When launched from a transient build bundle while `/Applications/AetherTerm.app` is installed,
+    /// returns the canonical `/Applications/AetherTerm.app` URL so LaunchServices/Dock never runs two bundles.
+    nonisolated public static func canonicalRedirectAppURL(
+        currentBundleURL: URL,
+        installedAppURL: URL = URL(fileURLWithPath: "/Applications/AetherTerm.app"),
+        installedExists: Bool
+    ) -> URL? {
+        guard installedExists, isTransientBuildBundleURL(currentBundleURL) else {
+            return nil
+        }
+        guard currentBundleURL.standardizedFileURL != installedAppURL.standardizedFileURL else {
+            return nil
+        }
+        return installedAppURL
+    }
+
+    /// Returns PIDs of other active instances matching the same bundle identifier.
+    nonisolated public static func otherRunningInstancePIDs(
+        bundleIdentifier: String = "com.apexterm.app",
+        currentPID: pid_t = ProcessInfo.processInfo.processIdentifier,
+        runningApps: [(pid: pid_t, bundleIdentifier: String?, isTerminated: Bool)]
+    ) -> [pid_t] {
+        runningApps.compactMap { app in
+            guard !app.isTerminated,
+                  app.pid != currentPID,
+                  app.bundleIdentifier == bundleIdentifier else {
+                return nil
+            }
+            return app.pid
+        }
+    }
+
     /// Returns the target application URL to replace
     nonisolated public static func defaultTargetAppURL() -> URL {
         let bundle = Bundle.main.bundleURL
-        if bundle.pathExtension == "app" && !bundle.path.contains("/.build/") && !bundle.path.contains("/DerivedData/") {
+        if bundle.pathExtension == "app" && !Self.isTransientBuildBundleURL(bundle) {
             return Self.brandedInstallationURL(for: bundle)
         }
         return URL(fileURLWithPath: "/Applications/AetherTerm.app")
@@ -336,7 +391,7 @@ public final class UpdateManager: ObservableObject {
             [ "$ID" = 'com.apexterm.app' ] || exit 1
             mv "$TARGET" "$BACKUP/previous" || exit 1
         fi
-        if [ "$CURRENT" != "$TARGET" ] && [ "$(basename "$CURRENT")" = "ApexTerm.app" ] && [ -d "$CURRENT" ]; then
+        if [ "$CURRENT" != "$TARGET" ] && { [ "$(basename "$CURRENT")" = "ApexTerm.app" ] || [ "$(basename "$CURRENT")" = "AetherTerm.app" ]; } && [ -d "$CURRENT" ]; then
             OLD_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$CURRENT/Contents/Info.plist") || exit 1
             [ "$OLD_ID" = 'com.apexterm.app' ] || exit 1
             mv "$CURRENT" "$BACKUP/legacy" || exit 1

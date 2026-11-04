@@ -20,6 +20,61 @@ private extension FocusedValues {
 private final class ApexTermAppDelegate: NSObject, NSApplicationDelegate {
     var reopenMainWindow: (() -> Void)?
 
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        guard UpdateManager.shouldEnforceSingleInstance() else { return }
+
+        let currentPID = ProcessInfo.processInfo.processIdentifier
+        let running = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apexterm.app")
+        let runningSummary = running.map {
+            (pid: $0.processIdentifier, bundleIdentifier: $0.bundleIdentifier, isTerminated: $0.isTerminated)
+        }
+        let otherPIDs = Set(UpdateManager.otherRunningInstancePIDs(
+            bundleIdentifier: "com.apexterm.app",
+            currentPID: currentPID,
+            runningApps: runningSummary
+        ))
+
+        if let existing = running.first(where: { otherPIDs.contains($0.processIdentifier) }) {
+            NSApp.setActivationPolicy(.prohibited)
+            DistributedNotificationCenter.default().postNotificationName(
+                NSNotification.Name(UpdateManager.activateMainWindowNotificationName),
+                object: nil,
+                userInfo: nil,
+                deliverImmediately: true
+            )
+            existing.unhide()
+            existing.activate(options: [.activateAllWindows])
+            exit(0)
+        }
+
+        let canonicalURL = URL(fileURLWithPath: "/Applications/AetherTerm.app")
+        if let redirectURL = UpdateManager.canonicalRedirectAppURL(
+            currentBundleURL: Bundle.main.bundleURL,
+            installedAppURL: canonicalURL,
+            installedExists: FileManager.default.fileExists(atPath: canonicalURL.path)
+        ) {
+            NSApp.setActivationPolicy(.prohibited)
+            let openProc = Process()
+            openProc.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+            openProc.arguments = ["-a", redirectURL.path]
+            try? openProc.run()
+            exit(0)
+        }
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        DistributedNotificationCenter.default().addObserver(
+            forName: NSNotification.Name(UpdateManager.activateMainWindowNotificationName),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.reopenMainWindow?()
+                NSApp.activate(ignoringOtherApps: true)
+            }
+        }
+    }
+
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if !flag {
             reopenMainWindow?()

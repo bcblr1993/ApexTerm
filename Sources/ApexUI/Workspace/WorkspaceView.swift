@@ -1356,6 +1356,7 @@ private struct PaneContainerView: View {
                             tab.activePaneId = pane.id
                         }
                     },
+                    isCopyOnSelectEnabled: themeSettings.isCopyOnSelectEnabled,
                     triggers: store.triggers,
                     onResize: { cols, rows in
                         Task {

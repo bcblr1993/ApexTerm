@@ -14,6 +14,49 @@ struct SGRStyle: Equatable {
 
     private static let standard = ["#1E1E1E", "#FF453A", "#30D158", "#FFD60A", "#0A84FF", "#BF5AF2", "#64D2FF", "#FFFFFF", "#8E8E93", "#FF6961", "#77DD77", "#FDFD96", "#84B6F4", "#FDCAE1", "#B2FBA5", "#FFFFFF"]
 
+    mutating func apply(param: String) {
+        if !param.contains(":") {
+            apply(param.split(separator: ";").compactMap { Int($0) })
+            return
+        }
+        var codes: [Int] = []
+        for segment in param.split(separator: ";", omittingEmptySubsequences: false) {
+            if !segment.contains(":") {
+                if let code = Int(segment) {
+                    codes.append(code)
+                } else if segment.isEmpty {
+                    codes.append(0)
+                }
+                continue
+            }
+            let subparts = segment.split(separator: ":", omittingEmptySubsequences: false)
+            guard let lead = subparts.first, let leadCode = Int(lead) else { continue }
+            switch leadCode {
+            case 4:
+                if subparts.count >= 2, subparts[1] == "0" {
+                    codes.append(24)
+                } else {
+                    codes.append(4)
+                }
+            case 38, 48:
+                guard subparts.count >= 3, let mode = Int(subparts[1]) else { continue }
+                if mode == 5 {
+                    codes.append(contentsOf: [leadCode, 5, Int(subparts[2]) ?? 0])
+                } else if mode == 2, subparts.count >= 5 {
+                    // ITU T.416 allows either 38:2:R:G:B (5 parts) or 38:2:CS:R:G:B (6 parts)
+                    let rIndex = subparts.count >= 6 ? 3 : 2
+                    let r = Int(subparts[rIndex]) ?? 0
+                    let g = Int(subparts[rIndex + 1]) ?? 0
+                    let b = Int(subparts[rIndex + 2]) ?? 0
+                    codes.append(contentsOf: [leadCode, 2, r, g, b])
+                }
+            default:
+                codes.append(leadCode)
+            }
+        }
+        apply(codes)
+    }
+
     mutating func apply(_ input: [Int]) {
         let codes = input.isEmpty ? [0] : input
         var offset = 0

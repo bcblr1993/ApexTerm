@@ -312,7 +312,8 @@ private struct BehaviorSettingsTab: View {
                             tint: ApexStyle.secondary,
                             size: .small
                         ) {
-                            let url = URL(fileURLWithPath: settings.sessionLogDirectory, isDirectory: true)
+                            let expanded = (settings.sessionLogDirectory as NSString).expandingTildeInPath
+                            let url = URL(fileURLWithPath: expanded, isDirectory: true)
                             try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
                             NSWorkspace.shared.open(url)
                         }
@@ -597,10 +598,7 @@ private struct BackupSettingsTab: View {
         isSyncingAction = true
         Task {
             do {
-                let old = syncManager.conflictStrategy
-                syncManager.conflictStrategy = .overwriteCloud
-                let res = try await syncManager.syncNow()
-                syncManager.conflictStrategy = old
+                let res = try await syncManager.syncNow(withTemporaryStrategy: .overwriteCloud)
                 await MainActor.run {
                     isSyncingAction = false
                     alertMessage = res.message
@@ -620,10 +618,7 @@ private struct BackupSettingsTab: View {
         isSyncingAction = true
         Task {
             do {
-                let old = syncManager.conflictStrategy
-                syncManager.conflictStrategy = .overwriteLocal
-                let res = try await syncManager.syncNow()
-                syncManager.conflictStrategy = old
+                let res = try await syncManager.syncNow(withTemporaryStrategy: .overwriteLocal)
                 await MainActor.run {
                     isSyncingAction = false
                     alertMessage = res.message

@@ -1,6 +1,7 @@
 import XCTest
 @testable import ApexCore
 @testable import ApexSSH
+@testable import ApexTerminal
 @testable import ApexUI
 import AppKit
 import SwiftUI
@@ -766,5 +767,153 @@ final class CodeReviewRegressionTests: XCTestCase {
         let workspaceSource = try String(contentsOf: root.appendingPathComponent("Sources/ApexUI/Workspace/WorkspaceView.swift"), encoding: .utf8)
         XCTAssertTrue(workspaceSource.contains("where p.connectionState == .connected"),
                       "Broadcast mode must only send input to connected panes")
+    }
+
+    // MARK: - TC-REV-36: Copy-on-select setting respected by context menu and WorkspaceView binding
+    @MainActor
+    func testCopyOnSelectDisabledDoesNotClobberPasteboardOnContextMenu() throws {
+        let pasteboard = NSPasteboard.general
+        let savedItems = (pasteboard.pasteboardItems ?? []).map { original in
+            let copy = NSPasteboardItem()
+            for type in original.types {
+                if let data = original.data(forType: type) { copy.setData(data, forType: type) }
+            }
+            return copy
+        }
+        defer {
+            pasteboard.clearContents()
+            pasteboard.writeObjects(savedItems)
+        }
+
+        pasteboard.clearContents()
+        pasteboard.setString("keep-existing-clipboard", forType: .string)
+
+        let view = NativeTerminalView()
+        view.isCopyOnSelectEnabled = false
+        view.textStorage?.setAttributedString(NSAttributedString(string: "selected terminal text"))
+        view.setSelectedRange(NSRange(location: 0, length: 8))
+
+        _ = view.menu(for: NSEvent())
+        XCTAssertEqual(pasteboard.string(forType: .string), "keep-existing-clipboard",
+                       "Opening context menu with isCopyOnSelectEnabled == false must not overwrite clipboard")
+
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let workspaceSource = try String(contentsOf: root.appendingPathComponent("Sources/ApexUI/Workspace/WorkspaceView.swift"), encoding: .utf8)
+        XCTAssertTrue(workspaceSource.contains("isCopyOnSelectEnabled: themeSettings.isCopyOnSelectEnabled"),
+                      "PaneContainerView must pass themeSettings.isCopyOnSelectEnabled to TerminalRepresentable")
+    }
+
+    // MARK: - TC-REV-37: TerminalRingBuffer records standalone BEL (\u{07}) while ignoring OSC terminator BEL
+    @MainActor
+    func testTerminalBellDetectionAndVisualBellHandling() {
+        let buffer = TerminalRingBuffer(maxLines: 100)
+        XCTAssertFalse(buffer.consumeBellFlag())
+
+        // 1. OSC title sequence terminated by \u{07} must NOT trigger a terminal bell
+        buffer.appendStream("\u{1B}]0;user@host:~/project\u{07}prompt$ ")
+        XCTAssertFalse(buffer.consumeBellFlag(), "OSC sequence terminator BEL must not trigger terminal bell")
+
+        // 2. Standalone BEL (\u{07}) must set the pending bell flag and be consumed atomically once
+        buffer.appendStream("\u{07}")
+        XCTAssertTrue(buffer.consumeBellFlag(), "Standalone BEL character must set bell flag")
+        XCTAssertFalse(buffer.consumeBellFlag(), "consumeBellFlag must reset flag after consumption")
+
+        // 3. NativeTerminalView.refresh() consumes bell flag and increments bellTriggerCount
+        let prevBellMode = AppSettings.shared.bellMode
+        AppSettings.shared.bellMode = .visual
+        defer { AppSettings.shared.bellMode = prevBellMode }
+
+        let view = NativeTerminalView(frame: NSRect(x: 0, y: 0, width: 400, height: 300), textContainer: nil)
+        view.ringBuffer = buffer
+        buffer.appendStream("alert\u{07}\n")
+        view.refresh()
+        XCTAssertEqual(view.bellTriggerCount, 1)
+    }
+
+    // MARK: - TC-REV-38: TransferManager.clearCompleted removes failed tasks and cleans speed tracking dictionaries
+    @MainActor
+    func testTransferManagerClearCompletedRemovesFailedTasksAndCleansSamples() {
+        let manager = TransferManager(distributionChannel: .direct, maxConcurrentTransfers: 2)
+        let dummyURL = URL(fileURLWithPath: "/tmp/test-transfer.bin")
+
+        let completedId = manager.beginExternalTransfer(
+            fileName: "done.bin", remotePath: "/root/done.bin", localURL: dummyURL, direction: .upload, totalBytes: 100
+        )
+        manager.completeExternalTransfer(taskId: completedId)
+
+        let failedId = manager.beginExternalTransfer(
+            fileName: "failed.bin", remotePath: "/root/failed.bin", localURL: dummyURL, direction: .download, totalBytes: 200
+        )
+        manager.failExternalTransfer(taskId: failedId, error: NSError(domain: "SFTP", code: 1, userInfo: [NSLocalizedDescriptionKey: "Permission denied"]))
+
+        let activeId = manager.beginExternalTransfer(
+            fileName: "active.bin", remotePath: "/root/active.bin", localURL: dummyURL, direction: .upload, totalBytes: 500
+        )
+
+        XCTAssertTrue(manager.tasks.first(where: { $0.id == completedId })?.status.isTerminal == true)
+        XCTAssertTrue(manager.tasks.first(where: { $0.id == failedId })?.status.isTerminal == true)
+        XCTAssertFalse(manager.tasks.first(where: { $0.id == activeId })?.status.isTerminal == true)
+
+        manager.clearCompleted()
+
+        XCTAssertEqual(manager.tasks.map(\.id), [activeId], "clearCompleted() must remove completed, cancelled, and failed tasks while keeping active tasks")
+
+        manager.removeTask(id: activeId)
+        XCTAssertTrue(manager.tasks.isEmpty, "removeTask(id:) must cancel and remove the specified task")
+    }
+
+    // MARK: - TC-REV-39: VTParser and TerminalRingBuffer support colon-separated CSI SGR subparameters
+    func testVTParserAndRingBufferColonSeparatedSGRAndIntermediateCSI() {
+        let parser = VTParser()
+        // Colon-separated TrueColor (38:2:255:128:0 and ITU 38:2::0:200:100) + curly underline (4:3) + underline off (4:0) + DECSCUSR (\e[6 q)
+        let raw = "\u{1B}[6 q\u{1B}[38:2:255:128:0;4:3mOrangeUnder\u{1B}[4:0;38:2::0:200:100mGreenPlain\u{1B}[0m"
+        let spans = parser.parseANSI(raw)
+
+        XCTAssertEqual(spans.map(\.text).joined(), "OrangeUnderGreenPlain",
+                       "CSI sequences with colon subparameters or intermediate bytes must never leak into visible text")
+        XCTAssertEqual(spans.first?.foregroundColorHex, "#FF8000")
+        XCTAssertEqual(spans.first?.isUnderlined, true)
+        if spans.count >= 2 {
+            XCTAssertEqual(spans[1].foregroundColorHex, "#00C864")
+            XCTAssertEqual(spans[1].isUnderlined, false)
+        }
+
+        let buffer = TerminalRingBuffer(maxLines: 50)
+        buffer.appendStream("\u{1B}[38:2:255:128:0mColored\u{1B}[0m\r\n")
+        let lines = buffer.tailLines(count: 1)
+        XCTAssertEqual(lines.count, 1)
+        let parsedFromBuffer = parser.parseANSI(lines[0])
+        XCTAssertEqual(parsedFromBuffer.map(\.text).joined(), "Colored")
+    }
+
+    // MARK: - TC-REV-40: iCloudSyncManager.syncNow(withTemporaryStrategy:) restores conflictStrategy on error
+    @MainActor
+    func testICloudSyncTemporaryStrategyRestoresOnThrow() async {
+        final class UnavailableCloudBackend: iCloudStorageBackend, @unchecked Sendable {
+            func isCloudAvailable() -> Bool { false }
+            func readPayloadData() throws -> Data? { nil }
+            func writePayloadData(_ data: Data) throws {}
+            func readBackupData() throws -> Data? { nil }
+            func removePayloadData() throws {}
+            func lastModifiedDate() -> Date? { nil }
+            func cloudVaultURL() -> URL? { nil }
+        }
+
+        let manager = iCloudSyncManager(
+            storageBackend: UnavailableCloudBackend(),
+            conflictStrategy: .smartMerge
+        )
+        XCTAssertEqual(manager.conflictStrategy, .smartMerge)
+
+        do {
+            _ = try await manager.syncNow(withTemporaryStrategy: .overwriteCloud)
+            XCTFail("Expected cloudUnavailable error")
+        } catch {
+            // Expected throw
+        }
+
+        XCTAssertEqual(manager.conflictStrategy, .smartMerge,
+                       "conflictStrategy must be restored to original value even when syncNow throws")
     }
 }

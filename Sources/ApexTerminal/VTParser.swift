@@ -54,11 +54,17 @@ public final class VTParser: Sendable {
                 if nextIndex < raw.endIndex && raw[nextIndex] == "[" { // CSI
                     var j = raw.index(after: nextIndex)
                     var csiParam = ""
+                    var hasSpaceBeforeQ = false
                     var isValidCsi = true
-                    while j < raw.endIndex && !raw[j].isLetter {
+                    while j < raw.endIndex && !raw[j].isLetter && raw[j] != "@" && raw[j] != "~" {
                         let c = raw[j]
-                        if c.isNumber || c == ";" || c == "?" {
+                        if (c.isNumber || c == ";" || c == ":" || c == "?" || c == ">") && !hasSpaceBeforeQ {
                             csiParam.append(c)
+                            j = raw.index(after: j)
+                        } else if c == " ", !hasSpaceBeforeQ,
+                                  raw.index(after: j) < raw.endIndex,
+                                  raw[raw.index(after: j)] == "q" {
+                            hasSpaceBeforeQ = true
                             j = raw.index(after: j)
                         } else {
                             isValidCsi = false
@@ -67,9 +73,8 @@ public final class VTParser: Sendable {
                     }
                     if isValidCsi && j < raw.endIndex {
                         let finalChar = raw[j]
-                        if finalChar == "m" { // SGR color/style
-                            let codes = csiParam.split(separator: ";").compactMap { Int($0) }
-                            style.apply(codes)
+                        if finalChar == "m" && !hasSpaceBeforeQ && !csiParam.hasPrefix("?") && !csiParam.hasPrefix(">") { // SGR color/style
+                            style.apply(param: csiParam)
                         }
                         i = j
                     } else {

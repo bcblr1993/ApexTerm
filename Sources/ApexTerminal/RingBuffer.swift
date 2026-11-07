@@ -152,6 +152,7 @@ public final class TerminalRingBuffer: @unchecked Sendable {
     
     private var _totalCommittedCount: Int64 = 0
     private var _isClearPending: Bool = false
+    private var _isBellPending: Bool = false
     private var _isBracketedPasteEnabled: Bool = false
     
     /// Whether the remote shell has enabled bracketed paste mode (DEC private mode 2004)
@@ -167,6 +168,17 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         defer { lock.unlock() }
         if _isClearPending {
             _isClearPending = false
+            return true
+        }
+        return false
+    }
+
+    /// Atomically consume and reset pending terminal bell (\u{07}) flag
+    public func consumeBellFlag() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if _isBellPending {
+            _isBellPending = false
             return true
         }
         return false
@@ -331,6 +343,7 @@ public final class TerminalRingBuffer: @unchecked Sendable {
                 i = fullText.index(after: i)
                 continue
             } else if ch == "\u{07}" { // Bell
+                _isBellPending = true
                 i = fullText.index(after: i)
                 continue
             } else if ch == "\u{001B}" { // ESC sequence
@@ -666,7 +679,7 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         switch finalChar {
         case "m":
             var style = currentStyle
-            style.apply(param.split(separator: ";").compactMap { Int($0) })
+            style.apply(param: param)
             currentStyle = style
         case "H", "f":
             screenRow = min(screenRows - 1, max(0, amount - 1))
@@ -812,9 +825,8 @@ public final class TerminalRingBuffer: @unchecked Sendable {
                 _isBracketedPasteEnabled = false
             }
         case "m": // SGR Color & Style
-            let codes = param.split(separator: ";").compactMap { Int($0) }
             var style = currentStyle
-            style.apply(codes)
+            style.apply(param: param)
             currentStyle = style
         case "J": // Erase in Display
             let mode = Int(param) ?? 0
@@ -1030,6 +1042,7 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         savedScreenPosition = nil
         _isCursorHidden = false; _isApplicationCursorKeys = false
         _isBracketedPasteEnabled = false; _mouseTrackingMode = 0; _isSGRMouseEnabled = false
+        _isBellPending = false
         _screenRevision += 1; _isClearPending = true
     }
 
@@ -1045,6 +1058,7 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         cursorCol = 0
         pendingSequence = ""
         currentStyle = SGRStyle(foreground: nil, index: nil, bold: false)
+        _isBellPending = false
         _isClearPending = true
         let updateHandler = onUpdate
         lock.unlock()

@@ -11,6 +11,15 @@ public enum TransferStatus: Sendable, Equatable {
     case completed
     case failed(String)
     case cancelled
+
+    public var isTerminal: Bool {
+        switch self {
+        case .completed, .cancelled, .failed:
+            return true
+        case .queued, .transferring:
+            return false
+        }
+    }
 }
 
 public struct TransferTask: Identifiable, Sendable, Equatable {

@@ -62,7 +62,7 @@ public struct TransferDrawer: View {
                         .controlSize(.small)
                         .frame(width: 200)
                         
-                        if manager.tasks.contains(where: { $0.status == .completed || $0.status == .cancelled }) {
+                        if manager.tasks.contains(where: { $0.status.isTerminal }) {
                             ApexActionButton(
                                 "清空记录",
                                 icon: "trash",
@@ -106,7 +106,11 @@ public struct TransferDrawer: View {
                             LazyVStack(spacing: 8) {
                                 ForEach(filteredTasks) { task in
                                     TransferTaskRow(task: task) {
-                                        manager.cancelTask(id: task.id)
+                                        if task.status.isTerminal {
+                                            manager.removeTask(id: task.id)
+                                        } else {
+                                            manager.cancelTask(id: task.id)
+                                        }
                                     }
                                 }
                             }
@@ -282,9 +286,20 @@ private struct TransferTaskRow: View {
                             .foregroundColor(ApexStyle.success)
                     }
                 } else if case .failed = task.status {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 13))
-                        .foregroundColor(ApexStyle.error)
+                    HStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 13))
+                            .foregroundColor(ApexStyle.error)
+
+                        ApexIconButton(
+                            icon: "xmark",
+                            label: "移除失败记录 \(task.fileName)",
+                            size: 20,
+                            iconSize: 9
+                        ) {
+                            onCancel()
+                        }
+                    }
                 }
             }
             

@@ -2,6 +2,33 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.17.4] - 2026-11-07
+
+### ⚡️ 体验优化 (Improvements)
+- **终端响铃（BEL `\u{07}`）通知与视觉闪烁反馈全链路打通**：
+  - `TerminalRingBuffer` 新增独立终端响铃控制符（`0x07`）原子状态捕获 `consumeBellFlag()`（严格排除 OSC 窗口标题转义序列结束符 `\u{07}` 的误触发）；
+  - `NativeTerminalView.refresh()` 完整对接「设置 -> 终端 -> 终端响铃通知 (`bellMode`)」三态配置：支持系统提示音（`.audible`）、基于 CoreAnimation 硬件加速图层的平滑视觉闪烁提示（`.visual`）与静默模式（`.none`）。
+- **增强型 ECMA-48 / ITU T.416 冒号分隔 SGR 子参数与中间字节 CSI 序列兼容**：
+  - `VTParser` 与 `SGRStyle.apply(param:)` 新增对现代 CLI 工具（如 Neovim、tmux、delta、git diff）发出的冒号分隔 TrueColor/256 色子参数（`\e[38:2:R:G:B`、`\e[38:2::R:G:B`、`\e[38:5:N`）、波浪下划线子参数（`\e[4:3m` / `\e[4:0m`）以及带中间字节的 CSI 序列（如 `\e[6 q` 光标样式控制）的原生解析支持，彻底杜绝复杂 CSI 序列泄漏为终端可见乱码文本。
+- **终端 URL 识别引擎静态预编译加速**：
+  - `NativeTerminalView.detectURLs` 将 `NSDataDetector` 升级为线程安全的静态预编译单例 `linkDetector`，消除按住 `⌘` 移动鼠标时在主线程高频重复编译正则表达式的开销。
+
+### 🐞 问题修复 (Bug Fixes)
+- **修复「选中即复制 (`isCopyOnSelectEnabled`)」开关被视图刷新重置及右键菜单无条件覆盖剪贴板的问题**：
+  - `WorkspaceView` 向 `TerminalRepresentable` 显式绑定 `themeSettings.isCopyOnSelectEnabled`，修复关闭「选中即复制」后在分屏或焦点切换时被默认参数重置回 `true` 的问题；
+  - `NativeTerminalView.menu(for:)` 在弹出右键菜单前严格检查 `isCopyOnSelectEnabled`，防止用户关闭「选中即复制」后准备右键粘贴时剪贴板被当前终端选区内容意外覆盖。
+- **修复 SFTP 传输任务抽屉无法清理失败记录及速率采样字典残留问题**：
+  - `TransferStatus` 新增 `isTerminal` 终态判定（涵盖 `.completed`、`.cancelled` 与 `.failed`），修复 `TransferManager.clearCompleted()` 与 `TransferDrawer`「清空记录」按钮忽略失败任务导致失败条目永久驻留抽屉的问题；
+  - `TransferManager` 新增单条任务移除接口 `removeTask(id:)` 并在失败任务行提供一键移除按钮，同时在任务取消与清理时同步回收 `lastSpeedSampleTime` 与 `lastSampledBytes` 字典采样状态。
+- **修复 iCloud 强制上传/下载异常中断时污染全局冲突解决策略及日志目录 `~` 未展开的问题**：
+  - `iCloudSyncManager` 新增 `syncNow(withTemporaryStrategy:)` 并通过 `defer` 保证在云端不可用或同步抛出异常时无条件还原用户原有的 `conflictStrategy`；
+  - 「设置 -> 行为 -> 打开目录」在创建并打开会话审计日志目录前自动执行 `expandingTildeInPath` 路径展开。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- 新增 `CodeReviewRegressionTests` `TC-REV-36 ~ TC-REV-40` 共 5 项 TDD 回归测试（累计 40 项代码审查回归测试），覆盖选中即复制与右键菜单剪贴板保护、终端响铃控制符精准识别与视觉闪烁、SFTP 失败任务清理与速率字典回收、冒号分隔 SGR / 中间字节 CSI 解析以及 iCloud 临时策略异常恢复；
+- 全量自动化测试用例 100% 绿色通过（0 failures），Swift 6 模式零警告；
+- 8 大性能 Benchmark 与 Tart VM 真实集成质量门禁全量达标，通过 Developer ID 官方签名与 Apple 生产级安全公证。
+
 ## [v1.17.3] - 2026-11-07
 
 ### ⚡️ 体验优化 (Improvements)

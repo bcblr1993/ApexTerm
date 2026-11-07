@@ -205,10 +205,24 @@ public final class TransferManager: ObservableObject {
         }
         activeTaskHandles[id]?.cancel()
         activeTaskHandles.removeValue(forKey: id)
+        lastSpeedSampleTime.removeValue(forKey: id)
+        lastSampledBytes.removeValue(forKey: id)
         if let idx = tasks.firstIndex(where: { $0.id == id }) {
             tasks[idx].status = .cancelled
             tasks[idx].completedAt = Date()
         }
+    }
+
+    public func removeTask(id: UUID) {
+        if let idx = tasks.firstIndex(where: { $0.id == id }), !tasks[idx].status.isTerminal {
+            cancelTask(id: id)
+        } else {
+            activeTaskHandles[id]?.cancel()
+            activeTaskHandles.removeValue(forKey: id)
+            lastSpeedSampleTime.removeValue(forKey: id)
+            lastSampledBytes.removeValue(forKey: id)
+        }
+        tasks.removeAll { $0.id == id }
     }
 
     public func cancelAllTasks() {
@@ -221,6 +235,8 @@ public final class TransferManager: ObservableObject {
             handle.cancel()
         }
         activeTaskHandles.removeAll()
+        lastSpeedSampleTime.removeAll()
+        lastSampledBytes.removeAll()
         runningTransferCount = 0
         let now = Date()
         for idx in tasks.indices where tasks[idx].status == .queued || tasks[idx].status == .transferring {
@@ -230,7 +246,13 @@ public final class TransferManager: ObservableObject {
     }
     
     public func clearCompleted() {
-        tasks.removeAll { $0.status == .completed || $0.status == .cancelled }
+        let terminalIds = tasks.filter { $0.status.isTerminal }.map(\.id)
+        for id in terminalIds {
+            activeTaskHandles.removeValue(forKey: id)
+            lastSpeedSampleTime.removeValue(forKey: id)
+            lastSampledBytes.removeValue(forKey: id)
+        }
+        tasks.removeAll { $0.status.isTerminal }
     }
     
     // MARK: - Externally Driven Transfers (Drag & Drop Export / Streaming)

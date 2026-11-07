@@ -2,6 +2,24 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.18.0] - 2026-11-08
+
+### ✨ 新增特性 (Features)
+- **会话登录启动脚本与环境变量注入引擎 (`SessionStartupHelper`)**：
+  - `Session` 模型新增向下兼容的三大自动化登录字段：初始工作目录（`initialWorkingDirectory`）、登录后自动执行命令（`startupCommand`）与自定义环境变量字典（`environmentVariables`）；
+  - `SessionEditModal` 新增符合 `ApexStyle` 规范的「登录启动与环境变量」配置分组，支持配置初始远端/本地目录（如 `/var/www/app` 或 `~/workspace`）、自动挂载命令（如 `tmux attach -t main || tmux new -s main`）与多行 `KEY=VALUE` 环境变量，并内置实时变量名语法校验；
+  - `TerminalTabItem` 在首次连接建立后自动执行单引号安全转义的复合引导脚本（`export ... && cd ... && <cmd>`），并自动将 SFTP 文件浏览器的初始路径对齐至 `initialWorkingDirectory`；
+  - `LocalTerminalSession` 原生支持在 `posix_spawnp` 阶段直接切换至 `initialWorkingDirectory` 并注入经白名单校验的环境变量。
+
+### 🛡️ 安全与云同步加固 (Security & Cloud Sync)
+- **动态链接器注入防护与 iCloud 敏感环境变量零捆绑脱敏**：
+  - `SessionStartupHelper.isValidEnvKey` 严格遵循 POSIX 标识符规范，并主动拦截 `LD_PRELOAD`、`DYLD_INSERT_LIBRARIES`、`BASH_ENV`、`PROMPT_COMMAND` 等高危注入变量；
+  - `iCloudSyncManager.sanitizeForCloud` 自动识别并剥离包含 `SECRET`、`TOKEN`、`PASSWORD`、`PRIVATE_KEY`、`API_KEY`、`CREDENTIAL` 等敏感关键字的环境变量，确保云端同步零明文凭据泄漏。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- 新增 `SessionStartupEngineTests`（`TC-START-01 ~ TC-START-08`）与 `CodeReviewRegressionTests` `TC-REV-46` 共 9 项自动化测试，覆盖历史会话 JSON 向下兼容、环境变量多行解析与黑名单拦截、含空格/`~` 路径的安全引用、复合启动命令构建、本地终端环境注入、iCloud 敏感变量脱敏与会话克隆/合并保留；
+- 全量自动化测试用例 100% 绿色通过（0 failures），Swift 6 模式零警告。
+
 ## [v1.17.5] - 2026-11-07
 
 ### ⚡️ 体验优化 (Improvements)

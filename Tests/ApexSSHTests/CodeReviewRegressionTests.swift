@@ -1119,4 +1119,21 @@ final class CodeReviewRegressionTests: XCTestCase {
         XCTAssertTrue(merged.tags.contains("主节点"))
         XCTAssertEqual(merged.passphraseRef, "session.pass.existing")
     }
+
+    // MARK: - TC-REV-46: Session startup bootstrap escapes multiline/control characters and guards auto-reconnect duplicate execution
+    func testSessionStartupBootstrapSanitizationAndSingleLineSafety() {
+        let session = Session(
+            name: "Bootstrap Guard",
+            host: "10.0.0.5",
+            username: "root",
+            initialWorkingDirectory: "  /srv/my app  ",
+            startupCommand: "  echo hello\r\nwhoami  ",
+            environmentVariables: [
+                "NORMAL_KEY": "val1",
+                "INJECT;KEY": "ignored"
+            ]
+        )
+        let bootstrap = SessionStartupHelper.buildBootstrapCommand(for: session)
+        XCTAssertEqual(bootstrap, "export NORMAL_KEY='val1' && cd '/srv/my app' && echo hello; whoami")
+    }
 }

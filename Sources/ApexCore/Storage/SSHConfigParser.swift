@@ -103,6 +103,9 @@ public struct SSHConfigHost: Identifiable, Sendable, Equatable, Hashable {
             sftpAutoSyncEnabled: existing.sftpAutoSyncEnabled,
             keepAliveIntervalSeconds: existing.keepAliveIntervalSeconds,
             terminalType: existing.terminalType,
+            initialWorkingDirectory: existing.initialWorkingDirectory,
+            startupCommand: existing.startupCommand,
+            environmentVariables: existing.environmentVariables,
             createdAt: existing.createdAt,
             lastConnectedAt: existing.lastConnectedAt
         )

@@ -159,8 +159,14 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
     public init(session: Session, sshClient: SSHSessionProtocol) {
         self.session = session
         self.sshClient = sshClient
+        let defaultRemoteDir: String = {
+            if let initDir = session.initialWorkingDirectory?.trimmingCharacters(in: .whitespacesAndNewlines), !initDir.isEmpty {
+                return initDir
+            }
+            return "~"
+        }()
         self.currentRemotePath = UserDefaults.standard.string(forKey: "workspace.remotePath.\(session.id.uuidString)")
-            ?? "~"
+            ?? defaultRemoteDir
         self.isDirectoryLinkageEnabled = session.sftpAutoSyncEnabled
         self.connectionState = .connecting(step: "正在连接")
         
@@ -232,6 +238,7 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
         }
         Task {
             do {
+                let shouldRunStartupBootstrap = !p.hasEverConnected
                 try await p.sshClient.connect()
                 let dims = p.ringBuffer.dimensions
                 try? await p.sshClient.resizeTerminal(columns: dims.columns, rows: dims.rows)
@@ -241,6 +248,15 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
                 }
                 if isPrimaryPane {
                     self.probeTerminfo(client: p.sshClient)
+                }
+                if shouldRunStartupBootstrap,
+                   let bootstrap = SessionStartupHelper.buildBootstrapCommand(
+                       for: self.session,
+                       includeWorkingDirectory: !self.session.isLocal,
+                       includeEnvExports: !self.session.isLocal
+                   ),
+                   let data = (bootstrap + "\n").data(using: .utf8) {
+                    try? await p.sshClient.sendInput(data)
                 }
                 
                 // Auto-start configured tunnels for this session

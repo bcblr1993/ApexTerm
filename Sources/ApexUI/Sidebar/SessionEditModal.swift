@@ -29,6 +29,9 @@ public struct SessionEditModal: View {
     @State private var sftpAutoSync: Bool = true
     @State private var keepAliveInterval: Int = 15
     @State private var terminalType: TerminalType = .default
+    @State private var initialWorkingDirectory: String = ""
+    @State private var startupCommand: String = ""
+    @State private var environmentVariablesText: String = ""
     @State private var saveError: String?
     @State private var isTestingConnection: Bool = false
     @State private var testResult: SSHTestConnectionResult?
@@ -425,6 +428,26 @@ public struct SessionEditModal: View {
                         .font(.caption)
                         .foregroundStyle(ApexStyle.secondary)
                 }
+
+                // 5. 登录启动与环境变量
+                Section("登录启动与环境变量") {
+                    TextField("初始工作目录 (如 /var/www/app 或 ~/workspace)", text: $initialWorkingDirectory)
+                        .accessibilityLabel("初始工作目录")
+                        .accessibilityIdentifier("session.initialWorkingDirectory")
+                        .font(.system(.body, design: .monospaced))
+                    TextField("登录后自动执行命令 (如 tmux attach -t main || tmux new -s main)", text: $startupCommand)
+                        .accessibilityLabel("登录后自动执行命令")
+                        .accessibilityIdentifier("session.startupCommand")
+                        .font(.system(.body, design: .monospaced))
+                    TextField("自定义环境变量 (每行 KEY=VALUE，如 APP_ENV=production)", text: $environmentVariablesText, axis: .vertical)
+                        .lineLimit(2...4)
+                        .accessibilityLabel("自定义环境变量")
+                        .accessibilityIdentifier("session.environmentVariables")
+                        .font(.system(.body, design: .monospaced))
+                    Text("敏感变量名（含 SECRET / TOKEN / PASSWORD 等）仅在本地生效，iCloud 云同步时将自动脱敏剔除。")
+                        .font(.caption2)
+                        .foregroundStyle(ApexStyle.secondary)
+                }
             }
             .formStyle(.grouped)
 
@@ -472,7 +495,7 @@ public struct SessionEditModal: View {
                     .help(result.isSuccess ? "连接正常" : (result.errorMessage ?? "连接失败"))
                     .accessibilityIdentifier("session.testResultBanner")
                     .transition(.opacity)
-                } else if let message = saveError ?? authValidationMessage {
+                } else if let message = saveError ?? authValidationMessage ?? envValidationMessage {
                     Text(message)
                         .font(.caption)
                         .foregroundStyle(saveError != nil ? ApexStyle.error : ApexStyle.warning)
@@ -500,7 +523,7 @@ public struct SessionEditModal: View {
                 ) {
                     saveSession()
                 }
-                .disabled(host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !isValidPort || authValidationMessage != nil)
+                .disabled(host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !isValidPort || authValidationMessage != nil || envValidationMessage != nil)
                 .keyboardShortcut(.defaultAction)
             }
             .padding(.horizontal, 20)
@@ -568,6 +591,16 @@ public struct SessionEditModal: View {
 
     private var authValidationMessage: String? {
         authType.validationMessage(privateKeyPath: privateKeyPath, certificatePath: certificatePath)
+    }
+
+    private var envValidationMessage: String? {
+        Self.environmentValidationMessage(for: environmentVariablesText)
+    }
+
+    nonisolated public static func environmentValidationMessage(for text: String) -> String? {
+        let parsed = SessionStartupHelper.parseEnvLines(text)
+        guard !parsed.invalidKeys.isEmpty else { return nil }
+        return "环境变量名格式无效：\(parsed.invalidKeys.joined(separator: ", "))"
     }
 
     private var availableAuthTypes: [AuthType] {
@@ -700,6 +733,9 @@ public struct SessionEditModal: View {
         terminalType = s.terminalType
         sftpAutoSync = s.sftpAutoSyncEnabled
         keepAliveInterval = [10, 15, 30, 60].contains(s.keepAliveIntervalSeconds) ? s.keepAliveIntervalSeconds : 15
+        initialWorkingDirectory = s.initialWorkingDirectory ?? ""
+        startupCommand = s.startupCommand ?? ""
+        environmentVariablesText = SessionStartupHelper.formatEnvLines(s.environmentVariables)
         
         jumpServerId = s.jumpServerId
         
@@ -803,6 +839,14 @@ public struct SessionEditModal: View {
             authMethod = .agent
         }
         
+        let trimmedInitDir = initialWorkingDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedStartupCmd = startupCommand.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parsedEnv = SessionStartupHelper.parseEnvLines(environmentVariablesText)
+        if !parsedEnv.invalidKeys.isEmpty {
+            saveError = "环境变量名无效：\(parsedEnv.invalidKeys.joined(separator: ", "))"
+            return
+        }
+
         let newSession = Session(
             id: sessionId,
             name: name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? host.trimmingCharacters(in: .whitespaces) : name.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -818,6 +862,9 @@ public struct SessionEditModal: View {
             sftpAutoSyncEnabled: sftpAutoSync,
             keepAliveIntervalSeconds: keepAliveInterval,
             terminalType: terminalType,
+            initialWorkingDirectory: trimmedInitDir.isEmpty ? nil : trimmedInitDir,
+            startupCommand: trimmedStartupCmd.isEmpty ? nil : trimmedStartupCmd,
+            environmentVariables: parsedEnv.variables,
             createdAt: initialSession?.createdAt ?? Date(),
             lastConnectedAt: initialSession?.lastConnectedAt
         )

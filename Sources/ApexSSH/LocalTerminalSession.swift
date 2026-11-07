@@ -86,6 +86,31 @@ public final class LocalTerminalSession: SSHSessionProtocol, @unchecked Sendable
         return "/bin/sh"
     }
     
+    /// Builds the child process environment dictionary for `posix_spawnp`, injecting validated session environment variables.
+    public static func buildSpawnEnvironment(
+        base: [String: String] = ProcessInfo.processInfo.environment,
+        session: Session,
+        homeDirectory: String,
+        workingDirectory: String
+    ) -> [String: String] {
+        var envVars = base
+        envVars["TERM"] = "xterm-256color"
+        envVars["COLORTERM"] = "truecolor"
+        envVars["LANG"] = "en_US.UTF-8"
+        envVars["LC_ALL"] = "en_US.UTF-8"
+        envVars["HOME"] = homeDirectory
+        envVars["PWD"] = workingDirectory
+        let currentUser = ProcessInfo.processInfo.userName
+        if !currentUser.isEmpty {
+            envVars["USER"] = currentUser
+            envVars["LOGNAME"] = currentUser
+        }
+        for (key, value) in session.environmentVariables where SessionStartupHelper.isValidEnvKey(key) {
+            envVars[key] = value
+        }
+        return envVars
+    }
+
     public func connect() async throws {
         if ptyMasterFd != -1 || childPid > 0 {
             await disconnect()
@@ -122,7 +147,17 @@ public final class LocalTerminalSession: SSHSessionProtocol, @unchecked Sendable
         posix_spawn_file_actions_addclose(&fileActions, master)
         
         let homeDir = NSHomeDirectory()
-        posix_spawn_file_actions_addchdir_np(&fileActions, homeDir)
+        let workingDir: String = {
+            if let raw = session.initialWorkingDirectory?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
+                let expanded = (raw as NSString).expandingTildeInPath
+                var isDir: ObjCBool = false
+                if FileManager.default.fileExists(atPath: expanded, isDirectory: &isDir), isDir.boolValue {
+                    return expanded
+                }
+            }
+            return homeDir
+        }()
+        posix_spawn_file_actions_addchdir_np(&fileActions, workingDir)
         
         var spawnAttributes: posix_spawnattr_t?
         posix_spawnattr_init(&spawnAttributes)
@@ -147,18 +182,11 @@ public final class LocalTerminalSession: SSHSessionProtocol, @unchecked Sendable
             nil
         ]
         
-        var envVars = ProcessInfo.processInfo.environment
-        envVars["TERM"] = "xterm-256color"
-        envVars["COLORTERM"] = "truecolor"
-        envVars["LANG"] = "en_US.UTF-8"
-        envVars["LC_ALL"] = "en_US.UTF-8"
-        envVars["HOME"] = homeDir
-        envVars["PWD"] = homeDir
-        let currentUser = ProcessInfo.processInfo.userName
-        if !currentUser.isEmpty {
-            envVars["USER"] = currentUser
-            envVars["LOGNAME"] = currentUser
-        }
+        let envVars = Self.buildSpawnEnvironment(
+            session: session,
+            homeDirectory: homeDir,
+            workingDirectory: workingDir
+        )
         
         var cEnv: [UnsafeMutablePointer<CChar>?] = envVars.map { strdup("\($0.key)=\($0.value)") }
         cEnv.append(nil)

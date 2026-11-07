@@ -84,6 +84,9 @@ public struct Session: Identifiable, Codable, Sendable, Equatable, Hashable {
     public var sftpAutoSyncEnabled: Bool
     public var keepAliveIntervalSeconds: Int
     public var terminalType: TerminalType
+    public var initialWorkingDirectory: String?
+    public var startupCommand: String?
+    public var environmentVariables: [String: String]
     
     // Timestamps
     public var createdAt: Date
@@ -98,6 +101,7 @@ public struct Session: Identifiable, Codable, Sendable, Equatable, Hashable {
         case id, name, host, port, username, authMethod, sessionType
         case folder, tags, colorHex, jumpServerId
         case agentlessMonitorEnabled, sftpAutoSyncEnabled, keepAliveIntervalSeconds, terminalType
+        case initialWorkingDirectory, startupCommand, environmentVariables
         case createdAt, lastConnectedAt
     }
     
@@ -117,6 +121,9 @@ public struct Session: Identifiable, Codable, Sendable, Equatable, Hashable {
         sftpAutoSyncEnabled: Bool = true,
         keepAliveIntervalSeconds: Int = 30,
         terminalType: TerminalType = .default,
+        initialWorkingDirectory: String? = nil,
+        startupCommand: String? = nil,
+        environmentVariables: [String: String] = [:],
         createdAt: Date = Date(),
         lastConnectedAt: Date? = nil
     ) {
@@ -135,6 +142,9 @@ public struct Session: Identifiable, Codable, Sendable, Equatable, Hashable {
         self.sftpAutoSyncEnabled = sftpAutoSyncEnabled
         self.keepAliveIntervalSeconds = keepAliveIntervalSeconds
         self.terminalType = terminalType
+        self.initialWorkingDirectory = initialWorkingDirectory
+        self.startupCommand = startupCommand
+        self.environmentVariables = environmentVariables
         self.createdAt = createdAt
         self.lastConnectedAt = lastConnectedAt
     }
@@ -158,6 +168,9 @@ public struct Session: Identifiable, Codable, Sendable, Equatable, Hashable {
         // Older builds never wrote this key; unknown values from newer builds also fall back.
         let rawTerminalType = try? container.decodeIfPresent(String.self, forKey: .terminalType)
         self.terminalType = rawTerminalType.flatMap { TerminalType(rawValue: $0) } ?? .default
+        self.initialWorkingDirectory = try container.decodeIfPresent(String.self, forKey: .initialWorkingDirectory)
+        self.startupCommand = try container.decodeIfPresent(String.self, forKey: .startupCommand)
+        self.environmentVariables = try container.decodeIfPresent([String: String].self, forKey: .environmentVariables) ?? [:]
         self.createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
         self.lastConnectedAt = try container.decodeIfPresent(Date.self, forKey: .lastConnectedAt)
     }
@@ -179,6 +192,11 @@ public struct Session: Identifiable, Codable, Sendable, Equatable, Hashable {
         try container.encode(sftpAutoSyncEnabled, forKey: .sftpAutoSyncEnabled)
         try container.encode(keepAliveIntervalSeconds, forKey: .keepAliveIntervalSeconds)
         try container.encode(terminalType, forKey: .terminalType)
+        try container.encodeIfPresent(initialWorkingDirectory, forKey: .initialWorkingDirectory)
+        try container.encodeIfPresent(startupCommand, forKey: .startupCommand)
+        if !environmentVariables.isEmpty {
+            try container.encode(environmentVariables, forKey: .environmentVariables)
+        }
         try container.encode(createdAt, forKey: .createdAt)
         try container.encodeIfPresent(lastConnectedAt, forKey: .lastConnectedAt)
     }

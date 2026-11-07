@@ -2,6 +2,19 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.22.0] - 2026-11-08
+
+### ✨ 新增特性 (Features)
+- **已知主机指纹管理器 (`KnownHostsManager` & `KnownHostsSettingsView`)**：
+  - 设置中心「密钥保险库」新增「SSH 密钥 / 主机指纹 (`known_hosts`)」双视图切换，可视化审查本机 `~/.ssh/known_hosts` 中的所有受信任主机公钥条目；
+  - 完整解析标准 `host,ip` 多主机行、非标端口 `[host]:2222`、`@cert-authority` 证书颁发机构、`@revoked` 吊销标记以及 `|1|salt|hash` 哈希混淆主机记录，并基于 CryptoKit 实时计算与 OpenSSH `ssh-keygen -lf` 完全一致的 `SHA256:<base64>` 指纹；
+  - **主机重装公钥冲突自动侦测与一键修复**：自动检测同一端点（含 `[host]:22` 与裸 `host` 归一化）下存在多个不同公钥指纹的冲突状态（`REMOTE HOST IDENTIFICATION HAS CHANGED`），提供告警横幅与一键清理能力，无需手动编辑行号；
+  - **原子级 `.bak` 备份与多主机行无损剥离**：移除单条指纹或按端点清理时自动生成 `known_hosts.bak` 备份并完整保留注释行；当逗号分隔的多主机行仅移除其中一个 IP/域名时，自动保留同行其余兄弟主机记录。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- 新增 `KnownHostsManagerTests`（`TC-KH-01 ~ TC-KH-08`）与 `CodeReviewRegressionTests` `TC-REV-50` 共 9 项自动化测试，覆盖多格式 `known_hosts` 解析、OpenSSH `SHA256` 指纹计算、公钥冲突检测、`.bak` 原子备份与多主机同行兄弟节点无损保留；
+- 全量自动化测试用例 100% 绿色通过（0 failures），Swift 6 模式零警告。
+
 ## [v1.21.0] - 2026-11-08
 
 ### ✨ 新增特性 (Features)

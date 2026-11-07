@@ -1183,4 +1183,34 @@ final class CodeReviewRegressionTests: XCTestCase {
         XCTAssertEqual(ring.shellIntegration.lastCompletedRecord?.commandText, "uname -s")
         XCTAssertEqual(ring.extractLastOSC133CommandOutput(), "Linux")
     }
+
+    // MARK: - TC-REV-50: KnownHostsManager preserves sibling hosts on comma-separated lines and normalizes [host]:22 in conflict detection
+    func testKnownHostsCommaSeparatedSiblingPreservationAndPort22ConflictNormalization() throws {
+        let keyA = "AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
+        let keyB = "AAAAC3NzaC1lZDI1NTE5AAAAIBX9p7wK8vL2mN4qR6sT8uV0wX2yZ4aB6cD8eF0gH2iJ"
+
+        // 1. [host]:22 and bare host must be normalized to the same endpoint for conflict detection
+        let entries = KnownHostsManager.parse(content: """
+        [git.internal]:22 ssh-ed25519 \(keyA)
+        git.internal ssh-ed25519 \(keyB)
+        """)
+        let conflicts = KnownHostsManager.detectConflicts(in: entries)
+        XCTAssertEqual(conflicts.count, 1)
+        XCTAssertEqual(conflicts[0].endpoint, "git.internal")
+
+        // 2. Removing one host from a comma-separated line must preserve sibling hosts on that line
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("kh-sibling-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let khFile = tempDir.appendingPathComponent("known_hosts")
+        try "github.com,140.82.112.4 ssh-ed25519 \(keyA) multi-host\n".write(to: khFile, atomically: true, encoding: .utf8)
+
+        let manager = KnownHostsManager(fileURL: khFile)
+        let modified = try manager.removeEntries(matchingEndpoint: "140.82.112.4", port: 22)
+        XCTAssertEqual(modified, 1)
+        XCTAssertEqual(manager.entries.count, 1)
+        XCTAssertEqual(manager.entries[0].hostPattern, "github.com")
+        XCTAssertEqual(manager.entries[0].comment, "multi-host")
+    }
 }

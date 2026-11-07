@@ -4,9 +4,16 @@ import ApexCore
 
 /// Centralized SSH Key Vault Manager view for Settings
 public struct SSHKeyVaultSettingsView: View {
+    private enum SecuritySubTab: Int, CaseIterable {
+        case keyVault = 0
+        case knownHosts = 1
+    }
+
     @ObservedObject private var themeSettings = AppSettings.shared
     @ObservedObject private var vaultManager = SSHKeyVaultManager.shared
-    
+    @ObservedObject private var knownHostsManager = KnownHostsManager.shared
+
+    @State private var selectedSubTab: SecuritySubTab = .keyVault
     @State private var showingImportSheet: Bool = false
     @State private var showingDeploySheet: Bool = false
     @State private var selectedKeyForDeploy: SSHKeyIdentity?
@@ -34,44 +41,58 @@ public struct SSHKeyVaultSettingsView: View {
             // Header
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("SSH 密钥保险库 (Key Vault)")
+                    Text(selectedSubTab == .keyVault ? "SSH 密钥保险库 (Key Vault)" : "已知主机指纹 (known_hosts)")
                         .font(.system(size: 15, weight: .bold))
                         .foregroundColor(ApexStyle.primary)
-                    Text("集中管理 SSH 密钥对，私钥采用 macOS 官方 Keychain 安全加密隔离")
+                    Text(selectedSubTab == .keyVault ? "集中管理 SSH 密钥对，私钥采用 macOS 官方 Keychain 安全加密隔离" : "可视化审查 ~/.ssh/known_hosts 信任库、SHA-256 指纹与主机重装公钥冲突")
                         .font(.system(size: 11))
                         .foregroundColor(ApexStyle.secondary)
                 }
                 
                 Spacer()
                 
-                Button(action: {
-                    importName = ""
-                    importPrivateKey = ""
-                    importPublicKey = ""
-                    importPassphrase = ""
-                    importError = nil
-                    showingImportSheet = true
-                }) {
-                    Label("导入密钥", systemImage: "plus")
+                Picker("", selection: $selectedSubTab) {
+                    Text("SSH 密钥 (\(vaultManager.keys.count))").tag(SecuritySubTab.keyVault)
+                    Text("主机指纹 (\(knownHostsManager.entries.count))").tag(SecuritySubTab.knownHosts)
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+                
+                if selectedSubTab == .keyVault {
+                    Button(action: {
+                        importName = ""
+                        importPrivateKey = ""
+                        importPublicKey = ""
+                        importPassphrase = ""
+                        importError = nil
+                        showingImportSheet = true
+                    }) {
+                        Label("导入密钥", systemImage: "plus")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                }
             }
             .padding(.horizontal, 4)
             
             Divider()
             
-            // Key List
-            if vaultManager.keys.isEmpty {
-                emptyVaultPlaceholder
+            if selectedSubTab == .knownHosts {
+                KnownHostsSettingsView()
             } else {
-                ScrollView {
-                    LazyVStack(spacing: 8) {
-                        ForEach(vaultManager.keys) { key in
-                            keyRow(key)
+                // Key List
+                if vaultManager.keys.isEmpty {
+                    emptyVaultPlaceholder
+                } else {
+                    ScrollView {
+                        LazyVStack(spacing: 8) {
+                            ForEach(vaultManager.keys) { key in
+                                keyRow(key)
+                            }
                         }
+                        .padding(.vertical, 4)
                     }
-                    .padding(.vertical, 4)
                 }
             }
             

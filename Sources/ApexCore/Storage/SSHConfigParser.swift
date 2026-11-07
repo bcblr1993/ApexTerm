@@ -9,6 +9,8 @@ public struct SSHConfigHost: Identifiable, Sendable, Equatable, Hashable {
     public let port: Int
     public let identityFile: String?
     public let certificateFile: String?
+    public let remoteCommand: String?
+    public let environmentVariables: [String: String]
     
     public init(
         id: UUID = UUID(),
@@ -17,7 +19,9 @@ public struct SSHConfigHost: Identifiable, Sendable, Equatable, Hashable {
         user: String,
         port: Int = 22,
         identityFile: String? = nil,
-        certificateFile: String? = nil
+        certificateFile: String? = nil,
+        remoteCommand: String? = nil,
+        environmentVariables: [String: String] = [:]
     ) {
         self.id = id
         self.hostPattern = hostPattern
@@ -26,6 +30,8 @@ public struct SSHConfigHost: Identifiable, Sendable, Equatable, Hashable {
         self.port = port
         self.identityFile = identityFile
         self.certificateFile = certificateFile
+        self.remoteCommand = remoteCommand
+        self.environmentVariables = environmentVariables
     }
     
     /// Converts this parsed config entry into a ready-to-use ApexTerm Session
@@ -52,7 +58,9 @@ public struct SSHConfigHost: Identifiable, Sendable, Equatable, Hashable {
             folder: folder,
             tags: ["ssh-config", "imported"],
             agentlessMonitorEnabled: true,
-            sftpAutoSyncEnabled: true
+            sftpAutoSyncEnabled: true,
+            startupCommand: remoteCommand,
+            environmentVariables: environmentVariables
         )
     }
 
@@ -146,6 +154,8 @@ public final class SSHConfigParser: Sendable {
         var currentPort = 22
         var currentIdentityFile: String? = nil
         var currentCertificateFile: String? = nil
+        var currentRemoteCommand: String? = nil
+        var currentEnvVars: [String: String] = [:]
         var portWasSet = false
         // `Match` blocks are conditional; their directives must not leak into the preceding Host.
         var insideMatchBlock = false
@@ -166,7 +176,9 @@ public final class SSHConfigParser: Sendable {
                     user: currentUser,
                     port: currentPort,
                     identityFile: currentIdentityFile,
-                    certificateFile: currentCertificateFile
+                    certificateFile: currentCertificateFile,
+                    remoteCommand: currentRemoteCommand,
+                    environmentVariables: currentEnvVars
                 )
                 results.append(entry)
             }
@@ -176,6 +188,8 @@ public final class SSHConfigParser: Sendable {
             currentPort = 22
             currentIdentityFile = nil
             currentCertificateFile = nil
+            currentRemoteCommand = nil
+            currentEnvVars = [:]
             portWasSet = false
         }
         
@@ -186,11 +200,12 @@ public final class SSHConfigParser: Sendable {
                 continue
             }
             
-            // Tokens can be separated by whitespace (spaces, tabs) or '='
+            // Tokens can be separated by whitespace (spaces, tabs) or '=' (when key before '=' has no internal spaces)
             let directive: String
             let rawValue: String
             
-            if let eqIndex = line.firstIndex(of: "=") {
+            if let eqIndex = line.firstIndex(of: "="),
+               line[..<eqIndex].trimmingCharacters(in: .whitespaces).allSatisfy({ !$0.isWhitespace }) {
                 let key = line[..<eqIndex].trimmingCharacters(in: .whitespaces)
                 let val = line[line.index(after: eqIndex)...].trimmingCharacters(in: .whitespaces)
                 directive = key.lowercased()
@@ -252,6 +267,17 @@ public final class SSHConfigParser: Sendable {
             case "certificatefile":
                 if currentCertificateFile == nil {
                     currentCertificateFile = (cleanValue as NSString).expandingTildeInPath
+                }
+                
+            case "remotecommand":
+                if currentRemoteCommand == nil && cleanValue.lowercased() != "none" && !cleanValue.isEmpty {
+                    currentRemoteCommand = cleanValue
+                }
+                
+            case "setenv":
+                let parsed = SessionStartupHelper.parseEnvLines(rawValue)
+                for (k, v) in parsed.variables where currentEnvVars[k] == nil {
+                    currentEnvVars[k] = v
                 }
                 
             default:

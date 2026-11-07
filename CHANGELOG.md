@@ -2,6 +2,19 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.23.0] - 2026-11-08
+
+### ✨ 新增特性 (Features)
+- **会话配置导入导出中心与零凭据团队分享包 (`SessionBundleExporter` & `AetherSharePack`)**：
+  - 设置中心「数据与云同步」新增「导出零凭据分享包 (`.aetherpack`)」与「导出 OpenSSH Config」功能，支持将远程会话、快捷命令片段 (`Snippet`)、终端高亮触发器 (`TerminalTrigger`)、SFTP 书签与 SSH 端口转发隧道一键打包为 `.aetherpack.json` 归档或按项目分组导出；
+  - **零捆绑安全红线脱敏 (`sanitizeSessionForShare`)**：分享包导出时自动剥离所有密码/口令钥匙串引用、阻断私钥 PEM 明文块与 `vault://` 内部引用、过滤敏感环境变量，并将本机绝对路径 `/Users/<name>/.ssh/...` 归一化为跨设备通用的 `~/.ssh/...` 路径；
+  - **智能去重合并与跳板机关系重映射 (`importSharePackData`)**：导入分享包（同时向下兼容旧版 `[Session]` JSON 备份）时自动按 `(host, port, username, name)` 识别并跳过重复会话，当跳板机已存在于本地时自动将依赖会话的 `jumpServerId` 重映射至本地跳板机 UUID；
+  - **反向生成标准 OpenSSH `~/.ssh/config` (`generateOpenSSHConfig`)**：支持将当前会话列表一键导出为符合 OpenSSH 规范的 `ssh_config` 配置文件（完整映射 `Host` 重名消歧、`HostName`、`User`、`Port`、`IdentityFile`、`CertificateFile`、`ProxyJump`、`SetEnv` 与 `RemoteCommand`），并支持与 `SSHConfigParser` 双向无损往返。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- 新增 `SessionBundleExportImportTests`（`TC-PACK-01 ~ TC-PACK-08`）与 `CodeReviewRegressionTests` `TC-REV-51` 共 9 项自动化测试，覆盖 `.aetherpack` 全量序列化、零凭据脱敏与路径归一化、按分组导出、智能去重合并、跳板机 UUID 重映射及 OpenSSH Config 双向往返校验；
+- 全量自动化测试用例 100% 绿色通过（0 failures），Swift 6 模式零警告。
+
 ## [v1.22.0] - 2026-11-08
 
 ### ✨ 新增特性 (Features)

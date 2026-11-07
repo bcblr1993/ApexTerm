@@ -1213,4 +1213,44 @@ final class CodeReviewRegressionTests: XCTestCase {
         XCTAssertEqual(manager.entries[0].hostPattern, "github.com")
         XCTAssertEqual(manager.entries[0].comment, "multi-host")
     }
+
+    // MARK: - TC-REV-51: SessionBundleExporter remaps jumpServerId to existing local bastion UUID and disambiguates duplicate OpenSSH Host aliases
+    @MainActor
+    func testSessionBundleJumpServerIDRemappingAndDuplicateHostAliasDisambiguation() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("pack-remap-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let store = SessionStore(baseDirectory: tempDir)
+        let localBastion = Session(name: "Bastion", host: "1.2.3.4", port: 22, username: "ops", authMethod: .agent)
+        store.addSession(localBastion)
+
+        let incomingBastion = Session(name: "Bastion", host: "1.2.3.4", port: 22, username: "ops", authMethod: .agent)
+        let incomingTarget = Session(
+            name: "Private DB",
+            host: "10.0.0.99",
+            port: 22,
+            username: "postgres",
+            authMethod: .agent,
+            jumpServerId: incomingBastion.id
+        )
+
+        let packData = try SessionBundleExporter.exportSharePackData(sessions: [incomingBastion, incomingTarget])
+        _ = try SessionBundleExporter.importSharePackData(packData, into: store, overwriteExisting: false)
+
+        let importedTarget = store.sessions.first(where: { $0.name == "Private DB" })
+        XCTAssertNotNil(importedTarget)
+        XCTAssertEqual(
+            importedTarget?.jumpServerId,
+            localBastion.id,
+            "When incoming bastion matches an existing local session, imported target's jumpServerId must be remapped to the existing local bastion ID"
+        )
+
+        // Duplicate session names must produce distinct Host aliases in OpenSSH config
+        let dup1 = Session(name: "web-node", host: "10.0.1.1", username: "root", authMethod: .agent)
+        let dup2 = Session(name: "web-node", host: "10.0.1.2", username: "root", authMethod: .agent)
+        let config = SessionBundleExporter.generateOpenSSHConfig(from: [dup1, dup2])
+        XCTAssertTrue(config.contains("Host web-node\n"))
+        XCTAssertTrue(config.contains("Host web-node-2\n"))
+    }
 }

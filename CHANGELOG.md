@@ -2,6 +2,20 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.20.0] - 2026-11-08
+
+### ✨ 新增特性 (Features)
+- **SFTP 远端文件属性巡检与云端 SHA-256 / MD5 完整性校验面板 (`SFTPFileInspectorSheet` & `SFTPInspectorHelper`)**：
+  - SFTP 右键菜单新增「属性与校验和 (SHA-256)...」，集中展示远端文件/目录的完整路径、精确字节大小、八进制与符号权限掩码（`0755 · drwxr-xr-x`，支持 `setuid`/`setgid`/`sticky` 特殊位）及修改时间；
+  - 支持在远端服务器直接计算文件的 `SHA-256` 或 `MD5` 摘要（自动适配 GNU `sha256sum`/`md5sum`、macOS/BSD `shasum -a 256`/`md5 -q` 及 `openssl dgst` 回退），无需将大体积镜像或归档包下载至本地即可完成校验；
+  - 内置「期望校验值比对」输入框：支持直接粘贴期望哈希值或完整 `SHA256SUMS.txt` 行，实时给出「校验一致」或「哈希不匹配」视觉徽章反馈。
+- **SFTP 服务器端快速克隆（`cp -pR`）与符号链接创建（`ln -s`）**：
+  - 右键菜单新增「在服务器端创建副本 (快速克隆)」与「创建符号链接 (ln -s)...」，支持在不经过本地网络中转的情况下直接在远端完成文件/目录克隆（智能识别 `.tar.gz` 等复合扩展名并自动生成无冲突的 `copy` / `copy 2` 副本名）及软链接创建。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- 新增 `SFTPInspectorAndChecksumTests`（`TC-SFTP-INSP-01 ~ TC-SFTP-INSP-08`）与 `CodeReviewRegressionTests` `TC-REV-48` 共 9 项自动化测试，覆盖八进制权限格式化、多平台 SHA-256/MD5 输出解析、哈希比对校验、软链接与服务端克隆命令安全转义及复合扩展名去重命名；
+- 全量自动化测试用例 100% 绿色通过（0 failures），Swift 6 模式零警告。
+
 ## [v1.19.0] - 2026-11-08
 
 ### ✨ 新增特性 (Features)

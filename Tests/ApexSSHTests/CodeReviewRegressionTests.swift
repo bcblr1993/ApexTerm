@@ -1151,4 +1151,20 @@ final class CodeReviewRegressionTests: XCTestCase {
         XCTAssertEqual(candidate.bindPort, 8081, "toLocalForwardingTunnel must pick the next free local port when 8080 is already bound by an existing local tunnel")
         XCTAssertEqual(candidate.targetPort, 8080)
     }
+
+    // MARK: - TC-REV-48: SFTPInspectorHelper preserves compound archive extensions (.tar.gz) and parses binary-mode shasum output
+    func testSFTPInspectorCompoundArchiveDuplicateNameAndBinaryModeHash() {
+        let dupArchive = SFTPInspectorHelper.defaultDuplicateName(
+            for: "bundle.tar.gz",
+            isDirectory: false,
+            existingNames: ["bundle.tar.gz"]
+        )
+        XCTAssertEqual(dupArchive, "bundle copy.tar.gz")
+
+        let binaryModeLine = "343ec64901780508b7e1cdc2af93cc6eebebcd0d0b6cd906b91772822afd3311 *AetherTerm.tar.gz\r\n"
+        XCTAssertEqual(
+            SFTPInspectorHelper.parseChecksumOutput(binaryModeLine, algorithm: .sha256),
+            "343ec64901780508b7e1cdc2af93cc6eebebcd0d0b6cd906b91772822afd3311"
+        )
+    }
 }

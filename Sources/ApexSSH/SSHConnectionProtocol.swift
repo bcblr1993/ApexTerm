@@ -91,3 +91,17 @@ public extension SSHSessionProtocol {
     func rename(oldPath: String, newPath: String) async throws {}
     func changePermissions(remotePath: String, permissions: String) async throws {}
 }
+
+public extension SFTPInspectorHelper {
+    /// Computes the remote file checksum over the SSH command channel and parses the hex digest.
+    static func computeRemoteChecksum(
+        for item: SFTPItem,
+        algorithm: SFTPChecksumAlgorithm,
+        session: SSHSessionProtocol?
+    ) async -> String? {
+        guard !item.isDirectory, let session = session, session.isConnected else { return nil }
+        let cmd = buildChecksumCommand(remotePath: item.path, algorithm: algorithm)
+        guard let output = try? await session.executeCommand(cmd) else { return nil }
+        return parseChecksumOutput(output, algorithm: algorithm)
+    }
+}

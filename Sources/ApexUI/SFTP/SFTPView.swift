@@ -105,6 +105,10 @@ public struct SFTPView: View {
     @State private var isShowingNewFolderAlert = false
     @State private var newFileName = ""
     @State private var isShowingNewFileAlert = false
+    @State private var inspectingItem: SFTPItem? = nil
+    @State private var itemToSymlink: SFTPItem? = nil
+    @State private var symlinkNameText = ""
+    @State private var isShowingSymlinkAlert = false
 
     public init(
         currentPath: Binding<String>,
@@ -632,6 +636,22 @@ public struct SFTPView: View {
                 }
             )
         }
+        .sheet(item: $inspectingItem) { item in
+            SFTPFileInspectorSheet(item: item, session: session)
+                .apexTheme()
+        }
+        .alert("创建符号链接 (ln -s)", isPresented: $isShowingSymlinkAlert) {
+            TextField("链接名称", text: $symlinkNameText)
+                .autocorrectionDisabled()
+            Button("创建") {
+                if let item = itemToSymlink {
+                    performCreateSymlink(targetItem: item, linkName: symlinkNameText)
+                }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("在当前目录创建指向「\(itemToSymlink?.name ?? "")」的符号链接")
+        }
         .confirmationDialog(
             "确定删除？",
             isPresented: isShowingDeleteConfirmation,
@@ -762,6 +782,10 @@ public struct SFTPView: View {
                     openEditor(item)
                 }
             }
+            Button("属性与校验和 (SHA-256)...") {
+                selectedPaths = [item.path]
+                inspectingItem = item
+            }
             if item.isModifiableRemoteItem {
                 Divider()
                 Button("重命名...") {
@@ -775,6 +799,16 @@ public struct SFTPView: View {
                     itemToChmod = item
                     chmodText = item.isDirectory ? "755" : "644"
                     isShowingChmodAlert = true
+                }
+                Button("在服务器端创建副本 (快速克隆)") {
+                    selectedPaths = [item.path]
+                    performServerSideDuplicate(item)
+                }
+                Button("创建符号链接 (ln -s)...") {
+                    selectedPaths = [item.path]
+                    itemToSymlink = item
+                    symlinkNameText = "\(item.name)-link"
+                    isShowingSymlinkAlert = true
                 }
                 Button(role: .destructive) {
                     selectedPaths = [item.path]
@@ -1082,6 +1116,57 @@ public struct SFTPView: View {
             } catch {
                 await MainActor.run {
                     self.transferNotice = "修改权限失败: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    private func performCreateSymlink(targetItem: SFTPItem, linkName: String) {
+        let trimmed = linkName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let s = session else { return }
+        let parent = (targetItem.path as NSString).deletingLastPathComponent
+        let linkPath = parent == "/" ? "/\(trimmed)" : "\(parent)/\(trimmed)"
+        let cmd = SFTPInspectorHelper.buildSymlinkCommand(targetPath: targetItem.path, linkPath: linkPath)
+        Task {
+            do {
+                _ = try await s.executeCommand(cmd)
+                await MainActor.run {
+                    self.transferNotice = "已创建符号链接: \(trimmed)"
+                    self.loadDirectory(path: self.currentPath)
+                }
+            } catch {
+                await MainActor.run {
+                    self.transferNotice = "创建符号链接失败: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    private func performServerSideDuplicate(_ item: SFTPItem) {
+        guard item.isModifiableRemoteItem, let s = session else { return }
+        let existingNames = Set(items.map(\.name))
+        let dupName = SFTPInspectorHelper.defaultDuplicateName(
+            for: item.name,
+            isDirectory: item.isDirectory,
+            existingNames: existingNames
+        )
+        let parent = (item.path as NSString).deletingLastPathComponent
+        let destPath = parent == "/" ? "/\(dupName)" : "\(parent)/\(dupName)"
+        let cmd = SFTPInspectorHelper.buildServerSideDuplicateCommand(
+            sourcePath: item.path,
+            destinationPath: destPath,
+            isDirectory: item.isDirectory
+        )
+        Task {
+            do {
+                _ = try await s.executeCommand(cmd)
+                await MainActor.run {
+                    self.transferNotice = "已创建副本: \(dupName)"
+                    self.loadDirectory(path: self.currentPath)
+                }
+            } catch {
+                await MainActor.run {
+                    self.transferNotice = "创建副本失败: \(error.localizedDescription)"
                 }
             }
         }

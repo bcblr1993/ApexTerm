@@ -37,6 +37,7 @@ public final class TerminalPaneItem: Identifiable, ObservableObject {
     }
     public var onConnectionStateChanged: ((SSHConnectionState) -> Void)?
     public private(set) var logger: SessionLogger?
+    public private(set) var isTornDown: Bool = false
     
     public func cancelAutoReconnect() {
         autoReconnectTask?.cancel()
@@ -45,7 +46,29 @@ public final class TerminalPaneItem: Identifiable, ObservableObject {
         autoReconnectAttempt = 0
     }
     
+    /// Explicitly tears down the pane, cancelling pending auto-reconnect timers, closing audit logs,
+    /// clearing scrollback memory, detaching SSH callbacks, and disconnecting the underlying session.
+    public func tearDown() {
+        guard !isTornDown else { return }
+        isTornDown = true
+        cancelAutoReconnect()
+        onAutoReconnectRequested = nil
+        onConnectionStateChanged = nil
+        sshClient.setOutputHandler { _ in }
+        sshClient.setStateChangeHandler { _ in }
+        sshClient.setDirectoryChangeHandler { _ in }
+        sshClient.setMetricsHandler { _ in }
+        ringBuffer.onUpdate = nil
+        ringBuffer.finishStream()
+        ringBuffer.clear()
+        logger?.close()
+        logger = nil
+        let client = sshClient
+        Task { await client.disconnect() }
+    }
+    
     private func scheduleAutoReconnect() {
+        guard !isTornDown else { return }
         autoReconnectTask?.cancel()
         autoReconnectAttempt += 1
         isAutoReconnecting = true
@@ -54,7 +77,7 @@ public final class TerminalPaneItem: Identifiable, ObservableObject {
         let delayNs = delays[min(max(attempt - 1, 0), delays.count - 1)]
         autoReconnectTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: delayNs)
-            guard let self = self, !Task.isCancelled, self.isAutoReconnecting else { return }
+            guard let self = self, !Task.isCancelled, !self.isTornDown, self.isAutoReconnecting else { return }
             self.onAutoReconnectRequested?(self)
         }
     }
@@ -92,7 +115,7 @@ public final class TerminalPaneItem: Identifiable, ObservableObject {
                 sessionLogger?.close()
             }
             Task { @MainActor [weak self] in
-                guard let self = self else { return }
+                guard let self = self, !self.isTornDown else { return }
                 self.connectionState = state
                 if case .disconnected = state,
                    self.hasEverConnected,
@@ -146,8 +169,24 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
     }
     @Published public var splitMode: PaneSplitMode = .single
     @Published public var isPaneMaximized: Bool = false
+    public private(set) var isTornDown: Bool = false
     
     private let fallbackRingBuffer = TerminalRingBuffer(maxLines: AppSettings.shared.scrollbackMaxLines)
+    
+    /// Explicitly tears down the tab and all its split panes, cancelling background tasks and reclaiming memory.
+    public func tearDown() {
+        guard !isTornDown else { return }
+        isTornDown = true
+        terminfoProbeTask?.cancel()
+        terminfoProbeTask = nil
+        linkageRefreshTask?.cancel()
+        linkageRefreshTask = nil
+        metricsHistory.clear()
+        fallbackRingBuffer.clear()
+        for pane in panes {
+            pane.tearDown()
+        }
+    }
     public var ringBuffer: TerminalRingBuffer {
         activePane?.ringBuffer ?? panes.first?.ringBuffer ?? fallbackRingBuffer
     }
@@ -344,7 +383,7 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
     public func closePane(id: UUID) {
         guard let idx = panes.firstIndex(where: { $0.id == id }) else { return }
         let pane = panes[idx]
-        Task { await pane.sshClient.disconnect() }
+        pane.tearDown()
         panes.remove(at: idx)
         splitMode = .single
         paneSplitRatio = 0.5
@@ -983,9 +1022,7 @@ public struct WorkspaceView: View {
     }
     
     private func closeTab(_ tab: TerminalTabItem) {
-        for pane in tab.panes {
-            Task { await pane.sshClient.disconnect() }
-        }
+        tab.tearDown()
         activeTabs.removeAll(where: { $0.id == tab.id })
         if selectedTabId == tab.id {
             selectedTabId = activeTabs.first?.id
@@ -995,9 +1032,7 @@ public struct WorkspaceView: View {
     private func closeOtherTabs(_ tab: TerminalTabItem) {
         let toClose = activeTabs.filter { $0.id != tab.id }
         for t in toClose {
-            for pane in t.panes {
-                Task { await pane.sshClient.disconnect() }
-            }
+            t.tearDown()
         }
         activeTabs = [tab]
         selectedTabId = tab.id
@@ -1007,9 +1042,7 @@ public struct WorkspaceView: View {
         guard let idx = activeTabs.firstIndex(where: { $0.id == tab.id }) else { return }
         let toClose = Array(activeTabs.suffix(from: idx + 1))
         for t in toClose {
-            for pane in t.panes {
-                Task { await pane.sshClient.disconnect() }
-            }
+            t.tearDown()
         }
         activeTabs.removeSubrange((idx + 1)...)
         if !activeTabs.contains(where: { $0.id == selectedTabId }) {

@@ -1336,4 +1336,121 @@ final class CodeReviewRegressionTests: XCTestCase {
             "Font discovery must pre-filter non-monospace families and finish in < 150ms on the main thread (actual: \(String(format: "%.2f", elapsedMs))ms)"
         )
     }
+
+    // MARK: - TC-REV-56: TerminalTabItem.tearDown() and closePane(id:) cancel auto-reconnect, clear ringBuffer/metricsHistory, and prevent zombie reconnect
+    @MainActor
+    func testTerminalTabAndPaneTearDownPreventsZombieAutoReconnectAndReclaimsMemory() async {
+        let session = Session(name: "Prod Node", host: "10.0.0.12", port: 22, username: "root", authMethod: .agent)
+        let mockClient = MockSSHSession(session: session)
+        let tab = TerminalTabItem(session: session, sshClient: mockClient)
+        guard let primaryPane = tab.panes.first else {
+            XCTFail("Expected primary pane")
+            return
+        }
+
+        primaryPane.ringBuffer.appendLines(["boot log 1", "boot log 2", "boot log 3"])
+        tab.metricsHistory.append(
+            ServerMetricsSnapshot(
+                cpuUsagePercent: 42.0,
+                memoryTotalBytes: 8_000_000_000,
+                memoryUsedBytes: 4_000_000_000,
+                networkRxBytesPerSec: 1024,
+                networkTxBytesPerSec: 2048,
+                diskTotalBytes: 100_000_000_000,
+                diskUsedBytes: 50_000_000_000
+            )
+        )
+        XCTAssertEqual(primaryPane.ringBuffer.nonEmptyBackingSlotCount, 3)
+        XCTAssertEqual(tab.metricsHistory.snapshots.count, 1)
+
+        // Simulate connected state followed by unexpected network drop to trigger auto-reconnect timer
+        primaryPane.connectionState = .connected
+        XCTAssertTrue(primaryPane.hasEverConnected)
+
+        var reconnectTriggered = false
+        primaryPane.onAutoReconnectRequested = { _ in
+            reconnectTriggered = true
+        }
+
+        tab.tearDown()
+
+        XCTAssertTrue(tab.isTornDown)
+        XCTAssertTrue(primaryPane.isTornDown)
+        XCTAssertFalse(primaryPane.isAutoReconnecting)
+        XCTAssertNil(primaryPane.onAutoReconnectRequested)
+        XCTAssertNil(primaryPane.onConnectionStateChanged)
+        XCTAssertEqual(primaryPane.ringBuffer.nonEmptyBackingSlotCount, 0, "tab.tearDown() must reclaim pane ringBuffer strings")
+        XCTAssertTrue(tab.metricsHistory.snapshots.isEmpty, "tab.tearDown() must clear tab metricsHistory snapshots")
+        XCTAssertFalse(reconnectTriggered)
+    }
+
+    // MARK: - TC-REV-57: NativeSSHSession.writePTYInput preserves all bytes on O_NONBLOCK descriptor under EAGAIN pressure
+    func testWritePTYInputOnNonBlockingDescriptorRetriesOnEAGAINWithoutDroppingBytes() async throws {
+        let pipe = Pipe()
+        let writeFd = pipe.fileHandleForWriting.fileDescriptor
+        let flags = fcntl(writeFd, F_GETFL)
+        XCTAssertGreaterThanOrEqual(flags, 0)
+        _ = fcntl(writeFd, F_SETFL, flags | O_NONBLOCK)
+
+        // 256 KB payload exceeds typical 64 KB macOS pipe buffer, forcing EAGAIN on O_NONBLOCK write
+        let payload = Data(String(repeating: "0123456789abcdef-nonblock-paste-line\n", count: 7_500).utf8)
+        let writer = Task.detached {
+            NativeSSHSession.writePTYInput(payload, to: writeFd)
+            try? pipe.fileHandleForWriting.close()
+        }
+
+        var received = Data()
+        let readHandle = pipe.fileHandleForReading
+        while true {
+            try await Task.sleep(nanoseconds: 2_000_000) // 2ms slow reader to provoke EAGAIN on writer
+            let chunk = readHandle.availableData
+            if chunk.isEmpty { break }
+            received.append(chunk)
+        }
+        await writer.value
+        XCTAssertEqual(received.count, payload.count, "Non-blocking PTY write must retry on EAGAIN and never truncate large pastes")
+        XCTAssertEqual(received, payload)
+    }
+
+    // MARK: - TC-REV-58: TransferManager automatically prunes oldest completed/failed/cancelled task history beyond maxCompletedHistory
+    @MainActor
+    func testTransferManagerPrunesCompletedHistoryBeyondCapWhilePreservingActiveTasks() {
+        let manager = TransferManager(maxCompletedHistory: 5)
+        let tempURL = URL(fileURLWithPath: "/tmp/transfer-cap-test.bin")
+
+        // 1. Start one active external transfer that must NOT be pruned
+        let activeId = manager.beginExternalTransfer(
+            fileName: "active-live.iso",
+            remotePath: "/remote/active-live.iso",
+            localURL: tempURL,
+            direction: .upload,
+            totalBytes: 10_000
+        )
+
+        // 2. Complete 10 external transfers (exceeding maxCompletedHistory = 5)
+        var completedIds: [UUID] = []
+        for i in 1...10 {
+            let tid = manager.beginExternalTransfer(
+                fileName: "done-\(i).tar.gz",
+                remotePath: "/remote/done-\(i).tar.gz",
+                localURL: tempURL,
+                direction: .download,
+                totalBytes: 1024
+            )
+            manager.completeExternalTransfer(taskId: tid)
+            completedIds.append(tid)
+        }
+
+        let terminalTasks = manager.tasks.filter { $0.status.isTerminal }
+        XCTAssertEqual(terminalTasks.count, 5, "Completed task history must be capped at maxCompletedHistory (5)")
+        XCTAssertTrue(manager.tasks.contains(where: { $0.id == activeId && $0.status == .transferring }), "Active transferring tasks must never be pruned")
+
+        // The 5 most recent completed tasks (6...10) must be retained, and the oldest 5 (1...5) pruned
+        for recentId in completedIds.suffix(5) {
+            XCTAssertTrue(terminalTasks.contains(where: { $0.id == recentId }))
+        }
+        for oldId in completedIds.prefix(5) {
+            XCTAssertFalse(terminalTasks.contains(where: { $0.id == oldId }))
+        }
+    }
 }

@@ -2,6 +2,21 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.23.2] - 2026-11-08
+
+### 🐞 问题修复 (Bug Fixes)
+- **标签页与分屏关闭时的僵尸重连与内存驻留修复 (`TerminalTabItem.tearDown` & `TerminalPaneItem.tearDown`)**：
+  - 修复关闭终端标签页（`closeTab` / `closeOtherTabs` / `closeTabsToTheRight` / `closeCurrentConnection`）或关闭分屏（`closePane`）时，仅调用 `sshClient.disconnect()` 而未取消自动重连退避定时器（`autoReconnectTask`）、未关闭审计日志句柄（`SessionLogger`）、未解绑 `SSH` 回调闭包且未清空 `ringBuffer` 与 `ObservableMetricsHistory` 快照的问题；
+  - 新增 `TerminalPaneItem.tearDown()`、`TerminalTabItem.tearDown()` 与 `ObservableMetricsHistory.clear()`，彻底阻断已关闭标签页在网络闪断退避期结束后触发僵尸重连，并实现关闭标签页即刻 100% 回收回滚缓冲区与监控历史内存。
+- **非阻塞 PTY 大文本粘贴截断修复 (`NativeSSHSession.writePTYInput` & `LocalTerminalSession.sendInputSync`)**：
+  - 修复在 `O_NONBLOCK` 终端主描述符下一次性粘贴数千行文本时，内核 PTY 缓冲区满返回 `EAGAIN` / `EWOULDBLOCK` 导致后续字节被静默丢弃的问题；`writePTYInput` 新增 `EAGAIN` 自适应微秒级退避重试，`LocalTerminalSession.sendInputSync` 同步接入分块完整写入与大负载异步队列分发。
+- **SFTP 传输历史记录自动容量裁剪 (`TransferManager.maxCompletedHistory`)**：
+  - 为 `TransferManager` 新增 `maxCompletedHistory = 200` 已完成/失败/取消任务自动裁剪机制（保留全部排队与传输中活跃任务），防止长期高频传输文件后已完成任务列表与采样字典无限累积。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- 新增 `CodeReviewRegressionTests` `TC-REV-56 ~ TC-REV-58` 共 3 项自动化测试，覆盖标签页/分屏 `tearDown()` 防僵尸重连与内存清空、`O_NONBLOCK` 管道 `EAGAIN` 256KB 零丢失写入以及 `TransferManager` 历史记录上限自动裁剪；
+- 全量自动化测试用例 100% 绿色通过（0 failures），Swift 6 模式零警告。
+
 ## [v1.23.1] - 2026-11-08
 
 ### ⚡️ 体验优化 (Improvements)

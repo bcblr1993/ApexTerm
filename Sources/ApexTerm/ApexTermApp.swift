@@ -423,9 +423,7 @@ struct ApexTermApp: App {
         if current.panes.count > 1, let activeId = current.activePaneId {
             current.closePane(id: activeId)
         } else {
-            for pane in current.panes {
-                Task { await pane.sshClient.disconnect() }
-            }
+            current.tearDown()
             activeTabs.removeAll(where: { $0.id == current.id })
             selectedTabId = activeTabs.first?.id
         }

@@ -787,15 +787,24 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         }
     }
 
-    static func writePTYInput(_ data: Data, to descriptor: Int32) {
+    public static func writePTYInput(_ data: Data, to descriptor: Int32) {
         data.withUnsafeBytes { raw in
             guard let base = raw.baseAddress else { return }
             var offset = 0
+            var eagainRetries = 0
             while offset < raw.count {
                 let written = write(descriptor, base.advanced(by: offset), min(4096, raw.count - offset))
-                if written > 0 { offset += written }
-                else if written < 0 && errno == EINTR { continue }
-                else { return }
+                if written > 0 {
+                    offset += written
+                    eagainRetries = 0
+                } else if written < 0 && errno == EINTR {
+                    continue
+                } else if written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) && eagainRetries < 500 {
+                    eagainRetries += 1
+                    usleep(1_000)
+                } else {
+                    return
+                }
             }
         }
     }

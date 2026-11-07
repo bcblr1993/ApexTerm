@@ -40,6 +40,7 @@ public final class LocalTerminalSession: SSHSessionProtocol, @unchecked Sendable
     private var processSource: DispatchSourceProcess?
     private var metricsTimer: Task<Void, Never>?
     private let queue = DispatchQueue(label: "com.apexterm.local-pty", qos: .userInteractive)
+    private let inputQueue = DispatchQueue(label: "com.apexterm.local-pty.input", qos: .userInteractive)
     private var directoryStream = DirectoryChangeStreamParser()
     private var prevNet: AgentlessMonitor.NetTickState?
     
@@ -332,11 +333,19 @@ public final class LocalTerminalSession: SSHSessionProtocol, @unchecked Sendable
     }
     
     public func sendInputSync(_ data: Data) {
-        let fd = stateLock.withLock { self.ptyMasterFd }
-        guard fd != -1 else { return }
-        data.withUnsafeBytes { ptr in
-            if let base = ptr.baseAddress {
-                _ = write(fd, base, ptr.count)
+        guard !data.isEmpty else { return }
+        if data.count <= 512 {
+            let fd = stateLock.withLock { self.ptyMasterFd }
+            guard fd != -1 else { return }
+            NativeSSHSession.writePTYInput(data, to: fd)
+        } else {
+            let descriptor = stateLock.withLock { () -> Int32 in
+                ptyMasterFd >= 0 ? dup(ptyMasterFd) : -1
+            }
+            guard descriptor >= 0 else { return }
+            inputQueue.async {
+                defer { close(descriptor) }
+                NativeSSHSession.writePTYInput(data, to: descriptor)
             }
         }
     }

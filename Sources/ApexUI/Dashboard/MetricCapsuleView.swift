@@ -201,6 +201,11 @@ public final class ObservableMetricsHistory: ObservableObject {
         store.append(snapshot)
         self.snapshots = store.allSnapshots
     }
+
+    public func clear() {
+        store.clear()
+        self.snapshots.removeAll(keepingCapacity: false)
+    }
 }
 
 /// Standalone capsules (outside a toolbar) keep presenting their own popover.

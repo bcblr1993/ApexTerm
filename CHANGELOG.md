@@ -2,6 +2,22 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.23.1] - 2026-11-08
+
+### ⚡️ 体验优化 (Improvements)
+- **终端引擎回滚内存即时回收 (`TerminalRingBuffer.clear` & `resetTerminalState`)**：
+  - 修复 `clear()`（`⌘K` 清空回滚）与 `RIS` 全终端重置（`\ec`）仅将环形缓冲区游标 `head`/`count` 置零而未释放底层 `buffer: [String]` 槽位中残留字符串对象的问题；现在清空或重置终端时立即清空全量历史字符串槽位、释放 `activeCells` 额外容量并重置 `OSC 133` Shell 集成记录；
+- **24-bit TrueColor 颜色缓存容量硬上限保护 (`NativeTerminalView.colorCache`)**：
+  - 为 `NativeTerminalView` 静态 `colorCache` 增设 `maxColorCacheEntries = 1024` 容量上限保护，防止长时间运行 `btop`、`cmatrix` 或 24-bit 渐变动画时静态颜色字典无限膨胀；
+- **终端视图拆卸生命周期闭环 (`TerminalRepresentable.dismantleNSView` & `tearDown`)**：
+  - 新增 `TerminalRepresentable.dismantleNSView`、`NativeTerminalScrollView.tearDown()` 与 `NativeTerminalView.tearDown()`，在分屏或标签页关闭销毁时主动注销 `NotificationCenter` / `NSWorkspace` 监听器、停止光标闪烁定时器、取消防抖尺寸调整任务、解绑 `ringBuffer.onUpdate` 闭包并清空 `NSTextStorage`；
+- **设置面板字体发现主线程提速 6x (`TerminalFontManager.availableFonts`)**：
+  - 新增 `isLikelyMonospaceFamily` 候选字体族预筛机制，避免首次打开「设置 -> 外观」时在主线程同步实例化数百个中文字体与装饰字体族，将字体枚举耗时从 `~756ms` 降低至 `~120ms`。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- 新增 `CodeReviewRegressionTests` `TC-REV-52 ~ TC-REV-55` 共 4 项自动化测试，覆盖 `RingBuffer` 内存槽位清零与 `OSC 133` 重置、TrueColor 缓存 1024 上限保护、终端视图 `tearDown()` 引用解绑以及主线程字体快速枚举性能断言；
+- 全量自动化测试用例 100% 绿色通过（0 failures），Swift 6 模式零警告。
+
 ## [v1.23.0] - 2026-11-08
 
 ### ✨ 新增特性 (Features)

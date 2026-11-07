@@ -64,6 +64,25 @@ public final class TerminalFontManager {
 
     public init() {}
 
+    /// Fast candidate family keywords for monospace / coding fonts to avoid instantiating
+    /// hundreds of CJK / decorative NSFont objects synchronously on the main thread.
+    private nonisolated static let monospaceCandidateKeywords: [String] = [
+        "mono", "code", "console", "courier", "term", "fixed", "typewriter",
+        "inconsolata", "iosevka", "hack", "jetbrains", "fira", "cascadia",
+        "meslo", "menlo", "monaco", "andale", "zed", "0xproto", "geist",
+        "agave", "victor", "fantasque", "anonymous", "bitstream", "cousine",
+        "droid sans", "go ", "input", "lekton", "luxi", "monofur", "monoid",
+        "mononoki", "ocr", "overpass", "oxygen", "plex", "profont", "proggy",
+        "pt ", "redhat", "roboto", "share tech", "space", "spleen", "ubuntu",
+        "dejavu", "liberation"
+    ]
+
+    /// Determines whether a font family name is a likely candidate for fixed-pitch inspection.
+    public nonisolated static func isLikelyMonospaceFamily(_ familyName: String) -> Bool {
+        let lower = familyName.lowercased()
+        return monospaceCandidateKeywords.contains { lower.contains($0) }
+    }
+
     /// Returns list of available monospace and Nerd Fonts on this Mac
     public func availableFonts(forceRefresh: Bool = false) -> [TerminalFontOption] {
         if !forceRefresh, let cached = cachedFonts {
@@ -72,13 +91,14 @@ public final class TerminalFontManager {
 
         let fontManager = NSFontManager.shared
         let availableFamilies = fontManager.availableFontFamilies
+        let availableFamilySet = Set(availableFamilies)
 
         var result: [TerminalFontOption] = []
         var seenFamilies = Set<String>()
 
         // 1. Curated monospace fonts installed on the system
         for family in Self.curatedMonospaceFamilies {
-            if availableFamilies.contains(family) && !seenFamilies.contains(family) {
+            if availableFamilySet.contains(family) && !seenFamilies.contains(family) {
                 seenFamilies.insert(family)
                 result.append(TerminalFontOption(familyName: family))
             }
@@ -92,9 +112,10 @@ public final class TerminalFontManager {
             }
         }
 
-        // 3. Other detected monospace fonts on the system
+        // 3. Other detected monospace fonts on the system (pre-filtered by candidate keywords
+        //    to avoid loading heavy CJK/Emoji/decorative font tables on the UI thread)
         for family in availableFamilies {
-            if !seenFamilies.contains(family) {
+            if !seenFamilies.contains(family) && Self.isLikelyMonospaceFamily(family) {
                 if let members = fontManager.availableMembers(ofFontFamily: family),
                    let firstMember = members.first,
                    let postScriptName = firstMember.first as? String {

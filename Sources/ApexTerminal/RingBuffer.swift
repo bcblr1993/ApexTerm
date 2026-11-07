@@ -1044,9 +1044,17 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         return count + (hasActive ? 1 : 0)
     }
     
+    /// Returns the number of backing array slots currently holding non-empty strings (for memory reclamation verification).
+    public var nonEmptyBackingSlotCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return buffer.reduce(0) { $0 + ($1.isEmpty ? 0 : 1) }
+    }
+
     private func resetTerminalState() {
         head = 0; count = 0; _totalCommittedCount = 0
-        activeLine = ""; activeCells.removeAll(keepingCapacity: true)
+        buffer = [String](repeating: "", count: historyLimit)
+        activeLine = ""; activeCells.removeAll(keepingCapacity: false)
         isEditingActiveLine = false; cursorCol = 0
         currentStyle = SGRStyle(foreground: nil, index: nil, bold: false)
         pendingSequence = ""; screen = nil
@@ -1060,14 +1068,15 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         _screenRevision += 1; _isClearPending = true
     }
 
-    /// Clear all lines
+    /// Clear all lines and immediately release backing scrollback string memory
     public func clear() {
         lock.lock()
         head = 0
         count = 0
         _totalCommittedCount = 0
+        buffer = [String](repeating: "", count: historyLimit)
         activeLine = ""
-        activeCells.removeAll(keepingCapacity: true)
+        activeCells.removeAll(keepingCapacity: false)
         isEditingActiveLine = false
         cursorCol = 0
         pendingSequence = ""

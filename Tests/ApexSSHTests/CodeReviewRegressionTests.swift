@@ -1253,4 +1253,87 @@ final class CodeReviewRegressionTests: XCTestCase {
         XCTAssertTrue(config.contains("Host web-node\n"))
         XCTAssertTrue(config.contains("Host web-node-2\n"))
     }
+
+    // MARK: - TC-REV-52: TerminalRingBuffer.clear() and RIS reset (\e c) immediately reclaim backing scrollback strings and reset OSC 133 records
+    func testRingBufferClearAndResetReclaimBackingStringsAndShellIntegration() {
+        let ring = TerminalRingBuffer(maxLines: 100)
+        for i in 0..<60 {
+            ring.appendStream("\u{1B}]133;A\u{07}$ echo line-\(i)\r\n\u{1B}]133;B\u{07}\u{1B}]133;C\u{07}output-\(i)\r\n\u{1B}]133;D;0\u{07}")
+        }
+        XCTAssertGreaterThan(ring.nonEmptyBackingSlotCount, 50)
+        XCTAssertFalse(ring.shellIntegration.allRecords().isEmpty)
+
+        ring.clear()
+        XCTAssertEqual(ring.lineCount, 0)
+        XCTAssertEqual(ring.nonEmptyBackingSlotCount, 0, "clear() must release all retained strings in backing scrollback slots")
+        XCTAssertTrue(ring.shellIntegration.allRecords().isEmpty, "clear() must reset OSC 133 shell integration records")
+
+        // Verify RIS full terminal reset (\u{1B}c) also reclaims backing scrollback strings
+        ring.appendLines((0..<40).map { "persisted-payload-\($0)" })
+        XCTAssertEqual(ring.nonEmptyBackingSlotCount, 40)
+        ring.appendStream("\u{1B}c")
+        XCTAssertEqual(ring.nonEmptyBackingSlotCount, 0, "RIS terminal reset (\\ec) must release all retained strings in backing scrollback slots")
+    }
+
+    // MARK: - TC-REV-53: NativeTerminalView.colorCache enforces 1024-entry upper bound under 24-bit TrueColor floods
+    @MainActor
+    func testNativeTerminalViewColorCacheEnforcesUpperBound() {
+        NativeTerminalView.clearColorCache()
+        XCTAssertEqual(NativeTerminalView.cachedColorCount, 0)
+
+        let scrollView = NativeTerminalScrollView(frame: NSRect(x: 0, y: 0, width: 640, height: 400))
+        defer { scrollView.tearDown() }
+
+        for i in 0..<1500 {
+            let r = (i * 37) & 0xFF
+            let g = (i * 73) & 0xFF
+            let b = (i * 109) & 0xFF
+            _ = scrollView.terminalView.formatANSI("\u{1B}[38;2;\(r);\(g);\(b)mX\u{1B}[0m")
+        }
+
+        XCTAssertLessThanOrEqual(
+            NativeTerminalView.cachedColorCount,
+            NativeTerminalView.maxColorCacheEntries,
+            "Static TrueColor cache must never exceed \(NativeTerminalView.maxColorCacheEntries) entries"
+        )
+        XCTAssertGreaterThan(NativeTerminalView.cachedColorCount, 0)
+    }
+
+    // MARK: - TC-REV-54: NativeTerminalScrollView.tearDown() detaches ringBuffer callbacks, clears textStorage, and breaks references
+    @MainActor
+    func testNativeTerminalScrollViewTearDownCleansUpCallbacksAndStorage() {
+        let ring = TerminalRingBuffer(maxLines: 100)
+        ring.appendLines(["line 1", "line 2", "line 3"])
+
+        let scrollView = NativeTerminalScrollView(frame: NSRect(x: 0, y: 0, width: 640, height: 400))
+        scrollView.terminalView.ringBuffer = ring
+        ring.onUpdate = {
+            // Simulated update callback
+        }
+        scrollView.terminalView.refresh()
+        XCTAssertGreaterThan(scrollView.terminalView.textStorage?.length ?? 0, 0)
+        XCTAssertNotNil(ring.onUpdate)
+
+        scrollView.tearDown()
+        XCTAssertNil(ring.onUpdate, "tearDown() must detach ringBuffer.onUpdate to prevent zombie UI refreshes")
+        XCTAssertNil(scrollView.terminalView.ringBuffer)
+        XCTAssertNil(scrollView.searchBarOverlay.terminalView)
+        XCTAssertEqual(scrollView.terminalView.textStorage?.length ?? -1, 0, "tearDown() must empty NSTextStorage")
+    }
+
+    // MARK: - TC-REV-55: TerminalFontManager.availableFonts(forceRefresh: true) completes in < 150ms without blocking main thread on CJK fonts
+    @MainActor
+    func testTerminalFontManagerFastEnumerationUnder150ms() {
+        let start = CFAbsoluteTimeGetCurrent()
+        let fonts = TerminalFontManager.shared.availableFonts(forceRefresh: true)
+        let elapsedMs = (CFAbsoluteTimeGetCurrent() - start) * 1000.0
+
+        XCTAssertFalse(fonts.isEmpty)
+        XCTAssertTrue(fonts.contains(where: { $0.familyName == "Menlo" || $0.familyName == "SF Mono" || $0.familyName == "Monaco" }))
+        XCTAssertLessThan(
+            elapsedMs,
+            150.0,
+            "Font discovery must pre-filter non-monospace families and finish in < 150ms on the main thread (actual: \(String(format: "%.2f", elapsedMs))ms)"
+        )
+    }
 }

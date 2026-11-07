@@ -109,6 +109,11 @@ public struct TerminalRepresentable: NSViewRepresentable {
         }
     }
     
+    public static func dismantleNSView(_ nsView: NativeTerminalScrollView, coordinator: Coordinator) {
+        coordinator.scrollView = nil
+        nsView.tearDown()
+    }
+    
     public func makeCoordinator() -> Coordinator {
         Coordinator()
     }
@@ -462,6 +467,17 @@ public final class NativeTerminalScrollView: NSScrollView {
         searchBarOverlay.hide()
     }
     
+    /// Explicitly releases observers, timers, and backing text storage when the scroll view is dismantled.
+    public func tearDown() {
+        NotificationCenter.default.removeObserver(self)
+        searchBarOverlay.terminalView = nil
+        terminalView.tearDown()
+    }
+    
+    isolated deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+    
     @objc private func handleTriggerFindNotification(_ note: Notification) {
         if let win = window, win.isKeyWindow, win.firstResponder === terminalView {
             showFindBar()
@@ -611,8 +627,21 @@ public final class NativeTerminalView: NSTextView {
     private var cachedBaseFont: NSFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
     private var cachedBoldFont: NSFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .bold)
     private var glyphAdvanceCache: [String: CGFloat] = [:]
+    public static let maxColorCacheEntries: Int = 1024
     private static var colorCache: [String: NSColor] = [:]
     private static let colorCacheLock = NSLock()
+    
+    public static var cachedColorCount: Int {
+        colorCacheLock.lock()
+        defer { colorCacheLock.unlock() }
+        return colorCache.count
+    }
+    
+    public static func clearColorCache() {
+        colorCacheLock.lock()
+        colorCache.removeAll(keepingCapacity: false)
+        colorCacheLock.unlock()
+    }
     
     /// Tracks whether viewport is pinned to the command prompt line at the bottom
     public var isPinnedToBottom: Bool = true
@@ -990,8 +1019,34 @@ public final class NativeTerminalView: NSTextView {
         needsDisplay = true
     }
     
+    /// Explicitly tears down timers, notification observers, callbacks, and cached attributed rows.
+    public func tearDown() {
+        stopCursorBlink()
+        resizeDebounceTask?.cancel()
+        resizeDebounceTask = nil
+        pendingDimensions = nil
+        NotificationCenter.default.removeObserver(self)
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
+        if let settingsObserver {
+            NotificationCenter.default.removeObserver(settingsObserver)
+            self.settingsObserver = nil
+        }
+        ringBuffer?.onUpdate = nil
+        ringBuffer = nil
+        onInput = nil
+        onResize = nil
+        onFileDrop = nil
+        onFocus = nil
+        renderedScreenRows = nil
+        renderedScreenLines = nil
+        renderedCommittedLineLengths.removeAll(keepingCapacity: false)
+        glyphAdvanceCache.removeAll(keepingCapacity: false)
+        textStorage?.setAttributedString(NSAttributedString())
+    }
+    
     isolated deinit {
         cursorBlinkTimer?.invalidate()
+        resizeDebounceTask?.cancel()
         NotificationCenter.default.removeObserver(self)
         NSWorkspace.shared.notificationCenter.removeObserver(self)
         if let settingsObserver { NotificationCenter.default.removeObserver(settingsObserver) }
@@ -2082,6 +2137,9 @@ public final class NativeTerminalView: NSTextView {
                     Self.colorCacheLock.unlock()
                     if let parsed = NSColor(hex: hex) {
                         Self.colorCacheLock.lock()
+                        if Self.colorCache.count >= Self.maxColorCacheEntries {
+                            Self.colorCache.removeAll(keepingCapacity: true)
+                        }
                         Self.colorCache[hex] = parsed
                         Self.colorCacheLock.unlock()
                         textColor = parsed

@@ -188,3 +188,200 @@ public enum ProcessListParser {
         return items
     }
 }
+
+/// Represents an active listening TCP/UDP socket on a remote Linux or macOS host
+public struct ListeningPortItem: Identifiable, Codable, Sendable, Equatable, Hashable {
+    public var id: String { "\(proto.uppercased()):\(bindAddress):\(port)" }
+    public let proto: String
+    public let bindAddress: String
+    public let port: Int
+    public let pid: Int?
+    public let processName: String
+
+    public init(
+        proto: String,
+        bindAddress: String,
+        port: Int,
+        pid: Int? = nil,
+        processName: String = ""
+    ) {
+        self.proto = proto.uppercased()
+        self.bindAddress = bindAddress
+        self.port = port
+        self.pid = pid
+        self.processName = processName
+    }
+
+    /// True when the listening address is bound to wildcard (`0.0.0.0`, `*`, `::`) or a non-loopback interface.
+    public var isPubliclyExposed: Bool {
+        let normalized = bindAddress
+            .trimmingCharacters(in: CharacterSet(charactersIn: "[] "))
+            .lowercased()
+        if normalized == "localhost" || normalized == "::1" || normalized.hasPrefix("127.") || normalized.hasPrefix("::ffff:127.") {
+            return false
+        }
+        return true
+    }
+
+    public var exposureBadgeText: String {
+        isPubliclyExposed ? "公网/全网卡" : "本地回环"
+    }
+
+    public var endpointDisplay: String {
+        if bindAddress.contains(":") && !bindAddress.hasPrefix("[") {
+            return "[\(bindAddress)]:\(port)"
+        }
+        return "\(bindAddress):\(port)"
+    }
+
+    /// Generates a collision-free local SSH port forwarding (`-L`) tunnel targeting this remote listening port.
+    public func toLocalForwardingTunnel(
+        sessionId: UUID,
+        preferredLocalPort: Int? = nil,
+        existingTunnels: [SSHTunnel] = []
+    ) -> SSHTunnel {
+        var candidatePort = preferredLocalPort ?? (port < 1024 ? port + 10000 : port)
+        candidatePort = min(max(candidatePort, 1024), 65535)
+        let occupiedLocalPorts = Set(
+            existingTunnels
+                .filter { $0.type != .remote }
+                .map(\.bindPort)
+        )
+        while occupiedLocalPorts.contains(candidatePort) && candidatePort < 65535 {
+            candidatePort += 1
+        }
+        let label = processName.isEmpty ? proto : processName
+        return SSHTunnel(
+            name: "\(label)-\(port)",
+            type: .local,
+            sessionId: sessionId,
+            bindHost: "127.0.0.1",
+            bindPort: candidatePort,
+            targetHost: "127.0.0.1",
+            targetPort: port
+        )
+    }
+}
+
+/// Zero-dependency parser for Linux `ss -tulpn`, Linux `netstat -tulpn`, and macOS/BSD `lsof -iTCP -sTCP:LISTEN`
+public enum ListeningPortParser {
+
+    public static func parseOutput(_ raw: String) -> [ListeningPortItem] {
+        var results: [ListeningPortItem] = []
+        var seenKeys: Set<String> = []
+
+        for rawLine in raw.components(separatedBy: .newlines) {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            if line.isEmpty || line.hasPrefix("Active ") || line.hasPrefix("Proto ") || line.hasPrefix("Netid ") || line.hasPrefix("COMMAND ") {
+                continue
+            }
+            if let item = parseLine(line) {
+                let dedupKey = "\(item.proto):\(item.bindAddress):\(item.port)"
+                if seenKeys.insert(dedupKey).inserted {
+                    results.append(item)
+                }
+            }
+        }
+
+        return results.sorted {
+            if $0.port != $1.port { return $0.port < $1.port }
+            return $0.bindAddress < $1.bindAddress
+        }
+    }
+
+    public static func filter(_ items: [ListeningPortItem], query: String) -> [ListeningPortItem] {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !trimmed.isEmpty else { return items }
+        return items.filter { item in
+            "\(item.port)".contains(trimmed) ||
+            item.processName.lowercased().contains(trimmed) ||
+            item.bindAddress.lowercased().contains(trimmed) ||
+            item.proto.lowercased().contains(trimmed) ||
+            (item.pid.map { "\($0)".contains(trimmed) } ?? false) ||
+            item.exposureBadgeText.lowercased().contains(trimmed)
+        }
+    }
+
+    private static func parseLine(_ line: String) -> ListeningPortItem? {
+        let tokens = line.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
+        guard tokens.count >= 4 else { return nil }
+
+        let firstLower = tokens[0].lowercased()
+        if firstLower.hasPrefix("tcp") || firstLower.hasPrefix("udp") {
+            let proto = firstLower.hasPrefix("udp") ? "UDP" : "TCP"
+            // Detect `ss -tulpn`: token[1] is State (LISTEN / UNCONN)
+            if tokens[1] == "LISTEN" || tokens[1] == "UNCONN" || tokens[1] == "ESTAB" {
+                guard tokens.count >= 5,
+                      let (addr, port) = splitHostPort(tokens[4]) else { return nil }
+                let rest = tokens.dropFirst(5).joined(separator: " ")
+                let (pid, proc) = parseSSUsersField(rest)
+                return ListeningPortItem(proto: proto, bindAddress: addr, port: port, pid: pid, processName: proc)
+            } else {
+                // `netstat -tulpn`: Proto Recv-Q Send-Q LocalAddress ForeignAddress [State] PID/Program
+                guard let (addr, port) = splitHostPort(tokens[3]) else { return nil }
+                let lastToken = tokens.last ?? ""
+                let (pid, proc) = parseNetstatPidProgram(lastToken)
+                return ListeningPortItem(proto: proto, bindAddress: addr, port: port, pid: pid, processName: proc)
+            }
+        }
+
+        // macOS / BSD `lsof -iTCP -sTCP:LISTEN -P -n`:
+        // COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME [(LISTEN)]
+        if let pid = Int(tokens[1]), tokens.count >= 9 {
+            let command = tokens[0]
+            let protoIndex = tokens.firstIndex(where: { $0.uppercased() == "TCP" || $0.uppercased() == "UDP" })
+            guard let pIdx = protoIndex, pIdx + 1 < tokens.count else { return nil }
+            let proto = tokens[pIdx].uppercased()
+            let addrToken = tokens[pIdx + 1]
+            guard let (addr, port) = splitHostPort(addrToken) else { return nil }
+            return ListeningPortItem(proto: proto, bindAddress: addr, port: port, pid: pid, processName: command)
+        }
+
+        return nil
+    }
+
+    private static func splitHostPort(_ raw: String) -> (String, Int)? {
+        guard let lastColon = raw.lastIndex(of: ":") else { return nil }
+        let portStr = String(raw[raw.index(after: lastColon)...])
+        guard let port = Int(portStr), (1...65535).contains(port) else { return nil }
+        var hostPart = String(raw[..<lastColon])
+        if hostPart.hasPrefix("[") && hostPart.hasSuffix("]") {
+            hostPart = String(hostPart.dropFirst().dropLast())
+        }
+        // Strip interface scope suffix such as `127.0.0.53%lo` or `fe80::1%eth0`
+        if let pct = hostPart.firstIndex(of: "%") {
+            hostPart = String(hostPart[..<pct])
+        }
+        if hostPart.isEmpty {
+            hostPart = "::"
+        }
+        return (hostPart, port)
+    }
+
+    private static func parseSSUsersField(_ text: String) -> (Int?, String) {
+        // Matches users:(("nginx",pid=1234,fd=6))
+        var procName = ""
+        var pidValue: Int? = nil
+        if let firstQuote = text.firstIndex(of: "\"") {
+            let afterFirst = text[text.index(after: firstQuote)...]
+            if let secondQuote = afterFirst.firstIndex(of: "\"") {
+                procName = String(afterFirst[..<secondQuote])
+            }
+        }
+        if let pidRange = text.range(of: "pid=") {
+            let afterPid = text[pidRange.upperBound...]
+            let digits = afterPid.prefix(while: { $0.isNumber })
+            pidValue = Int(digits)
+        }
+        return (pidValue, procName)
+    }
+
+    private static func parseNetstatPidProgram(_ token: String) -> (Int?, String) {
+        guard token.contains("/") else { return (nil, "") }
+        let parts = token.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
+        guard parts.count == 2 else { return (nil, "") }
+        let pid = Int(parts[0])
+        let name = String(parts[1]).trimmingCharacters(in: CharacterSet(charactersIn: ": "))
+        return (pid, name)
+    }
+}

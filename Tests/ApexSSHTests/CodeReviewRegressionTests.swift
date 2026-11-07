@@ -1136,4 +1136,19 @@ final class CodeReviewRegressionTests: XCTestCase {
         let bootstrap = SessionStartupHelper.buildBootstrapCommand(for: session)
         XCTAssertEqual(bootstrap, "export NORMAL_KEY='val1' && cd '/srv/my app' && echo hello; whoami")
     }
+
+    // MARK: - TC-REV-47: ListeningPortItem handles IPv4-mapped IPv6 addresses and avoids existing local tunnel port collisions
+    func testListeningPortIPv4MappedIPv6AndCollisionFreeLocalTunnel() {
+        let mappedLoopback = ListeningPortItem(proto: "TCP", bindAddress: "::ffff:127.0.0.1", port: 8080, pid: 900, processName: "java")
+        let mappedWildcard = ListeningPortItem(proto: "TCP", bindAddress: "::ffff:0.0.0.0", port: 9090, pid: 901, processName: "prometheus")
+        XCTAssertFalse(mappedLoopback.isPubliclyExposed, "::ffff:127.0.0.1 is IPv4-mapped loopback and must not be marked publicly exposed")
+        XCTAssertTrue(mappedWildcard.isPubliclyExposed, "::ffff:0.0.0.0 is IPv4-mapped wildcard and must be marked publicly exposed")
+        XCTAssertEqual(mappedLoopback.endpointDisplay, "[::ffff:127.0.0.1]:8080")
+
+        let sid = UUID()
+        let existingTunnel = SSHTunnel(name: "Existing 8080", type: .local, sessionId: sid, bindHost: "127.0.0.1", bindPort: 8080, targetHost: "127.0.0.1", targetPort: 80)
+        let candidate = mappedLoopback.toLocalForwardingTunnel(sessionId: sid, existingTunnels: [existingTunnel])
+        XCTAssertEqual(candidate.bindPort, 8081, "toLocalForwardingTunnel must pick the next free local port when 8080 is already bound by an existing local tunnel")
+        XCTAssertEqual(candidate.targetPort, 8080)
+    }
 }

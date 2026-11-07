@@ -12,6 +12,8 @@ public struct ProcessInspectorView: View {
     
     @State private var processes: [ProcessDetailItem] = []
     @State private var services: [SystemdServiceItem] = []
+    @State private var listeningPorts: [ListeningPortItem] = []
+    @State private var inspectorMode: InspectorMode = .processes
     @State private var searchText: String = ""
     @State private var sortColumn: SortColumn = .cpu
     @State private var sortAscending: Bool = false
@@ -20,6 +22,13 @@ public struct ProcessInspectorView: View {
     @State private var showingKillConfirmation: Bool = false
     @State private var selectedSignal: ProcessSignal = .sigterm
     @State private var statusFeedback: String?
+
+    public enum InspectorMode: String, CaseIterable, Identifiable {
+        case processes = "活跃进程"
+        case listeningPorts = "监听端口"
+
+        public var id: String { rawValue }
+    }
     
     public enum SortColumn: String, CaseIterable, Identifiable {
         case cpu = "CPU%"
@@ -54,8 +63,12 @@ public struct ProcessInspectorView: View {
             
             Divider()
             
-            // Main Process Table
-            processTable
+            // Main Process or Listening Ports Table
+            if inspectorMode == .processes {
+                processTable
+            } else {
+                listeningPortsTable
+            }
             
             Divider()
             
@@ -173,11 +186,22 @@ public struct ProcessInspectorView: View {
     // MARK: - Filter Toolbar
     private var filterToolbar: some View {
         HStack(spacing: 12) {
+            Picker("视图", selection: $inspectorMode) {
+                Text("活跃进程 (\(processes.count))").tag(InspectorMode.processes)
+                Text("监听端口 (\(listeningPorts.count))").tag(InspectorMode.listeningPorts)
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 210)
+            .accessibilityIdentifier("processInspector.modePicker")
+
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass")
                     .foregroundColor(ApexStyle.secondary)
                     .font(.system(size: 11))
-                TextField("搜索 PID / 进程名 / 用户 / 参数...", text: $searchText)
+                TextField(
+                    inspectorMode == .processes ? "搜索 PID / 进程名 / 用户 / 参数..." : "搜索端口 / 进程 / 协议 / 公网...",
+                    text: $searchText
+                )
                     .textFieldStyle(.plain)
                     .font(.system(size: 11.5))
                 if !searchText.isEmpty {
@@ -198,26 +222,38 @@ public struct ProcessInspectorView: View {
                 RoundedRectangle(cornerRadius: 6)
                     .stroke(ApexStyle.border, lineWidth: 1)
             }
-            .frame(maxWidth: 320)
+            .frame(maxWidth: 280)
             
             Spacer()
             
-            // Sort Column Picker
-            Picker("排序", selection: $sortColumn) {
-                ForEach(SortColumn.allCases) { col in
-                    Text(col.rawValue).tag(col)
+            if inspectorMode == .processes {
+                // Sort Column Picker
+                Picker("排序", selection: $sortColumn) {
+                    ForEach(SortColumn.allCases) { col in
+                        Text(col.rawValue).tag(col)
+                    }
                 }
-            }
-            .pickerStyle(.segmented)
-            .frame(width: 220)
-            
-            ApexIconButton(
-                icon: sortAscending ? "arrow.up" : "arrow.down",
-                label: sortAscending ? "切换为降序排列" : "切换为升序排列",
-                size: 24,
-                iconSize: 11
-            ) {
-                sortAscending.toggle()
+                .pickerStyle(.segmented)
+                .frame(width: 220)
+                
+                ApexIconButton(
+                    icon: sortAscending ? "arrow.up" : "arrow.down",
+                    label: sortAscending ? "切换为降序排列" : "切换为升序排列",
+                    size: 24,
+                    iconSize: 11
+                ) {
+                    sortAscending.toggle()
+                }
+            } else {
+                let publicCount = filteredListeningPorts.filter(\.isPubliclyExposed).count
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(publicCount > 0 ? ApexStyle.warning : ApexStyle.success)
+                        .frame(width: 7, height: 7)
+                    Text("公网/全网卡暴露: \(publicCount) 项")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(ApexStyle.secondary)
+                }
             }
         }
         .padding(.horizontal, ApexStyle.s4)
@@ -287,10 +323,74 @@ public struct ProcessInspectorView: View {
         }
     }
     
+    // MARK: - Listening Ports Table
+    private var listeningPortsTable: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Text("协议")
+                    .frame(width: 56, alignment: .leading)
+                Text("监听地址与端口")
+                    .frame(width: 170, alignment: .leading)
+                Text("暴露范围")
+                    .frame(width: 96, alignment: .leading)
+                Text("PID")
+                    .frame(width: 68, alignment: .leading)
+                Text("所属进程")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text("快捷操作")
+                    .frame(width: 165, alignment: .trailing)
+            }
+            .font(.system(size: 10.5, weight: .semibold))
+            .foregroundColor(ApexStyle.secondary)
+            .padding(.horizontal, ApexStyle.s4)
+            .padding(.vertical, 6)
+            .background(ApexStyle.subtleSurface.opacity(0.6))
+
+            Divider()
+
+            if filteredListeningPorts.isEmpty {
+                VStack(spacing: 12) {
+                    Spacer()
+                    Image(systemName: "network")
+                        .font(.system(size: 28))
+                        .foregroundColor(ApexStyle.secondary.opacity(0.5))
+                    Text(isLoading ? "正在探测远程监听端口..." : "未找到匹配的监听端口")
+                        .font(.system(size: 12))
+                        .foregroundColor(ApexStyle.secondary)
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(filteredListeningPorts) { item in
+                            ListeningPortRowView(
+                                item: item,
+                                onCopyEndpoint: {
+                                    NSPasteboard.general.clearContents()
+                                    NSPasteboard.general.setString(item.endpointDisplay, forType: .string)
+                                    statusFeedback = "已复制监听端点 \(item.endpointDisplay)"
+                                },
+                                onCreateTunnel: {
+                                    createLocalTunnel(for: item)
+                                }
+                            )
+                            Divider()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // MARK: - Footer Bar
     private var footerBar: some View {
         HStack {
-            Text("共展示 \(filteredProcesses.count) 个活跃进程 · 点击行可查看完整命令")
+            Text(
+                inspectorMode == .processes
+                    ? "共展示 \(filteredProcesses.count) 个活跃进程 · 点击行可查看完整命令"
+                    : "共检测到 \(filteredListeningPorts.count) 个监听端口 · 支持一键生成本地端口转发隧道 (-L)"
+            )
                 .font(.system(size: 11))
                 .foregroundColor(ApexStyle.secondary)
             
@@ -334,6 +434,23 @@ public struct ProcessInspectorView: View {
         }
         return result
     }
+
+    private var filteredListeningPorts: [ListeningPortItem] {
+        ListeningPortParser.filter(listeningPorts, query: searchText)
+    }
+
+    private func createLocalTunnel(for item: ListeningPortItem) {
+        let tunnel = item.toLocalForwardingTunnel(
+            sessionId: session.id,
+            existingTunnels: SSHTunnelManager.shared.tunnels
+        )
+        do {
+            try SSHTunnelManager.shared.addTunnel(tunnel)
+            statusFeedback = "已创建本地转发隧道 127.0.0.1:\(tunnel.bindPort) → 127.0.0.1:\(tunnel.targetPort)"
+        } catch {
+            statusFeedback = error.localizedDescription
+        }
+    }
     
     private func fetchProcessData() {
         guard !isLoading else { return }
@@ -344,6 +461,7 @@ public struct ProcessInspectorView: View {
             // Sample fallback processes if offline
             var fetchedItems: [ProcessDetailItem] = []
             var fetchedServices: [SystemdServiceItem] = []
+            var fetchedPorts: [ListeningPortItem] = []
             
             if let client = sshClient, client.isConnected {
                 let cmd = AgentlessMonitor.processInspectorProbeCommand
@@ -355,6 +473,11 @@ public struct ProcessInspectorView: View {
                 let svcCmd = AgentlessMonitor.systemdServicesProbeCommand(services: monitored)
                 if let rawSvc = try? await client.executeCommand(svcCmd) {
                     fetchedServices = ProcessListParser.parseSystemdServices(rawSvc, monitoredServices: monitored)
+                }
+
+                let portsCmd = AgentlessMonitor.listeningPortsProbeCommand
+                if let rawPorts = try? await client.executeCommand(portsCmd) {
+                    fetchedPorts = ListeningPortParser.parseOutput(rawPorts)
                 }
             }
             
@@ -374,13 +497,21 @@ public struct ProcessInspectorView: View {
                     SystemdServiceItem(name: "redis", activeState: "active"),
                     SystemdServiceItem(name: "sshd", activeState: "active")
                 ]
+                fetchedPorts = [
+                    ListeningPortItem(proto: "TCP", bindAddress: "0.0.0.0", port: 22, pid: 684, processName: "sshd"),
+                    ListeningPortItem(proto: "TCP", bindAddress: "0.0.0.0", port: 80, pid: 4096, processName: "nginx"),
+                    ListeningPortItem(proto: "TCP", bindAddress: "127.0.0.1", port: 3000, pid: 1024, processName: "node"),
+                    ListeningPortItem(proto: "TCP", bindAddress: "127.0.0.1", port: 6379, pid: 3072, processName: "redis-server")
+                ]
             }
             
             let finalItems = fetchedItems
             let finalServices = fetchedServices
+            let finalPorts = fetchedPorts
             await MainActor.run {
                 self.processes = finalItems
                 self.services = finalServices
+                self.listeningPorts = finalPorts
                 self.isLoading = false
             }
         }
@@ -531,6 +662,75 @@ private struct ProcessRowView: View {
         .onTapGesture {
             onSelect()
         }
+        .onHover { hovering in
+            withAnimation(ApexStyle.hoverTransition) {
+                isHovered = hovering
+            }
+        }
+    }
+}
+
+private struct ListeningPortRowView: View {
+    let item: ListeningPortItem
+    let onCopyEndpoint: () -> Void
+    let onCreateTunnel: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(item.proto)
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .foregroundColor(ApexStyle.accent)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(ApexStyle.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 4))
+                .frame(width: 56, alignment: .leading)
+
+            Text(item.endpointDisplay)
+                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                .foregroundColor(ApexStyle.primary)
+                .lineLimit(1)
+                .frame(width: 170, alignment: .leading)
+
+            HStack(spacing: 4) {
+                Circle()
+                    .fill(item.isPubliclyExposed ? ApexStyle.warning : ApexStyle.success)
+                    .frame(width: 6, height: 6)
+                Text(item.exposureBadgeText)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(item.isPubliclyExposed ? ApexStyle.warning : ApexStyle.success)
+            }
+            .frame(width: 96, alignment: .leading)
+
+            Text(item.pid.map { "\($0)" } ?? "—")
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundColor(ApexStyle.secondary)
+                .frame(width: 68, alignment: .leading)
+
+            Text(item.processName.isEmpty ? "未知或内核进程" : item.processName)
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .foregroundColor(ApexStyle.primary)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            HStack(spacing: 6) {
+                ApexActionButton("复制", tint: ApexStyle.secondary, size: .small) {
+                    onCopyEndpoint()
+                }
+                .help("复制监听地址与端口")
+
+                ApexActionButton("转本地隧道", icon: "arrow.triangle.swap", tint: ApexStyle.accent, size: .small) {
+                    onCreateTunnel()
+                }
+                .help("一键创建指向该端口的本地转发隧道 (-L)")
+            }
+            .frame(width: 165, alignment: .trailing)
+        }
+        .padding(.horizontal, ApexStyle.s4)
+        .padding(.vertical, 6)
+        .background(isHovered ? ApexStyle.primary.opacity(0.04) : Color.clear)
+        .contentShape(Rectangle())
         .onHover { hovering in
             withAnimation(ApexStyle.hoverTransition) {
                 isHovered = hovering

@@ -2,6 +2,19 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.19.0] - 2026-11-08
+
+### ✨ 新增特性 (Features)
+- **远程端口监听与活跃套接字巡检器 (`ListeningPortItem` & `ListeningPortParser`)**：
+  - `AgentlessMonitor` 新增跨平台无代理监听端口探测指令 `listeningPortsProbeCommand`，自动适配 Linux `ss -tulpnH`、Linux `netstat -tulpn` 回退与 macOS / BSD `lsof -iTCP -sTCP:LISTEN -P -n`；
+  - `ProcessInspectorView`（`⌘⌥K`）新增「活跃进程 / 监听端口」双视图切换，实时呈现远程主机所有 TCP/UDP 监听端点、PID 与所属进程，并支持按端口号、进程名、协议或暴露范围即时过滤；
+  - **公网暴露风险智能徽章**：自动识别通配符（`0.0.0.0`、`*`、`::`、`::ffff:0.0.0.0`）及非回环网卡监听并标记「公网/全网卡」告警圆点，与 `127.0.0.1` / `::1` / `127.0.0.53%lo` 等「本地回环」服务清晰区分；
+  - **一键转本地 SSH 转发隧道（`-L`）**：在监听端口行点击「转本地隧道」即可通过 `toLocalForwardingTunnel` 自动生成无冲突的本地端口转发隧道（对 `< 1024` 特权端口自动映射至 `10000+` 高位端口，并自动规避已有本地隧道占用端口）。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- 新增 `ListeningPortInspectorTests`（`TC-PORT-01 ~ TC-PORT-08`）与 `CodeReviewRegressionTests` `TC-REV-47` 共 9 项自动化测试，覆盖 Linux `ss`/`netstat` 与 macOS `lsof` 解析、IPv4/IPv6/网卡作用域与 IPv4 映射地址识别、多 Worker 进程监听去重排序、关键字过滤以及无冲突本地隧道自动生成；
+- 全量自动化测试用例 100% 绿色通过（0 failures），Swift 6 模式零警告。
+
 ## [v1.18.0] - 2026-11-08
 
 ### ✨ 新增特性 (Features)

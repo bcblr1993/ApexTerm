@@ -32,6 +32,17 @@ public final class AgentlessMonitor: Sendable {
         ps -eo pid,user,%cpu,%mem,rss,vsz,stat,comm,args --sort=-%cpu 2>/dev/null | head -46
     fi
     """
+
+    /// Listening TCP/UDP sockets probe command with automatic multi-OS fallback (`lsof` on Darwin, `ss` or `netstat` on Linux)
+    public static let listeningPortsProbeCommand = """
+    if [ "$(uname)" = "Darwin" ]; then
+        lsof -iTCP -sTCP:LISTEN -P -n 2>/dev/null | head -80
+    elif command -v ss >/dev/null 2>&1; then
+        ss -tulpnH 2>/dev/null | head -80
+    else
+        netstat -tulpn 2>/dev/null | head -80
+    fi
+    """
     
     /// Systemd service states query command (returns empty output on macOS/Alpine/BSD hosts without systemctl)
     public static func systemdServicesProbeCommand(services: [String] = ["nginx", "docker", "redis", "mysql", "sshd", "postgresql", "caddy"]) -> String {

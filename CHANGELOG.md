@@ -2,6 +2,19 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.21.0] - 2026-11-08
+
+### ✨ 新增特性 (Features)
+- **终端 Shell 集成引擎 (`ShellIntegrationTracker` & `OSC 133 / OSC 7 / OSC 1337`)**：
+  - `TerminalRingBuffer` 原生集成 `OSC 133`（FinalTerm / iTerm2 / VSCode 标准 Shell Integration `A` 提示符开始、`B` 命令输入开始、`C` 命令执行开始、`D;exitCode` 命令结束与退出码）以及 `OSC 7` / `OSC 1337` 远端工作目录追踪；
+  - 完整支持 `BEL` (`\u{07}`) 与跨分片 `ST` (`\e\\`) 两种终结符，确保控制序列零字符泄漏至可见终端，且 `BEL` 终结符绝不误触终端响铃；
+  - **精确命令输出提取与状态栏耗时/退出码徽章**：`⌘⌥C` 复制上一条命令输出时优先采用 `OSC 133` 精确行边界提取（自动剥离 ANSI 样式序列），底部状态栏新增最近命令执行耗时（`85ms` / `2.35s`）与退出码（`✓` / `✗ Exit <code>`）交互菜单，支持一键回溯复制历史命令文本或对应输出；
+  - **提示符书签导航 (`previousPromptLine` / `nextPromptLine`)**：自动记录每次提示符行号书签（带 FIFO 容量上限保护），支持在长输出历史中快速定位上下提示符边界。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- 新增 `ShellIntegrationTests`（`TC-SHELL-01 ~ TC-SHELL-08`）与 `CodeReviewRegressionTests` `TC-REV-49` 共 9 项自动化测试，覆盖 `OSC 133` 全生命周期解析、退出码与耗时计算、精确命令输出提取、提示符书签导航、`OSC 7`/`1337` 目录解析、FIFO 历史上限淘汰以及跨分片 `ST` 终结符重组；
+- 全量自动化测试用例 100% 绿色通过（0 failures），Swift 6 模式零警告。
+
 ## [v1.20.0] - 2026-11-08
 
 ### ✨ 新增特性 (Features)

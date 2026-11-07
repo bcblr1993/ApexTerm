@@ -850,6 +850,12 @@ public struct WorkspaceView: View {
 
     private func copyLastCommandOutput() {
         guard let tab = currentTab, let active = tab.activePane else { return }
+        if let oscOutput = active.ringBuffer.extractLastOSC133CommandOutput() {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(oscOutput, forType: .string)
+            showHUDToast("已复制上一条命令输出 (\(oscOutput.count) 字符)")
+            return
+        }
         let lines = active.ringBuffer.allLines()
         if let output = CommandBoundaryDetector.extractLastCommandOutput(from: lines) {
             NSPasteboard.general.clearContents()
@@ -1512,6 +1518,44 @@ private struct WorkspaceBottomStatusBar: View {
             
             Text("UTF-8")
                 .apexKeycap()
+            
+            if let pane = tab.activePane ?? tab.panes.first,
+               let lastRecord = pane.ringBuffer.shellIntegration.lastCompletedRecord {
+                Divider().frame(height: 12)
+                Menu {
+                    let records = Array(pane.ringBuffer.shellIntegration.allRecords().suffix(10).reversed())
+                    ForEach(records) { rec in
+                        let titleCmd = rec.commandText ?? "Shell 命令"
+                        let statusBadge = rec.isFailed ? "✗ Exit \(rec.exitCode ?? 1)" : "✓"
+                        Menu("\(statusBadge) \(titleCmd) (\(rec.formattedDuration))") {
+                            if let cmd = rec.commandText, !cmd.isEmpty {
+                                Button("复制命令文本") {
+                                    NSPasteboard.general.clearContents()
+                                    NSPasteboard.general.setString(cmd, forType: .string)
+                                }
+                            }
+                            Button("复制此命令输出") {
+                                if let out = pane.ringBuffer.extractOSC133CommandOutput(for: rec) {
+                                    NSPasteboard.general.clearContents()
+                                    NSPasteboard.general.setString(out, forType: .string)
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: lastRecord.isFailed ? "xmark.circle.fill" : "checkmark.circle.fill")
+                            .font(.system(size: 10))
+                            .foregroundColor(lastRecord.isFailed ? ApexStyle.error : ApexStyle.success)
+                        Text(lastRecord.isFailed ? "Exit \(lastRecord.exitCode ?? 1) · \(lastRecord.formattedDuration)" : lastRecord.formattedDuration)
+                            .font(.caption.monospaced())
+                            .foregroundColor(lastRecord.isFailed ? ApexStyle.error : ApexStyle.secondary)
+                    }
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help("OSC 133 Shell 集成：最近命令执行状态与耗时记录")
+            }
             
             if showsDirectoryControls {
                 Divider().frame(height: 12)

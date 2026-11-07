@@ -1167,4 +1167,20 @@ final class CodeReviewRegressionTests: XCTestCase {
             "343ec64901780508b7e1cdc2af93cc6eebebcd0d0b6cd906b91772822afd3311"
         )
     }
+
+    // MARK: - TC-REV-49: Split-packet OSC 133 ST (\e\\) terminator reassembly and dangling command auto-close on next prompt
+    func testOSC133SplitPacketSTTerminatorAndDanglingCommandAutoClose() {
+        let ring = TerminalRingBuffer(maxLines: 200)
+        // Packet 1 ends mid-ST terminator (\e without trailing \\)
+        ring.appendStream("\u{1B}]133;A\u{1B}")
+        ring.appendStream("\\$ uname -s\u{1B}]133;C;uname -s\u{1B}")
+        ring.appendStream("\\\r\nLinux\r\n")
+        // Next prompt arrives without an explicit 133;D
+        ring.appendStream("\u{1B}]133;A\u{07}$ ")
+
+        XCTAssertEqual(ring.allLines(), ["$ uname -s", "Linux", "$ "])
+        XCTAssertEqual(ring.shellIntegration.allRecords().count, 1)
+        XCTAssertEqual(ring.shellIntegration.lastCompletedRecord?.commandText, "uname -s")
+        XCTAssertEqual(ring.extractLastOSC133CommandOutput(), "Linux")
+    }
 }

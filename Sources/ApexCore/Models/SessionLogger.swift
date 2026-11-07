@@ -44,6 +44,11 @@ public final class SessionLogger: @unchecked Sendable {
     private var currentFileURL: URL?
     private var currentFileSize: UInt64 = 0
     private var isClosed = false
+    private var utf8Decoder = UTF8StreamDecoder()
+    private static let ansiRegex = try? NSRegularExpression(
+        pattern: "\\x1B(?:\\[[0-?]*[ -/]*[@-~]|\\].*?(?:\\x07|\\x1B\\\\))",
+        options: []
+    )
     
     public init(
         session: Session,
@@ -57,6 +62,10 @@ public final class SessionLogger: @unchecked Sendable {
         
         setupLogFile()
     }
+
+    deinit {
+        fileHandle?.closeFile()
+    }
     
     public var activeFileURL: URL? {
         queue.sync { currentFileURL }
@@ -65,7 +74,8 @@ public final class SessionLogger: @unchecked Sendable {
     private func setupLogFile() {
         queue.async { [weak self] in
             guard let self = self else { return }
-            let dir = URL(fileURLWithPath: self.config.logDirectoryPath, isDirectory: true)
+            let expandedDirPath = (self.config.logDirectoryPath as NSString).expandingTildeInPath
+            let dir = URL(fileURLWithPath: expandedDirPath, isDirectory: true)
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             
             let formatter = DateFormatter()
@@ -102,12 +112,9 @@ public final class SessionLogger: @unchecked Sendable {
             
             let dataToWrite: Data
             if self.config.format == .plainText {
-                if let string = String(data: rawData, encoding: .utf8) {
-                    let cleaned = Self.stripANSI(from: string)
-                    dataToWrite = Data(cleaned.utf8)
-                } else {
-                    dataToWrite = rawData
-                }
+                let decoded = self.utf8Decoder.decode(rawData)
+                let cleaned = Self.stripANSI(from: decoded)
+                dataToWrite = Data(cleaned.utf8)
             } else {
                 dataToWrite = rawData
             }
@@ -161,9 +168,7 @@ public final class SessionLogger: @unchecked Sendable {
     
     /// Strips ANSI CSI sequences, OSC hyperlinks, and non-printable control bytes
     public static func stripANSI(from text: String) -> String {
-        // Regex pattern matches standard ANSI escape sequences: \x1b\[[0-9;]*[a-zA-Z] and OSC \x1b\].*?\x07
-        let pattern = "\\x1B(?:\\[[0-?]*[ -/]*[@-~]|\\].*?(?:\\x07|\\x1B\\\\))"
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else {
+        guard let regex = ansiRegex else {
             return text
         }
         let range = NSRange(location: 0, length: (text as NSString).length)

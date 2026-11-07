@@ -244,6 +244,9 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     }
 
     public static func expandPath(_ path: String) -> String {
+        if KeychainStore.isVaultPrivateKeyReference(path) {
+            return SSHKeyVaultManager.materializePrivateKeyPath(for: path) ?? path
+        }
         if path.hasPrefix("~/") {
             let home = FileManager.default.homeDirectoryForCurrentUser.path
             return home + "/" + String(path.dropFirst(2))
@@ -298,7 +301,8 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     /// Every child operation owns its grant independently, including cancellation cleanup.
     func acquirePrivateKeyAccess() throws -> FileAccessLease? {
         guard distributionChannel == .appStore,
-              let path = session.privateKeyPath, !path.isEmpty else { return nil }
+              let path = session.privateKeyPath, !path.isEmpty,
+              !KeychainStore.isVaultPrivateKeyReference(path) else { return nil }
         let access = try fileAccessStore.acquire(URL(fileURLWithPath: Self.expandPath(path)))
         guard FileManager.default.isReadableFile(atPath: access.url.path) else {
             access.close()

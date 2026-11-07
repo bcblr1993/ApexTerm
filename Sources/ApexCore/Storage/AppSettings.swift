@@ -287,6 +287,7 @@ public final class AppSettings: ObservableObject {
     /// Reset all settings to factory default
     public func resetToDefaults() {
         let defaultDownloadPath = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first?.path ?? "~/Downloads"
+        let defaultLogDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.appendingPathComponent("AetherTerm/Logs", isDirectory: true).path ?? "~/Documents/AetherTerm/Logs"
         
         fontName = "SF Mono"
         fontSize = 13.0
@@ -303,6 +304,10 @@ public final class AppSettings: ObservableObject {
         defaultDownloadDirectory = defaultDownloadPath
         maxConcurrentTransfers = 3
         checkForUpdatesOnLaunch = true
+        isSessionLoggingEnabled = false
+        sessionLogFormat = .plainText
+        sessionLogDirectory = defaultLogDir
+        sessionLogMaxFileSizeMB = 50
         isAutoReconnectEnabled = true
         isKeepAliveEnhanced = true
     }

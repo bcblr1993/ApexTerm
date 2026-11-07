@@ -536,4 +536,235 @@ final class CodeReviewRegressionTests: XCTestCase {
         XCTAssertTrue(appSource.contains("TransferManager.shared.cancelAllTasks()"),
                       "App termination must cancel active SFTP transfers")
     }
+
+    // MARK: - TC-REV-28: SSH Key Vault materialization and passphrase fallback for SSH & Tunnels
+    @MainActor
+    func testSSHKeyVaultMaterializationAndPassphraseFallback() async throws {
+        let keyId = UUID()
+        let privRef = "vault.priv.\(keyId.uuidString)"
+        let passRef = "vault.pass.\(keyId.uuidString)"
+        let fakePEM = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmU=\n-----END OPENSSH PRIVATE KEY-----"
+
+        XCTAssertTrue(KeychainStore.isManagedReference(privRef))
+        XCTAssertTrue(KeychainStore.isManagedReference(passRef))
+        XCTAssertTrue(KeychainStore.isVaultPrivateKeyReference(privRef))
+        XCTAssertEqual(KeychainStore.vaultPassphraseReference(forPrivateKeyRef: privRef), passRef)
+
+        let tempVaultDir = FileManager.default.temporaryDirectory.appendingPathComponent("VaultMaterialize_\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempVaultDir) }
+
+        let materializedPath = SSHKeyVaultManager.materializePrivateKeyPath(
+            for: privRef,
+            directory: tempVaultDir,
+            lookup: { ref in ref == privRef ? fakePEM : nil }
+        )
+        let unwrappedPath = try XCTUnwrap(materializedPath)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: unwrappedPath))
+
+        let content = try String(contentsOfFile: unwrappedPath, encoding: .utf8)
+        XCTAssertTrue(content.hasSuffix("\n"), "Materialized OpenSSH private key must end with a trailing newline")
+        let attrs = try FileManager.default.attributesOfItem(atPath: unwrappedPath)
+        let perms = (attrs[.posixPermissions] as? NSNumber)?.uint16Value ?? 0
+        XCTAssertEqual(perms & 0o777, 0o600, "Materialized private key file must have 0600 permissions")
+
+        let session = Session(
+            name: "VaultKeyHost",
+            host: "10.0.0.10",
+            username: "ubuntu",
+            authMethod: .privateKey(keychainRef: privRef, passphraseRef: nil)
+        )
+        let secret = await SSHTunnelManager.resolveSecret(for: session) { ref in
+            if ref == passRef { return "vault-key-passphrase-123" }
+            return nil
+        }
+        XCTAssertEqual(secret, "vault-key-passphrase-123", "Vault key session without explicit passphraseRef must fall back to vault.pass.<UUID>")
+    }
+
+    // MARK: - TC-REV-29: Duplicating a session isolates Keychain secret references
+    @MainActor
+    func testDuplicateSessionIsolatesKeychainReferences() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("DupSessionTests_\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let store = SessionStore(baseDirectory: tempDir)
+
+        let origId = UUID()
+        let origRef = "ssh_\(origId.uuidString)"
+        let original = Session(
+            id: origId,
+            name: "Prod DB",
+            host: "10.0.1.5",
+            username: "postgres",
+            authMethod: .password(keychainRef: origRef)
+        )
+        store.addSession(original)
+
+        var simulatedKeychain: [String: String] = [origRef: "origin-secret-pw"]
+        let duplicate = store.duplicateSession(
+            original,
+            nameSuffix: " (副本)",
+            secretCloner: { oldRef, newRef in
+                if let val = simulatedKeychain[oldRef] {
+                    simulatedKeychain[newRef] = val
+                    return newRef
+                }
+                return newRef
+            }
+        )
+
+        XCTAssertNotEqual(duplicate.id, original.id)
+        XCTAssertEqual(duplicate.name, "Prod DB (副本)")
+        guard case .password(let dupRef) = duplicate.authMethod else {
+            return XCTFail("Expected password auth method on duplicated session")
+        }
+        XCTAssertNotEqual(dupRef, origRef, "Duplicated session must use its own dedicated Keychain reference")
+        XCTAssertEqual(dupRef, "ssh_\(duplicate.id.uuidString)")
+        XCTAssertEqual(simulatedKeychain[dupRef], "origin-secret-pw")
+    }
+
+    // MARK: - TC-REV-30: Deleting a session cleans up Keychain secrets, tunnels, and dangling jumpServerId
+    @MainActor
+    func testDeleteSessionCleansUpSecretsTunnelsAndJumpServerReferences() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("DeleteSessionTests_\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let store = SessionStore(baseDirectory: tempDir)
+        let tunnelManager = SSHTunnelManager(baseDirectory: tempDir)
+
+        let jumpId = UUID()
+        let jumpRef = "ssh_\(jumpId.uuidString)"
+        let jumpSession = Session(
+            id: jumpId,
+            name: "Bastion Host",
+            host: "1.1.1.1",
+            username: "jump",
+            authMethod: .password(keychainRef: jumpRef)
+        )
+        let appSession = Session(
+            name: "Inner App",
+            host: "10.0.0.2",
+            username: "app",
+            authMethod: .agent,
+            jumpServerId: jumpId
+        )
+        store.addSession(jumpSession)
+        store.addSession(appSession)
+
+        let tunnel = SSHTunnel(name: "Bastion SOCKS", type: .dynamic, sessionId: jumpId, bindPort: 11080)
+        try tunnelManager.addTunnel(tunnel)
+        XCTAssertEqual(tunnelManager.tunnels(for: jumpId).count, 1)
+
+        var deletedKeys: [String] = []
+        store.deleteSession(
+            id: jumpId,
+            tunnelManager: tunnelManager,
+            secretDeleter: { key in deletedKeys.append(key) }
+        )
+
+        XCTAssertNil(store.sessions.first(where: { $0.id == jumpId }))
+        XCTAssertTrue(deletedKeys.contains(jumpRef), "Deleting session must delete its managed Keychain secret")
+        XCTAssertTrue(tunnelManager.tunnels(for: jumpId).isEmpty, "Deleting session must remove associated SSH tunnels")
+        let remainingApp = try XCTUnwrap(store.sessions.first(where: { $0.id == appSession.id }))
+        XCTAssertNil(remainingApp.jumpServerId, "Deleting jump host session must clear dangling jumpServerId on dependent sessions")
+    }
+
+    // MARK: - TC-REV-31: Snippet unresolvedVariables detection for interactive parameter prompting
+    func testSnippetUnresolvedVariablesDetection() throws {
+        let dockerSnippet = Snippet(title: "Logs", command: "docker logs -f --tail 100 {{container}}")
+        XCTAssertEqual(dockerSnippet.unresolvedVariables(context: ["host": "1.2.3.4", "user": "root"]), ["container"])
+        XCTAssertTrue(dockerSnippet.unresolvedVariables(context: ["container": "nginx-proxy"]).isEmpty)
+
+        let portSnippet = Snippet(title: "Port Check", command: "ss -tulpn | grep {{port}}")
+        XCTAssertEqual(portSnippet.unresolvedVariables(context: ["host": "1.2.3.4", "user": "root"]), ["port"])
+
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let workspaceSource = try String(contentsOf: root.appendingPathComponent("Sources/ApexUI/Workspace/WorkspaceView.swift"), encoding: .utf8)
+        XCTAssertTrue(workspaceSource.contains("executeSnippet(snippet)"),
+                      "CommandPalette snippet execution must route through unified executeSnippet handler with variable prompt support")
+    }
+
+    // MARK: - TC-REV-32: SSHTunnelManager jump server (-J) arguments and path expansion
+    func testSSHTunnelBuildArgumentsWithJumpServerAndPathExpansion() {
+        let jump = Session(name: "Jump", host: "203.0.113.5", port: 2222, username: "bastion", authMethod: .agent)
+        let target = Session(
+            name: "Internal DB",
+            host: "10.10.0.8",
+            port: 22,
+            username: "dbadmin",
+            authMethod: .certificate(keychainRef: "~/.ssh/id_ed25519", certificatePath: "~/.ssh/id_ed25519-cert.pub", passphraseRef: nil),
+            jumpServerId: jump.id
+        )
+        let tunnel = SSHTunnel(name: "PG Tunnel", type: .local, sessionId: target.id, bindPort: 15432, targetHost: "127.0.0.1", targetPort: 5432)
+
+        let args = SSHTunnelManager.buildSSHArguments(tunnel: tunnel, session: target, jumpSession: jump)
+        if let jIdx = args.firstIndex(of: "-J"), jIdx + 1 < args.count {
+            XCTAssertEqual(args[jIdx + 1], "bastion@203.0.113.5:2222")
+        } else {
+            XCTFail("SSHTunnelManager.buildSSHArguments must include -J user@host:port when jumpSession is provided")
+        }
+        XCTAssertFalse(args.contains("~/.ssh/id_ed25519"), "Private key path must expand ~ before invoking Process")
+        XCTAssertFalse(args.contains("CertificateFile=~/.ssh/id_ed25519-cert.pub"), "Certificate path must expand ~ before invoking Process")
+    }
+
+    // MARK: - TC-REV-33: SessionLogger streaming UTF-8 decoding across split multi-byte chunks
+    func testSessionLoggerSplitMultiByteUTF8AndANSIFiltering() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("LoggerUTF8Tests_\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let session = Session(name: "UTF8Test", host: "10.0.0.1", username: "root")
+        let config = SessionLogConfig(autoLoggingEnabled: true, logDirectoryPath: tempDir.path, format: .plainText, maxFileSizeMB: 10)
+        let logger = SessionLogger(session: session, config: config)
+
+        // "\u{001B}[32m中文测试\u{001B}[0m\n" where "中" (E4 B8 AD) is split across two chunks!
+        let fullBytes = Array("\u{001B}[32m中文测试\u{001B}[0m\n".utf8)
+        // Find first byte of "中" (0xE4) and split right after 0xE4, 0xB8
+        let splitIndex = 6 // 5 bytes of "\x1B[32m" + 1st byte of "中" (0xE4)
+        let chunk1 = Data(fullBytes[0..<splitIndex])
+        let chunk2 = Data(fullBytes[splitIndex..<fullBytes.count])
+
+        logger.appendData(chunk1)
+        logger.appendData(chunk2)
+        logger.close()
+
+        let fileURL = try XCTUnwrap(logger.activeFileURL)
+        let loggedText = try String(contentsOf: fileURL, encoding: .utf8)
+        XCTAssertTrue(loggedText.contains("中文测试"), "Split multi-byte UTF-8 characters must be reassembled cleanly")
+        XCTAssertFalse(loggedText.contains("\u{001B}[32m"), "Split UTF-8 chunk must not bypass ANSI stripping in plainText mode")
+    }
+
+    // MARK: - TC-REV-34: AppSettings.resetToDefaults resets session audit logging properties
+    @MainActor
+    func testAppSettingsResetToDefaultsResetsLoggingProperties() {
+        let settings = AppSettings.shared
+        let prevEnabled = settings.isSessionLoggingEnabled
+        let prevFormat = settings.sessionLogFormat
+        let prevDir = settings.sessionLogDirectory
+        let prevMax = settings.sessionLogMaxFileSizeMB
+        defer {
+            settings.isSessionLoggingEnabled = prevEnabled
+            settings.sessionLogFormat = prevFormat
+            settings.sessionLogDirectory = prevDir
+            settings.sessionLogMaxFileSizeMB = prevMax
+        }
+
+        settings.isSessionLoggingEnabled = true
+        settings.sessionLogFormat = .rawAnsi
+        settings.sessionLogDirectory = "/tmp/custom_audit_logs"
+        settings.sessionLogMaxFileSizeMB = 200
+
+        settings.resetToDefaults()
+
+        XCTAssertFalse(settings.isSessionLoggingEnabled)
+        XCTAssertEqual(settings.sessionLogFormat, .plainText)
+        XCTAssertEqual(settings.sessionLogMaxFileSizeMB, 50)
+        XCTAssertTrue(settings.sessionLogDirectory.hasSuffix("AetherTerm/Logs"))
+    }
+
+    // MARK: - TC-REV-35: Broadcast mode filters connected panes and refreshes directory linkage
+    func testBroadcastModeFiltersConnectedPanesAndRefreshesLinkage() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let workspaceSource = try String(contentsOf: root.appendingPathComponent("Sources/ApexUI/Workspace/WorkspaceView.swift"), encoding: .utf8)
+        XCTAssertTrue(workspaceSource.contains("where p.connectionState == .connected"),
+                      "Broadcast mode must only send input to connected panes")
+    }
 }

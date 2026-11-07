@@ -96,8 +96,103 @@ public final class SessionStore: ObservableObject {
         }
     }
     
-    public func deleteSession(id: UUID) {
+    @discardableResult
+    public func duplicateSession(
+        _ session: Session,
+        nameSuffix: String = " (副本)",
+        secretCloner: ((String, String) -> String?)? = nil
+    ) -> Session {
+        let cloner: (String, String) -> String? = secretCloner ?? { oldRef, newRef in
+            guard let secret = try? KeychainStore.shared.getSync(key: oldRef),
+                  let savedRef = try? KeychainStore.shared.save(key: newRef, secret: secret) else {
+                return newRef
+            }
+            return savedRef
+        }
+
+        var dup = session
+        let newId = UUID()
+        dup.id = newId
+        dup.name += nameSuffix
+        dup.createdAt = Date()
+        dup.lastConnectedAt = nil
+
+        switch session.authMethod {
+        case .password(let ref):
+            if KeychainStore.isSessionSecretReference(ref) {
+                let candidateRef = "ssh_\(newId.uuidString)"
+                let resolvedRef = cloner(ref, candidateRef) ?? candidateRef
+                dup.authMethod = .password(keychainRef: resolvedRef)
+            }
+        case .privateKey(let keyPath, let passRef):
+            if let ref = passRef, KeychainStore.isSessionSecretReference(ref) {
+                let candidateRef = "passphrase_\(newId.uuidString)"
+                let resolvedRef = cloner(ref, candidateRef) ?? candidateRef
+                dup.authMethod = .privateKey(keychainRef: keyPath, passphraseRef: resolvedRef)
+            }
+        case .certificate(let keyPath, let certPath, let passRef):
+            if let ref = passRef, KeychainStore.isSessionSecretReference(ref) {
+                let candidateRef = "passphrase_\(newId.uuidString)"
+                let resolvedRef = cloner(ref, candidateRef) ?? candidateRef
+                dup.authMethod = .certificate(keychainRef: keyPath, certificatePath: certPath, passphraseRef: resolvedRef)
+            }
+        case .agent, .none:
+            break
+        }
+
+        addSession(dup)
+        return dup
+    }
+
+    public func deleteSession(
+        id: UUID,
+        tunnelManager: SSHTunnelManager? = nil,
+        secretDeleter: ((String) -> Void)? = nil
+    ) {
+        let target = sessions.first(where: { $0.id == id })
         sessions.removeAll(where: { $0.id == id })
+
+        // Clear dangling jumpServerId references on remaining sessions
+        for idx in sessions.indices where sessions[idx].jumpServerId == id {
+            sessions[idx].jumpServerId = nil
+        }
+
+        // Clean up session-owned Keychain secrets if no remaining session still shares the reference
+        if let target {
+            let candidateRef: String?
+            switch target.authMethod {
+            case .password(let ref):
+                candidateRef = KeychainStore.isSessionSecretReference(ref) ? ref : nil
+            case .privateKey(_, let passRef), .certificate(_, _, let passRef):
+                if let ref = passRef, KeychainStore.isSessionSecretReference(ref) {
+                    candidateRef = ref
+                } else {
+                    candidateRef = nil
+                }
+            case .agent, .none:
+                candidateRef = nil
+            }
+            if let ref = candidateRef {
+                let stillReferenced = sessions.contains { s in
+                    switch s.authMethod {
+                    case .password(let r): return r == ref
+                    case .privateKey(_, let r), .certificate(_, _, let r): return r == ref
+                    case .agent, .none: return false
+                    }
+                }
+                if !stillReferenced {
+                    let deleter = secretDeleter ?? { key in try? KeychainStore.shared.delete(key: key) }
+                    deleter(ref)
+                }
+            }
+        }
+
+        // Stop and delete any SSH tunnels associated with the deleted session
+        let manager = tunnelManager ?? SSHTunnelManager.shared
+        for tunnel in manager.tunnels(for: id) {
+            manager.deleteTunnel(id: tunnel.id)
+        }
+
         saveAll()
     }
     

@@ -56,6 +56,16 @@ public struct Snippet: Identifiable, Codable, Sendable, Equatable, Hashable {
         }
         return vars
     }
+
+    /// Returns variable placeholders that still require interactive user input given the supplied context.
+    public func unresolvedVariables(context: [String: String] = [:]) -> [String] {
+        extractVariables().filter { varName in
+            guard let val = context[varName]?.trimmingCharacters(in: .whitespacesAndNewlines) else {
+                return true
+            }
+            return val.isEmpty
+        }
+    }
     
     /// Curated ops snippets built for quick terminal productivity
     public static let defaultCuratedSnippets: [Snippet] = [

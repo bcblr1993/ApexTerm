@@ -161,7 +161,7 @@ codesign -vvv --deep --strict "${APP_DIR}"
 NOTARY_PROFILE="${NOTARY_PROFILE:-AetherRoute-Notary}"
 NOTARY_ZIP="${BUILD_DIR}/ApexTerm-notarization.zip"
 ditto -c -k --keepParent "${APP_DIR}" "${NOTARY_ZIP}"
-xcrun notarytool submit "${NOTARY_ZIP}" --keychain-profile "${NOTARY_PROFILE}" --wait --output-format json > "${BUILD_DIR}/notarization-app.json"
+xcrun notarytool submit "${NOTARY_ZIP}" --keychain-profile "${NOTARY_PROFILE}" --no-s3-acceleration --wait --output-format json > "${BUILD_DIR}/notarization-app.json"
 python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["status"] == "Accepted", "Apple notarization rejected"' "${BUILD_DIR}/notarization-app.json"
 xcrun stapler staple "${APP_DIR}"
 xcrun stapler validate "${APP_DIR}"
@@ -184,7 +184,7 @@ if command -v hdiutil >/dev/null 2>&1; then
 fi
 
 codesign --force --sign "${SIGNING_IDENTITY}" --timestamp "${DIST_DMG}"
-xcrun notarytool submit "${DIST_DMG}" --keychain-profile "${NOTARY_PROFILE}" --wait --output-format json > "${BUILD_DIR}/notarization-dmg.json"
+xcrun notarytool submit "${DIST_DMG}" --keychain-profile "${NOTARY_PROFILE}" --no-s3-acceleration --wait --output-format json > "${BUILD_DIR}/notarization-dmg.json"
 python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["status"] == "Accepted", "DMG notarization rejected"' "${BUILD_DIR}/notarization-dmg.json"
 xcrun stapler staple "${DIST_DMG}"
 xcrun stapler validate "${DIST_DMG}"

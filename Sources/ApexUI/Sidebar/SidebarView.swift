@@ -178,10 +178,7 @@ public struct SidebarView: View {
                                             }
                                             Divider()
                                             Button(L10n.duplicateSessionAction) {
-                                                var dup = session
-                                                dup.id = UUID()
-                                                dup.name += " \(L10n.copyTag)"
-                                                store.addSession(dup)
+                                                store.duplicateSession(session, nameSuffix: " \(L10n.copyTag)")
                                             }
                                             Button(L10n.deleteSessionAction, role: .destructive) {
                                                 sessionToDelete = session

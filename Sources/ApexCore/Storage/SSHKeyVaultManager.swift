@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 public enum SSHKeyVaultError: LocalizedError, Equatable {
     case duplicateKey(String)
@@ -79,13 +80,54 @@ public final class SSHKeyVaultManager: ObservableObject {
     
     public func deleteKey(id: UUID) {
         guard let key = keys.first(where: { $0.id == id }) else { return }
-        // Clean up secrets from Keychain
+        // Clean up secrets from Keychain and any materialized temporary key file
         try? KeychainStore.shared.delete(key: key.keychainPrivateKeyRef)
         if let passRef = key.keychainPassphraseRef {
             try? KeychainStore.shared.delete(key: passRef)
         }
+        let tempKeyURL = Self.defaultMaterializedDirectory.appendingPathComponent("\(key.keychainPrivateKeyRef).key")
+        try? fileManager.removeItem(at: tempKeyURL)
         keys.removeAll(where: { $0.id == id })
         saveKeys()
+    }
+
+    /// Restricted user-only temporary directory used to materialize Vault private keys for `/usr/bin/ssh`.
+    nonisolated public static var defaultMaterializedDirectory: URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent("com.apexterm.vaultkeys.\(getuid())", isDirectory: true)
+    }
+
+    /// Materializes a Keychain-backed SSH Key Vault reference (`vault.priv.<UUID>`) into a `0600` local file
+    /// with a guaranteed trailing newline so `/usr/bin/ssh` and `/usr/bin/scp` can authenticate with it.
+    nonisolated public static func materializePrivateKeyPath(
+        for reference: String,
+        directory: URL? = nil,
+        lookup: (String) -> String? = { try? KeychainStore.shared.getSync(key: $0) }
+    ) -> String? {
+        guard KeychainStore.isVaultPrivateKeyReference(reference),
+              let rawPEM = lookup(reference)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !rawPEM.isEmpty else {
+            return nil
+        }
+        let dir = directory ?? defaultMaterializedDirectory
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        _ = chmod(dir.path, 0o700)
+
+        let fileURL = dir.appendingPathComponent("\(reference).key")
+        let normalizedPEM = rawPEM + "\n"
+        guard let data = normalizedPEM.data(using: .utf8) else { return nil }
+        do {
+            try data.write(to: fileURL, options: .atomic)
+            _ = chmod(fileURL.path, 0o600)
+            return fileURL.path
+        } catch {
+            return nil
+        }
+    }
+
+    /// Removes all materialized temporary key files on application exit.
+    nonisolated public static func cleanupMaterializedKeys(directory: URL? = nil) {
+        let dir = directory ?? defaultMaterializedDirectory
+        try? FileManager.default.removeItem(at: dir)
     }
     
     public func key(for id: UUID) -> SSHKeyIdentity? {

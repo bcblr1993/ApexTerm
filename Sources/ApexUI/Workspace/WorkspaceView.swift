@@ -394,6 +394,10 @@ public struct WorkspaceView: View {
     /// down the popover's anchor and re-present it as a non-key window that ignores Escape.
     @State private var metricsDetail = MetricsDetailPresentation()
     @State private var hudToastMessage: String?
+    @State private var pendingSnippetForVariables: Snippet? = nil
+    @State private var pendingSnippetVariables: [String: String] = [:]
+    
+    public static let executeSnippetNotification = NSNotification.Name("ExecuteSnippetInWorkspace")
     
     // Tab Rename
     @State private var tabToRename: TerminalTabItem?
@@ -489,8 +493,11 @@ public struct WorkspaceView: View {
                         onBroadcastSubmit: { cmd in
                             guard let data = cmd.data(using: .utf8) else { return }
                             for tab in activeTabs {
-                                for pane in tab.panes {
-                                    Task { try? await pane.sshClient.sendInput(data) }
+                                for p in tab.panes where p.connectionState == .connected {
+                                    Task { try? await p.sshClient.sendInput(data) }
+                                }
+                                if tab.isDirectoryLinkageEnabled && (data.contains(13) || data.contains(10)) {
+                                    tab.scheduleDirectoryLinkageRefresh()
                                 }
                             }
                         }
@@ -694,6 +701,25 @@ public struct WorkspaceView: View {
                 showHUDToast(msg)
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: Self.executeSnippetNotification)) { notif in
+            if let snippet = notif.object as? Snippet {
+                executeSnippet(snippet)
+            }
+        }
+        .sheet(item: $pendingSnippetForVariables) { snippet in
+            VariableInputSheet(
+                snippet: snippet,
+                variableValues: $pendingSnippetVariables,
+                onConfirm: { resolved in
+                    sendSnippetCommand(resolved, autoExecute: true)
+                    pendingSnippetForVariables = nil
+                },
+                onCancel: {
+                    pendingSnippetForVariables = nil
+                }
+            )
+            .apexTheme()
+        }
         .sheet(isPresented: $isTunnelModalPresented) {
             SSHTunnelModalView(store: store).apexTheme()
         }
@@ -847,16 +873,7 @@ public struct WorkspaceView: View {
                 isSFTPVisible = true
             }
         case .runSnippet(let snippet):
-            if let tab = currentTab, let pane = tab.activePane ?? tab.panes.first {
-                let resolved = snippet.resolvedCommand(context: [
-                    "host": tab.session.host,
-                    "user": tab.session.username,
-                    "port": "\(tab.session.port)"
-                ])
-                if let data = (resolved + "\n").data(using: .utf8) {
-                    Task { try? await pane.sshClient.sendInput(data) }
-                }
-            }
+            executeSnippet(snippet)
         case .executeAppAction(let appAction):
             switch appAction {
             case .newLocalTerminal:
@@ -886,6 +903,34 @@ public struct WorkspaceView: View {
             case .openShortcuts:
                 NotificationCenter.default.post(name: NSNotification.Name("OpenShortcutsModal"), object: nil)
             }
+        }
+    }
+
+    public func executeSnippet(_ snippet: Snippet) {
+        guard let tab = currentTab else { return }
+        let baseContext: [String: String] = [
+            "host": tab.session.host,
+            "user": tab.session.username
+        ]
+        let unresolved = snippet.unresolvedVariables(context: baseContext)
+        if unresolved.isEmpty {
+            let resolved = snippet.resolvedCommand(context: baseContext)
+            sendSnippetCommand(resolved, autoExecute: true)
+        } else {
+            var initialValues = baseContext
+            for v in unresolved {
+                initialValues[v] = ""
+            }
+            pendingSnippetVariables = initialValues
+            pendingSnippetForVariables = snippet
+        }
+    }
+
+    private func sendSnippetCommand(_ command: String, autoExecute: Bool) {
+        guard let tab = currentTab, let pane = tab.activePane ?? tab.panes.first else { return }
+        let payload = autoExecute ? (command + "\n") : command
+        if let data = payload.data(using: .utf8) {
+            Task { try? await pane.sshClient.sendInput(data) }
         }
     }
 
@@ -1329,7 +1374,7 @@ private struct PaneContainerView: View {
                 ) { inputData in
                     if isBroadcastActive {
                         for t in activeTabs {
-                            for p in t.panes {
+                            for p in t.panes where p.connectionState == .connected {
                                 p.sshClient.sendInputSync(inputData)
                             }
                         }

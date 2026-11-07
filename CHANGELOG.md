@@ -2,6 +2,34 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.17.3] - 2026-11-07
+
+### ⚡️ 体验优化 (Improvements)
+- **密钥保险库（SSH Key Vault）全链路连接与隧道无缝认证支持**：
+  - `SSHKeyVaultManager` 新增安全受控的私钥物化机制（`materializePrivateKeyPath`），在连接与隧道启动时将 Keychain 中的 `vault.priv.<UUID>` 引用按需物化为仅当前用户可读写的 `0600` 临时密钥文件（自动补齐 OpenSSH 必需的末尾换行符，并在密钥删除或应用退出时自动清理）；
+  - `SSHTunnelManager.resolveSecret` 支持在未单独指定会话口令时自动回退读取保险库密钥配对的 `vault.pass.<UUID>` 口令，打通「从密钥库选择」在终端会话、连接测试与端口转发隧道中的全流程使用。
+- **全局命令面板（`⌘P`）与侧边栏快捷命令交互式填参统一**：
+  - `Snippet` 新增 `unresolvedVariables(context:)` 占位符检测，统一 `WorkspaceView.executeSnippet`、命令面板（`⌘P`）与侧边栏快捷命令执行入口：当命令包含 `{{container}}`、`{{service}}`、`{{port}}` 等未解析变量时自动弹出参数输入面板（`VariableInputSheet`），杜绝将原始占位符文本直接发往终端。
+- **SSH 隧道跳板机（`-J`）支持与 `stderr` 异步非阻塞排空**：
+  - `SSHTunnelManager.buildSSHArguments` 新增跳板机 `jumpSession`（`-J user@jumpHost:jumpPort`）参数生成与 `~` 路径自动展开；
+  - 隧道子进程 `stderr` 管道挂载非阻塞 `readabilityHandler` 滚动缓存最近 8KB 诊断摘要，消除长连接隧道累计告警超出 64KB 管道缓冲区导致的子进程写阻塞。
+
+### 🐞 问题修复 (Bug Fixes)
+- **修复「复制会话」共享同一 Keychain 引用导致修改副本密码篡改原会话密码的问题**：
+  - `SessionStore.duplicateSession` 为复制出的新会话生成独立的 `ssh_<newUUID>` / `passphrase_<newUUID>` 引用并克隆原密文，彻底隔离原会话与副本的钥匙串凭据；
+- **修复删除会话遗留孤儿 Keychain 密文、残留关联隧道与跳板机悬挂引用的问题**：
+  - `SessionStore.deleteSession` 删除会话时同步清理无其他会话引用的受管钥匙串条目、停止并移除绑定该会话的 SSH 隧道，并将依赖该会话作为跳板机的其他会话 `jumpServerId` 自动置空；
+- **修复会话审计日志（`SessionLogger`）在跨分片中文 UTF-8 字节流下回退写入未脱敏原始 ANSI 流的问题**：
+  - `SessionLogger` 集成增量流式解码器 `UTF8StreamDecoder` 与预编译静态正则 `ansiRegex`，修复多字节中文字符跨 PTY `read()` 边界截断时跳过 ANSI 过滤的问题，同时支持 `logDirectoryPath` 的 `~` 路径展开与 `deinit` 句柄安全关闭；
+- **修复「恢复默认设置」遗漏审计日志配置及多端广播向已断开分屏发送输入的问题**：
+  - `AppSettings.resetToDefaults()` 补齐会话审计日志四项配置的默认值重置；
+  - `BroadcastBar` 与终端广播输入严格过滤 `pane.connectionState == .connected` 的在线分屏，并在顶部广播栏发送回车命令时同步触发目录联动刷新。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- 新增 `CodeReviewRegressionTests` `TC-REV-28 ~ TC-REV-35` 共 8 项 TDD 回归测试（累计 35 项代码审查回归测试），覆盖密钥库物化与口令回退、复制会话凭据隔离、删除会话级联清理、快捷命令占位符拦截、隧道跳板机参数构建、跨分片 UTF-8 审计日志解码、设置重置与广播分屏过滤；
+- 全量自动化测试用例 100% 绿色通过（0 failures），Swift 6 模式零警告；
+- 8 大性能 Benchmark 与 Tart VM 真实集成质量门禁全量达标，通过 Developer ID 官方签名与 Apple 生产级安全公证。
+
 ## [v1.17.2] - 2026-11-04
 
 ### ⚡️ 体验优化 (Improvements)

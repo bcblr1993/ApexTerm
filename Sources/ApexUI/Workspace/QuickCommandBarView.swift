@@ -174,17 +174,29 @@ public struct QuickCommandBarView: View {
 }
 
 /// Modal dialog for prompting variable values in dynamic snippets like `{{service}}` or `{{container}}`
-private struct VariableInputSheet: View {
-    let snippet: Snippet
-    @Binding var variableValues: [String: String]
-    let onConfirm: (String) -> Void
-    let onCancel: () -> Void
+public struct VariableInputSheet: View {
+    public let snippet: Snippet
+    @Binding public var variableValues: [String: String]
+    public let onConfirm: (String) -> Void
+    public let onCancel: () -> Void
+    
+    public init(
+        snippet: Snippet,
+        variableValues: Binding<[String: String]>,
+        onConfirm: @escaping (String) -> Void,
+        onCancel: @escaping () -> Void
+    ) {
+        self.snippet = snippet
+        self._variableValues = variableValues
+        self.onConfirm = onConfirm
+        self.onCancel = onCancel
+    }
     
     private var variables: [String] {
         snippet.extractVariables()
     }
     
-    var body: some View {
+    public var body: some View {
         VStack(alignment: .leading, spacing: ApexStyle.s4) {
             HStack {
                 Image(systemName: "slider.horizontal.3")

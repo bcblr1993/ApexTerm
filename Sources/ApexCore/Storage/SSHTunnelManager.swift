@@ -73,11 +73,30 @@ public final class SSHTunnelManager: ObservableObject {
         }
     }
     
+    nonisolated public static func hasPortConflict(_ candidate: SSHTunnel, existing: SSHTunnel) -> Bool {
+        guard candidate.id != existing.id,
+              candidate.bindPort == existing.bindPort,
+              candidate.bindHost == existing.bindHost else {
+            return false
+        }
+        // Remote (-R) tunnels bind on the remote SSH server (scoped by sessionId),
+        // whereas Local (-L) and Dynamic (-D) tunnels bind on the local client machine.
+        let candidateIsRemote = candidate.type == .remote
+        let existingIsRemote = existing.type == .remote
+        guard candidateIsRemote == existingIsRemote else {
+            return false
+        }
+        if candidateIsRemote {
+            return candidate.sessionId == existing.sessionId
+        }
+        return true
+    }
+
     public func addTunnel(_ tunnel: SSHTunnel) throws {
         guard tunnel.isValid else {
             throw SSHTunnelError.invalidConfiguration("端口必须在 1 ~ 65535 范围内且地址不能为空")
         }
-        if tunnels.contains(where: { $0.id != tunnel.id && $0.bindPort == tunnel.bindPort && $0.bindHost == tunnel.bindHost }) {
+        if tunnels.contains(where: { Self.hasPortConflict(tunnel, existing: $0) }) {
             throw SSHTunnelError.portConflict(tunnel.bindPort)
         }
         tunnels.append(tunnel)
@@ -88,7 +107,7 @@ public final class SSHTunnelManager: ObservableObject {
         guard tunnel.isValid else {
             throw SSHTunnelError.invalidConfiguration("端口必须在 1 ~ 65535 范围内且地址不能为空")
         }
-        if tunnels.contains(where: { $0.id != tunnel.id && $0.bindPort == tunnel.bindPort && $0.bindHost == tunnel.bindHost }) {
+        if tunnels.contains(where: { Self.hasPortConflict(tunnel, existing: $0) }) {
             throw SSHTunnelError.portConflict(tunnel.bindPort)
         }
         if let index = tunnels.firstIndex(where: { $0.id == tunnel.id }) {
@@ -153,13 +172,15 @@ public final class SSHTunnelManager: ObservableObject {
         ]
         
         // Tunnel specifier: -L, -R, or -D
+        let bHost = SSHTunnel.formatForwardingHost(tunnel.bindHost)
+        let tHost = SSHTunnel.formatForwardingHost(tunnel.targetHost)
         switch tunnel.type {
         case .local:
-            args.append(contentsOf: ["-L", "\(tunnel.bindHost):\(tunnel.bindPort):\(tunnel.targetHost):\(tunnel.targetPort)"])
+            args.append(contentsOf: ["-L", "\(bHost):\(tunnel.bindPort):\(tHost):\(tunnel.targetPort)"])
         case .remote:
-            args.append(contentsOf: ["-R", "\(tunnel.bindHost):\(tunnel.bindPort):\(tunnel.targetHost):\(tunnel.targetPort)"])
+            args.append(contentsOf: ["-R", "\(bHost):\(tunnel.bindPort):\(tHost):\(tunnel.targetPort)"])
         case .dynamic:
-            args.append(contentsOf: ["-D", "\(tunnel.bindHost):\(tunnel.bindPort)"])
+            args.append(contentsOf: ["-D", "\(bHost):\(tunnel.bindPort)"])
         }
         
         // Certificate and/or private key
@@ -170,12 +191,13 @@ public final class SSHTunnelManager: ObservableObject {
             args.append(contentsOf: ["-i", expandPath(keyPath)])
         }
         if let jump = jumpSession, !jump.host.isEmpty {
-            let jHost = jump.host.contains(":") && !jump.host.hasPrefix("[") ? "[\(jump.host)]" : jump.host
+            let jHost = SSHTunnel.formatForwardingHost(jump.host)
             args.append(contentsOf: ["-J", "\(jump.username)@\(jHost):\(jump.port)"])
         }
         
         // Port & host
-        args.append(contentsOf: ["-p", "\(session.port)", "\(session.username)@\(session.host)"])
+        let destHost = SSHTunnel.formatForwardingHost(session.host)
+        args.append(contentsOf: ["-p", "\(session.port)", "\(session.username)@\(destHost)"])
         return args
     }
     

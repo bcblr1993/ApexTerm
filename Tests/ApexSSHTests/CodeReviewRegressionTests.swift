@@ -916,4 +916,207 @@ final class CodeReviewRegressionTests: XCTestCase {
         XCTAssertEqual(manager.conflictStrategy, .smartMerge,
                        "conflictStrategy must be restored to original value even when syncNow throws")
     }
+
+    // MARK: - TC-REV-41: SFTP parent navigation entry ("..") and root ("/") are excluded from destructive/modifiable operations
+    func testSFTPParentNavigationAndRootExcludedFromModifiableSelection() {
+        let parentEntry = SFTPItem(name: "..", path: "/var", isDirectory: true)
+        let rootEntry = SFTPItem(name: "/", path: "/", isDirectory: true)
+        let normalDir = SFTPItem(name: "logs", path: "/var/logs", isDirectory: true)
+        let normalFile = SFTPItem(name: "app.log", path: "/var/app.log", isDirectory: false, size: 1024)
+
+        XCTAssertTrue(parentEntry.isParentNavigationEntry)
+        XCTAssertFalse(parentEntry.isModifiableRemoteItem, "Parent directory entry '..' must never be deletable or modifiable")
+        XCTAssertFalse(rootEntry.isModifiableRemoteItem, "Root directory '/' must never be deletable or modifiable")
+        XCTAssertTrue(normalDir.isModifiableRemoteItem)
+        XCTAssertTrue(normalFile.isModifiableRemoteItem)
+
+        let allItems = [parentEntry, rootEntry, normalDir, normalFile]
+        let selectedPaths: Set<String> = ["/var", "/", "/var/logs", "/var/app.log"]
+        let modifiable = SFTPItem.modifiableSelection(from: allItems, selectedPaths: selectedPaths)
+        XCTAssertEqual(modifiable.map(\.path), ["/var/logs", "/var/app.log"],
+                       "Batch selection must filter out '..' and '/' to prevent accidental parent directory deletion")
+    }
+
+    // MARK: - TC-REV-42: SessionEditModal restores and syncs SSHKeyVault selection with privateKeyPath
+    func testSessionEditModalVaultKeyMatchingAndManualFallback() {
+        let idA = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        let idB = UUID(uuidString: "66666666-7777-8888-9999-000000000000")!
+        let keyA = SSHKeyIdentity(
+            id: idA,
+            name: "Prod Key",
+            algorithm: .ed25519,
+            fingerprintSHA256: "SHA256:TestA",
+            publicKeyOpenSSH: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestA prod@host",
+            keychainPrivateKeyRef: "vault.priv.\(idA.uuidString)"
+        )
+        let keyB = SSHKeyIdentity(
+            id: idB,
+            name: "Staging Key",
+            algorithm: .rsa,
+            fingerprintSHA256: "SHA256:TestB",
+            publicKeyOpenSSH: "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQTestB staging@host",
+            keychainPrivateKeyRef: "vault.priv.\(idB.uuidString)"
+        )
+        let keys = [keyA, keyB]
+
+        // 1. Reopening a session with keyA's vault reference matches keyA.id
+        let matched = SessionEditModal.matchedVaultKeyId(forPrivateKeyPath: keyA.keychainPrivateKeyRef, keys: keys)
+        XCTAssertEqual(matched, keyA.id)
+
+        // 2. Manual filesystem path returns nil
+        XCTAssertNil(SessionEditModal.matchedVaultKeyId(forPrivateKeyPath: "~/.ssh/id_ed25519", keys: keys))
+
+        // 3. Switching picker from a Vault key back to manual (nil) clears the stale vault.priv.<UUID> reference
+        let clearedPath = SessionEditModal.resolvedPrivateKeyPathAfterPickerChange(
+            selectedVaultKeyId: nil,
+            currentPath: keyA.keychainPrivateKeyRef,
+            keys: keys
+        )
+        XCTAssertEqual(clearedPath, "")
+
+        // 4. Switching picker to keyB updates privateKeyPath to keyB's keychain ref
+        let updatedPath = SessionEditModal.resolvedPrivateKeyPathAfterPickerChange(
+            selectedVaultKeyId: keyB.id,
+            currentPath: "~/.ssh/id_ed25519",
+            keys: keys
+        )
+        XCTAssertEqual(updatedPath, keyB.keychainPrivateKeyRef)
+    }
+
+    // MARK: - TC-REV-43: ProcessDetailItem protects full-path critical daemons and parses non-systemd hosts cleanly
+    func testProcessInspectorFullPathProtectionAndNonSystemdProbe() {
+        let fullPathSshd = ProcessDetailItem(
+            pid: 512,
+            user: "root",
+            cpuPercent: 0.2,
+            memPercent: 0.4,
+            rssBytes: 4096 * 1024,
+            vszBytes: 81920 * 1024,
+            state: .sleeping,
+            command: "/usr/sbin/sshd",
+            fullCommandLine: "/usr/sbin/sshd -D"
+        )
+        let fullPathLaunchd = ProcessDetailItem(
+            pid: 300,
+            user: "root",
+            cpuPercent: 0.1,
+            memPercent: 0.2,
+            rssBytes: 2048 * 1024,
+            vszBytes: 40960 * 1024,
+            state: .sleeping,
+            command: "/sbin/launchd",
+            fullCommandLine: "/sbin/launchd"
+        )
+        XCTAssertTrue(fullPathSshd.isProtected, "Full-path /usr/sbin/sshd must be protected against accidental kill")
+        XCTAssertTrue(fullPathLaunchd.isProtected, "Full-path /sbin/launchd must be protected against accidental kill")
+
+        // ps output with full path in comm column normalizes command to binary basename while preserving fullCommandLine
+        let psSample = """
+          512 root       0.2  0.4   4096  81920 Ss   /usr/sbin/sshd   /usr/sbin/sshd -D -o UseDNS=no
+          901 www-data   1.5  2.0  32768 128000 S    /usr/local/bin/node /usr/local/bin/node server.js
+        """
+        let parsed = ProcessListParser.parsePSOutput(psSample)
+        XCTAssertEqual(parsed.count, 2)
+        XCTAssertEqual(parsed[0].command, "sshd")
+        XCTAssertEqual(parsed[0].fullCommandLine, "/usr/sbin/sshd -D -o UseDNS=no")
+        XCTAssertTrue(parsed[0].isProtected)
+        XCTAssertEqual(parsed[1].command, "node")
+        XCTAssertEqual(parsed[1].fullCommandLine, "/usr/local/bin/node server.js")
+        XCTAssertFalse(parsed[1].isProtected)
+
+        // Non-systemd hosts guard systemctl with command -v systemctl and produce empty service list on empty output
+        XCTAssertTrue(AgentlessMonitor.systemdServicesProbeCommand().contains("command -v systemctl"))
+        XCTAssertTrue(ProcessListParser.parseSystemdServices("").isEmpty)
+    }
+
+    // MARK: - TC-REV-44: SSHTunnel brackets IPv6 forwarding hosts and isolates remote (-R) vs local (-L/-D) port conflicts
+    @MainActor
+    func testSSHTunnelIPv6BracketingAndRemotePortConflictIsolation() throws {
+        let sessionA = Session(name: "Node A", host: "2001:db8::10", port: 22, username: "root", authMethod: .agent)
+        let sessionB = Session(name: "Node B", host: "10.0.0.2", port: 22, username: "root", authMethod: .agent)
+
+        let ipv6Local = SSHTunnel(
+            name: "IPv6 Local",
+            type: .local,
+            sessionId: sessionA.id,
+            bindHost: "::1",
+            bindPort: 8080,
+            targetHost: "2001:db8::20",
+            targetPort: 80
+        )
+        XCTAssertEqual(ipv6Local.openSSHSpecifier, "-L [::1]:8080:[2001:db8::20]:80")
+
+        let args = SSHTunnelManager.buildSSHArguments(tunnel: ipv6Local, session: sessionA)
+        XCTAssertTrue(args.contains("[::1]:8080:[2001:db8::20]:80"))
+        XCTAssertTrue(args.contains("root@[2001:db8::10]"))
+
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("TunnelConflictTest_\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let manager = SSHTunnelManager(baseDirectory: tempDir)
+        let local8080 = SSHTunnel(name: "Local 8080", type: .local, sessionId: sessionA.id, bindHost: "127.0.0.1", bindPort: 8080, targetHost: "localhost", targetPort: 80)
+        let remote8080A = SSHTunnel(name: "Remote 8080 on A", type: .remote, sessionId: sessionA.id, bindHost: "127.0.0.1", bindPort: 8080, targetHost: "localhost", targetPort: 3000)
+        let remote8080B = SSHTunnel(name: "Remote 8080 on B", type: .remote, sessionId: sessionB.id, bindHost: "127.0.0.1", bindPort: 8080, targetHost: "localhost", targetPort: 3000)
+        let remote8080ADup = SSHTunnel(name: "Remote 8080 on A Dup", type: .remote, sessionId: sessionA.id, bindHost: "127.0.0.1", bindPort: 8080, targetHost: "localhost", targetPort: 4000)
+
+        // Local 8080 and Remote 8080 bind on different machines and must not conflict
+        XCTAssertNoThrow(try manager.addTunnel(local8080))
+        XCTAssertNoThrow(try manager.addTunnel(remote8080A))
+        // Remote 8080 on Session B binds on a different remote server and must not conflict with Session A
+        XCTAssertNoThrow(try manager.addTunnel(remote8080B))
+        // Duplicate Remote 8080 on the SAME Session A must conflict
+        XCTAssertThrowsError(try manager.addTunnel(remote8080ADup))
+    }
+
+    // MARK: - TC-REV-45: SSHConfigHost.mergedSession preserves existing user customizations on re-import
+    func testSSHConfigMergedSessionPreservesCustomizations() {
+        let existingId = UUID()
+        let jumpId = UUID()
+        let created = Date(timeIntervalSince1970: 1_700_000_000)
+        let lastConnected = Date(timeIntervalSince1970: 1_700_050_000)
+
+        let existing = Session(
+            id: existingId,
+            name: "prod-api",
+            host: "10.0.1.10",
+            port: 22,
+            username: "ubuntu",
+            authMethod: .privateKey(keychainRef: "/Users/test/.ssh/id_ed25519", passphraseRef: "session.pass.existing"),
+            folder: "核心生产",
+            tags: ["SSHConfig", "K8s", "主节点"],
+            colorHex: "#FF5500",
+            jumpServerId: jumpId,
+            keepAliveIntervalSeconds: 45,
+            terminalType: .vt100,
+            createdAt: created,
+            lastConnectedAt: lastConnected
+        )
+
+        let hostEntry = SSHConfigHost(
+            hostPattern: "prod-api",
+            hostName: "10.0.1.99",
+            user: "deploy",
+            port: 2222,
+            identityFile: "/Users/test/.ssh/id_ed25519"
+        )
+
+        let merged = hostEntry.mergedSession(updating: existing, folder: "SSH Config 导入")
+
+        XCTAssertEqual(merged.id, existingId)
+        XCTAssertEqual(merged.host, "10.0.1.99")
+        XCTAssertEqual(merged.port, 2222)
+        XCTAssertEqual(merged.username, "deploy")
+        // Preserves existing folder, color, terminalType, keepAliveIntervalSeconds, jumpServerId, timestamps, custom tags, and passphraseRef
+        XCTAssertEqual(merged.folder, "核心生产")
+        XCTAssertEqual(merged.colorHex, "#FF5500")
+        XCTAssertEqual(merged.terminalType, .vt100)
+        XCTAssertEqual(merged.keepAliveIntervalSeconds, 45)
+        XCTAssertEqual(merged.jumpServerId, jumpId)
+        XCTAssertEqual(merged.createdAt, created)
+        XCTAssertEqual(merged.lastConnectedAt, lastConnected)
+        XCTAssertTrue(merged.tags.contains("K8s"))
+        XCTAssertTrue(merged.tags.contains("主节点"))
+        XCTAssertEqual(merged.passphraseRef, "session.pass.existing")
+    }
 }

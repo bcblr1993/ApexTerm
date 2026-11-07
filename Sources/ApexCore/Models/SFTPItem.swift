@@ -52,4 +52,21 @@ public struct SFTPItem: Identifiable, Sendable, Codable, Equatable, Hashable {
         let others = rwx(permissions & 7, special: permissions & 0o1000 != 0, sticky: true)
         return "\(typeChar)\(user)\(group)\(others)"
     }
+
+    /// True when this item represents the virtual `".."` parent directory navigation row.
+    public var isParentNavigationEntry: Bool {
+        name == ".."
+    }
+
+    /// True when this item can be safely downloaded, renamed, chmodded, or deleted.
+    /// Excludes the virtual `".."` entry and the filesystem root `"/"`.
+    public var isModifiableRemoteItem: Bool {
+        let trimmedPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !isParentNavigationEntry && !trimmedPath.isEmpty && trimmedPath != "/"
+    }
+
+    /// Filters a selection of SFTP items to only those safe for batch download or deletion.
+    public static func modifiableSelection(from items: [SFTPItem], selectedPaths: Set<String>) -> [SFTPItem] {
+        items.filter { selectedPaths.contains($0.path) && $0.isModifiableRemoteItem }
+    }
 }

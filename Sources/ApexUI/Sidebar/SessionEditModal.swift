@@ -208,9 +208,11 @@ public struct SessionEditModal: View {
                                     }
                                 }
                                 .onChange(of: selectedVaultKeyId) { _, newId in
-                                    if let newId = newId, let vk = SSHKeyVaultManager.shared.key(for: newId) {
-                                        privateKeyPath = vk.keychainPrivateKeyRef
-                                    }
+                                    privateKeyPath = Self.resolvedPrivateKeyPathAfterPickerChange(
+                                        selectedVaultKeyId: newId,
+                                        currentPath: privateKeyPath,
+                                        keys: SSHKeyVaultManager.shared.keys
+                                    )
                                 }
                             }
                             
@@ -219,6 +221,12 @@ public struct SessionEditModal: View {
                                     .accessibilityLabel("私钥路径")
                                     .accessibilityIdentifier("session.privateKeyPath")
                                     .font(.system(.body, design: .monospaced))
+                                    .onChange(of: privateKeyPath) { _, newValue in
+                                        let matched = Self.matchedVaultKeyId(forPrivateKeyPath: newValue, keys: SSHKeyVaultManager.shared.keys)
+                                        if selectedVaultKeyId != matched {
+                                            selectedVaultKeyId = matched
+                                        }
+                                    }
                                 ApexActionButton(
                                     "浏览...",
                                     icon: "folder",
@@ -255,8 +263,12 @@ public struct SessionEditModal: View {
                                     }
                                 }
                                 .onChange(of: selectedVaultKeyId) { _, newId in
-                                    if let newId = newId, let vk = SSHKeyVaultManager.shared.key(for: newId) {
-                                        privateKeyPath = vk.keychainPrivateKeyRef
+                                    privateKeyPath = Self.resolvedPrivateKeyPathAfterPickerChange(
+                                        selectedVaultKeyId: newId,
+                                        currentPath: privateKeyPath,
+                                        keys: SSHKeyVaultManager.shared.keys
+                                    )
+                                    if newId != nil {
                                         autoDiscoverCertificateIfNeeded()
                                     }
                                 }
@@ -267,7 +279,11 @@ public struct SessionEditModal: View {
                                     .accessibilityLabel("私钥路径")
                                     .accessibilityIdentifier("session.privateKeyPath")
                                     .font(.system(.body, design: .monospaced))
-                                    .onChange(of: privateKeyPath) { _, _ in
+                                    .onChange(of: privateKeyPath) { _, newValue in
+                                        let matched = Self.matchedVaultKeyId(forPrivateKeyPath: newValue, keys: SSHKeyVaultManager.shared.keys)
+                                        if selectedVaultKeyId != matched {
+                                            selectedVaultKeyId = matched
+                                        }
                                         autoDiscoverCertificateIfNeeded()
                                     }
                                 ApexActionButton(
@@ -702,6 +718,7 @@ public struct SessionEditModal: View {
         case .privateKey(let keyPath, let passRef):
             authType = .privateKey
             privateKeyPath = keyPath
+            selectedVaultKeyId = Self.matchedVaultKeyId(forPrivateKeyPath: keyPath, keys: SSHKeyVaultManager.shared.keys)
             if let ref = passRef, !ref.isEmpty {
                 Task {
                     if let saved = try? await KeychainStore.shared.get(key: ref) {
@@ -715,6 +732,7 @@ public struct SessionEditModal: View {
             authType = .certificate
             privateKeyPath = keyPath
             certificatePath = certPath
+            selectedVaultKeyId = Self.matchedVaultKeyId(forPrivateKeyPath: keyPath, keys: SSHKeyVaultManager.shared.keys)
             if let ref = passRef, !ref.isEmpty {
                 Task {
                     if let saved = try? await KeychainStore.shared.get(key: ref) {
@@ -805,6 +823,30 @@ public struct SessionEditModal: View {
         )
         onSave(newSession)
         dismiss()
+    }
+
+    /// Finds the SSHKeyIdentity ID whose `keychainPrivateKeyRef` matches `path`.
+    nonisolated public static func matchedVaultKeyId(forPrivateKeyPath path: String, keys: [SSHKeyIdentity]) -> UUID? {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return keys.first(where: { $0.keychainPrivateKeyRef == trimmed })?.id
+    }
+
+    /// Resolves the updated `privateKeyPath` when the user changes the SSH Key Vault picker.
+    /// Selecting "手动指定路径 / 文件" (`nil`) clears any stale `vault.priv.<UUID>` reference while keeping manual paths intact.
+    nonisolated public static func resolvedPrivateKeyPathAfterPickerChange(
+        selectedVaultKeyId: UUID?,
+        currentPath: String,
+        keys: [SSHKeyIdentity]
+    ) -> String {
+        if let id = selectedVaultKeyId, let vk = keys.first(where: { $0.id == id }) {
+            return vk.keychainPrivateKeyRef
+        }
+        let trimmed = currentPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        if KeychainStore.isVaultPrivateKeyReference(trimmed) || keys.contains(where: { $0.keychainPrivateKeyRef == trimmed }) {
+            return ""
+        }
+        return currentPath
     }
 }
 

@@ -80,11 +80,14 @@ public struct ProcessDetailItem: Identifiable, Codable, Sendable, Equatable, Has
     public var isProtected: Bool {
         if pid <= 1 { return true }
         let lower = command.lowercased()
+        let baseLower = (command as NSString).lastPathComponent.lowercased()
         let protectedCommands = [
             "systemd", "init", "sshd", "kthreadd", "launchd", "kernel_task",
             "dbus-daemon", "systemd-journald", "systemd-udevd", "login"
         ]
-        return protectedCommands.contains(where: { lower == $0 || lower.hasPrefix($0) })
+        return protectedCommands.contains(where: {
+            lower == $0 || lower.hasPrefix($0) || baseLower == $0 || baseLower.hasPrefix($0)
+        })
     }
     
     /// Validates whether this process can be safely killed
@@ -142,8 +145,15 @@ public enum ProcessListParser {
             let stateChar = statRaw.prefix(1)
             let state = ProcessState(rawValue: String(stateChar)) ?? .running
             
-            let comm = tokens[7]
-            let args = tokens.count > 8 ? tokens.dropFirst(8).joined(separator: " ") : comm
+            let rawComm = tokens[7]
+            let comm: String
+            if rawComm.hasPrefix("/") {
+                let base = (rawComm as NSString).lastPathComponent
+                comm = base.isEmpty ? rawComm : base
+            } else {
+                comm = rawComm
+            }
+            let args = tokens.count > 8 ? tokens.dropFirst(8).joined(separator: " ") : rawComm
             
             let item = ProcessDetailItem(
                 pid: pid,
@@ -162,9 +172,10 @@ public enum ProcessListParser {
         return items
     }
     
-    public static func parseSystemdServices(_ raw: String, monitoredServices: [String]) -> [SystemdServiceItem] {
+    public static func parseSystemdServices(_ raw: String, monitoredServices: [String] = ["nginx", "docker", "redis", "mysql", "sshd", "postgresql", "caddy"]) -> [SystemdServiceItem] {
         var items: [SystemdServiceItem] = []
-        let lines = raw.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        let lines = raw.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        guard !lines.isEmpty else { return [] }
         
         for (index, svc) in monitoredServices.enumerated() {
             if index < lines.count {

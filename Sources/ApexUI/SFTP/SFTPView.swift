@@ -741,58 +741,75 @@ public struct SFTPView: View {
 
     @ViewBuilder
     private func fileContextActions(_ item: SFTPItem) -> some View {
-        Button(DistributionChannel.current == .appStore ? "下载并保存…" : L10n.downloadToDownloads) {
-            selectedPaths = [item.path]
-            downloadAction(item)
-        }
-        if !item.isDirectory {
-            Button(L10n.quickViewEdit) {
-                selectedPaths = [item.path]
-                openEditor(item)
+        if item.isParentNavigationEntry {
+            Button("返回上级目录") {
+                navigateUp()
             }
-        }
-        Divider()
-        Button("重命名...") {
-            selectedPaths = [item.path]
-            itemToRename = item
-            renameText = item.name
-            isShowingRenameAlert = true
-        }
-        Button("修改权限 (chmod)...") {
-            selectedPaths = [item.path]
-            itemToChmod = item
-            chmodText = item.isDirectory ? "755" : "644"
-            isShowingChmodAlert = true
-        }
-        Button(role: .destructive) {
-            selectedPaths = [item.path]
-            itemToDelete = item
-        } label: {
-            Label("删除", systemImage: "trash")
-        }
-        Divider()
-        Button(L10n.copyRemotePath) {
-            selectedPaths = [item.path]
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(item.path, forType: .string)
+            Divider()
+            Button(L10n.copyRemotePath) {
+                selectedPaths = [item.path]
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(item.path, forType: .string)
+            }
+        } else {
+            Button(DistributionChannel.current == .appStore ? "下载并保存…" : L10n.downloadToDownloads) {
+                selectedPaths = [item.path]
+                downloadAction(item)
+            }
+            if !item.isDirectory {
+                Button(L10n.quickViewEdit) {
+                    selectedPaths = [item.path]
+                    openEditor(item)
+                }
+            }
+            if item.isModifiableRemoteItem {
+                Divider()
+                Button("重命名...") {
+                    selectedPaths = [item.path]
+                    itemToRename = item
+                    renameText = item.name
+                    isShowingRenameAlert = true
+                }
+                Button("修改权限 (chmod)...") {
+                    selectedPaths = [item.path]
+                    itemToChmod = item
+                    chmodText = item.isDirectory ? "755" : "644"
+                    isShowingChmodAlert = true
+                }
+                Button(role: .destructive) {
+                    selectedPaths = [item.path]
+                    itemToDelete = item
+                } label: {
+                    Label("删除", systemImage: "trash")
+                }
+            }
+            Divider()
+            Button(L10n.copyRemotePath) {
+                selectedPaths = [item.path]
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(item.path, forType: .string)
+            }
         }
     }
 
     @ViewBuilder
     private func batchContextActions(for ids: Set<String>) -> some View {
-        let selectedItems = items.filter { ids.contains($0.path) }
-        Button("下载选中的 \(selectedItems.count) 个项目") {
-            downloadBatchAction(selectedItems)
+        let selectedItems = SFTPItem.modifiableSelection(from: items, selectedPaths: ids)
+        if !selectedItems.isEmpty {
+            Button("下载选中的 \(selectedItems.count) 个项目") {
+                downloadBatchAction(selectedItems)
+            }
+            Divider()
+            Button(role: .destructive) {
+                batchItemsToDelete = selectedItems
+            } label: {
+                Label("删除选中的 \(selectedItems.count) 个项目", systemImage: "trash")
+            }
+            Divider()
         }
-        Divider()
-        Button(role: .destructive) {
-            batchItemsToDelete = selectedItems
-        } label: {
-            Label("删除选中的 \(selectedItems.count) 个项目", systemImage: "trash")
-        }
-        Divider()
         Button("复制所有选中远程路径") {
-            let joined = selectedItems.map(\.path).joined(separator: "\n")
+            let paths = items.filter { ids.contains($0.path) && !$0.isParentNavigationEntry }.map(\.path)
+            let joined = paths.joined(separator: "\n")
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(joined, forType: .string)
         }
@@ -896,15 +913,16 @@ public struct SFTPView: View {
     }
 
     private func performBatchDelete(_ targetItems: [SFTPItem]) {
-        guard let s = session, !targetItems.isEmpty else { return }
-        let pathsToRemove = Set(targetItems.map(\.path))
+        let safeItems = targetItems.filter(\.isModifiableRemoteItem)
+        guard let s = session, !safeItems.isEmpty else { return }
+        let pathsToRemove = Set(safeItems.map(\.path))
         withAnimation {
-            self.items.removeAll { pathsToRemove.contains($0.path) }
+            self.items.removeAll { pathsToRemove.contains($0.path) && $0.isModifiableRemoteItem }
             self.updateDisplayItems()
         }
         Task {
             var failed: [String] = []
-            for item in targetItems {
+            for item in safeItems {
                 do {
                     if item.isDirectory {
                         try await s.removeDirectory(remotePath: item.path, recursive: true)
@@ -917,7 +935,7 @@ public struct SFTPView: View {
             }
             await MainActor.run {
                 if failed.isEmpty {
-                    self.transferNotice = "已成功删除 \(targetItems.count) 个项目"
+                    self.transferNotice = "已成功删除 \(safeItems.count) 个项目"
                 } else {
                     self.transferNotice = "部分项目删除失败 (\(failed.joined(separator: ", ")))"
                 }
@@ -927,7 +945,7 @@ public struct SFTPView: View {
     }
 
     private func performDelete(_ item: SFTPItem) {
-        guard let s = session else { return }
+        guard let s = session, item.isModifiableRemoteItem else { return }
         withAnimation {
             self.items.removeAll { $0.path == item.path }
             self.updateDisplayItems()

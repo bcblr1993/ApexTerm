@@ -55,6 +55,58 @@ public struct SSHConfigHost: Identifiable, Sendable, Equatable, Hashable {
             sftpAutoSyncEnabled: true
         )
     }
+
+    /// Merges updated `~/.ssh/config` connection parameters into an existing `Session` while
+    /// preserving the user's existing ID, folder, color, keep-alive interval, terminal type,
+    /// jump server, custom tags, timestamps, and stored Keychain passphrase/password reference.
+    public func mergedSession(updating existing: Session, folder: String = "SSH Config") -> Session {
+        let base = toSession(folder: folder)
+        let mergedAuth: SSHAuthMethod
+        switch base.authMethod {
+        case .certificate(let keyRef, let certPath, _):
+            let preservedPassRef = (existing.privateKeyPath == keyRef) ? existing.passphraseRef : nil
+            mergedAuth = .certificate(keychainRef: keyRef, certificatePath: certPath, passphraseRef: preservedPassRef)
+        case .privateKey(let keyRef, _):
+            let preservedPassRef = (existing.privateKeyPath == keyRef) ? existing.passphraseRef : nil
+            mergedAuth = .privateKey(keychainRef: keyRef, passphraseRef: preservedPassRef)
+        case .agent:
+            // Keep existing password/key auth if ~/.ssh/config did not specify an IdentityFile/CertificateFile
+            switch existing.authMethod {
+            case .password, .privateKey, .certificate:
+                mergedAuth = existing.authMethod
+            default:
+                mergedAuth = .agent
+            }
+        default:
+            mergedAuth = base.authMethod
+        }
+
+        var mergedTags = existing.tags
+        for tag in base.tags where !mergedTags.contains(where: { $0.caseInsensitiveCompare(tag) == .orderedSame }) {
+            mergedTags.append(tag)
+        }
+
+        let existingFolder = existing.folder?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let preservedFolder = existingFolder.isEmpty ? folder : existingFolder
+        return Session(
+            id: existing.id,
+            name: base.name,
+            host: base.host,
+            port: base.port,
+            username: base.username,
+            authMethod: mergedAuth,
+            folder: preservedFolder,
+            tags: mergedTags,
+            colorHex: existing.colorHex,
+            jumpServerId: existing.jumpServerId,
+            agentlessMonitorEnabled: existing.agentlessMonitorEnabled,
+            sftpAutoSyncEnabled: existing.sftpAutoSyncEnabled,
+            keepAliveIntervalSeconds: existing.keepAliveIntervalSeconds,
+            terminalType: existing.terminalType,
+            createdAt: existing.createdAt,
+            lastConnectedAt: existing.lastConnectedAt
+        )
+    }
 }
 
 /// Parser for standard OpenSSH configuration files (`~/.ssh/config`)

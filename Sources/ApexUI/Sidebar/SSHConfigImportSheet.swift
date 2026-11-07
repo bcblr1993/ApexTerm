@@ -260,9 +260,8 @@ public struct SSHConfigImportSheet: View {
         
         for host in toImport {
             let session = host.toSession(folder: resolvedFolder)
-            if let existing = store.sessions.first(where: { $0.name == session.name && $0.host == session.host }) {
-                var updated = session
-                updated.id = existing.id
+            if let existing = store.sessions.first(where: { $0.name == session.name || ($0.name == session.name && $0.host == session.host) }) {
+                let updated = host.mergedSession(updating: existing, folder: resolvedFolder)
                 store.updateSession(updated)
             } else {
                 store.addSession(session)

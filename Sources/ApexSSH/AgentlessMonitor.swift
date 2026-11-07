@@ -33,13 +33,15 @@ public final class AgentlessMonitor: Sendable {
     fi
     """
     
-    /// Systemd service states query command
+    /// Systemd service states query command (returns empty output on macOS/Alpine/BSD hosts without systemctl)
     public static func systemdServicesProbeCommand(services: [String] = ["nginx", "docker", "redis", "mysql", "sshd", "postgresql", "caddy"]) -> String {
         let joined = services.joined(separator: " ")
         return """
-        for s in \(joined); do
-            systemctl is-active "$s" 2>/dev/null || echo "inactive"
-        done
+        if command -v systemctl >/dev/null 2>&1; then
+            for s in \(joined); do
+                systemctl is-active "$s" 2>/dev/null || echo "inactive"
+            done
+        fi
         """
     }
     

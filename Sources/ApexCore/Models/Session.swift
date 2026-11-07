@@ -25,6 +25,14 @@ public enum SSHAuthMethod: Codable, Sendable, Equatable, Hashable {
         default: return nil
         }
     }
+
+    public var passphraseRef: String? {
+        switch self {
+        case .privateKey(_, let passRef): return passRef
+        case .certificate(_, _, let passRef): return passRef
+        default: return nil
+        }
+    }
 }
 
 /// Type of terminal session: SSH remote or local system shell
@@ -84,6 +92,7 @@ public struct Session: Identifiable, Codable, Sendable, Equatable, Hashable {
     public var isLocal: Bool { sessionType == .local }
     public var certificatePath: String? { authMethod.certificatePath }
     public var privateKeyPath: String? { authMethod.privateKeyPath }
+    public var passphraseRef: String? { authMethod.passphraseRef }
     
     public enum CodingKeys: String, CodingKey {
         case id, name, host, port, username, authMethod, sessionType

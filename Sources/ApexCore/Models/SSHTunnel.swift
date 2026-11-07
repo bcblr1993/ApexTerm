@@ -82,15 +82,27 @@ public struct SSHTunnel: Identifiable, Codable, Sendable, Equatable, Hashable {
         self.autoStart = autoStart
     }
     
+    /// Formats a host literal for OpenSSH `-L` / `-R` / `-D` forwarding specifiers,
+    /// enclosing bare IPv6 literals in square brackets so colons do not collide with field delimiters.
+    public static func formatForwardingHost(_ host: String) -> String {
+        let trimmed = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.contains(":") && !trimmed.hasPrefix("[") {
+            return "[\(trimmed)]"
+        }
+        return trimmed
+    }
+
     /// Returns the standard OpenSSH command line parameter for this tunnel specification
     public var openSSHSpecifier: String {
+        let bHost = Self.formatForwardingHost(bindHost)
+        let tHost = Self.formatForwardingHost(targetHost)
         switch type {
         case .local:
-            return "-L \(bindHost):\(bindPort):\(targetHost):\(targetPort)"
+            return "-L \(bHost):\(bindPort):\(tHost):\(targetPort)"
         case .remote:
-            return "-R \(bindHost):\(bindPort):\(targetHost):\(targetPort)"
+            return "-R \(bHost):\(bindPort):\(tHost):\(targetPort)"
         case .dynamic:
-            return "-D \(bindHost):\(bindPort)"
+            return "-D \(bHost):\(bindPort)"
         }
     }
     

@@ -2,6 +2,31 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.17.5] - 2026-11-07
+
+### ⚡️ 体验优化 (Improvements)
+- **SSH 端口转发隧道（`-L` / `-R` / `-D`）IPv6 地址规范化与远端/本地端口冲突域隔离**：
+  - `SSHTunnel.formatForwardingHost` 与 `SSHTunnelManager.buildSSHArguments` 自动将裸 IPv6 地址（如 `::1`、`2001:db8::1`）包裹为标准方括号语法（`[::1]:8080:[2001:db8::20]:80` 与 `user@[2001:db8::10]`），避免 IPv6 冒号与 OpenSSH 转发分隔符冲突导致启动失败；
+  - `SSHTunnelManager.hasPortConflict` 区分远端绑定（`.remote` `-R`，作用域为目标远程服务器 `sessionId`）与本地绑定（`.local` `-L` / `.dynamic` `-D`，作用域为本机），彻底消除本地隧道与远端反向隧道或不同服务器间远端反向隧道的误报端口冲突。
+- **`~/.ssh/config` 主机重新导入的无损增量合并（`SSHConfigHost.mergedSession`）**：
+  - 重新导入已存在的同名主机时，在同步更新 `HostName`、`Port`、`User` 与认证路径的同时，完整保留用户自定义的会话分组（`folder`）、标签（`tags`）、标识颜色（`colorHex`）、跳板机（`jumpServerId`）、保活间隔（`keepAliveIntervalSeconds`）、终端类型（`terminalType`）、历史连接时间戳及同私钥绑定的钥匙串 `passphraseRef`。
+- **进程巡检器（`ProcessInspector`）非 systemd 宿主环境自适应探测**：
+  - `AgentlessMonitor.systemdServicesProbeCommand` 新增 `command -v systemctl` 前置守卫，`ProcessListParser.parseSystemdServices` 在无 `systemctl` 环境（如 macOS 本地终端、Alpine OpenRC、BSD 主机）下自动返回空服务列表，不再渲染 6 个伪造的 `inactive` systemd 服务状态条。
+
+### 🐞 问题修复 (Bug Fixes)
+- **修复 SFTP 文件浏览器右键或全选（`⌘A`）包含上级目录 `".."` 时可触发误删父目录的高危隐患**：
+  - `SFTPItem` 新增 `isParentNavigationEntry`、`isModifiableRemoteItem` 与批量过滤方法 `SFTPItem.modifiableSelection(from:selectedPaths:)`；
+  - `SFTPView` 在单文件右键菜单（`fileContextActions`）、多选右键菜单（`batchContextActions`）、单删（`performDelete`）与批量删除（`performBatchDelete`）全链路强制拦截 `".."` 与根目录 `"/"`，右键 `".."` 仅提供「返回上级目录」与「复制远程路径」。
+- **修复会话编辑弹窗（`SessionEditModal`）重新打开时不回显已绑定的密钥保险库条目及切回手动模式残留 `vault.priv.*` 引用的问题**：
+  - `SessionEditModal` 新增 `matchedVaultKeyId(forPrivateKeyPath:keys:)` 与 `resolvedPrivateKeyPathAfterPickerChange`，在加载私钥/证书会话时自动匹配并选中对应的保险库密钥，切回「手动指定路径 / 文件」时自动清空内部 `vault.priv.<UUID>` 引用。
+- **修复 macOS / BSD 全路径守护进程（如 `/usr/sbin/sshd`、`/sbin/launchd`）绕过关键进程防误杀保护的问题**：
+  - `ProcessDetailItem.isProtected` 同时校验命令名与可执行文件 `lastPathComponent` 基名，`ProcessListParser.parsePSOutput` 自动将 `comm` 列的全路径归一化为二进制短名并保留完整 `fullCommandLine`。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- 新增 `CodeReviewRegressionTests` `TC-REV-41 ~ TC-REV-45` 共 5 项 TDD 回归测试（累计 45 项代码审查回归测试），覆盖 SFTP `".."` 与 `"/"` 防误删保护、会话编辑弹窗密钥保险库双向同步、全路径核心进程保护与非 systemd 宿主探测、SSH 隧道 IPv6 语法及远端/本地端口冲突域隔离、`~/.ssh/config` 重新导入无损合并；
+- 全量自动化测试用例 100% 绿色通过（0 failures），Swift 6 模式零警告；
+- 8 大性能 Benchmark 与 Tart VM 真实集成质量门禁全量达标，通过 Developer ID 官方签名与 Apple 生产级安全公证。
+
 ## [v1.17.4] - 2026-11-07
 
 ### ⚡️ 体验优化 (Improvements)

@@ -586,10 +586,15 @@ private struct BackupSettingsTab: View {
         }
     }
     
-    private func formattedDate(_ date: Date) -> String {
+    private static let syncDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd HH:mm"
-        return formatter.string(from: date)
+        return formatter
+    }()
+
+    private func formattedDate(_ date: Date) -> String {
+        Self.syncDateFormatter.string(from: date)
     }
     
     private func runManualSync() {

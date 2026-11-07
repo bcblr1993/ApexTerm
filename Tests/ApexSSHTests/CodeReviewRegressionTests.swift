@@ -1453,4 +1453,75 @@ final class CodeReviewRegressionTests: XCTestCase {
             XCTAssertFalse(terminalTasks.contains(where: { $0.id == oldId }))
         }
     }
+
+    // MARK: - TC-REV-59: SFTPView shared DateFormatter formats 5,000 rows in < 80ms and SFTPDragExportHelper prunes stale temp folders
+    @MainActor
+    func testSFTPSharedRowDateFormatterSpeedAndStaleDragExportDirectoryCleanup() throws {
+        let sampleDate = Date(timeIntervalSince1970: 1_762_560_000)
+        let start = CFAbsoluteTimeGetCurrent()
+        for _ in 0..<5_000 {
+            _ = SFTPView.formatRowDate(sampleDate)
+        }
+        let elapsedMs = (CFAbsoluteTimeGetCurrent() - start) * 1000.0
+        XCTAssertLessThan(elapsedMs, 80.0, "Shared static DateFormatter must format 5,000 SFTP rows in < 80ms (actual: \(String(format: "%.2f", elapsedMs))ms)")
+
+        let tempRoot = FileManager.default.temporaryDirectory.appendingPathComponent("sftp-drag-cleanup-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        let staleDir = tempRoot.appendingPathComponent("stale-uuid", isDirectory: true)
+        let freshDir = tempRoot.appendingPathComponent("fresh-uuid", isDirectory: true)
+        try FileManager.default.createDirectory(at: staleDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: freshDir, withIntermediateDirectories: true)
+
+        let now = Date()
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-7200)], ofItemAtPath: staleDir.path)
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-60)], ofItemAtPath: freshDir.path)
+
+        let removed = SFTPDragExportHelper.cleanupStaleDragExportDirectories(in: tempRoot, olderThan: 3600, now: now)
+        XCTAssertEqual(removed, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: staleDir.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: freshDir.path))
+    }
+
+    // MARK: - TC-REV-60: SessionEditModal.inspectCertificateFile caches certificate metadata cleanly on path change
+    func testSessionEditModalInspectCertificateFile() throws {
+        let emptyInfo = SessionEditModal.inspectCertificateFile(atPath: "   ")
+        XCTAssertFalse(emptyInfo.isValid)
+
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("cert-inspect-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let certFile = tempDir.appendingPathComponent("id_ed25519-cert.pub")
+        try "ssh-ed25519-cert-v01@openssh.com AAAAIHNzaC1lZDI1NTE5LWNlcnQtdjAxQG9wZW5zc2guY29t prod-ops@corp\n".write(to: certFile, atomically: true, encoding: .utf8)
+
+        let validInfo = SessionEditModal.inspectCertificateFile(atPath: certFile.path)
+        XCTAssertTrue(validInfo.isValid)
+        XCTAssertEqual(validInfo.keyType, "ssh-ed25519-cert-v01@openssh.com")
+        XCTAssertEqual(validInfo.comment, "prod-ops@corp")
+    }
+
+    // MARK: - TC-REV-61: SessionStore.importSessionsJSON sanitizes dangling and self-referential jumpServerId links
+    @MainActor
+    func testSessionStoreImportSanitizesDanglingAndSelfReferentialJumpServerIds() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("store-sanitize-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let store = SessionStore(baseDirectory: tempDir)
+        let bastion = Session(name: "Valid Bastion", host: "1.1.1.1", port: 22, username: "ops", authMethod: .agent)
+        let validTarget = Session(name: "App Node", host: "10.0.0.2", port: 22, username: "app", authMethod: .agent, jumpServerId: bastion.id)
+        let danglingTarget = Session(name: "Orphan Node", host: "10.0.0.3", port: 22, username: "app", authMethod: .agent, folder: "   ", jumpServerId: UUID())
+        let selfRefId = UUID()
+        let selfRefTarget = Session(id: selfRefId, name: "Loop Node", host: "10.0.0.4", port: 22, username: "app", authMethod: .agent, jumpServerId: selfRefId)
+
+        let data = try JSONEncoder().encode([bastion, validTarget, danglingTarget, selfRefTarget])
+        _ = try store.importSessionsJSON(from: data, overwrite: true)
+
+        XCTAssertEqual(store.sessions.first(where: { $0.name == "App Node" })?.jumpServerId, bastion.id, "Valid bastion jumpServerId must be preserved")
+        XCTAssertNil(store.sessions.first(where: { $0.name == "Orphan Node" })?.jumpServerId, "Dangling jumpServerId pointing to missing session must be cleared")
+        XCTAssertEqual(store.sessions.first(where: { $0.name == "Orphan Node" })?.folder, "常用会话", "Blank folder must be normalized to 常用会话")
+        XCTAssertNil(store.sessions.first(where: { $0.name == "Loop Node" })?.jumpServerId, "Self-referential jumpServerId must be cleared")
+    }
 }

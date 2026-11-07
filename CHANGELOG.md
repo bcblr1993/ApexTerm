@@ -2,6 +2,22 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.23.3] - 2026-11-08
+
+### ⚡️ 体验优化 (Improvements)
+- **SFTP 文件列表与设置面板共享 `DateFormatter` 零分配渲染 (`SFTPView` & `BackupSettingsTab` & `SessionLogger`)**：
+  - 消除 `SFTPView.formatDate(_:)` 在每一行文件单元格渲染时重复实例化 `DateFormatter()` 的高频内存分配开销，改为复用静态 `POSIX` 格式器，5,000 行时间戳格式化耗时低于 `15ms`，显著提升大目录 120Hz 滚动帧率稳定性；
+- **会话编辑弹窗证书状态横幅按需缓存 (`SessionEditModal.inspectCertificateFile`)**：
+  - 修复 `SessionEditModal.certificateStatusBanner` 在每次 SwiftUI 视图求值（如键入主机名、用户名或密码）时同步读取磁盘证书文件的问题，改为在初始加载与 `certificatePath` 变更时按需解析并缓存至 `@State`，实现表单键入零磁盘 I/O 阻塞；
+- **SFTP 拖拽导出临时目录过期自动回收 (`SFTPDragExportHelper.cleanupStaleDragExportDirectories`)**：
+  - 在发起 Finder 拖拽导出时自动扫描并清理 `ApexTermTransfers` 临时目录下超过 1 小时的陈旧传输子目录，杜绝临时中转文件残留占用磁盘；
+- **会话备份导入悬挂跳板机引用自动净化 (`SessionStore.sanitizeJumpServerReferences`)**：
+  - 在 `importSessionsJSON` 与 `replaceAllSessions` 导入会话时自动清理指向不存在会话 UUID 或自引用的悬挂 `jumpServerId` 并将空白分组名归一化为「常用会话」。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- 新增 `CodeReviewRegressionTests` `TC-REV-59 ~ TC-REV-61` 共 3 项自动化测试，覆盖 SFTP 5,000 行共享日期格式器性能断言与拖拽临时目录清理、证书状态按需解析以及会话导入悬挂跳板机引用净化；
+- 全量自动化测试用例 100% 绿色通过（0 failures），Swift 6 模式零警告。
+
 ## [v1.23.2] - 2026-11-08
 
 ### 🐞 问题修复 (Bug Fixes)

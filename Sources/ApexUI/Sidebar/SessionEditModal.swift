@@ -35,6 +35,7 @@ public struct SessionEditModal: View {
     @State private var saveError: String?
     @State private var isTestingConnection: Bool = false
     @State private var testResult: SSHTestConnectionResult?
+    @State private var cachedCertificateInfo = SSHCertificateInfo(isValid: false, keyType: nil, comment: nil)
     
     public enum AuthType: String, CaseIterable, Identifiable {
         case password = "密码认证"
@@ -551,19 +552,28 @@ public struct SessionEditModal: View {
         .onChange(of: authType) { _, _ in testResult = nil }
         .onChange(of: privateKeyPath) { _, _ in testResult = nil }
         .onChange(of: passphrase) { _, _ in testResult = nil }
-        .onChange(of: certificatePath) { _, _ in testResult = nil }
+        .onChange(of: certificatePath) { _, newValue in
+            testResult = nil
+            cachedCertificateInfo = Self.inspectCertificateFile(atPath: newValue)
+        }
         .onChange(of: jumpServerId) { _, _ in testResult = nil }
+    }
+
+    nonisolated public static func inspectCertificateFile(atPath rawPath: String) -> SSHCertificateInfo {
+        let trimmed = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return SSHCertificateInfo(isValid: false, keyType: nil, comment: nil)
+        }
+        let expandedPath = (trimmed as NSString).expandingTildeInPath
+        if let content = try? String(contentsOfFile: expandedPath, encoding: .utf8) {
+            return SSHCertificateHelper.inspectCertificate(certContent: content)
+        }
+        return SSHCertificateInfo(isValid: false, keyType: nil, comment: nil)
     }
 
     @ViewBuilder
     private var certificateStatusBanner: some View {
-        let certInfo: SSHCertificateInfo = {
-            let expandedPath = (certificatePath as NSString).expandingTildeInPath
-            if let content = try? String(contentsOfFile: expandedPath, encoding: .utf8) {
-                return SSHCertificateHelper.inspectCertificate(certContent: content)
-            }
-            return SSHCertificateInfo(isValid: false, keyType: nil, comment: nil)
-        }()
+        let certInfo = cachedCertificateInfo
         
         HStack(spacing: 6) {
             Image(systemName: certInfo.isValid ? "checkmark.seal.fill" : "exclamationmark.triangle")
@@ -768,6 +778,7 @@ public struct SessionEditModal: View {
             authType = .certificate
             privateKeyPath = keyPath
             certificatePath = certPath
+            cachedCertificateInfo = Self.inspectCertificateFile(atPath: certPath)
             selectedVaultKeyId = Self.matchedVaultKeyId(forPrivateKeyPath: keyPath, keys: SSHKeyVaultManager.shared.keys)
             if let ref = passRef, !ref.isEmpty {
                 Task {

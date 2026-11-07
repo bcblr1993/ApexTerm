@@ -224,12 +224,26 @@ public final class SessionStore: ObservableObject {
         return try encoder.encode(sessions)
     }
     
+    /// Sanitizes dangling or self-referential `jumpServerId` links across a session array.
+    public static func sanitizeJumpServerReferences(in sessions: [Session]) -> [Session] {
+        let validIds = Set(sessions.map(\.id))
+        return sessions.map { session in
+            var copy = session
+            let trimmedFolder = copy.folder?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            copy.folder = trimmedFolder.isEmpty ? "常用会话" : trimmedFolder
+            if let jumpId = copy.jumpServerId, (jumpId == copy.id || !validIds.contains(jumpId)) {
+                copy.jumpServerId = nil
+            }
+            return copy
+        }
+    }
+
     /// Imports sessions from JSON data. Returns number of sessions imported.
     @discardableResult
     public func importSessionsJSON(from data: Data, overwrite: Bool = false) throws -> Int {
         let imported = try JSONDecoder().decode([Session].self, from: data)
         if overwrite {
-            self.sessions = imported
+            self.sessions = Self.sanitizeJumpServerReferences(in: imported)
         } else {
             for item in imported {
                 if let index = self.sessions.firstIndex(where: { $0.id == item.id }) {
@@ -238,13 +252,14 @@ public final class SessionStore: ObservableObject {
                     self.sessions.append(item)
                 }
             }
+            self.sessions = Self.sanitizeJumpServerReferences(in: self.sessions)
         }
         saveAll()
         return imported.count
     }
     
     public func replaceAllSessions(_ newSessions: [Session]) {
-        self.sessions = newSessions
+        self.sessions = Self.sanitizeJumpServerReferences(in: newSessions)
         saveAll()
     }
     

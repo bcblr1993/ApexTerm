@@ -1526,22 +1526,62 @@ public struct SFTPView: View {
         }
     }
 
-    private func formatDate(_ date: Date) -> String {
+    private static let rowDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd HH:mm"
-        return formatter.string(from: date)
+        return formatter
+    }()
+
+    public static func formatRowDate(_ date: Date) -> String {
+        rowDateFormatter.string(from: date)
+    }
+
+    private func formatDate(_ date: Date) -> String {
+        Self.formatRowDate(date)
     }
 }
 
 // MARK: - SFTP Drag & Drop Export Helper
 public enum SFTPDragExportHelper {
+    /// Removes stale temporary drag-export directories older than `maxAgeSeconds` (default 1 hour).
+    @discardableResult
+    public static func cleanupStaleDragExportDirectories(
+        in rootDir: URL? = nil,
+        olderThan maxAgeSeconds: TimeInterval = 3600,
+        now: Date = Date()
+    ) -> Int {
+        let baseDir = rootDir ?? FileManager.default.temporaryDirectory
+            .appendingPathComponent("ApexTermTransfers", isDirectory: true)
+        guard let children = try? FileManager.default.contentsOfDirectory(
+            at: baseDir,
+            includingPropertiesForKeys: [.contentModificationDateKey, .creationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return 0
+        }
+        var removedCount = 0
+        for url in children {
+            let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .creationDateKey])
+            let timestamp = values?.contentModificationDate ?? values?.creationDate ?? .distantPast
+            if now.timeIntervalSince(timestamp) >= maxAgeSeconds {
+                if (try? FileManager.default.removeItem(at: url)) != nil {
+                    removedCount += 1
+                }
+            }
+        }
+        return removedCount
+    }
+
     public static func makeItemProvider(
         for item: SFTPItem,
         session: (any SSHSessionProtocol)?,
         onStatusChange: (@Sendable @MainActor (String) -> Void)? = nil
     ) -> NSItemProvider {
-        let tempDir = FileManager.default.temporaryDirectory
+        let transfersRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("ApexTermTransfers", isDirectory: true)
+        _ = cleanupStaleDragExportDirectories(in: transfersRoot)
+        let tempDir = transfersRoot
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         let localURL = tempDir.appendingPathComponent(item.name)
 

@@ -49,6 +49,12 @@ public final class SessionLogger: @unchecked Sendable {
         pattern: "\\x1B(?:\\[[0-?]*[ -/]*[@-~]|\\].*?(?:\\x07|\\x1B\\\\))",
         options: []
     )
+    private static let fileTimestampFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyyMMdd_HHmmss"
+        return formatter
+    }()
     
     public init(
         session: Session,
@@ -78,9 +84,7 @@ public final class SessionLogger: @unchecked Sendable {
             let dir = URL(fileURLWithPath: expandedDirPath, isDirectory: true)
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             
-            let formatter = DateFormatter()
-            formatter.dateFormat = "yyyyMMdd_HHmmss"
-            let dateStr = formatter.string(from: Date())
+            let dateStr = Self.fileTimestampFormatter.string(from: Date())
             let safeName = self.sessionName.replacingOccurrences(of: "/", with: "-")
                 .replacingOccurrences(of: " ", with: "_")
             let fileName = "\(dateStr)_\(safeName)_\(self.username)@\(self.host).log"

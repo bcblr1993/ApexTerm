@@ -2,6 +2,27 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.23.6] - 2026-11-10
+
+### 🐞 问题修复与双向拖拽增强 (Bug Fixes & Improvements)
+- **重构从服务器拖拽文件/目录到本机任意目录的原生 AppKit 文件承诺链路 (`SFTPOutlineViewDragDropBridge` & `SFTPFilePromiseProvider`)**：
+  - **根因定位**：
+    1. 此前依赖 SwiftUI `TableRow.itemProvider` 经由 `SwiftUI.PasteboardWriter.make(from:)` 桥接时，同时注册 `public.data` 与具体文件扩展名 `UTType` 会使 SwiftUI 自动附加 `alternateProviders` 剪贴板风味，干扰 Finder 的 `NSFilePromiseReceiver` 识别；
+    2. 同时 `SFTPView` 外层 `ZStack` 的 `.onDrop(of: [.fileURL])` 在从表格向外拖拽文件时会高频轮询 `Apple CFPasteboard drag`，并与内部 `NSOutlineView` 抢占拖拽焦点；
+  - **修复方案**：新增原生 AppKit `SFTPOutlineViewDragDropBridge` 与 `SFTPOutlineDataSourceProxy`，直接接管 `NSOutlineView` 的 `outlineView(_:pasteboardWriterForItem:)` 并返回纯净的 `SFTPFilePromiseProvider`（`NSFilePromiseProvider`），当用户将服务器文件或文件夹拖入本机 Finder、桌面或任意子目录时，由 `SFTPFilePromiseDelegate.filePromiseProvider(_:writePromiseTo:completionHandler:)` 直接接收用户选择的目标目录真实路径，完成下载、原子落盘校验并在 `TransferManager` 中记录真实本机目标路径（点击「在 Finder 中显示」可直接定位至目标目录文件）。
+- **全面修复从宿主机拖拽文件/文件夹到终端服务器与 SFTP 面板上传 (`NativeTerminalView` & `SFTPOutlineDataSourceProxy` & `NativeSSHSession`)**：
+  - **修复终端视图拒绝 Finder 拖拽 (`NativeTerminalView` & `NativeTerminalScrollView`)**：`NativeTerminalView` 继承自非可编辑 `NSTextView`（`isEditable = false`），此前仅重写了 `draggingEntered` 与 `performDragOperation` 而未重写 `draggingUpdated` 与 `prepareForDragOperation`，导致鼠标在终端内移动 1 像素即触发父类 `NSTextView.draggingUpdated` 返回 `[]`（拒绝拖放），且未覆盖空白滚动区域。现已在 `NativeTerminalView` 与 `NativeTerminalScrollView` 完整实现 `draggingEntered` / `draggingUpdated` / `draggingExited` / `prepareForDragOperation` / `performDragOperation` / `concludeDragOperation`，支持拖入任意数量文件与文件夹，并在拖入时显示高亮边框与顶部实时上传状态胶囊提示，底部状态栏传输指示器支持点击直接展开「传输记录」抽屉；
+  - **修复 SFTP 表格区域拖入上传拦截 (`SFTPOutlineDataSourceProxy`)**：在 `NSOutlineView` 数据源代理中实现 `outlineView(_:validateDrop:proposedItem:proposedChildIndex:)` 与 `outlineView(_:acceptDrop:item:childIndex:)`，自动过滤表格自身发起的向外导出拖拽，同时在任意表格行或空白区域接收宿主机拖入的文件与目录并上传至当前远程目录；
+  - **修复终端初始目录 `~` 下 SCP 上传/下载路径展开 (`NativeSSHSession.expandTildeForSCP`)**：当用户尚未打开 SFTP 侧边栏、终端当前远程目录仍为默认 `"~"` 时直接向终端拖入文件上传，自动将 `~` / `~/` 展开为远端真实主目录路径（或相对主目录路径），避免现代 OpenSSH `scp`（SFTP 模式）报错 `No such file or directory`。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- 新增 `CodeReviewRegressionTests` `TC-REV-64`，完整覆盖：
+  1. 服务器 `SFTPFilePromiseProvider` 拖拽导出至本机任意嵌套目录的落盘校验与 `TransferManager` 真实目标路径记录；
+  2. 宿主机文件拖入非可编辑 `NativeTerminalView` / `NativeTerminalScrollView` 的完整 `draggingEntered` -> `draggingUpdated` -> `prepareForDragOperation` -> `performDragOperation` 生命周期；
+  3. 宿主机文件拖入 `SFTPView` `NSOutlineView` 的 `validateDrop` / `acceptDrop` 上传与内部向外拖拽防自拦截；
+  4. `NativeSSHSession.expandTildeForSCP` 远端主目录 `~` 路径展开断言；
+- 全量自动化测试用例 100% 绿色通过（0 failures），Swift 6 模式零警告。
+
 ## [v1.23.5] - 2026-11-10
 
 ### 🐞 问题修复 (Bug Fixes)

@@ -1367,6 +1367,8 @@ private struct PaneContainerView: View {
     @ObservedObject var tab: TerminalTabItem
     let activeTabs: [TerminalTabItem]
     let isBroadcastActive: Bool
+    @State private var dropTransferNotice: String? = nil
+    @State private var dropTransferIsError: Bool = false
     
     var isFocused: Bool {
         tab.activePaneId == pane.id
@@ -1419,11 +1421,38 @@ private struct PaneContainerView: View {
                         }
                     },
                     onFileDrop: { localURL in
+                        if tab.session.isLocal {
+                            let escapedPath = "'" + localURL.path.replacingOccurrences(of: "'", with: "'\\''") + "' "
+                            if let data = escapedPath.data(using: .utf8) {
+                                pane.sshClient.sendInputSync(data)
+                            }
+                            return
+                        }
                         let targetDir = tab.currentRemotePath
-                        let dest = targetDir.hasSuffix("/") ? "\(targetDir)\(localURL.lastPathComponent)" : "\(targetDir)/\(localURL.lastPathComponent)"
-                        TransferManager.shared.enqueueUpload(session: pane.sshClient, localURL: localURL, remotePath: dest, onResult: { _ in
+                        let fileName = localURL.lastPathComponent
+                        let dest = targetDir.hasSuffix("/") ? "\(targetDir)\(fileName)" : "\(targetDir)/\(fileName)"
+                        dropTransferIsError = false
+                        dropTransferNotice = "正在上传 \(fileName) 至 \(targetDir)…"
+                        TransferManager.shared.enqueueUpload(session: pane.sshClient, localURL: localURL, remotePath: dest, onResult: { result in
                             Task { @MainActor in
-                                NotificationCenter.default.post(name: NSNotification.Name("SFTPDirectoryRefreshNeeded"), object: dest)
+                                switch result {
+                                case .success:
+                                    dropTransferIsError = false
+                                    dropTransferNotice = "已上传 \(fileName) 至 \(targetDir)"
+                                    NotificationCenter.default.post(name: NSNotification.Name("SFTPDirectoryRefreshNeeded"), object: dest)
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) {
+                                        if dropTransferNotice == "已上传 \(fileName) 至 \(targetDir)" {
+                                            dropTransferNotice = nil
+                                        }
+                                    }
+                                case .failure(let error):
+                                    dropTransferIsError = true
+                                    if error is CancellationError {
+                                        dropTransferNotice = "已取消上传: \(fileName)"
+                                    } else {
+                                        dropTransferNotice = "上传失败: \(error.localizedDescription)"
+                                    }
+                                }
                             }
                         })
                     }
@@ -1526,6 +1555,36 @@ private struct PaneContainerView: View {
                         Spacer()
                     }
                     .transition(.opacity)
+                } else if let notice = dropTransferNotice {
+                    VStack {
+                        HStack(spacing: 8) {
+                            Image(systemName: dropTransferIsError ? "exclamationmark.triangle.fill" : (notice.hasPrefix("正在上传") ? "arrow.up.circle.fill" : "checkmark.circle.fill"))
+                                .foregroundColor(dropTransferIsError ? ApexStyle.error : (notice.hasPrefix("正在上传") ? ApexStyle.accent : ApexStyle.success))
+                            Text(notice)
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundColor(dropTransferIsError ? ApexStyle.error : ApexStyle.primary)
+                                .lineLimit(1)
+                            Button {
+                                dropTransferNotice = nil
+                            } label: {
+                                Image(systemName: "xmark")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("关闭提示")
+                            .accessibilityLabel("关闭提示")
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .apexGlassCard(
+                            cornerRadius: 12,
+                            material: .regularMaterial,
+                            borderColor: (dropTransferIsError ? ApexStyle.error : ApexStyle.accent).opacity(0.4),
+                            shadowRadius: 8
+                        )
+                        .padding(.top, 12)
+                        Spacer()
+                    }
+                    .transition(.opacity)
                 }
             }
         }
@@ -1542,6 +1601,7 @@ private struct WorkspaceBottomStatusBar: View {
     @ObservedObject var tab: TerminalTabItem
     let showsDirectoryControls: Bool
     @ObservedObject var transferManager = TransferManager.shared
+    @State private var isTransferDrawerPresented = false
     
     var body: some View {
         HStack(spacing: 14) {
@@ -1604,19 +1664,30 @@ private struct WorkspaceBottomStatusBar: View {
 
             if !transferManager.tasks.isEmpty {
                 Divider().frame(height: 12)
-                HStack(spacing: 6) {
-                    Image(systemName: transferManager.activeCount > 0 ? "arrow.triangle.2.circlepath" : "arrow.up.arrow.down")
-                        .font(.system(size: 10))
-                        .foregroundColor(transferManager.activeCount > 0 ? ApexStyle.accent : ApexStyle.secondary)
-                    if transferManager.activeCount > 0 {
-                        Text("传输中 \(transferManager.activeCount) 项 · \(transferManager.formattedTotalSpeed)")
-                            .font(.caption.monospaced())
-                            .foregroundColor(ApexStyle.accent)
-                    } else {
-                        Text("传输记录 \(transferManager.tasks.count) 项")
-                            .font(.caption.monospaced())
-                            .foregroundColor(ApexStyle.secondary)
+                Button {
+                    isTransferDrawerPresented = true
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: transferManager.activeCount > 0 ? "arrow.triangle.2.circlepath" : "arrow.up.arrow.down")
+                            .font(.system(size: 10))
+                            .foregroundColor(transferManager.activeCount > 0 ? ApexStyle.accent : ApexStyle.secondary)
+                        if transferManager.activeCount > 0 {
+                            Text("传输中 \(transferManager.activeCount) 项 · \(transferManager.formattedTotalSpeed)")
+                                .font(.caption.monospaced())
+                                .foregroundColor(ApexStyle.accent)
+                        } else {
+                            Text("传输记录 \(transferManager.tasks.count) 项")
+                                .font(.caption.monospaced())
+                                .foregroundColor(ApexStyle.secondary)
+                        }
                     }
+                }
+                .buttonStyle(.plain)
+                .help("点击查看文件传输记录")
+                .sheet(isPresented: $isTransferDrawerPresented) {
+                    TransferDrawer(isExpanded: $isTransferDrawerPresented)
+                        .frame(width: 700, height: 360)
+                        .apexTheme()
                 }
             }
             

@@ -1536,8 +1536,32 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         return "\(username)@\(address):\(path)"
     }
 
+    public static func expandTildeForSCP(_ path: String, homeDirectory: String?) -> String {
+        guard path == "~" || path.hasPrefix("~/") else { return path }
+        if let home = homeDirectory, home.hasPrefix("/") {
+            let trimmedHome = home.hasSuffix("/") && home.count > 1 ? String(home.dropLast()) : home
+            return path == "~" ? trimmedHome : trimmedHome + "/" + String(path.dropFirst(2))
+        }
+        // In OpenSSH scp (SFTP mode), a relative path after `user@host:` is resolved relative
+        // to the remote user's home directory, whereas a literal `~/` can fail on servers
+        // without expand-path@openssh.com.
+        let relative = path == "~" ? "." : String(path.dropFirst(2))
+        return relative.isEmpty ? "." : relative
+    }
+
+    private func resolveRemotePathForTransfer(_ path: String) async -> String {
+        guard path == "~" || path.hasPrefix("~/") else { return path }
+        var home = remoteHomeDirectory
+        if home == nil { home = await probeRemoteHome() }
+        if let home, home.hasPrefix("/") {
+            remoteHomeDirectory = home
+        }
+        return Self.expandTildeForSCP(path, homeDirectory: home)
+    }
+
     public func downloadFile(remotePath: String, localURL: URL, progress: @Sendable @escaping (Double) -> Void) async throws {
         await resolvePasswordIfNeeded()
+        let resolvedRemotePath = await resolveRemotePathForTransfer(remotePath)
         let keyAccess = try acquirePrivateKeyAccess()
         defer { keyAccess?.close() }
         let certAccess = try acquireCertificateAccess()
@@ -1560,7 +1584,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         baseArgs.append(contentsOf: jumpServerArgs())
         // Modern scp uses SFTP: the remote path is already one argv operand.
         // Shell quote characters would become part of the filename.
-        let escapedRemote = remotePath
+        let escapedRemote = resolvedRemotePath
         baseArgs.append(contentsOf: [
             "-P", "\(session.port)",
             Self.scpRemoteSpecifier(username: session.username, host: session.host, path: escapedRemote),
@@ -1589,6 +1613,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     
     public func uploadFile(localURL: URL, remotePath: String, progress: @Sendable @escaping (Double) -> Void) async throws {
         await resolvePasswordIfNeeded()
+        let resolvedRemotePath = await resolveRemotePathForTransfer(remotePath)
         let keyAccess = try acquirePrivateKeyAccess()
         defer { keyAccess?.close() }
         let certAccess = try acquireCertificateAccess()
@@ -1611,7 +1636,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         baseArgs.append(contentsOf: jumpServerArgs())
         // Modern scp uses SFTP: the remote path is already one argv operand.
         // Shell quote characters would become part of the filename.
-        let escapedRemote = remotePath
+        let escapedRemote = resolvedRemotePath
         baseArgs.append(contentsOf: [
             "-P", "\(session.port)",
             accessibleURL.path,

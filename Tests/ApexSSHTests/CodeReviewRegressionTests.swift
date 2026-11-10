@@ -1581,41 +1581,11 @@ final class CodeReviewRegressionTests: XCTestCase {
             ))
         }
 
-        struct DragTestTable: View {
-            let items: [SFTPItem]
-            let session: any SSHSessionProtocol
-            var body: some View {
-                Table(of: SFTPItem.self) {
-                    TableColumn("Name", value: \.name)
-                } rows: {
-                    ForEach(items) { item in
-                        TableRow(item)
-                            .itemProvider { SFTPDragExportHelper.makeItemProvider(for: item, session: session) }
-                    }
-                }
-            }
-        }
-
-        func findOutlineView(in view: NSView) -> NSOutlineView? {
-            if let ov = view as? NSOutlineView { return ov }
-            for sub in view.subviews {
-                if let found = findOutlineView(in: sub) { return found }
-            }
-            return nil
-        }
-
-        let hosting = NSHostingView(rootView: DragTestTable(items: sftpItems, session: mockSession))
-        hosting.frame = NSRect(x: 0, y: 0, width: 480, height: 320)
-        hosting.layoutSubtreeIfNeeded()
-        let outlineView = try XCTUnwrap(findOutlineView(in: hosting))
-        let dataSource = try XCTUnwrap(outlineView.dataSource)
-
-        for (row, fixture) in fixtures.enumerated() {
-            let rowItem = try XCTUnwrap(outlineView.item(atRow: row))
-            let writer = try XCTUnwrap(
-                dataSource.outlineView?(outlineView, pasteboardWriterForItem: rowItem) as? NSFilePromiseProvider
-            )
+        for fixture in fixtures {
+            let item = try XCTUnwrap(sftpItems.first { $0.name == fixture.name })
+            let writer = SFTPDragExportHelper.makeFilePromiseProvider(for: item, session: mockSession)
             let pb = NSPasteboard.withUniqueName()
+            defer { pb.releaseGlobally() }
             pb.writeObjects([writer])
 
             // 1. Must NOT advertise public.file-url or trigger premature SSH download before drop
@@ -1649,6 +1619,158 @@ final class CodeReviewRegressionTests: XCTestCase {
 
             let completedTask = try XCTUnwrap(TransferManager.shared.tasks.first { $0.fileName == fixture.name })
             XCTAssertEqual(completedTask.status, .completed)
+            XCTAssertEqual(completedTask.localURL.standardizedFileURL, promisedURL.standardizedFileURL)
         }
+    }
+
+    // MARK: - TC-REV-64: Bidirectional Drag & Drop (Server -> Any Local Directory & Host -> Terminal/SFTP Server)
+    @MainActor
+    func testTC_REV_64_BidirectionalDragDropHostToServerAndServerToLocalDirectory() async throws {
+        TransferManager.shared.clearCompleted()
+        defer { TransferManager.shared.clearCompleted() }
+
+        // 1. Verify tilde expansion for SCP uploads/downloads when currentRemotePath is "~"
+        XCTAssertEqual(NativeSSHSession.expandTildeForSCP("~", homeDirectory: "/root"), "/root")
+        XCTAssertEqual(NativeSSHSession.expandTildeForSCP("~/app.tar.gz", homeDirectory: "/home/ubuntu/"), "/home/ubuntu/app.tar.gz")
+        XCTAssertEqual(NativeSSHSession.expandTildeForSCP("~", homeDirectory: nil), ".")
+        XCTAssertEqual(NativeSSHSession.expandTildeForSCP("~/app.tar.gz", homeDirectory: nil), "app.tar.gz")
+        XCTAssertEqual(NativeSSHSession.expandTildeForSCP("/var/www/index.html", homeDirectory: "/root"), "/var/www/index.html")
+
+        // 2. Verify NativeTerminalView (isEditable == false) & NativeTerminalScrollView accept Finder file drops
+        // across draggingEntered -> draggingUpdated -> prepareForDragOperation -> performDragOperation
+        final class MockDraggingInfo: NSObject, NSDraggingInfo {
+            let pasteboard: NSPasteboard
+            weak var source: AnyObject?
+            init(urls: [URL], source: AnyObject? = nil) {
+                let pb = NSPasteboard.withUniqueName()
+                pb.clearContents()
+                pb.writeObjects(urls.map { $0 as NSURL })
+                self.pasteboard = pb
+                self.source = source
+                super.init()
+            }
+            deinit {
+                pasteboard.releaseGlobally()
+            }
+            var draggingDestinationWindow: NSWindow? { nil }
+            var draggingSourceOperationMask: NSDragOperation { .copy }
+            var draggingLocation: NSPoint { .zero }
+            var draggedImageLocation: NSPoint { .zero }
+            var draggedImage: NSImage? { nil }
+            var draggingPasteboard: NSPasteboard { pasteboard }
+            var draggingSource: Any? { source }
+            var draggingSequenceNumber: Int { 42 }
+            func slideDraggedImage(to screenPoint: NSPoint) {}
+            var animatesToDestination: Bool = false
+            var draggingFormation: NSDraggingFormation = .default
+            var numberOfValidItemsForDrop: Int = 1
+            func enumerateDraggingItems(
+                options enumOpts: NSDraggingItemEnumerationOptions = [],
+                for view: NSView?,
+                classes classArray: [AnyClass],
+                searchOptions: [NSPasteboard.ReadingOptionKey: Any] = [:],
+                using block: @escaping (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void
+            ) {}
+            var springLoadingHighlight: NSSpringLoadingHighlight { .none }
+            func resetSpringLoading() {}
+        }
+
+        let scrollView = NativeTerminalScrollView(frame: NSRect(x: 0, y: 0, width: 600, height: 400))
+        defer { scrollView.tearDown() }
+        let terminalView = scrollView.terminalView
+        XCTAssertFalse(terminalView.isEditable, "Terminal view must remain non-editable")
+        var droppedTerminalURLs: [URL] = []
+        terminalView.onFileDrop = { url in
+            droppedTerminalURLs.append(url)
+        }
+
+        let hostFileA = URL(fileURLWithPath: "/tmp/host-upload-a.tar.gz")
+        let hostFileB = URL(fileURLWithPath: "/tmp/host-upload-b.yml")
+        let dragInfo = MockDraggingInfo(urls: [hostFileA, hostFileB])
+
+        XCTAssertEqual(scrollView.draggingEntered(dragInfo), .copy)
+        XCTAssertTrue(terminalView.isFileDropTargeted)
+        // Critical: draggingUpdated on non-editable NSTextView previously returned []!
+        XCTAssertEqual(scrollView.draggingUpdated(dragInfo), .copy)
+        XCTAssertEqual(terminalView.draggingUpdated(dragInfo), .copy)
+        XCTAssertTrue(scrollView.prepareForDragOperation(dragInfo))
+        XCTAssertTrue(scrollView.performDragOperation(dragInfo))
+        scrollView.concludeDragOperation(dragInfo)
+        XCTAssertFalse(terminalView.isFileDropTargeted)
+        XCTAssertEqual(droppedTerminalURLs, [hostFileA, hostFileB])
+
+        // 3. Verify SFTPOutlineDataSourceProxy handles BOTH:
+        //    - Server -> Any Local Directory via pure NSFilePromiseProvider (recording real destination URL in TransferManager)
+        //    - Host -> Server drop via validateDrop / acceptDrop (while ignoring self-originated outgoing drags)
+        let sessionModel = Session(name: "BidirectionalDrag", host: "10.0.0.88", port: 22, username: "root")
+        let mockSession = MockSSHSession(session: sessionModel)
+        try await mockSession.connect()
+
+        let workDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tc-rev-64-\(UUID().uuidString)", isDirectory: true)
+        let arbitraryLocalDir = workDir.appendingPathComponent("UserChosenFolder/Subfolder", isDirectory: true)
+        try FileManager.default.createDirectory(at: workDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workDir) }
+
+        let remoteFileName = "release-bundle.tar.gz"
+        let remoteFileContent = "tar-gz-payload-\(UUID().uuidString)"
+        let seedURL = workDir.appendingPathComponent(remoteFileName)
+        try remoteFileContent.write(to: seedURL, atomically: true, encoding: .utf8)
+        let remotePath = "/root/\(remoteFileName)"
+        try await mockSession.uploadFile(localURL: seedURL, remotePath: remotePath, progress: { _ in })
+
+        let sftpItems: [SFTPItem] = [
+            SFTPItem(name: "..", path: "/", isDirectory: true, size: 0, permissions: 0o755, modificationDate: Date()),
+            SFTPItem(name: remoteFileName, path: remotePath, isDirectory: false, size: UInt64(remoteFileContent.utf8.count), permissions: 0o644, modificationDate: Date())
+        ]
+
+        let outlineView = NSOutlineView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
+        let proxy = SFTPOutlineDataSourceProxy()
+        proxy.items = sftpItems
+        proxy.session = mockSession
+        var droppedIntoSFTP: [URL] = []
+        proxy.onDropURLs = { urls in
+            droppedIntoSFTP.append(contentsOf: urls)
+        }
+        outlineView.dataSource = proxy
+
+        // Outgoing drag for file row must be SFTPFilePromiseProvider
+        let provider = SFTPDragExportHelper.makeFilePromiseProvider(for: sftpItems[1], session: mockSession)
+        let pb = NSPasteboard.withUniqueName()
+        defer { pb.releaseGlobally() }
+        pb.writeObjects([provider])
+        let pbTypes = Set(pb.pasteboardItems?.first?.types.map(\.rawValue) ?? [])
+        XCTAssertTrue(pbTypes.contains("com.apple.NSFilePromiseItemMetaData"))
+        XCTAssertFalse(pbTypes.contains("org.gnu.gnu-zip-archive"), "Pure NSFilePromiseProvider must not attach conflicting alternateProviders flavors")
+        XCTAssertFalse(pbTypes.contains(NSPasteboard.PasteboardType.fileURL.rawValue))
+
+        // Simulate Finder dropping the promised file into an arbitrary nested local directory
+        let finalLocalDestination = arbitraryLocalDir.appendingPathComponent(remoteFileName)
+        let delegate = try XCTUnwrap(provider.delegate)
+        XCTAssertEqual(delegate.filePromiseProvider(provider, fileNameForType: provider.fileType), remoteFileName)
+
+        let exportExp = expectation(description: "Export promised file to arbitrary local directory")
+        delegate.filePromiseProvider(provider, writePromiseTo: finalLocalDestination) { error in
+            XCTAssertNil(error)
+            exportExp.fulfill()
+        }
+        await fulfillment(of: [exportExp], timeout: 5.0)
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: finalLocalDestination.path))
+        XCTAssertEqual(try String(contentsOf: finalLocalDestination, encoding: .utf8), remoteFileContent)
+
+        // TransferManager must record the ACTUAL destination URL chosen by the user (not a /var/folders temp path)
+        let recordedTask = try XCTUnwrap(TransferManager.shared.tasks.first { $0.fileName == remoteFileName })
+        XCTAssertEqual(recordedTask.status, .completed)
+        XCTAssertEqual(recordedTask.localURL.standardizedFileURL, finalLocalDestination.standardizedFileURL)
+
+        // Verify SFTPOutlineDataSourceProxy rejects self-originated outgoing drags and accepts Finder file drops
+        let selfDragInfo = MockDraggingInfo(urls: [hostFileA], source: outlineView)
+        XCTAssertEqual(proxy.outlineView(outlineView, validateDrop: selfDragInfo, proposedItem: nil, proposedChildIndex: -1), [])
+
+        let finderDropInfo = MockDraggingInfo(urls: [hostFileA, hostFileB], source: nil)
+        XCTAssertEqual(proxy.outlineView(outlineView, validateDrop: finderDropInfo, proposedItem: nil, proposedChildIndex: -1), .copy)
+        XCTAssertTrue(proxy.outlineView(outlineView, acceptDrop: finderDropInfo, item: nil, childIndex: -1))
+        XCTAssertEqual(droppedIntoSFTP, [hostFileA, hostFileB])
     }
 }

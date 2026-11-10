@@ -439,6 +439,12 @@ public struct SFTPView: View {
                             .font(.caption)
                         Spacer()
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .contentShape(Rectangle())
+                    .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
+                        handleDropUpload(providers: providers)
+                        return true
+                    }
                 } else if let loadError {
                     ContentUnavailableView {
                         Label("无法读取远程文件", systemImage: "wifi.exclamationmark")
@@ -447,11 +453,23 @@ public struct SFTPView: View {
                     } actions: {
                         Button("重试") { loadDirectory(path: currentPath) }
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .contentShape(Rectangle())
+                    .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
+                        handleDropUpload(providers: providers)
+                        return true
+                    }
                 } else if filteredItems.isEmpty {
                     ContentUnavailableView(
                         searchFilter.isEmpty ? "文件夹为空" : "没有匹配的文件",
                         systemImage: searchFilter.isEmpty ? "folder" : "magnifyingglass"
                     )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .contentShape(Rectangle())
+                    .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
+                        handleDropUpload(providers: providers)
+                        return true
+                    }
                 } else {
                     Table(of: SFTPItem.self, selection: $selectedPaths, sortOrder: $tableSortOrder) {
                         TableColumn("名称", value: \.name) { item in
@@ -481,6 +499,19 @@ public struct SFTPView: View {
                     }
                     // Keep the system's semantic selection foreground instead of inheriting a theme's fixed text color.
                     .foregroundStyle(Color.primary)
+                    .background(
+                        SFTPOutlineViewDragDropBridge(
+                            items: filteredItems,
+                            session: session,
+                            onDropURLs: { urls in
+                                requestBatchUpload(urls, targetDirectory: currentPath)
+                            },
+                            onStatusChange: { notice in
+                                self.transferNotice = notice
+                            }
+                        )
+                        .frame(width: 0, height: 0)
+                    )
                     .contextMenu(forSelectionType: String.self) { ids in
                         if ids.count == 1, let path = ids.first, let item = items.first(where: { $0.path == path }) {
                             fileContextActions(item)
@@ -543,14 +574,8 @@ public struct SFTPView: View {
 
 
             }
-            // Empty, loading and failure states share the full file-area drop target.
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(ApexStyle.surface)
-            .contentShape(Rectangle())
-            .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
-                handleDropUpload(providers: providers)
-                return true
-            }
         }
     }
 
@@ -1303,7 +1328,7 @@ public struct SFTPView: View {
     private func uploadAction() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
-        panel.canChooseDirectories = false
+        panel.canChooseDirectories = true
         panel.allowsMultipleSelection = true
         if panel.runModal() == .OK {
             requestBatchUpload(panel.urls, targetDirectory: currentPath)
@@ -1325,13 +1350,12 @@ public struct SFTPView: View {
                     for url in urls { accesses.append(try FileAccessStore.shared.acquire(url)) }
                 }
                 let urls = accesses.isEmpty ? urls : accesses.map(\.url)
-                let existing = try await session.listDirectory(path: targetDirectory)
+                let existing = (try? await session.listDirectory(path: targetDirectory)) ?? []
                 let existingNames = Set(existing.map(\.name))
                 let conflicts = urls.filter { existingNames.contains($0.lastPathComponent) }
                 
                 var filesToUpload = urls
-                if !conflicts.isEmpty {
-                    guard let window = windowReference.window else { return }
+                if !conflicts.isEmpty, let window = windowReference.window ?? NSApp.keyWindow ?? NSApp.mainWindow {
                     let alert = NSAlert()
                     alert.messageText = "目标目录已存在同名文件"
                     if conflicts.count == 1 {
@@ -1542,6 +1566,277 @@ public struct SFTPView: View {
     }
 }
 
+// MARK: - Native AppKit OutlineView Drag & Drop Bridge
+public final class SFTPFilePromiseProvider: NSFilePromiseProvider {
+    public let sftpItem: SFTPItem
+    private var strongDelegate: SFTPFilePromiseDelegate?
+
+    public init(fileType: String, sftpItem: SFTPItem, delegate: SFTPFilePromiseDelegate) {
+        self.sftpItem = sftpItem
+        self.strongDelegate = delegate
+        super.init()
+        self.fileType = fileType
+        self.delegate = delegate
+        self.userInfo = sftpItem.path
+    }
+}
+
+public final class SFTPFilePromiseDelegate: NSObject, NSFilePromiseProviderDelegate, @unchecked Sendable {
+    public let item: SFTPItem
+    public let session: (any SSHSessionProtocol)?
+    public let onStatusChange: (@Sendable @MainActor (String) -> Void)?
+    private static let promiseQueue: OperationQueue = {
+        let queue = OperationQueue()
+        queue.name = "com.apexterm.sftp.filepromise"
+        queue.qualityOfService = .userInitiated
+        queue.maxConcurrentOperationCount = 4
+        return queue
+    }()
+
+    public init(
+        item: SFTPItem,
+        session: (any SSHSessionProtocol)?,
+        onStatusChange: (@Sendable @MainActor (String) -> Void)? = nil
+    ) {
+        self.item = item
+        self.session = session
+        self.onStatusChange = onStatusChange
+        super.init()
+    }
+
+    public func filePromiseProvider(_ filePromiseProvider: NSFilePromiseProvider, fileNameForType fileType: String) -> String {
+        item.name
+    }
+
+    public func operationQueue(for filePromiseProvider: NSFilePromiseProvider) -> OperationQueue {
+        Self.promiseQueue
+    }
+
+    public func filePromiseProvider(
+        _ filePromiseProvider: NSFilePromiseProvider,
+        writePromiseTo url: URL,
+        completionHandler: @escaping ((any Error)?) -> Void
+    ) {
+        let item = self.item
+        let session = self.session
+        let onStatusChange = self.onStatusChange
+        nonisolated(unsafe) let completion = completionHandler
+        Task.detached(priority: .userInitiated) {
+            do {
+                _ = try await SFTPDragExportHelper.exportItemToDestination(
+                    item: item,
+                    session: session,
+                    destinationURL: url,
+                    onStatusChange: onStatusChange
+                )
+                completion(nil)
+            } catch {
+                completion(error)
+            }
+        }
+    }
+}
+
+@MainActor
+public final class SFTPOutlineDataSourceProxy: NSObject, NSOutlineViewDataSource {
+    nonisolated(unsafe) public weak var originalDataSource: (any NSOutlineViewDataSource)?
+    public var items: [SFTPItem] = []
+    public var session: (any SSHSessionProtocol)?
+    public var onDropURLs: (([URL]) -> Void)?
+    public var onStatusChange: (@Sendable @MainActor (String) -> Void)?
+    private var retainedPromiseProviders: [SFTPFilePromiseProvider] = []
+
+    nonisolated override public func responds(to aSelector: Selector!) -> Bool {
+        if super.responds(to: aSelector) { return true }
+        return originalDataSource?.responds(to: aSelector) ?? false
+    }
+
+    nonisolated override public func forwardingTarget(for aSelector: Selector!) -> Any? {
+        originalDataSource
+    }
+
+    public func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
+        originalDataSource?.outlineView?(outlineView, numberOfChildrenOfItem: item) ?? (item == nil ? items.count : 0)
+    }
+
+    public func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
+        originalDataSource?.outlineView?(outlineView, isItemExpandable: item) ?? false
+    }
+
+    public func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
+        if let child = originalDataSource?.outlineView?(outlineView, child: index, ofItem: item) {
+            return child
+        }
+        return index < items.count ? items[index] : NSNull()
+    }
+
+    public func outlineView(_ outlineView: NSOutlineView, pasteboardWriterForItem item: Any) -> (any NSPasteboardWriting)? {
+        let row = outlineView.row(forItem: item)
+        guard row >= 0, row < items.count else {
+            return originalDataSource?.outlineView?(outlineView, pasteboardWriterForItem: item)
+        }
+        let sftpItem = items[row]
+        guard sftpItem.name != ".." else { return nil }
+        let provider = SFTPDragExportHelper.makeFilePromiseProvider(
+            for: sftpItem,
+            session: session,
+            onStatusChange: onStatusChange
+        )
+        retainedPromiseProviders.append(provider)
+        return provider
+    }
+
+    public func outlineView(
+        _ outlineView: NSOutlineView,
+        draggingSession session: NSDraggingSession,
+        willBeginAt screenPoint: NSPoint,
+        forItems draggedItems: [Any]
+    ) {
+        originalDataSource?.outlineView?(outlineView, draggingSession: session, willBeginAt: screenPoint, forItems: draggedItems)
+    }
+
+    public func outlineView(
+        _ outlineView: NSOutlineView,
+        draggingSession session: NSDraggingSession,
+        endedAt screenPoint: NSPoint,
+        operation: NSDragOperation
+    ) {
+        originalDataSource?.outlineView?(outlineView, draggingSession: session, endedAt: screenPoint, operation: operation)
+        // Release promise provider references after Finder has had time to start/finish receiving
+        DispatchQueue.main.asyncAfter(deadline: .now() + 60.0) { [weak self] in
+            self?.retainedPromiseProviders.removeAll()
+        }
+    }
+
+    public func outlineView(
+        _ outlineView: NSOutlineView,
+        validateDrop info: any NSDraggingInfo,
+        proposedItem item: Any?,
+        proposedChildIndex index: Int
+    ) -> NSDragOperation {
+        // Ignore outgoing drags originating from this SFTP outline view itself
+        if let sourceOutline = info.draggingSource as? NSOutlineView, sourceOutline === outlineView {
+            return []
+        }
+        if info.draggingPasteboard.types?.contains(NSPasteboard.PasteboardType("com.apple.NSFilePromiseItemMetaData")) == true {
+            return []
+        }
+        guard info.draggingPasteboard.canReadObject(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]
+        ) else {
+            return []
+        }
+        outlineView.setDropRow(-1, dropOperation: .on)
+        return .copy
+    }
+
+    public func outlineView(
+        _ outlineView: NSOutlineView,
+        acceptDrop info: any NSDraggingInfo,
+        item: Any?,
+        childIndex index: Int
+    ) -> Bool {
+        if let sourceOutline = info.draggingSource as? NSOutlineView, sourceOutline === outlineView {
+            return false
+        }
+        guard let urls = info.draggingPasteboard.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]
+        ) as? [URL], !urls.isEmpty else {
+            return false
+        }
+        onDropURLs?(urls)
+        return true
+    }
+}
+
+private struct SFTPOutlineViewDragDropBridge: NSViewRepresentable {
+    let items: [SFTPItem]
+    let session: (any SSHSessionProtocol)?
+    let onDropURLs: ([URL]) -> Void
+    let onStatusChange: @Sendable @MainActor (String) -> Void
+
+    final class BridgeNSView: NSView {
+        let proxy = SFTPOutlineDataSourceProxy()
+        weak var attachedOutlineView: NSOutlineView?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            attachIfNeeded()
+        }
+
+        override func layout() {
+            super.layout()
+            attachIfNeeded()
+        }
+
+        func attachIfNeeded() {
+            if let ov = attachedOutlineView, ov.window != nil {
+                configure(outlineView: ov)
+                return
+            }
+            var ancestor: NSView? = superview
+            for _ in 0..<6 {
+                guard let current = ancestor else { break }
+                if let ov = Self.findSFTPOutlineView(in: current) {
+                    attachedOutlineView = ov
+                    configure(outlineView: ov)
+                    return
+                }
+                ancestor = current.superview
+            }
+        }
+
+        private func configure(outlineView: NSOutlineView) {
+            if outlineView.dataSource !== proxy {
+                proxy.originalDataSource = outlineView.dataSource
+                outlineView.dataSource = proxy
+            }
+            outlineView.setDraggingSourceOperationMask(.copy, forLocal: false)
+            outlineView.setDraggingSourceOperationMask(.copy, forLocal: true)
+            if !outlineView.registeredDraggedTypes.contains(.fileURL) {
+                outlineView.registerForDraggedTypes([.fileURL])
+            }
+        }
+
+        private static func findSFTPOutlineView(in view: NSView) -> NSOutlineView? {
+            if let ov = view as? NSOutlineView, ov.tableColumns.count == 4 {
+                return ov
+            }
+            for subview in view.subviews {
+                if let found = findSFTPOutlineView(in: subview) {
+                    return found
+                }
+            }
+            return nil
+        }
+    }
+
+    func makeNSView(context: Context) -> BridgeNSView {
+        let view = BridgeNSView(frame: .zero)
+        view.proxy.items = items
+        view.proxy.session = session
+        view.proxy.onDropURLs = onDropURLs
+        view.proxy.onStatusChange = onStatusChange
+        DispatchQueue.main.async {
+            view.attachIfNeeded()
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: BridgeNSView, context: Context) {
+        nsView.proxy.items = items
+        nsView.proxy.session = session
+        nsView.proxy.onDropURLs = onDropURLs
+        nsView.proxy.onStatusChange = onStatusChange
+        nsView.attachIfNeeded()
+        DispatchQueue.main.async {
+            nsView.attachIfNeeded()
+        }
+    }
+}
+
 // MARK: - SFTP Drag & Drop Export Helper
 public enum SFTPDragExportHelper {
     /// Removes stale temporary drag-export directories older than `maxAgeSeconds` (default 1 hour).
@@ -1573,107 +1868,160 @@ public enum SFTPDragExportHelper {
         return removedCount
     }
 
-    public static func makeItemProvider(
+    /// Creates a native AppKit `NSFilePromiseProvider` for dragging a remote file or directory
+    /// from the SFTP browser to any local folder in Finder / Desktop.
+    public static func makeFilePromiseProvider(
         for item: SFTPItem,
         session: (any SSHSessionProtocol)?,
         onStatusChange: (@Sendable @MainActor (String) -> Void)? = nil
-    ) -> NSItemProvider {
+    ) -> SFTPFilePromiseProvider {
+        let fileType = item.isDirectory ? UTType.folder.identifier : UTType.data.identifier
+        let delegate = SFTPFilePromiseDelegate(
+            item: item,
+            session: session,
+            onStatusChange: onStatusChange
+        )
+        return SFTPFilePromiseProvider(
+            fileType: fileType,
+            sftpItem: item,
+            delegate: delegate
+        )
+    }
+
+    /// Downloads `item` from `session` and places it at `destinationURL` (or inside a temporary
+    /// staging directory when `destinationURL` is nil), updating `TransferManager` throughout.
+    @discardableResult
+    public static func exportItemToDestination(
+        item: SFTPItem,
+        session: (any SSHSessionProtocol)?,
+        destinationURL: URL? = nil,
+        onStatusChange: (@Sendable @MainActor (String) -> Void)? = nil
+    ) async throws -> URL {
+        guard let session else {
+            throw NSError(
+                domain: "SFTPDragExport",
+                code: 404,
+                userInfo: [NSLocalizedDescriptionKey: "No active SSH session"]
+            )
+        }
         let transfersRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("ApexTermTransfers", isDirectory: true)
         _ = cleanupStaleDragExportDirectories(in: transfersRoot)
         let tempDir = transfersRoot
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        let localURL = tempDir.appendingPathComponent(item.name)
-
-        let provider = NSItemProvider()
-        let ext = (item.name as NSString).pathExtension
-        let specificType: UTType = item.isDirectory ? .folder : (UTType(filenameExtension: ext) ?? .data)
-        provider.suggestedName = item.name
-
+        let stagingURL = tempDir.appendingPathComponent(item.name)
+        let recordedLocalURL = destinationURL ?? stagingURL
         let taskId = UUID()
-        let export = SFTPExportDownload {
-            guard let session else {
-                throw NSError(domain: "SFTPDragExport", code: 404,
-                              userInfo: [NSLocalizedDescriptionKey: "No active SSH session"])
-            }
-            await Self.dispatchMainActorNonBlocking {
-                TransferManager.shared.beginExternalTransfer(
-                    id: taskId, fileName: item.name, remotePath: item.path,
-                    localURL: localURL, direction: .download, totalBytes: Int64(item.size))
-                onStatusChange?("正在下载并导出: \(item.name)...")
-            }
-            do {
-                try Task.checkCancellation()
-                try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-                // scp does not report byte progress through SSHSessionProtocol. Sample the
-                // destination file off the main actor while Finder waits for the file.
-                let expectedBytes = Int64(clamping: item.size)
-                let progressMonitor = Task.detached(priority: .utility) {
-                    while !Task.isCancelled {
-                        let bytes = TransferManager.currentTransferredBytes(at: localURL)
-                        if bytes > 0 {
-                            Task { @MainActor in
-                                TransferManager.shared.updateExternalProgress(
-                                    taskId: taskId,
-                                    fraction: expectedBytes > 0 ? min(Double(bytes) / Double(expectedBytes), 1) : 0,
-                                    transferredBytes: bytes
-                                )
-                            }
+
+        await Self.dispatchMainActorNonBlocking {
+            TransferManager.shared.beginExternalTransfer(
+                id: taskId,
+                fileName: item.name,
+                remotePath: item.path,
+                localURL: recordedLocalURL,
+                direction: .download,
+                totalBytes: Int64(item.size)
+            )
+            onStatusChange?("正在下载并导出: \(item.name)...")
+        }
+        do {
+            try Task.checkCancellation()
+            try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+            let expectedBytes = Int64(clamping: item.size)
+            let progressMonitor = Task.detached(priority: .utility) {
+                while !Task.isCancelled {
+                    let bytes = TransferManager.currentTransferredBytes(at: stagingURL)
+                    if bytes > 0 {
+                        Task { @MainActor in
+                            TransferManager.shared.updateExternalProgress(
+                                taskId: taskId,
+                                fraction: expectedBytes > 0 ? min(Double(bytes) / Double(expectedBytes), 1) : 0,
+                                transferredBytes: bytes
+                            )
                         }
-                        try? await Task.sleep(for: .milliseconds(150))
                     }
+                    try? await Task.sleep(for: .milliseconds(150))
                 }
-                defer { progressMonitor.cancel() }
-                try await session.downloadFile(remotePath: item.path, localURL: localURL) { fraction in
-                    Task { @MainActor in
-                        TransferManager.shared.updateExternalProgress(taskId: taskId, fraction: fraction)
-                    }
+            }
+            defer { progressMonitor.cancel() }
+            try await session.downloadFile(remotePath: item.path, localURL: stagingURL) { fraction in
+                Task { @MainActor in
+                    TransferManager.shared.updateExternalProgress(taskId: taskId, fraction: fraction)
                 }
-                try Task.checkCancellation()
-                guard FileManager.default.fileExists(atPath: localURL.path) else {
+            }
+            try Task.checkCancellation()
+            guard FileManager.default.fileExists(atPath: stagingURL.path) else {
+                throw NSError(
+                    domain: "SFTPDragExport",
+                    code: 500,
+                    userInfo: [NSLocalizedDescriptionKey: "导出临时文件不存在: \(item.name)"]
+                )
+            }
+            let finalURL: URL
+            if let destinationURL {
+                let parentDir = destinationURL.deletingLastPathComponent()
+                if !FileManager.default.fileExists(atPath: parentDir.path) {
+                    try FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true)
+                }
+                if FileManager.default.fileExists(atPath: destinationURL.path) {
+                    try FileManager.default.removeItem(at: destinationURL)
+                }
+                try FileManager.default.moveItem(at: stagingURL, to: destinationURL)
+                try? FileManager.default.removeItem(at: tempDir)
+                guard FileManager.default.fileExists(atPath: destinationURL.path) else {
                     throw NSError(
                         domain: "SFTPDragExport",
-                        code: 500,
-                        userInfo: [NSLocalizedDescriptionKey: "导出临时文件不存在: \(item.name)"]
+                        code: 501,
+                        userInfo: [NSLocalizedDescriptionKey: "目标目录写入失败: \(destinationURL.path)"]
                     )
                 }
-                await Self.dispatchMainActorNonBlocking {
-                    TransferManager.shared.completeExternalTransfer(taskId: taskId)
-                    onStatusChange?("拖拽导出完成: \(item.name)")
-                }
-                return localURL
-            } catch {
-                try? FileManager.default.removeItem(at: localURL)
-                try? FileManager.default.removeItem(at: tempDir)
-                await Self.dispatchMainActorNonBlocking {
-                    if error is CancellationError {
-                        TransferManager.shared.cancelExternalTransfer(taskId: taskId)
-                        onStatusChange?("拖拽下载已取消: \(item.name)")
-                    } else {
-                        TransferManager.shared.failExternalTransfer(taskId: taskId, error: error)
-                        onStatusChange?("拖拽下载失败: \(error.localizedDescription)")
-                    }
-                }
-                throw error
+                finalURL = destinationURL
+            } else {
+                finalURL = stagingURL
             }
+            await Self.dispatchMainActorNonBlocking {
+                TransferManager.shared.completeExternalTransfer(taskId: taskId)
+                onStatusChange?("拖拽导出完成: \(item.name)")
+            }
+            return finalURL
+        } catch {
+            try? FileManager.default.removeItem(at: stagingURL)
+            try? FileManager.default.removeItem(at: tempDir)
+            await Self.dispatchMainActorNonBlocking {
+                if error is CancellationError {
+                    TransferManager.shared.cancelExternalTransfer(taskId: taskId)
+                    onStatusChange?("拖拽下载已取消: \(item.name)")
+                } else {
+                    TransferManager.shared.failExternalTransfer(taskId: taskId, error: error)
+                    onStatusChange?("拖拽下载失败: \(error.localizedDescription)")
+                }
+            }
+            throw error
+        }
+    }
+
+    public static func makeItemProvider(
+        for item: SFTPItem,
+        session: (any SSHSessionProtocol)?,
+        onStatusChange: (@Sendable @MainActor (String) -> Void)? = nil
+    ) -> NSItemProvider {
+        let provider = NSItemProvider()
+        provider.suggestedName = item.name
+
+        let export = SFTPExportDownload {
+            try await exportItemToDestination(
+                item: item,
+                session: session,
+                destinationURL: nil,
+                onStatusChange: onStatusChange
+            )
         }
         let loadHandler: @Sendable (@escaping @Sendable (URL?, Bool, (any Error)?) -> Void) -> Progress? = { completion in
             let progress = Progress(totalUnitCount: Int64(max(item.size, 1)))
-            let progressMonitor = Task.detached(priority: .utility) {
-                while !Task.isCancelled {
-                    let bytes = TransferManager.currentTransferredBytes(at: localURL)
-                    if bytes > 0 {
-                        progress.completedUnitCount = min(bytes, progress.totalUnitCount)
-                    }
-                    try? await Task.sleep(for: .milliseconds(250))
-                }
-            }
             progress.cancellationHandler = {
-                progressMonitor.cancel()
                 Task { await export.cancel() }
             }
             Task {
-                defer { progressMonitor.cancel() }
                 do {
                     guard !progress.isCancelled else { throw CancellationError() }
                     let url = try await export.value()
@@ -1685,11 +2033,8 @@ public enum SFTPDragExportHelper {
             return progress
         }
 
-        // Never register `UTType.fileURL` via `registerFileRepresentation`: Foundation treats the
-        // file's *contents* as the `public.file-url` payload, causing CFPasteboard to immediately
-        // demand a sandbox extension at drag start (triggering a premature SSH download and marking
-        // TransferManager completed) while rejecting the entry (`CreateSandboxExtensionData failed`)
-        // and causing Finder drops to fail with `Failed to get a sandbox extension (0)`.
+        let ext = (item.name as NSString).pathExtension
+        let specificType: UTType = item.isDirectory ? .folder : (UTType(filenameExtension: ext) ?? .data)
         if item.isDirectory {
             provider.registerFileRepresentation(
                 forTypeIdentifier: UTType.folder.identifier,
@@ -1698,9 +2043,6 @@ public enum SFTPDragExportHelper {
                 loadHandler: loadHandler
             )
         } else {
-            // Register `public.data` first so SwiftUI's FilePromiseProvider uses `public.data`
-            // as its primary fileType and preserves `suggestedName` (`item.name`) verbatim
-            // without appending duplicate extensions (e.g. `.yml.yml`, `.log.log`, `.sh.sh`).
             provider.registerFileRepresentation(
                 forTypeIdentifier: UTType.data.identifier,
                 fileOptions: [],

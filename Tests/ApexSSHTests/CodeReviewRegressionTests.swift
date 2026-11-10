@@ -1524,4 +1524,16 @@ final class CodeReviewRegressionTests: XCTestCase {
         XCTAssertEqual(store.sessions.first(where: { $0.name == "Orphan Node" })?.folder, "常用会话", "Blank folder must be normalized to 常用会话")
         XCTAssertNil(store.sessions.first(where: { $0.name == "Loop Node" })?.jumpServerId, "Self-referential jumpServerId must be cleared")
     }
+
+    // MARK: - TC-REV-62: SessionCopyHelper formats username+password and session info on a single line without newlines
+    func testSessionCopyHelperFormatsUserPasswordAndSessionInfoOnSingleLine() {
+        let userPass = SessionCopyHelper.formatUserAndPassword(username: "root", password: "123456")
+        XCTAssertEqual(userPass, "用户名: root 密码: 123456")
+        XCTAssertFalse(userPass.contains("\n"))
+
+        let session = Session(name: "生产主库", host: "10.8.8.71", port: 22, username: "root", authMethod: .password(keychainRef: "ref"))
+        let info = SessionCopyHelper.formatSessionInfo(session: session, password: "123456")
+        XCTAssertEqual(info, "会话: 生产主库 主机: 10.8.8.71 端口: 22 用户名: root 密码: 123456")
+        XCTAssertFalse(info.contains("\n"))
+    }
 }

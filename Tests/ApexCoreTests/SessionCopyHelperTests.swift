@@ -7,22 +7,26 @@ final class SessionCopyHelperTests: XCTestCase {
     
     func testFormatUserAndPasswordWithPassword() {
         let result = SessionCopyHelper.formatUserAndPassword(username: "root", password: "Password123!")
-        XCTAssertEqual(result, "用户名: root\n密码: Password123!")
+        XCTAssertEqual(result, "用户名: root 密码: Password123!")
+        XCTAssertFalse(result.contains("\n"))
     }
     
     func testFormatUserAndPasswordWithoutPassword() {
         let result = SessionCopyHelper.formatUserAndPassword(username: "ubuntu", password: nil)
-        XCTAssertEqual(result, "用户名: ubuntu\n密码: (未配置)")
+        XCTAssertEqual(result, "用户名: ubuntu 密码: (未配置)")
+        XCTAssertFalse(result.contains("\n"))
     }
     
     func testFormatUserAndPasswordWithEmptyPassword() {
         let result = SessionCopyHelper.formatUserAndPassword(username: "deploy", password: "")
-        XCTAssertEqual(result, "用户名: deploy\n密码: (未配置)")
+        XCTAssertEqual(result, "用户名: deploy 密码: (未配置)")
+        XCTAssertFalse(result.contains("\n"))
     }
     
     func testFormatUserAndPasswordWithWhitespaceUsername() {
         let result = SessionCopyHelper.formatUserAndPassword(username: "  admin  ", password: "pwd")
-        XCTAssertEqual(result, "用户名: admin\n密码: pwd")
+        XCTAssertEqual(result, "用户名: admin 密码: pwd")
+        XCTAssertFalse(result.contains("\n"))
     }
     
     // MARK: - Format Session Info
@@ -35,13 +39,9 @@ final class SessionCopyHelperTests: XCTestCase {
             username: "root"
         )
         let result = SessionCopyHelper.formatSessionInfo(session: session, password: "SecretPassword")
-        let expected = """
-        主机: 10.8.8.71
-        端口: 22
-        用户名: root
-        密码: SecretPassword
-        """
+        let expected = "主机: 10.8.8.71 端口: 22 用户名: root 密码: SecretPassword"
         XCTAssertEqual(result, expected)
+        XCTAssertFalse(result.contains("\n"))
     }
     
     func testFormatSessionInfoWithCustomNameAndNonStandardPort() {
@@ -52,14 +52,9 @@ final class SessionCopyHelperTests: XCTestCase {
             username: "admin"
         )
         let result = SessionCopyHelper.formatSessionInfo(session: session, password: "MyComplex#Pass99")
-        let expected = """
-        会话: 微服务测试机器-10.8.8.246
-        主机: 10.8.8.246
-        端口: 22022
-        用户名: admin
-        密码: MyComplex#Pass99
-        """
+        let expected = "会话: 微服务测试机器-10.8.8.246 主机: 10.8.8.246 端口: 22022 用户名: admin 密码: MyComplex#Pass99"
         XCTAssertEqual(result, expected)
+        XCTAssertFalse(result.contains("\n"))
     }
     
     func testFormatSessionInfoWithoutPassword() {
@@ -70,14 +65,9 @@ final class SessionCopyHelperTests: XCTestCase {
             username: "ops"
         )
         let result = SessionCopyHelper.formatSessionInfo(session: session, password: nil)
-        let expected = """
-        会话: bastion
-        主机: 10.0.0.1
-        端口: 22
-        用户名: ops
-        密码: (未配置)
-        """
+        let expected = "会话: bastion 主机: 10.0.0.1 端口: 22 用户名: ops 密码: (未配置)"
         XCTAssertEqual(result, expected)
+        XCTAssertFalse(result.contains("\n"))
     }
     
     // MARK: - Resolve Secret

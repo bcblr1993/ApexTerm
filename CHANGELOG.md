@@ -2,6 +2,17 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.23.4] - 2026-11-10
+
+### ⚡️ 体验优化 (Improvements)
+- **复制用户名密码与复制会话信息统一为单行紧凑格式 (`SessionCopyHelper`)**：
+  - 将「复制用户名密码」(`formatUserAndPassword`) 调整为单行格式：`用户名: <user> 密码: <password>`；
+  - 将「复制会话信息」(`formatSessionInfo`) 调整为单行格式：`会话: <name> 主机: <host> 端口: <port> 用户名: <user> 密码: <password>`（当会话名与主机相同时自动省略重复会话字段），方便在 IM、工单或文档中单行粘贴分享，避免多行换行。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- 更新 `SessionCopyHelperTests` 并新增 `CodeReviewRegressionTests` `TC-REV-62`，断言单行复制输出零换行符且字段对齐；
+- 全量自动化测试用例 100% 绿色通过（0 failures），Swift 6 模式零警告。
+
 ## [v1.23.3] - 2026-11-08
 
 ### ⚡️ 体验优化 (Improvements)

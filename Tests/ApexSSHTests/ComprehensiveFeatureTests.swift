@@ -363,8 +363,9 @@ final class ComprehensiveFeatureTests: XCTestCase {
         
         let provider = SFTPDragExportHelper.makeItemProvider(for: fileItem, session: session)
         
-        XCTAssertEqual(provider.suggestedName, "test_report")
-        XCTAssertTrue(provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier))
+        XCTAssertEqual(provider.suggestedName, "test_report.pdf")
+        XCTAssertFalse(provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier))
+        XCTAssertEqual(provider.registeredTypeIdentifiers.first, UTType.data.identifier)
         XCTAssertTrue(provider.hasItemConformingToTypeIdentifier(UTType.pdf.identifier))
         XCTAssertTrue(provider.hasItemConformingToTypeIdentifier(UTType.data.identifier))
     }
@@ -375,7 +376,7 @@ final class ComprehensiveFeatureTests: XCTestCase {
         let provider = SFTPDragExportHelper.makeItemProvider(
             for: SFTPItem(name: "cancel.txt", path: path, isDirectory: false), session: client)
         let completion = expectation(description: "Cancelled export completion")
-        let progress = provider.loadFileRepresentation(forTypeIdentifier: UTType.fileURL.identifier) { url, error in
+        let progress = provider.loadFileRepresentation(forTypeIdentifier: UTType.data.identifier) { url, error in
             XCTAssertNil(url)
             XCTAssertNotNil(error)
             completion.fulfill()
@@ -402,7 +403,8 @@ final class ComprehensiveFeatureTests: XCTestCase {
         let provider = SFTPDragExportHelper.makeItemProvider(
             for: SFTPItem(name: "abandoned.txt", path: path, isDirectory: false), session: client)
         try await Task.sleep(for: .milliseconds(100))
-        XCTAssertTrue(provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier))
+        XCTAssertFalse(provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier))
+        XCTAssertTrue(provider.hasItemConformingToTypeIdentifier(UTType.data.identifier))
         XCTAssertFalse(TransferManager.shared.tasks.contains { $0.remotePath == path })
     }
 
@@ -414,7 +416,7 @@ final class ComprehensiveFeatureTests: XCTestCase {
             for: SFTPItem(name: "same.txt", path: "/second/same.txt", isDirectory: false), session: client)
         func load(_ provider: NSItemProvider) async throws -> (String, Data) {
             try await withCheckedThrowingContinuation { continuation in
-                provider.loadFileRepresentation(forTypeIdentifier: UTType.fileURL.identifier) { url, error in
+                provider.loadFileRepresentation(forTypeIdentifier: UTType.data.identifier) { url, error in
                     do {
                         if let error { throw error }
                         guard let url else { throw NSError(domain: "ExportTest", code: 1) }

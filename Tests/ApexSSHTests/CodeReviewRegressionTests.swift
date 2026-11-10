@@ -1536,4 +1536,119 @@ final class CodeReviewRegressionTests: XCTestCase {
         XCTAssertEqual(info, "会话: 生产主库 主机: 10.8.8.71 端口: 22 用户名: root 密码: 123456")
         XCTAssertFalse(info.contains("\n"))
     }
+
+    // MARK: - TC-REV-63: SFTPDragExportHelper avoids public.file-url pasteboard corruption and writes exact promised files
+    @MainActor
+    func testSFTPDragExportHelperFilePromiseWritesExactFilesWithoutFileURLCorruption() async throws {
+        TransferManager.shared.clearCompleted()
+        defer { TransferManager.shared.clearCompleted() }
+
+        let sessionModel = Session(name: "DragPromiseNode", host: "10.0.0.8", port: 22, username: "root")
+        let mockSession = MockSSHSession(session: sessionModel)
+        let prepDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tc-rev-63-prep-\(UUID().uuidString)", isDirectory: true)
+        let destDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tc-rev-63-dest-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: prepDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: destDir, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: prepDir)
+            try? FileManager.default.removeItem(at: destDir)
+        }
+
+        let fixtures: [(name: String, content: String)] = [
+            ("docker-compose.yml", "version: '3.8'\nservices:\n  web:\n    image: nginx:alpine\n    ports:\n      - \"8080:80\"\n"),
+            ("用户使用手册.md", "# 用户使用手册\n\n1. 登录系统\n2. 拖拽导出文件到桌面或访达\n"),
+            ("server.log", "2026-11-10 13:12:31 INFO Server started on :8080\n"),
+            ("deploy.sh", "#!/usr/bin/env bash\nset -euo pipefail\necho deploying\n"),
+            ("archive.tar.gz", "fake-tar-gz-binary-payload"),
+            ("Dockerfile", "FROM alpine:3.20\nCMD [\"/bin/sh\"]\n")
+        ]
+
+        var sftpItems: [SFTPItem] = []
+        for fixture in fixtures {
+            let prepURL = prepDir.appendingPathComponent(fixture.name)
+            try fixture.content.write(to: prepURL, atomically: true, encoding: .utf8)
+            let remotePath = "/opt/app/\(fixture.name)"
+            try await mockSession.uploadFile(localURL: prepURL, remotePath: remotePath, progress: { _ in })
+            sftpItems.append(SFTPItem(
+                name: fixture.name,
+                path: remotePath,
+                isDirectory: false,
+                size: UInt64(fixture.content.utf8.count),
+                permissions: 0o644,
+                modificationDate: Date()
+            ))
+        }
+
+        struct DragTestTable: View {
+            let items: [SFTPItem]
+            let session: any SSHSessionProtocol
+            var body: some View {
+                Table(of: SFTPItem.self) {
+                    TableColumn("Name", value: \.name)
+                } rows: {
+                    ForEach(items) { item in
+                        TableRow(item)
+                            .itemProvider { SFTPDragExportHelper.makeItemProvider(for: item, session: session) }
+                    }
+                }
+            }
+        }
+
+        func findOutlineView(in view: NSView) -> NSOutlineView? {
+            if let ov = view as? NSOutlineView { return ov }
+            for sub in view.subviews {
+                if let found = findOutlineView(in: sub) { return found }
+            }
+            return nil
+        }
+
+        let hosting = NSHostingView(rootView: DragTestTable(items: sftpItems, session: mockSession))
+        hosting.frame = NSRect(x: 0, y: 0, width: 480, height: 320)
+        hosting.layoutSubtreeIfNeeded()
+        let outlineView = try XCTUnwrap(findOutlineView(in: hosting))
+        let dataSource = try XCTUnwrap(outlineView.dataSource)
+
+        for (row, fixture) in fixtures.enumerated() {
+            let rowItem = try XCTUnwrap(outlineView.item(atRow: row))
+            let writer = try XCTUnwrap(
+                dataSource.outlineView?(outlineView, pasteboardWriterForItem: rowItem) as? NSFilePromiseProvider
+            )
+            let pb = NSPasteboard.withUniqueName()
+            pb.writeObjects([writer])
+
+            // 1. Must NOT advertise public.file-url or trigger premature SSH download before drop
+            XCTAssertFalse(pb.types?.contains(.fileURL) ?? false, "Drag pasteboard must not advertise public.file-url")
+            XCTAssertFalse(
+                pb.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]),
+                "Drag pasteboard must not claim to hold an existing local file URL before file promise fulfillment"
+            )
+            XCTAssertFalse(
+                TransferManager.shared.tasks.contains { $0.fileName == fixture.name },
+                "SSH download must not start during drag setup before writePromiseTo is invoked"
+            )
+
+            // 2. Promised filename must match exact remote filename (no .yml.yml, .log.log, .sh.sh)
+            let delegate = try XCTUnwrap(writer.delegate)
+            let promisedName = delegate.filePromiseProvider(writer, fileNameForType: writer.fileType)
+            XCTAssertEqual(promisedName, fixture.name, "Promised filename must preserve \(fixture.name) verbatim")
+
+            // 3. Fulfilling the file promise writes the exact file to the destination directory
+            let promisedURL = destDir.appendingPathComponent(promisedName)
+            let promiseExp = expectation(description: "Fulfill file promise for \(fixture.name)")
+            delegate.filePromiseProvider(writer, writePromiseTo: promisedURL) { error in
+                XCTAssertNil(error, "writePromiseTo failed for \(fixture.name): \(String(describing: error))")
+                promiseExp.fulfill()
+            }
+            await fulfillment(of: [promiseExp], timeout: 5.0)
+
+            XCTAssertTrue(FileManager.default.fileExists(atPath: promisedURL.path), "Promised file must exist at destination for \(fixture.name)")
+            let writtenContent = try String(contentsOf: promisedURL, encoding: .utf8)
+            XCTAssertEqual(writtenContent, fixture.content)
+
+            let completedTask = try XCTUnwrap(TransferManager.shared.tasks.first { $0.fileName == fixture.name })
+            XCTAssertEqual(completedTask.status, .completed)
+        }
+    }
 }

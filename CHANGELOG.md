@@ -2,6 +2,18 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.23.5] - 2026-11-10
+
+### 🐞 问题修复 (Bug Fixes)
+- **修复从 SFTP 文件浏览器拖拽文件到 Finder/桌面时传输记录显示成功但本地未生成文件的问题 (`SFTPDragExportHelper.makeItemProvider`)**：
+  - **根因定位**：此前 `makeItemProvider` 对文件同时注册了 `UTType.fileURL.identifier`（`public.file-url`）的 `registerFileRepresentation`。在 macOS `CFPasteboard` 与 `SwiftUI.PasteboardDataProvider` 拖拽启动阶段，系统要求立即为 `public.file-url` 生成沙盒扩展（`Sandbox extension data required immediately for flavor public.file-url`），并在鼠标尚未松开时提前触发 `NSItemProvider.loadURLSynchronously(for: .fileURL)` 下载文件至临时目录（使传输中心状态提前变为「传输完成」），随后调用 `NSURL.object(withItemProviderData:typeIdentifier: "public.file-url")` 将文件正文（如 Markdown / YAML 内容）当作 URL 字节解析失败（返回空 `Data`），导致松开鼠标落盘至 Finder 时因 `public.file-url` 沙盒校验失败（`sandbox_extension_consume failed: 1`）而静默丢弃，不会触发 `NSFilePromiseProvider` 落盘；
+  - **修复方案**：移除错误的 `UTType.fileURL` 文件表示注册，统一通过标准 `NSFilePromiseProvider` 文件承诺通道（普通文件优先注册 `UTType.data.identifier` 并附带具体 `UTType`，目录注册 `UTType.folder.identifier`）按需在用户在目标文件夹松开鼠标时执行下载与落盘；
+  - **修复拖拽导出文件名重复追加后缀与落盘校验**：保留完整 `provider.suggestedName = item.name` 并以 `UTType.data` 作为主承诺类型，解决 `.yml`、`.log`、`.sh` 等文件经 `FilePromiseProvider` 导出时被重复追加扩展名（如 `docker-compose.yml.yml`）的问题；同时在调用 `completeExternalTransfer` 标记传输成功前强制校验本地文件存在性。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- 更新 `DragAndDropTransferTests`、`ComprehensiveFeatureTests`、`VMIntegrationTests`，并新增 `CodeReviewRegressionTests` `TC-REV-63`（模拟 `SwiftUI` `NSFilePromiseProvider` 真实落盘链路并验证 `.md` / `.yml` / `.log` / `.sh` 原名无损落盘与目录打包导出）；
+- 全量自动化测试用例 100% 绿色通过（0 failures），Swift 6 模式零警告。
+
 ## [v1.23.4] - 2026-11-10
 
 ### ⚡️ 体验优化 (Improvements)

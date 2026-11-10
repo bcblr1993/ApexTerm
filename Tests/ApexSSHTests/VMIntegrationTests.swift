@@ -248,7 +248,7 @@ final class VMIntegrationTests: XCTestCase {
         let provider = SFTPDragExportHelper.makeItemProvider(for: item, session: client)
         let completed = expectation(description: "64 MiB drag export finishes")
         let expectedHash = try Self.sha256(of: local)
-        let loadProgress = provider.loadFileRepresentation(forTypeIdentifier: "public.file-url") { url, error in
+        let loadProgress = provider.loadFileRepresentation(forTypeIdentifier: "public.data") { url, error in
             defer { completed.fulfill() }
             XCTAssertNil(error)
             guard let url else { XCTFail("Finder file representation was empty"); return }

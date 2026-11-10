@@ -46,11 +46,12 @@ final class DragAndDropTransferTests: XCTestCase {
         )
         
         let provider = SFTPDragExportHelper.makeItemProvider(for: item, session: mockSession)
-        XCTAssertTrue(provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier))
+        XCTAssertFalse(provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier))
+        XCTAssertTrue(provider.hasItemConformingToTypeIdentifier(UTType.data.identifier))
         
         let exp = expectation(description: "Small file exported to Finder/Desktop representation")
         
-        _ = provider.loadFileRepresentation(forTypeIdentifier: UTType.fileURL.identifier) { url, error in
+        _ = provider.loadFileRepresentation(forTypeIdentifier: UTType.data.identifier) { url, error in
             XCTAssertNil(error, "Export should succeed without error: \(String(describing: error))")
             XCTAssertNotNil(url, "Exported URL must not be nil")
             if let url = url {
@@ -93,7 +94,7 @@ final class DragAndDropTransferTests: XCTestCase {
         
         let exp = expectation(description: "Large file exported without deadlock or starvation")
         
-        _ = provider.loadFileRepresentation(forTypeIdentifier: UTType.fileURL.identifier) { url, error in
+        _ = provider.loadFileRepresentation(forTypeIdentifier: UTType.data.identifier) { url, error in
             XCTAssertNil(error)
             XCTAssertNotNil(url)
             if let url = url {
@@ -136,7 +137,7 @@ final class DragAndDropTransferTests: XCTestCase {
         for (index, item) in items.enumerated() {
             let exp = expectations[index]
             let provider = SFTPDragExportHelper.makeItemProvider(for: item, session: mockSession)
-            _ = provider.loadFileRepresentation(forTypeIdentifier: UTType.fileURL.identifier) { url, error in
+            _ = provider.loadFileRepresentation(forTypeIdentifier: UTType.data.identifier) { url, error in
                 XCTAssertNil(error)
                 XCTAssertNotNil(url)
                 if let url = url {
@@ -175,7 +176,7 @@ final class DragAndDropTransferTests: XCTestCase {
         // eventual completion on macOS 26. Cancellation must remain idempotent.
         exp.assertForOverFulfill = false
         
-        let progress = provider.loadFileRepresentation(forTypeIdentifier: UTType.fileURL.identifier) { _, _ in
+        let progress = provider.loadFileRepresentation(forTypeIdentifier: UTType.data.identifier) { _, _ in
             exp.fulfill()
         }
         
@@ -313,7 +314,7 @@ final class DragAndDropTransferTests: XCTestCase {
         let provider = SFTPDragExportHelper.makeItemProvider(for: item, session: mockSession)
         let exp = expectation(description: "Export complex path with spaces")
         
-        _ = provider.loadFileRepresentation(forTypeIdentifier: UTType.fileURL.identifier) { url, error in
+        _ = provider.loadFileRepresentation(forTypeIdentifier: UTType.data.identifier) { url, error in
             XCTAssertNil(error)
             XCTAssertNotNil(url)
             if let url = url {
@@ -365,7 +366,7 @@ final class DragAndDropTransferTests: XCTestCase {
         let semaphore = DispatchSemaphore(value: 0)
         nonisolated(unsafe) var exportedContent: String?
         nonisolated(unsafe) var exportedError: (any Error)?
-        _ = provider.loadFileRepresentation(forTypeIdentifier: UTType.fileURL.identifier) { url, error in
+        _ = provider.loadFileRepresentation(forTypeIdentifier: UTType.data.identifier) { url, error in
             exportedError = error
             if let url {
                 exportedContent = try? String(contentsOf: url, encoding: .utf8)

@@ -1588,11 +1588,7 @@ public enum SFTPDragExportHelper {
         let provider = NSItemProvider()
         let ext = (item.name as NSString).pathExtension
         let specificType: UTType = item.isDirectory ? .folder : (UTType(filenameExtension: ext) ?? .data)
-        // Finder preserves the supplied extension for text, but appends the
-        // content type's extension for binary file representations.
-        provider.suggestedName = item.isDirectory || ext.isEmpty || specificType.conforms(to: .text)
-            ? item.name
-            : (item.name as NSString).deletingPathExtension
+        provider.suggestedName = item.name
 
         let taskId = UUID()
         let export = SFTPExportDownload {
@@ -1634,6 +1630,13 @@ public enum SFTPDragExportHelper {
                     }
                 }
                 try Task.checkCancellation()
+                guard FileManager.default.fileExists(atPath: localURL.path) else {
+                    throw NSError(
+                        domain: "SFTPDragExport",
+                        code: 500,
+                        userInfo: [NSLocalizedDescriptionKey: "导出临时文件不存在: \(item.name)"]
+                    )
+                }
                 await Self.dispatchMainActorNonBlocking {
                     TransferManager.shared.completeExternalTransfer(taskId: taskId)
                     onStatusChange?("拖拽导出完成: \(item.name)")
@@ -1682,17 +1685,36 @@ public enum SFTPDragExportHelper {
             return progress
         }
 
-        // 1. Finder & Desktop require public.file-url
-        provider.registerFileRepresentation(forTypeIdentifier: UTType.fileURL.identifier, fileOptions: [], visibility: .all, loadHandler: loadHandler)
-
-        // 2. Specific file content type (e.g. public.plain-text, public.image, public.folder)
-        if specificType != .fileURL {
-            provider.registerFileRepresentation(forTypeIdentifier: specificType.identifier, fileOptions: [], visibility: .all, loadHandler: loadHandler)
-        }
-
-        // 3. Generic data fallback
-        if specificType != .data {
-            provider.registerFileRepresentation(forTypeIdentifier: UTType.data.identifier, fileOptions: [], visibility: .all, loadHandler: loadHandler)
+        // Never register `UTType.fileURL` via `registerFileRepresentation`: Foundation treats the
+        // file's *contents* as the `public.file-url` payload, causing CFPasteboard to immediately
+        // demand a sandbox extension at drag start (triggering a premature SSH download and marking
+        // TransferManager completed) while rejecting the entry (`CreateSandboxExtensionData failed`)
+        // and causing Finder drops to fail with `Failed to get a sandbox extension (0)`.
+        if item.isDirectory {
+            provider.registerFileRepresentation(
+                forTypeIdentifier: UTType.folder.identifier,
+                fileOptions: [],
+                visibility: .all,
+                loadHandler: loadHandler
+            )
+        } else {
+            // Register `public.data` first so SwiftUI's FilePromiseProvider uses `public.data`
+            // as its primary fileType and preserves `suggestedName` (`item.name`) verbatim
+            // without appending duplicate extensions (e.g. `.yml.yml`, `.log.log`, `.sh.sh`).
+            provider.registerFileRepresentation(
+                forTypeIdentifier: UTType.data.identifier,
+                fileOptions: [],
+                visibility: .all,
+                loadHandler: loadHandler
+            )
+            if specificType != .data && specificType != .fileURL && !specificType.conforms(to: .url) {
+                provider.registerFileRepresentation(
+                    forTypeIdentifier: specificType.identifier,
+                    fileOptions: [],
+                    visibility: .all,
+                    loadHandler: loadHandler
+                )
+            }
         }
 
         return provider

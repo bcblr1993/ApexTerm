@@ -259,7 +259,6 @@ public final class TransferManager: ObservableObject {
         activeTaskHandles.removeAll()
         lastSpeedSampleTime.removeAll()
         lastSampledBytes.removeAll()
-        runningTransferCount = 0
         let now = Date()
         for idx in tasks.indices where tasks[idx].status == .queued || tasks[idx].status == .transferring {
             tasks[idx].status = .cancelled

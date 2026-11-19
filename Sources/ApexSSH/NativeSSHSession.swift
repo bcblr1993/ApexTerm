@@ -42,21 +42,41 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     private var connectionGrantRequest: ChildProcessFileGrants?
     private let bridgeExecutableURL: URL
     private let sandboxPaths: SandboxSSHPaths
+    private let connectionLogDirectory: URL
     private let stateLock = NSLock()
     private var storedConnectionState: SSHConnectionState = .disconnected
     public private(set) var connectionState: SSHConnectionState {
         get { stateLock.withLock { storedConnectionState } }
         set {
-            let changed: Bool = stateLock.withLock {
-                if storedConnectionState != newValue {
-                    storedConnectionState = newValue
-                    return true
-                }
-                return false
+            let handler = stateLock.withLock { () -> (@Sendable (SSHConnectionState) -> Void)? in
+                guard storedConnectionState != newValue else { return nil }
+                storedConnectionState = newValue
+                return stateChangeHandler
             }
-            if changed {
-                stateChangeHandler?(newValue)
-            }
+            handler?(newValue)
+        }
+    }
+
+    public enum ConnectionLogEvent: Sendable, Equatable {
+        case step(String)
+        case established
+        case diagnostic(String)
+        case ignore
+    }
+
+    private final class HandshakeTracker: @unchecked Sendable {
+        let id: UUID
+        var remainderBytes = Data()
+        var diagnosticLines: [String] = []
+        var isEstablished: Bool = false
+        var isResolved: Bool = false
+        var isResolvingTermination: Bool = false
+        var terminalResult: Result<Void, Error>?
+        var continuation: CheckedContinuation<Void, Error>?
+        var ptyCloseFallbackTimer: DispatchSourceTimer?
+
+        init(id: UUID) {
+            self.id = id
         }
     }
     
@@ -66,6 +86,15 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     private var stateChangeHandler: (@Sendable (SSHConnectionState) -> Void)?
     
     private var ptyMasterFd: Int32 = -1
+    private var connectionLogFd: Int32 = -1
+    private var connectionLogPath: String?
+    private var logReadSource: DispatchSourceFileSystemObject?
+    private var handshakeProcessSource: DispatchSourceProcess?
+    private var handshakeState: HandshakeTracker?
+    private var activeAttemptId: UUID?
+    private var isActiveAttemptEstablished = false
+    private var isPTYClosed = false
+    private var storedConnectTimeoutSeconds: Int = 15
     private let controlSocketIdentifier = UUID().uuidString
     private let controlSocketGate = ControlSocketGate()
     private let inputQueue = DispatchQueue(label: "com.apexterm.pty-input", qos: .userInteractive)
@@ -94,9 +123,47 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     private var storedTerminalType: TerminalType
     
     public var terminalType: TerminalType { stateLock.withLock { storedTerminalType } }
+
+    public var connectTimeoutSeconds: Int {
+        get { stateLock.withLock { storedConnectTimeoutSeconds } }
+        set { stateLock.withLock { storedConnectTimeoutSeconds = newValue } }
+    }
     
     public func setTerminalType(_ type: TerminalType) {
         stateLock.withLock { storedTerminalType = type }
+    }
+
+    /// Maps an OpenSSH `-E` debug1/diagnostic log line to a connection lifecycle milestone.
+    public static func classifyConnectionLogLine(_ rawLine: String, host: String, port: Int) -> ConnectionLogEvent {
+        let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !line.isEmpty else { return .ignore }
+        if line.contains("Entering interactive session.") || line.contains("mux_client_request_session: master session id:") {
+            return .established
+        }
+        if line.contains("auto-mux: Trying existing master") {
+            return .step("正在复用已有 SSH 连接通道...")
+        }
+        if line.contains("Connecting to ") {
+            return .step("正在建立连接 (\(host):\(port))...")
+        }
+        if line.contains("Connection established.") {
+            return .step("已建立 TCP 连接，正在握手与验证身份...")
+        }
+        if line.contains("Offering public key:") || line.contains("Next authentication method: publickey") {
+            return .step("正在验证密钥凭证...")
+        }
+        if line.contains("Next authentication method: password") || line.contains("Next authentication method: keyboard-interactive") {
+            return .step("正在验证登录口令...")
+        }
+        if line.hasPrefix("Authenticated to ") {
+            return .step("身份验证通过，正在开启远程终端...")
+        }
+        if line.hasPrefix("debug1:") || line.hasPrefix("debug2:") || line.hasPrefix("debug3:")
+            || line.hasPrefix("OpenSSH_") || line.hasPrefix("Transferred: sent ")
+            || line.hasPrefix("Bytes per second: sent ") {
+            return .ignore
+        }
+        return .diagnostic(line)
     }
     
     public var wasUserInitiatedDisconnect: Bool {
@@ -217,8 +284,10 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         self.distributionChannel = distributionChannel
         self.fileAccessStore = fileAccessStore
         self.bridgeExecutableURL = bridgeExecutableURL ?? URL(fileURLWithPath: Bundle.main.bundlePath + "/Contents/MacOS/ApexSSHBridge")
+        let tempDir = sandboxTemporaryURL ?? FileManager.default.temporaryDirectory
+        self.connectionLogDirectory = tempDir
         self.sandboxPaths = SandboxSSHPaths(home: sandboxHomeURL ?? URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true),
-            temporary: sandboxTemporaryURL ?? FileManager.default.temporaryDirectory)
+            temporary: tempDir)
         if let jumpId = session.jumpServerId, Thread.isMainThread {
             self.resolvedJumpServer = MainActor.assumeIsolated {
                 SessionStore.shared.sessions.first(where: { $0.id == jumpId })
@@ -226,21 +295,52 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             self.didResolveJumpServer = true
         }
     }
+
+    deinit {
+        terminatePTYProcess()
+    }
     
     public func setOutputHandler(_ handler: @Sendable @escaping (Data) -> Void) {
-        self.outputHandler = handler
+        stateLock.withLock { self.outputHandler = handler }
     }
     
     public func setMetricsHandler(_ handler: @Sendable @escaping (ServerMetricsSnapshot) -> Void) {
-        self.metricsHandler = handler
+        stateLock.withLock { self.metricsHandler = handler }
     }
     
     public func setDirectoryChangeHandler(_ handler: @Sendable @escaping (String) -> Void) {
-        self.directoryChangeHandler = handler
+        stateLock.withLock { self.directoryChangeHandler = handler }
     }
     
     public func setStateChangeHandler(_ handler: @Sendable @escaping (SSHConnectionState) -> Void) {
-        self.stateChangeHandler = handler
+        stateLock.withLock { self.stateChangeHandler = handler }
+    }
+
+    private var currentResolvedPassword: String? {
+        stateLock.withLock { resolvedPassword }
+    }
+
+    private func transitionConnectionState(
+        for attemptId: UUID,
+        to newState: SSHConnectionState,
+        requirePending: Bool = false,
+        requireEstablished: Bool = false
+    ) {
+        let handler = stateLock.withLock { () -> (@Sendable (SSHConnectionState) -> Void)? in
+            guard self.activeAttemptId == attemptId else { return nil }
+            if requirePending {
+                guard !self.isActiveAttemptEstablished, !(self.handshakeState?.isResolved ?? true) else {
+                    return nil
+                }
+            }
+            if requireEstablished {
+                guard self.isActiveAttemptEstablished else { return nil }
+            }
+            guard self.storedConnectionState != newState else { return nil }
+            self.storedConnectionState = newState
+            return self.stateChangeHandler
+        }
+        handler?(newState)
     }
 
     public static func expandPath(_ path: String) -> String {
@@ -274,7 +374,10 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             if !certPath.isEmpty {
                 let connectedCertURL = stateLock.withLock { connectionCertAccess?.url }
                 let expandedCert = (certificateURL ?? connectedCertURL)?.path ?? Self.expandPath(certPath)
-                args.append(contentsOf: ["-o", "CertificateFile=\(expandedCert)"])
+                let formattedCert = expandedCert.contains(where: { $0.isWhitespace || $0 == "\"" || $0 == "\\" })
+                    ? SandboxSSHPaths.quotedPath(expandedCert)
+                    : expandedCert
+                args.append(contentsOf: ["-o", "CertificateFile=\(formattedCert)"])
             }
         default:
             break
@@ -444,38 +547,61 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     }
     
     public func connect() async throws {
+        guard !Task.isCancelled else { throw CancellationError() }
+        let attemptId = UUID()
+
         // Clean up any existing connection resources to prevent fd or process leaks on reconnect
-        if ptyMasterFd != -1 || readSource != nil || childPid > 0 {
+        let needsCleanup = stateLock.withLock {
+            ptyMasterFd != -1 || readSource != nil || childPid > 0 || connectionLogFd != -1 || handshakeState != nil || activeAttemptId != nil
+        }
+        if needsCleanup {
             await disconnect()
         }
+        guard !Task.isCancelled else { throw CancellationError() }
         
         // A peer disconnect may leave the previous probe finishing cancellation.
-        let previousKeepAlive = keepAliveTask
+        let (previousKeepAlive, previousProbe) = stateLock.withLock { () -> (Task<Void, Never>?, Task<Void, Never>?) in
+            let ka = keepAliveTask
+            keepAliveTask = nil
+            let pr = probeTask
+            probeTask = nil
+            return (ka, pr)
+        }
         previousKeepAlive?.cancel()
-        keepAliveTask = nil
-        let previousProbe = probeTask
         previousProbe?.cancel()
-        probeTask = nil
         await previousProbe?.value
+
         prevCpu = nil
         prevNet = nil
-        directoryStream = DirectoryChangeStreamParser()
-        recentPromptBuffer = ""
-        lastReportedDirectory = ""
-        stateLock.withLock {
+        let initialStep = SSHConnectionState.connecting(step: "正在准备连接 \(session.host):\(session.port)...")
+        let initialHandler = stateLock.withLock { () -> (@Sendable (SSHConnectionState) -> Void)? in
+            activeAttemptId = attemptId
+            isActiveAttemptEstablished = false
+            isPTYClosed = false
             explicitDisconnectRequested = false
+            passwordFeedSent = false
             recentInputLineBuffer = ""
             lastUserExitCommandAt = .distantPast
             lastPTYActivityTime = ProcessInfo.processInfo.systemUptime
+            directoryStream = DirectoryChangeStreamParser()
+            recentPromptBuffer = ""
+            lastReportedDirectory = ""
+            hasPendingCommandExecution = false
+            guard storedConnectionState != initialStep else { return nil }
+            storedConnectionState = initialStep
+            return stateChangeHandler
         }
-        self.connectionState = .connecting(step: "Initializing native Darwin PTY...")
-        self.passwordFeedSent = false
+        initialHandler?(initialStep)
         
         await resolvePasswordIfNeeded()
+        if Task.isCancelled || stateLock.withLock({ self.activeAttemptId != attemptId || self.explicitDisconnectRequested }) {
+            transitionConnectionState(for: attemptId, to: .disconnected)
+            throw CancellationError()
+        }
         let keyAccess: FileAccessLease?
         do { keyAccess = try acquirePrivateKeyAccess() }
         catch {
-            self.connectionState = .failed(error.localizedDescription)
+            transitionConnectionState(for: attemptId, to: .failed(error.localizedDescription))
             throw error
         }
         var transferredKeyAccess = false
@@ -484,16 +610,38 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         let certAccess: FileAccessLease?
         do { certAccess = try acquireCertificateAccess() }
         catch {
-            self.connectionState = .failed(error.localizedDescription)
+            transitionConnectionState(for: attemptId, to: .failed(error.localizedDescription))
             throw error
         }
         var transferredCertAccess = false
         defer { if !transferredCertAccess { certAccess?.close() } }
 
+        try? FileManager.default.createDirectory(at: connectionLogDirectory, withIntermediateDirectories: true)
+        let logPath = connectionLogDirectory
+            .appendingPathComponent("apx-conn-\(UUID().uuidString).log")
+            .path
+        let logFd = open(logPath, O_RDONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC, 0o600)
+        guard logFd >= 0 else {
+            let err = NSError(domain: "ApexSSH", code: Int(errno), userInfo: [NSLocalizedDescriptionKey: "无法创建连接状态通道"])
+            transitionConnectionState(for: attemptId, to: .failed(err.localizedDescription))
+            throw err
+        }
+        var transferredLogFd = false
+        defer {
+            if !transferredLogFd {
+                close(logFd)
+                unlink(logPath)
+            }
+        }
+
         // Setup command & arguments
+        let timeoutSec = max(2, connectTimeoutSeconds)
         var binaryPath = "/usr/bin/ssh"
         var sshArgs = ["-tt"] + Self.sshKeepAliveArguments(configuredInterval: session.keepAliveIntervalSeconds) + [
-            "-o", "StrictHostKeyChecking=accept-new"
+            "-o", "StrictHostKeyChecking=accept-new",
+            "-o", "ConnectTimeout=\(timeoutSec)",
+            "-o", "LogLevel=DEBUG1",
+            "-E", logPath
         ]
         sshArgs.append(contentsOf: sshAuthArgs(privateKeyURL: keyAccess?.url, certificateURL: certAccess?.url))
         sshArgs.append(contentsOf: jumpServerArgs())
@@ -502,7 +650,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             "\(session.username)@\(session.host)"
         ])
         
-        if let pw = resolvedPassword, !pw.isEmpty, let sshpass = sshpassExecutablePath {
+        if let pw = currentResolvedPassword, !pw.isEmpty, let sshpass = sshpassExecutablePath {
             binaryPath = sshpass
             sshArgs = sshpassArguments(secret: pw, tool: "/usr/bin/ssh") + sshArgs
         }
@@ -510,7 +658,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         let storeCommand: PreparedStoreCommand?
         do { storeCommand = try prepareStoreCommand(binaryPath: binaryPath, arguments: sshArgs, accesses: [keyAccess, certAccess]) }
         catch {
-            self.connectionState = .failed(error.localizedDescription)
+            transitionConnectionState(for: attemptId, to: .failed(error.localizedDescription))
             throw error
         }
         defer { if !transferredKeyAccess { storeCommand?.grants.close() } }
@@ -518,15 +666,16 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
 
         var master: Int32 = 0
         var slave: Int32 = 0
+        let dims = stateLock.withLock { currentDimensions }
         var win = winsize(
-            ws_row: UInt16(currentDimensions.rows),
-            ws_col: UInt16(currentDimensions.columns),
+            ws_row: UInt16(dims.rows),
+            ws_col: UInt16(dims.columns),
             ws_xpixel: 0,
             ws_ypixel: 0
         )
 
         guard openpty(&master, &slave, nil, nil, &win) == 0 else {
-            self.connectionState = .failed("Failed to allocate Darwin PTY")
+            transitionConnectionState(for: attemptId, to: .failed("Failed to allocate Darwin PTY"))
             throw NSError(domain: "ApexSSH", code: 1, userInfo: [NSLocalizedDescriptionKey: "openpty failed"])
         }
 
@@ -535,7 +684,6 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             _ = fcntl(master, F_SETFL, masterFlags | O_NONBLOCK)
         }
 
-        stateLock.withLock { self.ptyMasterFd = master }
         _ = ioctl(master, TIOCSWINSZ, &win)
 
         var fileActions: posix_spawn_file_actions_t?
@@ -585,76 +733,279 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         close(slave)
         
         guard spawnResult == 0 else {
-            self.connectionState = .failed("posix_spawn failed with error: \(spawnResult)")
-            stateLock.withLock { self.ptyMasterFd = -1 }
+            let err = NSError(domain: "ApexSSH", code: Int(spawnResult), userInfo: [NSLocalizedDescriptionKey: "posix_spawn failed with error: \(spawnResult)"])
+            transitionConnectionState(for: attemptId, to: .failed("posix_spawn failed with error: \(spawnResult)"))
             close(master)
-            return
+            throw err
         }
-        
-        self.childPid = pid
-        stateLock.withLock {
-            connectionKeyAccess = keyAccess
-            connectionCertAccess = certAccess
-            connectionGrantRequest = storeCommand?.grants
-        }
-        transferredKeyAccess = true
-        transferredCertAccess = true
-        beginSessionActivityAssertion()
-        self.connectionState = .connected
-        
-        // Setup asynchronous kqueue read source
-        let source = DispatchSource.makeReadSource(fileDescriptor: master, queue: DispatchQueue.global(qos: .userInteractive))
-        source.setEventHandler { [weak self] in
-            guard let self = self else { return }
-            var buffer = [UInt8](repeating: 0, count: 8192)
-            let bytesRead = read(master, &buffer, buffer.count)
-            if bytesRead > 0 {
-                self.recordPTYActivity()
-                let data = Data(buffer.prefix(bytesRead))
-                self.outputHandler?(data)
-                self.parseOSC7DirectoryChange(data: data)
-                
-                // Fallback auto-feed password if remote prompt asks for password
-                if !self.passwordFeedSent, let pw = self.resolvedPassword, !pw.isEmpty {
-                    if let str = String(data: data, encoding: .utf8) {
-                        let isPrompt = str.range(of: #"[pP]assword\s*:"#, options: .regularExpression) != nil ||
-                                       str.range(of: #"[pP]assphrase.*:"#, options: .regularExpression) != nil
-                        if isPrompt {
-                            self.passwordFeedSent = true
-                            let toSend = pw + "\n"
-                            if let d = toSend.data(using: .utf8) {
-                                _ = d.withUnsafeBytes { raw in
-                                    write(master, raw.baseAddress!, raw.count)
-                                }
-                            }
+
+        let tracker = HandshakeTracker(id: attemptId)
+        let connectingState = SSHConnectionState.connecting(step: "正在连接 \(session.host):\(session.port)...")
+        let activation: (activated: Bool, stateHandler: (@Sendable (SSHConnectionState) -> Void)?) = stateLock.withLock {
+            guard self.activeAttemptId == attemptId, !self.explicitDisconnectRequested, !Task.isCancelled else {
+                return (false, nil)
+            }
+
+            let logSource = DispatchSource.makeFileSystemObjectSource(
+                fileDescriptor: logFd,
+                eventMask: [.write, .extend, .attrib],
+                queue: DispatchQueue.global(qos: .userInteractive)
+            )
+            let processSource = DispatchSource.makeProcessSource(
+                identifier: pid,
+                eventMask: .exit,
+                queue: DispatchQueue.global(qos: .userInteractive)
+            )
+            let source = DispatchSource.makeReadSource(
+                fileDescriptor: master,
+                queue: DispatchQueue.global(qos: .userInteractive)
+            )
+
+            logSource.setEventHandler { [weak self] in
+                self?.consumeConnectionLog(attemptId: attemptId)
+            }
+            logSource.setCancelHandler { [weak self] in
+                if let self {
+                    self.stateLock.withLock {
+                        if self.connectionLogFd == logFd {
+                            self.connectionLogFd = -1
+                        }
+                        if self.connectionLogPath == logPath {
+                            self.connectionLogPath = nil
                         }
                     }
                 }
-            } else {
-                let err = errno
-                if Self.shouldKeepReadingAfterReadResult(bytesRead: bytesRead, errnoValue: err) {
-                    return
-                }
-                self.keepAliveTask?.cancel()
-                self.probeTask?.cancel()
-                self.endSessionActivityAssertion()
-                self.connectionState = .disconnected
-                source.cancel()
+                close(logFd)
+                unlink(logPath)
             }
-        }
-        source.setCancelHandler { [weak self] in
-            if let self {
-                self.endSessionActivityAssertion()
-                self.stateLock.withLock {
-                    if self.ptyMasterFd == master { self.ptyMasterFd = -1 }
+
+            processSource.setEventHandler { [weak self] in
+                self?.resolvePendingHandshakeFromTermination(attemptId: attemptId, processExited: true)
+            }
+
+            // Setup asynchronous kqueue read source
+            source.setEventHandler { [weak self] in
+                guard let self = self else { return }
+                var buffer = [UInt8](repeating: 0, count: 8192)
+                let bytesRead = read(master, &buffer, buffer.count)
+                if bytesRead > 0 {
+                    self.recordPTYActivity()
+                    let data = Data(buffer.prefix(bytesRead))
+                    let outHandler = self.stateLock.withLock { self.outputHandler }
+                    outHandler?(data)
+                    self.parseOSC7DirectoryChange(data: data)
+
+                    if let str = String(data: data, encoding: .utf8) {
+                        var didAutoFeed = false
+                        let isPrompt = str.range(of: #"[pP]assword\s*:"#, options: .regularExpression) != nil ||
+                                       str.range(of: #"[pP]assphrase.*:"#, options: .regularExpression) != nil
+                        // Fallback auto-feed password only during handshake before the session is established.
+                        if isPrompt {
+                            let secretToSend: String? = self.stateLock.withLock {
+                                guard self.activeAttemptId == attemptId,
+                                      !self.isActiveAttemptEstablished,
+                                      !self.passwordFeedSent,
+                                      let pw = self.resolvedPassword, !pw.isEmpty else {
+                                    return nil
+                                }
+                                self.passwordFeedSent = true
+                                return pw
+                            }
+                            if let pw = secretToSend {
+                                didAutoFeed = true
+                                let toSend = pw + "\n"
+                                if let d = toSend.data(using: .utf8) {
+                                    Self.writePTYInput(d, to: master)
+                                }
+                            }
+                        }
+
+                        if !didAutoFeed {
+                            let needsInteractiveInput =
+                                str.localizedCaseInsensitiveContains("continue connecting") ||
+                                str.localizedCaseInsensitiveContains("verification code") ||
+                                isPrompt
+                            if needsInteractiveInput {
+                                self.transitionConnectionState(
+                                    for: attemptId,
+                                    to: .connecting(step: "等待终端交互输入确认..."),
+                                    requirePending: true
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    let err = errno
+                    if Self.shouldKeepReadingAfterReadResult(bytesRead: bytesRead, errnoValue: err) {
+                        return
+                    }
+                    struct EOFAction {
+                        var isCurrent: Bool
+                        var wasEstablished: Bool
+                        var keepAlive: Task<Void, Never>?
+                        var probe: Task<Void, Never>?
+                        var keyAccess: FileAccessLease?
+                        var certAccess: FileAccessLease?
+                        var grants: ChildProcessFileGrants?
+                        var pidToReap: pid_t = -1
+                        var stateHandler: (@Sendable (SSHConnectionState) -> Void)?
+                    }
+                    let action: EOFAction = self.stateLock.withLock {
+                        guard self.activeAttemptId == attemptId else {
+                            return EOFAction(isCurrent: false, wasEstablished: false)
+                        }
+                        self.isPTYClosed = true
+                        if self.isActiveAttemptEstablished {
+                            let ka = self.keepAliveTask
+                            self.keepAliveTask = nil
+                            let pr = self.probeTask
+                            self.probeTask = nil
+                            let kAccess = self.connectionKeyAccess
+                            let cAccess = self.connectionCertAccess
+                            let gReq = self.connectionGrantRequest
+                            self.connectionKeyAccess = nil
+                            self.connectionCertAccess = nil
+                            self.connectionGrantRequest = nil
+                            let exitedPid = self.childPid
+                            self.childPid = -1
+                            self.readSource = nil
+                            var sHandler: (@Sendable (SSHConnectionState) -> Void)?
+                            if self.storedConnectionState != .disconnected {
+                                self.storedConnectionState = .disconnected
+                                sHandler = self.stateChangeHandler
+                            }
+                            return EOFAction(
+                                isCurrent: true,
+                                wasEstablished: true,
+                                keepAlive: ka,
+                                probe: pr,
+                                keyAccess: kAccess,
+                                certAccess: cAccess,
+                                grants: gReq,
+                                pidToReap: exitedPid,
+                                stateHandler: sHandler
+                            )
+                        } else {
+                            if let currentTracker = self.handshakeState,
+                               currentTracker.id == attemptId,
+                               !currentTracker.isResolved,
+                               !currentTracker.isResolvingTermination,
+                               currentTracker.ptyCloseFallbackTimer == nil {
+                                let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .userInteractive))
+                                timer.schedule(deadline: .now() + .milliseconds(500))
+                                timer.setEventHandler { [weak self] in
+                                    self?.resolvePendingHandshakeFromTermination(attemptId: attemptId, processExited: false)
+                                }
+                                currentTracker.ptyCloseFallbackTimer = timer
+                                timer.resume()
+                            }
+                            return EOFAction(isCurrent: true, wasEstablished: false)
+                        }
+                    }
+                    if !action.isCurrent {
+                        source.cancel()
+                        return
+                    }
+                    if action.wasEstablished {
+                        action.keepAlive?.cancel()
+                        action.probe?.cancel()
+                        self.endSessionActivityAssertion()
+                        action.grants?.close()
+                        action.keyAccess?.close()
+                        action.certAccess?.close()
+                        if action.pidToReap > 0 {
+                            let pidToReap = action.pidToReap
+                            var status: Int32 = 0
+                            if waitpid(pidToReap, &status, WNOHANG) == 0 {
+                                DispatchQueue.global(qos: .utility).async {
+                                    Self.killProcessTreeAndReap(pidToReap, maxWaitIterations: 15)
+                                }
+                            }
+                        }
+                        action.stateHandler?(.disconnected)
+                    }
+                    source.cancel()
+                }
+            }
+            source.setCancelHandler { [weak self] in
+                if let self {
+                    self.endSessionActivityAssertion()
+                    self.stateLock.withLock {
+                        if self.ptyMasterFd == master { self.ptyMasterFd = -1 }
+                        close(master)
+                    }
+                } else {
                     close(master)
                 }
-            } else {
-                close(master)
             }
+
+            self.ptyMasterFd = master
+            self.childPid = pid
+            self.connectionKeyAccess = keyAccess
+            self.connectionCertAccess = certAccess
+            self.connectionGrantRequest = storeCommand?.grants
+            self.isActiveAttemptEstablished = false
+            self.isPTYClosed = false
+            self.handshakeState = tracker
+            self.connectionLogFd = logFd
+            self.connectionLogPath = logPath
+            self.logReadSource = logSource
+            self.handshakeProcessSource = processSource
+            self.readSource = source
+            logSource.resume()
+            processSource.resume()
+            source.resume()
+
+            var handler: (@Sendable (SSHConnectionState) -> Void)?
+            if self.storedConnectionState != connectingState {
+                self.storedConnectionState = connectingState
+                handler = self.stateChangeHandler
+            }
+            return (true, handler)
         }
-        source.resume()
-        self.readSource = source
+
+        guard activation.activated else {
+            Self.killProcessTreeAndReap(pid, maxWaitIterations: 15)
+            close(master)
+            transitionConnectionState(for: attemptId, to: .disconnected)
+            throw CancellationError()
+        }
+
+        transferredKeyAccess = true
+        transferredCertAccess = true
+        transferredLogFd = true
+        beginSessionActivityAssertion()
+        activation.stateHandler?(connectingState)
+        consumeConnectionLog(attemptId: attemptId)
+
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                let immediateResult: Result<Void, Error>? = stateLock.withLock {
+                    guard self.activeAttemptId == attemptId,
+                          let currentTracker = self.handshakeState,
+                          currentTracker.id == attemptId else {
+                        return .failure(CancellationError())
+                    }
+                    if currentTracker.isResolved {
+                        let result = currentTracker.terminalResult ?? .failure(CancellationError())
+                        self.handshakeState = nil
+                        return result
+                    }
+                    currentTracker.continuation = continuation
+                    return nil
+                }
+                if let immediateResult {
+                    continuation.resume(with: immediateResult)
+                }
+            }
+        } onCancel: {
+            self.cancelAttempt(attemptId: attemptId, markExplicitDisconnect: true)
+        }
+
+        guard stateLock.withLock({ self.activeAttemptId == attemptId && self.isActiveAttemptEstablished && self.storedConnectionState == .connected }) else {
+            return
+        }
+
         startChannelKeepAliveLoop()
         
         // Probe user's real home directory after connection
@@ -662,8 +1013,11 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             try? await Task.sleep(nanoseconds: 1_200_000_000)
             guard let self, self.connectionState == .connected else { return }
             if let home = await self.probeRemoteHome(), !home.isEmpty, self.connectionState == .connected {
-                self.remoteHomeDirectory = home
-                self.directoryChangeHandler?(home)
+                let dirHandler: (@Sendable (String) -> Void)? = self.stateLock.withLock {
+                    self.remoteHomeDirectory = home
+                    return self.directoryChangeHandler
+                }
+                dirHandler?(home)
             }
         }
         
@@ -672,24 +1026,505 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             startAgentlessProbeLoop()
         }
     }
+
+    private func consumeConnectionLog(attemptId: UUID, flushRemainder: Bool = false) {
+        var pendingSteps: [String] = []
+        var pendingDiagnostics: [String] = []
+        var didEstablish = false
+        var continuationToResume: CheckedContinuation<Void, Error>?
+        var logSourceToCancel: DispatchSourceFileSystemObject?
+        var processSourceToCancel: DispatchSourceProcess?
+        var fallbackTimerToCancel: DispatchSourceTimer?
+        var pathToUnlink: String?
+        var outHandler: (@Sendable (Data) -> Void)?
+        var stateTransition: (state: SSHConnectionState, handler: (@Sendable (SSHConnectionState) -> Void)?)?
+        var shouldEndAssertion = false
+
+        stateLock.withLock {
+            guard self.activeAttemptId == attemptId,
+                  let tracker = self.handshakeState,
+                  tracker.id == attemptId,
+                  !tracker.isResolved,
+                  self.connectionLogFd >= 0 else {
+                return
+            }
+
+            outHandler = self.outputHandler
+            let fd = self.connectionLogFd
+            var collected = Data()
+            var buffer = [UInt8](repeating: 0, count: 4096)
+            while true {
+                let bytesRead = read(fd, &buffer, buffer.count)
+                if bytesRead > 0 {
+                    collected.append(contentsOf: buffer.prefix(bytesRead))
+                } else if bytesRead < 0 && errno == EINTR {
+                    continue
+                } else {
+                    break
+                }
+            }
+
+            if !collected.isEmpty {
+                tracker.remainderBytes.append(collected)
+            }
+
+            var lines: [String] = []
+            while let newlineIndex = tracker.remainderBytes.firstIndex(of: UInt8(ascii: "\n")) {
+                var lineSlice = tracker.remainderBytes[tracker.remainderBytes.startIndex..<newlineIndex]
+                if lineSlice.last == UInt8(ascii: "\r") {
+                    lineSlice = lineSlice.dropLast()
+                }
+                lines.append(String(decoding: lineSlice, as: UTF8.self))
+                tracker.remainderBytes.removeSubrange(tracker.remainderBytes.startIndex...newlineIndex)
+            }
+            if flushRemainder && !tracker.remainderBytes.isEmpty {
+                var lineSlice = tracker.remainderBytes[...]
+                if lineSlice.last == UInt8(ascii: "\r") {
+                    lineSlice = lineSlice.dropLast()
+                }
+                lines.append(String(decoding: lineSlice, as: UTF8.self))
+                tracker.remainderBytes.removeAll(keepingCapacity: false)
+            }
+
+            for rawLine in lines {
+                switch Self.classifyConnectionLogLine(rawLine, host: session.host, port: session.port) {
+                case .step(let stepText):
+                    pendingSteps.append(stepText)
+                case .diagnostic(let diag):
+                    if !diag.hasPrefix("Warning: Permanently added ") {
+                        tracker.diagnosticLines.append(diag)
+                    }
+                    pendingDiagnostics.append(diag)
+                case .established:
+                    tracker.isEstablished = true
+                    tracker.isResolved = true
+                    tracker.terminalResult = .success(())
+                    fallbackTimerToCancel = tracker.ptyCloseFallbackTimer
+                    tracker.ptyCloseFallbackTimer = nil
+                    self.isActiveAttemptEstablished = true
+                    continuationToResume = tracker.continuation
+                    tracker.continuation = nil
+                    if continuationToResume != nil {
+                        self.handshakeState = nil
+                    }
+                    logSourceToCancel = self.logReadSource
+                    processSourceToCancel = self.handshakeProcessSource
+                    pathToUnlink = self.connectionLogPath
+                    self.logReadSource = nil
+                    self.handshakeProcessSource = nil
+                    self.connectionLogPath = nil
+                    didEstablish = true
+                    let targetState: SSHConnectionState = self.isPTYClosed ? .disconnected : .connected
+                    shouldEndAssertion = self.isPTYClosed
+                    if self.storedConnectionState != targetState {
+                        self.storedConnectionState = targetState
+                        stateTransition = (targetState, self.stateChangeHandler)
+                    }
+                case .ignore:
+                    break
+                }
+                if didEstablish { break }
+            }
+
+            if !didEstablish, let lastStep = pendingSteps.last {
+                let nextState = SSHConnectionState.connecting(step: lastStep)
+                if self.storedConnectionState != nextState {
+                    self.storedConnectionState = nextState
+                    stateTransition = (nextState, self.stateChangeHandler)
+                }
+            }
+        }
+
+        for diag in pendingDiagnostics {
+            outHandler?(Data((diag + "\r\n").utf8))
+        }
+
+        if didEstablish {
+            fallbackTimerToCancel?.cancel()
+            if let pathToUnlink {
+                unlink(pathToUnlink)
+            }
+            logSourceToCancel?.cancel()
+            processSourceToCancel?.cancel()
+            if shouldEndAssertion {
+                self.endSessionActivityAssertion()
+            }
+            if let transition = stateTransition {
+                transition.handler?(transition.state)
+            }
+            continuationToResume?.resume()
+        } else if let transition = stateTransition {
+            transition.handler?(transition.state)
+        }
+    }
+
+    private func resolvePendingHandshakeFromTermination(attemptId: UUID, processExited: Bool) {
+        let initial: (pid: pid_t, fallbackTimer: DispatchSourceTimer?)? = stateLock.withLock {
+            guard self.activeAttemptId == attemptId,
+                  let tracker = self.handshakeState,
+                  tracker.id == attemptId,
+                  !tracker.isResolved,
+                  !tracker.isResolvingTermination else {
+                return nil
+            }
+            tracker.isResolvingTermination = true
+            let timer = tracker.ptyCloseFallbackTimer
+            tracker.ptyCloseFallbackTimer = nil
+            return (self.childPid, timer)
+        }
+        guard let initial else { return }
+        initial.fallbackTimer?.cancel()
+        let pid = initial.pid
+
+        consumeConnectionLog(attemptId: attemptId, flushRemainder: false)
+        if stateLock.withLock({ self.activeAttemptId != attemptId || (self.handshakeState?.isResolved ?? true) }) {
+            return
+        }
+
+        var reaped = false
+        var exitCode: Int32 = 255
+        if pid > 0 {
+            if processExited {
+                let result = Self.reapExitedProcess(pid)
+                reaped = result.reaped
+                exitCode = result.exitCode
+            } else {
+                var rawStatus: Int32 = 0
+                let waited = waitpid(pid, &rawStatus, WNOHANG)
+                if waited == pid {
+                    reaped = true
+                    exitCode = ((rawStatus & 0x7f) == 0) ? ((rawStatus >> 8) & 0xff) : 255
+                } else {
+                    Self.killProcessTreeAndReap(pid, maxWaitIterations: 15)
+                    reaped = true
+                    exitCode = 255
+                }
+            }
+            if reaped {
+                stateLock.withLock {
+                    if self.childPid == pid {
+                        self.childPid = -1
+                    }
+                }
+            }
+        }
+
+        consumeConnectionLog(attemptId: attemptId, flushRemainder: true)
+
+        struct TerminationCleanup {
+            var continuation: CheckedContinuation<Void, Error>?
+            var logSource: DispatchSourceFileSystemObject?
+            var processSource: DispatchSourceProcess?
+            var readSource: DispatchSourceRead?
+            var masterFd: Int32 = -1
+            var logPath: String?
+            var keyAccess: FileAccessLease?
+            var certAccess: FileAccessLease?
+            var grants: ChildProcessFileGrants?
+            var stateTransition: (state: SSHConnectionState, handler: (@Sendable (SSHConnectionState) -> Void)?)?
+            var error: Error
+        }
+
+        let cleanup: TerminationCleanup? = stateLock.withLock {
+            guard self.activeAttemptId == attemptId,
+                  let tracker = self.handshakeState,
+                  tracker.id == attemptId,
+                  !tracker.isResolved else {
+                return nil
+            }
+
+            let lSource = self.logReadSource
+            let pSource = self.handshakeProcessSource
+            let rSource = self.readSource
+            let master = self.ptyMasterFd
+            let lPath = self.connectionLogPath
+            let kAccess = self.connectionKeyAccess
+            let cAccess = self.connectionCertAccess
+            let gReq = self.connectionGrantRequest
+
+            self.logReadSource = nil
+            self.handshakeProcessSource = nil
+            self.readSource = nil
+            self.ptyMasterFd = -1
+            self.connectionLogPath = nil
+            self.connectionKeyAccess = nil
+            self.connectionCertAccess = nil
+            self.connectionGrantRequest = nil
+
+            tracker.isResolved = true
+            let cont = tracker.continuation
+            tracker.continuation = nil
+
+            if self.explicitDisconnectRequested {
+                let cancelErr = CancellationError()
+                tracker.terminalResult = .failure(cancelErr)
+                if cont != nil { self.handshakeState = nil }
+                var transition: (SSHConnectionState, (@Sendable (SSHConnectionState) -> Void)?)?
+                if self.storedConnectionState != .disconnected {
+                    self.storedConnectionState = .disconnected
+                    transition = (.disconnected, self.stateChangeHandler)
+                }
+                return TerminationCleanup(
+                    continuation: cont,
+                    logSource: lSource,
+                    processSource: pSource,
+                    readSource: rSource,
+                    masterFd: master,
+                    logPath: lPath,
+                    keyAccess: kAccess,
+                    certAccess: cAccess,
+                    grants: gReq,
+                    stateTransition: transition,
+                    error: cancelErr
+                )
+            }
+
+            let diagnostics = tracker.diagnosticLines.joined(separator: "\n")
+            let diagnostic: String
+            if exitCode == 5 && usesKeyPassphrase && !diagnostics.lowercased().contains("password") {
+                diagnostic = "私钥口令 (Passphrase) 错误"
+            } else {
+                diagnostic = Self.parseSSHErrorMessage(exitCode: exitCode, stderr: diagnostics)
+            }
+            let err = NSError(domain: "ApexSSH", code: Int(exitCode), userInfo: [NSLocalizedDescriptionKey: diagnostic])
+            tracker.terminalResult = .failure(err)
+            if cont != nil { self.handshakeState = nil }
+            let failedState = SSHConnectionState.failed(diagnostic)
+            var transition: (SSHConnectionState, (@Sendable (SSHConnectionState) -> Void)?)?
+            if self.storedConnectionState != failedState {
+                self.storedConnectionState = failedState
+                transition = (failedState, self.stateChangeHandler)
+            }
+            return TerminationCleanup(
+                continuation: cont,
+                logSource: lSource,
+                processSource: pSource,
+                readSource: rSource,
+                masterFd: master,
+                logPath: lPath,
+                keyAccess: kAccess,
+                certAccess: cAccess,
+                grants: gReq,
+                stateTransition: transition,
+                error: err
+            )
+        }
+
+        guard let cleanup else { return }
+        if let lPath = cleanup.logPath { unlink(lPath) }
+        cleanup.logSource?.cancel()
+        cleanup.processSource?.cancel()
+        cleanup.readSource?.cancel()
+        if cleanup.readSource == nil, cleanup.masterFd >= 0 { close(cleanup.masterFd) }
+        endSessionActivityAssertion()
+        cleanup.grants?.close()
+        cleanup.keyAccess?.close()
+        cleanup.certAccess?.close()
+        if let transition = cleanup.stateTransition {
+            transition.handler?(transition.state)
+        }
+        cleanup.continuation?.resume(throwing: cleanup.error)
+    }
+
+    /// Synchronously cancels a specific connection attempt without disturbing any newer attempt.
+    private func cancelAttempt(attemptId: UUID, markExplicitDisconnect: Bool) {
+        struct CancelBundle {
+            var continuation: CheckedContinuation<Void, Error>?
+            var logSource: DispatchSourceFileSystemObject?
+            var processSource: DispatchSourceProcess?
+            var readSource: DispatchSourceRead?
+            var fallbackTimer: DispatchSourceTimer?
+            var masterFd: Int32 = -1
+            var pid: pid_t = -1
+            var logPath: String?
+            var keyAccess: FileAccessLease?
+            var certAccess: FileAccessLease?
+            var grants: ChildProcessFileGrants?
+            var stateHandler: (@Sendable (SSHConnectionState) -> Void)?
+        }
+
+        let bundle: CancelBundle? = stateLock.withLock {
+            guard self.activeAttemptId == attemptId else { return nil }
+            if markExplicitDisconnect {
+                self.explicitDisconnectRequested = true
+            }
+            let tracker = self.handshakeState
+            self.handshakeState = nil
+            self.activeAttemptId = nil
+            self.isActiveAttemptEstablished = false
+
+            let lSource = self.logReadSource
+            let pSource = self.handshakeProcessSource
+            let rSource = self.readSource
+            let master = self.ptyMasterFd
+            let pid = self.childPid
+            let lPath = self.connectionLogPath
+            let kAccess = self.connectionKeyAccess
+            let cAccess = self.connectionCertAccess
+            let gReq = self.connectionGrantRequest
+
+            self.logReadSource = nil
+            self.handshakeProcessSource = nil
+            self.readSource = nil
+            self.ptyMasterFd = -1
+            self.childPid = -1
+            self.connectionLogPath = nil
+            self.connectionKeyAccess = nil
+            self.connectionCertAccess = nil
+            self.connectionGrantRequest = nil
+
+            var cont: CheckedContinuation<Void, Error>?
+            var timer: DispatchSourceTimer?
+            if let tracker {
+                timer = tracker.ptyCloseFallbackTimer
+                tracker.ptyCloseFallbackTimer = nil
+                if !tracker.isResolved {
+                    tracker.isResolved = true
+                    tracker.terminalResult = .failure(CancellationError())
+                    cont = tracker.continuation
+                    tracker.continuation = nil
+                }
+            }
+
+            var sHandler: (@Sendable (SSHConnectionState) -> Void)?
+            if self.storedConnectionState != .disconnected {
+                self.storedConnectionState = .disconnected
+                sHandler = self.stateChangeHandler
+            }
+
+            return CancelBundle(
+                continuation: cont,
+                logSource: lSource,
+                processSource: pSource,
+                readSource: rSource,
+                fallbackTimer: timer,
+                masterFd: master,
+                pid: pid,
+                logPath: lPath,
+                keyAccess: kAccess,
+                certAccess: cAccess,
+                grants: gReq,
+                stateHandler: sHandler
+            )
+        }
+
+        guard let bundle else { return }
+        bundle.fallbackTimer?.cancel()
+        if let path = bundle.logPath {
+            unlink(path)
+        }
+        bundle.logSource?.cancel()
+        bundle.processSource?.cancel()
+        bundle.readSource?.cancel()
+        if bundle.readSource == nil, bundle.masterFd >= 0 {
+            close(bundle.masterFd)
+        }
+        endSessionActivityAssertion()
+        bundle.grants?.close()
+        bundle.keyAccess?.close()
+        bundle.certAccess?.close()
+        if bundle.pid > 0 {
+            Self.killProcessTreeAndReap(bundle.pid, maxWaitIterations: 25)
+        }
+        bundle.stateHandler?(.disconnected)
+        bundle.continuation?.resume(throwing: CancellationError())
+    }
+
+    private func cancelPendingHandshakeOnDisconnect() {
+        let pending: (CheckedContinuation<Void, Error>?, DispatchSourceFileSystemObject?, DispatchSourceProcess?, DispatchSourceTimer?, String?) = stateLock.withLock {
+            let tracker = self.handshakeState
+            self.handshakeState = nil
+            self.activeAttemptId = nil
+            self.isActiveAttemptEstablished = false
+            let lSource = self.logReadSource
+            let pSource = self.handshakeProcessSource
+            let lPath = self.connectionLogPath
+            self.logReadSource = nil
+            self.handshakeProcessSource = nil
+            self.connectionLogPath = nil
+
+            var cont: CheckedContinuation<Void, Error>?
+            var timer: DispatchSourceTimer?
+            if let tracker {
+                timer = tracker.ptyCloseFallbackTimer
+                tracker.ptyCloseFallbackTimer = nil
+                if !tracker.isResolved {
+                    tracker.isResolved = true
+                    tracker.terminalResult = .failure(CancellationError())
+                    cont = tracker.continuation
+                    tracker.continuation = nil
+                }
+            }
+            return (cont, lSource, pSource, timer, lPath)
+        }
+
+        pending.3?.cancel()
+        if let path = pending.4 {
+            unlink(path)
+        }
+        pending.1?.cancel()
+        pending.2?.cancel()
+        pending.0?.resume(throwing: CancellationError())
+    }
+
+    private static func reapExitedProcess(_ pid: pid_t) -> (reaped: Bool, exitCode: Int32) {
+        var rawStatus: Int32 = 0
+        for _ in 0..<5 {
+            let waited = waitpid(pid, &rawStatus, WNOHANG)
+            if waited == pid {
+                let code: Int32 = ((rawStatus & 0x7f) == 0) ? ((rawStatus >> 8) & 0xff) : 255
+                return (true, code)
+            }
+            if waited < 0 {
+                return (false, 255)
+            }
+            sched_yield()
+        }
+        let waited = waitpid(pid, &rawStatus, 0)
+        if waited == pid {
+            let code: Int32 = ((rawStatus & 0x7f) == 0) ? ((rawStatus >> 8) & 0xff) : 255
+            return (true, code)
+        }
+        return (false, 255)
+    }
+
+    private static func killProcessTreeAndReap(_ pid: pid_t, maxWaitIterations: Int = 25) {
+        guard pid > 0 else { return }
+        // sshpass can place its SSH child in a separate session; include descendants
+        // before terminating the helper, otherwise its child can be reparented to launchd.
+        let descendants = ptyDescendants(of: pid)
+        for child in descendants.reversed() { kill(child, SIGKILL) }
+        kill(-pid, SIGKILL)
+        kill(pid, SIGKILL)
+        var status: Int32 = 0
+        for _ in 0..<maxWaitIterations {
+            let waited = waitpid(pid, &status, WNOHANG)
+            if waited != 0 { break }
+            usleep(2_000)
+        }
+    }
     
     public func disconnect() async {
         stateLock.withLock { explicitDisconnectRequested = true }
+        cancelPendingHandshakeOnDisconnect()
         self.connectionState = .disconnected
         endSessionActivityAssertion()
-        let pendingKeepAlive = keepAliveTask
+        let (pendingKeepAlive, pendingProbe) = stateLock.withLock { () -> (Task<Void, Never>?, Task<Void, Never>?) in
+            let ka = keepAliveTask
+            keepAliveTask = nil
+            let pr = probeTask
+            probeTask = nil
+            return (ka, pr)
+        }
         pendingKeepAlive?.cancel()
-        keepAliveTask = nil
-        let pendingProbe = probeTask
         pendingProbe?.cancel()
-        probeTask = nil
         await pendingProbe?.value
-        let source = readSource
-        readSource = nil
-        let master = stateLock.withLock { () -> Int32 in
+        let (source, master) = stateLock.withLock { () -> (DispatchSourceRead?, Int32) in
+            let s = readSource
+            readSource = nil
             let descriptor = ptyMasterFd
             ptyMasterFd = -1
-            return descriptor
+            return (s, descriptor)
         }
         source?.cancel()
         terminatePTYProcess()
@@ -728,37 +1563,28 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     /// Each spawned connection owns a process group, so this cannot target another session.
     public func terminatePTYProcess() {
         stateLock.withLock { explicitDisconnectRequested = true }
+        cancelPendingHandshakeOnDisconnect()
         endSessionActivityAssertion()
-        keepAliveTask?.cancel()
-        keepAliveTask = nil
-        probeTask?.cancel()
-        probeTask = nil
-        try? FileManager.default.removeItem(atPath: controlSocketPath)
-
-        let (keyAccess, certAccess) = stateLock.withLock { () -> (FileAccessLease?, FileAccessLease?) in
-            defer { connectionKeyAccess = nil; connectionCertAccess = nil }
-            return (connectionKeyAccess, connectionCertAccess)
+        let (ka, pr, source, master, keyAccess, certAccess, grants, pid) = stateLock.withLock {
+            () -> (Task<Void, Never>?, Task<Void, Never>?, DispatchSourceRead?, Int32, FileAccessLease?, FileAccessLease?, ChildProcessFileGrants?, pid_t) in
+            let ka = keepAliveTask; keepAliveTask = nil
+            let pr = probeTask; probeTask = nil
+            let s = readSource; readSource = nil
+            let descriptor = ptyMasterFd; ptyMasterFd = -1
+            let kAccess = connectionKeyAccess; connectionKeyAccess = nil
+            let cAccess = connectionCertAccess; connectionCertAccess = nil
+            let gReq = connectionGrantRequest; connectionGrantRequest = nil
+            let p = childPid; childPid = -1
+            return (ka, pr, s, descriptor, kAccess, cAccess, gReq, p)
         }
-        let grants = stateLock.withLock { () -> ChildProcessFileGrants? in
-            defer { connectionGrantRequest = nil }
-            return connectionGrantRequest
-        }
+        ka?.cancel()
+        pr?.cancel()
+        source?.cancel()
+        if source == nil, master >= 0 { close(master) }
+        _ = unlink(controlSocketPath)
         defer { grants?.close(); keyAccess?.close(); certAccess?.close() }
-        guard childPid > 0 else { return }
-        let pid = childPid
-        childPid = -1
-        // sshpass can place its SSH child in a separate session; include descendants
-        // before terminating the helper, otherwise its child can be reparented to launchd.
-        let descendants = Self.ptyDescendants(of: pid)
-        for child in descendants.reversed() { kill(child, SIGKILL) }
-        kill(-pid, SIGKILL)
-        kill(pid, SIGKILL)
-        var status: Int32 = 0
-        for _ in 0..<25 {
-            let waited = waitpid(pid, &status, WNOHANG)
-            if waited != 0 { break }
-            usleep(2_000)
-        }
+        guard pid > 0 else { return }
+        Self.killProcessTreeAndReap(pid, maxWaitIterations: 25)
     }
 
     private static func ptyDescendants(of parent: pid_t) -> [pid_t] {
@@ -771,15 +1597,18 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
 
     public func sendInputSync(_ data: Data) {
         guard !data.isEmpty else { return }
+        let hasNewline = data.contains(13) || data.contains(10)
         let descriptor = stateLock.withLock { () -> Int32 in
             lastPTYActivityTime = ProcessInfo.processInfo.systemUptime
             if Self.recordExitIntent(data: data, lineBuffer: &recentInputLineBuffer) {
                 lastUserExitCommandAt = Date()
             }
+            if hasNewline {
+                hasPendingCommandExecution = true
+            }
             return ptyMasterFd >= 0 ? dup(ptyMasterFd) : -1
         }
         guard descriptor >= 0 else { return }
-        if data.contains(13) || data.contains(10) { hasPendingCommandExecution = true }
         // A duplicated descriptor prevents queued input from reaching a reused fd after reconnect.
         inputQueue.async {
             defer { close(descriptor) }
@@ -816,14 +1645,19 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     public func resizeTerminal(columns: Int, rows: Int) async throws {
         let validCols = max(10, columns)
         let validRows = max(3, rows)
-        currentDimensions = (validCols, validRows)
-        guard ptyMasterFd >= 0 else { return }
+        let target: (fd: Int32, pid: pid_t) = stateLock.withLock {
+            currentDimensions = (validCols, validRows)
+            let dupFd = ptyMasterFd >= 0 ? dup(ptyMasterFd) : -1
+            return (dupFd, childPid)
+        }
+        guard target.fd >= 0 else { return }
+        defer { close(target.fd) }
         var win = winsize(ws_row: UInt16(validRows), ws_col: UInt16(validCols), ws_xpixel: 0, ws_ypixel: 0)
-        _ = ioctl(ptyMasterFd, TIOCSWINSZ, &win)
-        if childPid > 0 {
-            kill(childPid, SIGWINCH)
-            kill(-childPid, SIGWINCH)
-            for child in Self.ptyDescendants(of: childPid) {
+        _ = ioctl(target.fd, TIOCSWINSZ, &win)
+        if target.pid > 0 {
+            kill(target.pid, SIGWINCH)
+            kill(-target.pid, SIGWINCH)
+            for child in Self.ptyDescendants(of: target.pid) {
                 kill(child, SIGWINCH)
                 kill(-child, SIGWINCH)
             }
@@ -867,7 +1701,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         let ctrlArgs = controlMasterArguments
         let authArgs = sshAuthArgs(privateKeyURL: keyAccess?.url, certificateURL: certAccess?.url)
         let jumpArgs = jumpServerArgs()
-        if let pw = resolvedPassword, !pw.isEmpty, let sshpass = sshpassExecutablePath {
+        if let pw = currentResolvedPassword, !pw.isEmpty, let sshpass = sshpassExecutablePath {
             process.executableURL = URL(fileURLWithPath: sshpass)
             process.arguments = sshpassArguments(secret: pw, tool: "/usr/bin/ssh") + [
                 "-o", "StrictHostKeyChecking=accept-new",
@@ -912,33 +1746,37 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         // This strictly prevents metrics like '36' from 'Swap usage: 36%' being parsed as directories.
         guard trimmed.hasPrefix("/") || trimmed.hasPrefix("~") else { return }
         
-        guard let home = remoteHomeDirectory else {
-            if trimmed.hasPrefix("/") && trimmed != lastReportedDirectory {
-                lastReportedDirectory = trimmed
-                directoryChangeHandler?(trimmed)
+        let dispatch: (path: String, handler: (@Sendable (String) -> Void)?)? = stateLock.withLock {
+            guard let home = remoteHomeDirectory else {
+                if trimmed.hasPrefix("/") && trimmed != lastReportedDirectory {
+                    lastReportedDirectory = trimmed
+                    return (trimmed, directoryChangeHandler)
+                }
+                return nil
             }
-            return
-        }
-        var path = trimmed
-        if path == "~" {
-            path = home
-        } else if path.hasPrefix("~/") {
-            let sub = String(path.dropFirst(2))
-            path = home == "/" ? "/\(sub)" : "\(home)/\(sub)"
-        }
-        
-        // Must resolve to a valid Unix absolute path
-        guard path.hasPrefix("/") else { return }
-        
-        if !path.isEmpty {
+            var path = trimmed
+            if path == "~" {
+                path = home
+            } else if path.hasPrefix("~/") {
+                let sub = String(path.dropFirst(2))
+                path = home == "/" ? "/\(sub)" : "\(home)/\(sub)"
+            }
+            
+            // Must resolve to a valid Unix absolute path
+            guard path.hasPrefix("/"), !path.isEmpty else { return nil }
+            
             if path != lastReportedDirectory {
                 lastReportedDirectory = path
                 hasPendingCommandExecution = false
-                directoryChangeHandler?(path)
+                return (path, directoryChangeHandler)
             } else if hasPendingCommandExecution {
                 hasPendingCommandExecution = false
-                directoryChangeHandler?(path)
+                return (path, directoryChangeHandler)
             }
+            return nil
+        }
+        if let dispatch {
+            dispatch.handler?(dispatch.path)
         }
     }
     
@@ -956,7 +1794,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     }()
 
     private func parseOSC7DirectoryChange(data: Data) {
-        let parsed = directoryStream.consume(data)
+        let parsed = stateLock.withLock { directoryStream.consume(data) }
         for path in parsed.paths { resolveAndDispatchDirectory(path) }
         let text = parsed.text
         guard !text.isEmpty else { return }
@@ -970,13 +1808,16 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             clean = osc.stringByReplacingMatches(in: clean, range: NSRange(location: 0, length: (clean as NSString).length), withTemplate: "")
         }
         
-        recentPromptBuffer.append(clean)
-        if recentPromptBuffer.count > 2048 {
-            recentPromptBuffer = String(recentPromptBuffer.suffix(1024))
+        let promptSnapshot: String = stateLock.withLock {
+            recentPromptBuffer.append(clean)
+            if recentPromptBuffer.count > 2048 {
+                recentPromptBuffer = String(recentPromptBuffer.suffix(1024))
+            }
+            return recentPromptBuffer
         }
         
         // Match prompt pattern like ubuntu@host:~/services$ or user@host /var/log % or root@host:/etc#
-        if let raw = Self.directoryFromPrompt(recentPromptBuffer) {
+        if let raw = Self.directoryFromPrompt(promptSnapshot) {
             resolveAndDispatchDirectory(raw)
         }
     }
@@ -1006,7 +1847,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     /// injecting any bytes into the user's shell or editor.
     private func startChannelKeepAliveLoop() {
         let intervalSeconds = max(15, Self.effectiveKeepAliveInterval(configured: session.keepAliveIntervalSeconds))
-        keepAliveTask = Task.detached(priority: .utility) { [weak self] in
+        let task = Task.detached(priority: .utility) { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: UInt64(intervalSeconds) * 1_000_000_000)
                 guard let self = self, !Task.isCancelled, self.connectionState == .connected else { break }
@@ -1015,10 +1856,13 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
                 let shouldPulse: (fd: Int32, pid: pid_t, cols: Int, rows: Int, pixel: UInt16)? = self.stateLock.withLock {
                     guard self.ptyMasterFd >= 0, self.childPid > 0 else { return nil }
                     guard now - self.lastPTYActivityTime >= Double(intervalSeconds - 1) else { return nil }
+                    let dupFd = dup(self.ptyMasterFd)
+                    guard dupFd >= 0 else { return nil }
                     self.keepAlivePixelToggle = self.keepAlivePixelToggle == 0 ? 1 : 0
-                    return (self.ptyMasterFd, self.childPid, self.currentDimensions.columns, self.currentDimensions.rows, self.keepAlivePixelToggle)
+                    return (dupFd, self.childPid, self.currentDimensions.columns, self.currentDimensions.rows, self.keepAlivePixelToggle)
                 }
                 if let pulse = shouldPulse {
+                    defer { close(pulse.fd) }
                     var win = winsize(
                         ws_row: UInt16(max(3, pulse.rows)),
                         ws_col: UInt16(max(10, pulse.cols)),
@@ -1034,10 +1878,11 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
                 }
             }
         }
+        stateLock.withLock { keepAliveTask = task }
     }
 
     private func startAgentlessProbeLoop() {
-        probeTask = Task.detached(priority: .background) { [weak self] in
+        let task = Task.detached(priority: .background) { [weak self] in
             try? await Task.sleep(nanoseconds: 600_000_000)
             while !Task.isCancelled {
                 guard let self = self, self.connectionState == .connected else { break }
@@ -1066,7 +1911,9 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
                 defer { certAccess?.close() }
                 let authArgs = self.sshAuthArgs(privateKeyURL: keyAccess?.url, certificateURL: certAccess?.url)
                 let jumpArgs = self.jumpServerArgs()
-                if let pw = self.resolvedPassword, !pw.isEmpty, let passBin = sshpass {
+                let pw = self.currentResolvedPassword
+                let hasStoreAuth = self.distributionChannel == .appStore && !(pw?.isEmpty ?? true)
+                if let pw = pw, !pw.isEmpty, let passBin = sshpass {
                     process.executableURL = URL(fileURLWithPath: passBin)
                     process.arguments = sshpassArguments(secret: pw, tool: "/usr/bin/ssh") + [
                         "-o", "StrictHostKeyChecking=accept-new",
@@ -1078,8 +1925,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
                     ]
                 } else {
                     process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-                    process.arguments = [
-                        "-o", "BatchMode=yes",
+                    process.arguments = (hasStoreAuth ? [] : ["-o", "BatchMode=yes"]) + [
                         "-o", "StrictHostKeyChecking=accept-new",
                         "-o", "ConnectTimeout=3",
                     ] + authArgs + jumpArgs + ctrlArgs + [
@@ -1104,7 +1950,8 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
                                 prevCpu: &self.prevCpu,
                                 prevNet: &self.prevNet
                             )
-                            self.metricsHandler?(snapshot)
+                            let mHandler = self.stateLock.withLock { self.metricsHandler }
+                            mHandler?(snapshot)
                         }
                     }
                 } catch {
@@ -1114,6 +1961,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
                 try? await Task.sleep(nanoseconds: 1_500_000_000) // 1.5s smooth sampling interval
             }
         }
+        stateLock.withLock { probeTask = task }
     }
     
     /// Environment for the ssh child; ssh forwards TERM to the remote PTY request.
@@ -1156,7 +2004,9 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         defer { certAccess?.close() }
         let authArgs = self.sshAuthArgs(privateKeyURL: keyAccess?.url, certificateURL: certAccess?.url)
         let jumpArgs = self.jumpServerArgs()
-        if let pw = self.resolvedPassword, !pw.isEmpty, let passBin = sshpass {
+        let pw = self.currentResolvedPassword
+        let hasStoreAuth = self.distributionChannel == .appStore && !(pw?.isEmpty ?? true)
+        if let pw = pw, !pw.isEmpty, let passBin = sshpass {
             process.executableURL = URL(fileURLWithPath: passBin)
             process.arguments = sshpassArguments(secret: pw, tool: "/usr/bin/ssh") + [
                 "-o", "StrictHostKeyChecking=accept-new",
@@ -1168,8 +2018,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             ]
         } else {
             process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-            process.arguments = [
-                "-o", "BatchMode=yes",
+            process.arguments = (hasStoreAuth ? [] : ["-o", "BatchMode=yes"]) + [
                 "-o", "StrictHostKeyChecking=accept-new",
                 "-o", "ConnectTimeout=5",
             ] + authArgs + jumpArgs + ctrlArgs + [
@@ -1251,12 +2100,13 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         ]
         
         let pw = stateLock.withLock { self.resolvedPassword }
+        let hasStoreAuth = self.distributionChannel == .appStore && !(pw?.isEmpty ?? true)
         if let pw = pw, !pw.isEmpty, let passBin = sshpass {
             process.executableURL = URL(fileURLWithPath: passBin)
             process.arguments = sshpassArguments(secret: pw, tool: "/usr/bin/ssh") + baseSSHArgs
         } else {
             process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-            process.arguments = ["-o", "BatchMode=yes"] + baseSSHArgs
+            process.arguments = (hasStoreAuth ? [] : ["-o", "BatchMode=yes"]) + baseSSHArgs
         }
         
         let outPipe = Pipe()
@@ -1345,7 +2195,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         if cleanErr.contains("Connection refused") {
             return "连接被拒绝：请确认主机上的 SSH 端口是否正确或服务是否运行"
         }
-        if cleanErr.contains("timed out") || cleanErr.contains("Operation timed out") {
+        if cleanErr.localizedCaseInsensitiveContains("timed out") {
             return "连接超时：无法在规定时间内连接至主机，请检查 IP 与网络"
         }
         if cleanErr.contains("Could not resolve hostname") || cleanErr.contains("nodename nor servname provided") {
@@ -1400,14 +2250,17 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         defer { certAccess?.close() }
         var path = path
         if path == "~" || path.hasPrefix("~/") {
-            var home = remoteHomeDirectory
+            var home = stateLock.withLock { remoteHomeDirectory }
             if home == nil { home = await probeRemoteHome() }
             guard let home, home.hasPrefix("/") else {
                 throw NSError(domain: "ApexSSH", code: 1, userInfo: [NSLocalizedDescriptionKey: "无法读取远程主目录"])
             }
-            remoteHomeDirectory = home
+            let dirHandler: (@Sendable (String) -> Void)? = stateLock.withLock {
+                remoteHomeDirectory = home
+                return directoryChangeHandler
+            }
             path = path == "~" ? home : home + "/" + String(path.dropFirst(2))
-            directoryChangeHandler?(path)
+            dirHandler?(path)
         }
         let needsGate = !FileManager.default.fileExists(atPath: controlSocketPath)
         if needsGate { await controlSocketGate.acquire() }
@@ -1424,7 +2277,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         
         let authArgs = sshAuthArgs(privateKeyURL: keyAccess?.url, certificateURL: certAccess?.url)
         let jumpArgs = jumpServerArgs()
-        if let pw = resolvedPassword, !pw.isEmpty, let passBin = sshpass {
+        if let pw = currentResolvedPassword, !pw.isEmpty, let passBin = sshpass {
             process.executableURL = URL(fileURLWithPath: passBin)
             process.arguments = sshpassArguments(secret: pw, tool: "/usr/bin/ssh") + [
                 "-o", "StrictHostKeyChecking=accept-new",
@@ -1551,10 +2404,10 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
 
     private func resolveRemotePathForTransfer(_ path: String) async -> String {
         guard path == "~" || path.hasPrefix("~/") else { return path }
-        var home = remoteHomeDirectory
+        var home = stateLock.withLock { remoteHomeDirectory }
         if home == nil { home = await probeRemoteHome() }
         if let home, home.hasPrefix("/") {
-            remoteHomeDirectory = home
+            stateLock.withLock { remoteHomeDirectory = home }
         }
         return Self.expandTildeForSCP(path, homeDirectory: home)
     }
@@ -1591,7 +2444,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             accessibleURL.path
         ])
         
-        if let pw = resolvedPassword, !pw.isEmpty, let passBin = sshpass {
+        if let pw = currentResolvedPassword, !pw.isEmpty, let passBin = sshpass {
             process.executableURL = URL(fileURLWithPath: passBin)
             process.arguments = sshpassArguments(secret: pw, tool: "/usr/bin/scp") + baseArgs
         } else {
@@ -1643,7 +2496,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             Self.scpRemoteSpecifier(username: session.username, host: session.host, path: escapedRemote)
         ])
         
-        if let pw = resolvedPassword, !pw.isEmpty, let passBin = sshpass {
+        if let pw = currentResolvedPassword, !pw.isEmpty, let passBin = sshpass {
             process.executableURL = URL(fileURLWithPath: passBin)
             process.arguments = sshpassArguments(secret: pw, tool: "/usr/bin/scp") + baseArgs
         } else {
@@ -1833,7 +2686,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         
         let authArgs = sshAuthArgs(privateKeyURL: keyAccess?.url, certificateURL: certAccess?.url)
         let jumpArgs = jumpServerArgs()
-        if let pw = resolvedPassword, !pw.isEmpty, let passBin = sshpass {
+        if let pw = currentResolvedPassword, !pw.isEmpty, let passBin = sshpass {
             process.executableURL = URL(fileURLWithPath: passBin)
             process.arguments = sshpassArguments(secret: pw, tool: "/usr/bin/ssh") + [
                 "-o", "StrictHostKeyChecking=accept-new",

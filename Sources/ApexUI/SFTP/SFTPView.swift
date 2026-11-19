@@ -6,8 +6,25 @@ import ApexSSH
 import os
 
 public final class SFTPBatchTracker: @unchecked Sendable {
+    public enum Outcome: Sendable {
+        case succeeded
+        case failed
+        case cancelled
+    }
+
+    public struct Snapshot: Sendable {
+        public let completed: Int
+        public let succeeded: Int
+        public let failed: Int
+        public let cancelled: Int
+        public let isDone: Bool
+    }
+
     private let lock = NSLock()
     private var completed = 0
+    private var succeeded = 0
+    private var failed = 0
+    private var cancelled = 0
     private var didFireCompletion = false
     private var completionHandlers: [@Sendable () -> Void] = []
     public let total: Int
@@ -25,24 +42,39 @@ public final class SFTPBatchTracker: @unchecked Sendable {
             handler()
         }
     }
-    public func advance() -> (completed: Int, isDone: Bool) {
+    public func record(_ outcome: Outcome) -> Snapshot {
         var handlersToRun: [@Sendable () -> Void] = []
-        let result: (Int, Bool) = {
+        let snapshot: Snapshot = {
             lock.lock()
             defer { lock.unlock() }
             completed += 1
+            switch outcome {
+            case .succeeded: succeeded += 1
+            case .failed: failed += 1
+            case .cancelled: cancelled += 1
+            }
             let done = completed >= total
             if done && !didFireCompletion {
                 didFireCompletion = true
                 handlersToRun = completionHandlers
                 completionHandlers.removeAll()
             }
-            return (completed, done)
+            return Snapshot(
+                completed: completed,
+                succeeded: succeeded,
+                failed: failed,
+                cancelled: cancelled,
+                isDone: done
+            )
         }()
         for handler in handlersToRun {
             handler()
         }
-        return result
+        return snapshot
+    }
+    public func advance() -> (completed: Int, isDone: Bool) {
+        let snapshot = record(.succeeded)
+        return (snapshot.completed, snapshot.isDone)
     }
 }
 
@@ -52,6 +84,8 @@ public struct SFTPView: View {
     @Binding public var currentPath: String
     @Binding public var isLinkageEnabled: Bool
     public let session: SSHSessionProtocol?
+    public let connectionState: SSHConnectionState
+    public let tabID: UUID?
 
     public enum SFTPSortField: String, CaseIterable, Sendable {
         case name
@@ -88,6 +122,7 @@ public struct SFTPView: View {
     @State private var isOpeningEditor = false
     @State private var isTransferDrawerExpanded = false
     @State private var loadTask: Task<Void, Never>?
+    @State private var loadGeneration: Int = 0
     
     // Sort and visibility
     @State private var showHiddenFiles = AppSettings.shared.showHiddenFiles
@@ -113,11 +148,15 @@ public struct SFTPView: View {
     public init(
         currentPath: Binding<String>,
         isLinkageEnabled: Binding<Bool> = .constant(true),
-        session: SSHSessionProtocol?
+        session: SSHSessionProtocol?,
+        connectionState: SSHConnectionState = .connected,
+        tabID: UUID? = nil
     ) {
         self._currentPath = currentPath
         self._isLinkageEnabled = isLinkageEnabled
         self.session = session
+        self.connectionState = connectionState
+        self.tabID = tabID
     }
 
     private var pathControls: some View {
@@ -268,16 +307,19 @@ public struct SFTPView: View {
             .labelStyle(SFTPToolbarLabelStyle(compact: compact))
             .accessibilityLabel(L10n.uploadFile)
             .help(L10n.uploadFile)
+            .disabled(connectionState != .connected)
 
             Menu {
                 Button("新建文件夹", systemImage: "folder.badge.plus") {
                     newFolderName = ""
                     isShowingNewFolderAlert = true
                 }
+                .disabled(connectionState != .connected)
                 Button("新建文件", systemImage: "doc.badge.plus") {
                     newFileName = ""
                     isShowingNewFileAlert = true
                 }
+                .disabled(connectionState != .connected)
                 Toggle("显示隐藏文件", isOn: $showHiddenFiles)
             } label: {
                 ApexMenuTrigger(
@@ -432,7 +474,27 @@ public struct SFTPView: View {
             }
             // Files table with Drag & Drop upload & download
             ZStack {
-                if items.isEmpty && isLoading {
+                if connectionState != .connected {
+                    Group {
+                        if case .connecting = connectionState {
+                            VStack {
+                                Spacer()
+                                ProgressView("正在等待会话连接…")
+                                    .font(.caption)
+                                Spacer()
+                            }
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        } else {
+                            ContentUnavailableView {
+                                Label("会话尚未连接", systemImage: "network.slash")
+                            } description: {
+                                Text("SSH 连接建立后将自动加载远程目录")
+                            }
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                } else if items.isEmpty && isLoading {
                     VStack {
                         Spacer()
                         ProgressView(L10n.loadingFiles)
@@ -503,6 +565,7 @@ public struct SFTPView: View {
                         SFTPOutlineViewDragDropBridge(
                             items: filteredItems,
                             session: session,
+                            acceptsDrops: connectionState == .connected,
                             onDropURLs: { urls in
                                 requestBatchUpload(urls, targetDirectory: currentPath)
                             },
@@ -567,9 +630,14 @@ public struct SFTPView: View {
                         .allowsHitTesting(false)
                 }
                 if isOpeningEditor {
-                    ProgressView("正在读取远程文件…")
-                        .padding(18)
-                        .apexPanel()
+                    ZStack {
+                        Color.black.opacity(0.08)
+                        ProgressView("正在读取远程文件…")
+                            .padding(18)
+                            .apexPanel()
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .contentShape(Rectangle())
                 }
 
 
@@ -618,7 +686,10 @@ public struct SFTPView: View {
             }
         }
         .onChange(of: tableSortOrder) { _, _ in updateDisplayItems() }
-        .onDisappear { loadTask?.cancel() }
+        .onDisappear {
+            loadGeneration &+= 1
+            loadTask?.cancel()
+        }
         .onAppear {
             showHiddenFiles = themeSettings.showHiddenFiles
             pathInput = currentPath
@@ -630,7 +701,26 @@ public struct SFTPView: View {
             if !isPathFocused || pathInput == oldPath { pathInput = newPath }
             loadDirectory(path: newPath)
         }
+        .onChange(of: connectionState) { oldState, newState in
+            if newState == .connected && oldState != .connected {
+                loadDirectory(path: currentPath)
+            } else if newState != .connected {
+                loadGeneration &+= 1
+                loadTask?.cancel()
+                isLoading = false
+                items = []
+                displayItems = []
+                selectedPaths = []
+                isDropTargeted = false
+                if case .connecting = newState {
+                    loadError = nil
+                }
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("SFTPDirectoryRefreshNeeded"))) { notification in
+            if let myTabID = tabID, let notifTabID = notification.userInfo?["tabId"] as? UUID {
+                guard myTabID == notifTabID else { return }
+            }
             if let path = notification.object as? String, !path.isEmpty {
                 let parent = (path as NSString).deletingLastPathComponent
                 let normalizedPath = path.hasSuffix("/") && path.count > 1 ? String(path.dropLast()) : path
@@ -924,7 +1014,7 @@ public struct SFTPView: View {
     }
 
     private func downloadBatchAction(_ targetItems: [SFTPItem]) {
-        guard let s = session, !targetItems.isEmpty else { return }
+        guard let s = session, Self.shouldLoadDirectory(for: connectionState), !targetItems.isEmpty else { return }
         let access: FileAccessLease
         do { access = try downloadDirectoryAccess() }
         catch is CancellationError { return }
@@ -950,20 +1040,34 @@ public struct SFTPView: View {
                 totalBytes: Int64(item.size),
                 onCompleted: nil,
                 onResult: { result in
-                    let status = tracker.advance()
+                    let outcome: SFTPBatchTracker.Outcome = switch result {
+                    case .success: .succeeded
+                    case .failure(let error): error is CancellationError ? .cancelled : .failed
+                    }
+                    let snapshot = tracker.record(outcome)
                     Task { @MainActor in
-                        switch result {
-                        case .success:
-                            if status.isDone {
-                                self.transferNotice = "批量下载完成 (\(tracker.total) 个文件)"
+                        if snapshot.isDone {
+                            if snapshot.failed > 0 {
+                                let cancelSuffix = snapshot.cancelled > 0 ? "，取消 \(snapshot.cancelled)" : ""
+                                self.transferNotice = "批量下载部分失败（成功 \(snapshot.succeeded)，失败 \(snapshot.failed)\(cancelSuffix)）"
+                                self.isTransferDrawerExpanded = true
+                            } else if snapshot.cancelled > 0 {
+                                self.transferNotice = snapshot.succeeded > 0
+                                    ? "批量下载已取消部分项目（成功 \(snapshot.succeeded)，取消 \(snapshot.cancelled)）"
+                                    : "已取消下载: \(item.name)"
                             } else {
-                                self.transferNotice = "下载完成: \(item.name)"
+                                self.transferNotice = "批量下载完成 (\(tracker.total) 个文件)"
                             }
-                        case .failure(let error):
-                            self.transferNotice = error is CancellationError
-                                ? "已取消下载: \(item.name)"
-                                : "下载失败: \(error.localizedDescription)"
-                            self.isTransferDrawerExpanded = true
+                        } else {
+                            switch result {
+                            case .success:
+                                self.transferNotice = "下载完成: \(item.name)"
+                            case .failure(let error):
+                                self.transferNotice = error is CancellationError
+                                    ? "已取消下载: \(item.name)"
+                                    : "下载失败: \(error.localizedDescription)"
+                                self.isTransferDrawerExpanded = true
+                            }
                         }
                     }
                 }
@@ -973,7 +1077,7 @@ public struct SFTPView: View {
 
     private func performBatchDelete(_ targetItems: [SFTPItem]) {
         let safeItems = targetItems.filter(\.isModifiableRemoteItem)
-        guard let s = session, !safeItems.isEmpty else { return }
+        guard let s = session, Self.shouldLoadDirectory(for: connectionState), !safeItems.isEmpty else { return }
         let pathsToRemove = Set(safeItems.map(\.path))
         withAnimation {
             self.items.removeAll { pathsToRemove.contains($0.path) && $0.isModifiableRemoteItem }
@@ -1004,7 +1108,7 @@ public struct SFTPView: View {
     }
 
     private func performDelete(_ item: SFTPItem) {
-        guard let s = session, item.isModifiableRemoteItem else { return }
+        guard let s = session, Self.shouldLoadDirectory(for: connectionState), item.isModifiableRemoteItem else { return }
         withAnimation {
             self.items.removeAll { $0.path == item.path }
             self.updateDisplayItems()
@@ -1052,7 +1156,7 @@ public struct SFTPView: View {
 
     private func performCreateFolder(name: String) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let s = session else { return }
+        guard !trimmed.isEmpty, let s = session, Self.shouldLoadDirectory(for: connectionState) else { return }
         let target = currentPath.hasSuffix("/") ? "\(currentPath)\(trimmed)" : "\(currentPath)/\(trimmed)"
         Task {
             do {
@@ -1076,7 +1180,7 @@ public struct SFTPView: View {
     
     private func performCreateFile(name: String) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let s = session else { return }
+        guard !trimmed.isEmpty, let s = session, Self.shouldLoadDirectory(for: connectionState) else { return }
         let target = currentPath.hasSuffix("/") ? "\(currentPath)\(trimmed)" : "\(currentPath)/\(trimmed)"
         Task {
             do {
@@ -1100,7 +1204,7 @@ public struct SFTPView: View {
     
     private func performRename(item: SFTPItem, newName: String) {
         let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed != item.name, let s = session else { return }
+        guard !trimmed.isEmpty, trimmed != item.name, let s = session, Self.shouldLoadDirectory(for: connectionState) else { return }
         let parent = (item.path as NSString).deletingLastPathComponent
         let target = parent == "/" ? "/\(trimmed)" : "\(parent)/\(trimmed)"
         Task {
@@ -1125,7 +1229,7 @@ public struct SFTPView: View {
 
     private func performChmod(targetPath: String, mode: String) {
         let trimmed = mode.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let s = session else { return }
+        guard !trimmed.isEmpty, let s = session, Self.shouldLoadDirectory(for: connectionState) else { return }
         Task {
             do {
                 try await s.changePermissions(remotePath: targetPath, permissions: trimmed)
@@ -1148,7 +1252,7 @@ public struct SFTPView: View {
 
     private func performCreateSymlink(targetItem: SFTPItem, linkName: String) {
         let trimmed = linkName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let s = session else { return }
+        guard !trimmed.isEmpty, let s = session, Self.shouldLoadDirectory(for: connectionState) else { return }
         let parent = (targetItem.path as NSString).deletingLastPathComponent
         let linkPath = parent == "/" ? "/\(trimmed)" : "\(parent)/\(trimmed)"
         let cmd = SFTPInspectorHelper.buildSymlinkCommand(targetPath: targetItem.path, linkPath: linkPath)
@@ -1168,7 +1272,7 @@ public struct SFTPView: View {
     }
 
     private func performServerSideDuplicate(_ item: SFTPItem) {
-        guard item.isModifiableRemoteItem, let s = session else { return }
+        guard item.isModifiableRemoteItem, let s = session, Self.shouldLoadDirectory(for: connectionState) else { return }
         let existingNames = Set(items.map(\.name))
         let dupName = SFTPInspectorHelper.defaultDuplicateName(
             for: item.name,
@@ -1197,8 +1301,23 @@ public struct SFTPView: View {
         }
     }
 
+    static func shouldLoadDirectory(for state: SSHConnectionState) -> Bool {
+        state == .connected
+    }
+
     private func loadDirectory(path: String) {
         guard let s = session else { return }
+        guard Self.shouldLoadDirectory(for: connectionState) else {
+            loadGeneration &+= 1
+            loadTask?.cancel()
+            isLoading = false
+            if case .connecting = connectionState {
+                loadError = nil
+            }
+            return
+        }
+        loadGeneration &+= 1
+        let generation = loadGeneration
         isLoading = true
         loadError = nil
         selectedPaths = []
@@ -1206,15 +1325,19 @@ public struct SFTPView: View {
         loadTask = Task {
             do {
                 let fetched = try await s.listDirectory(path: path)
-                guard !Task.isCancelled else { return }
                 await MainActor.run {
+                    guard !Task.isCancelled,
+                          generation == self.loadGeneration,
+                          Self.shouldLoadDirectory(for: self.connectionState) else { return }
                     self.items = fetched
                     self.updateDisplayItems()
                     self.isLoading = false
                 }
             } catch {
-                guard !Task.isCancelled else { return }
                 await MainActor.run {
+                    guard !Task.isCancelled,
+                          generation == self.loadGeneration,
+                          Self.shouldLoadDirectory(for: self.connectionState) else { return }
                     self.items = []
                     self.updateDisplayItems()
                     self.loadError = error.localizedDescription
@@ -1250,11 +1373,12 @@ public struct SFTPView: View {
     }
 
     private func openEditor(_ item: SFTPItem) {
+        guard !isOpeningEditor else { return }
         guard item.size <= 1_000_000 else {
             transferNotice = "文件超过 1 MB，请先下载后编辑"
             return
         }
-        guard let session else { return }
+        guard let session, Self.shouldLoadDirectory(for: connectionState) else { return }
         isOpeningEditor = true
         Task {
             let localURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -1326,6 +1450,7 @@ public struct SFTPView: View {
     }
 
     private func uploadAction() {
+        guard Self.shouldLoadDirectory(for: connectionState) else { return }
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.canChooseDirectories = true
@@ -1336,7 +1461,7 @@ public struct SFTPView: View {
     }
 
     private func requestBatchUpload(_ urls: [URL], targetDirectory: String) {
-        guard let session, !urls.isEmpty else { return }
+        guard let session, Self.shouldLoadDirectory(for: connectionState), !urls.isEmpty else { return }
         Task { @MainActor in
             var accesses: [FileAccessLease] = []
             var handedOffToTracker = false
@@ -1403,22 +1528,39 @@ public struct SFTPView: View {
                         : "\(targetDirectory)/\(localURL.lastPathComponent)"
                     
                     TransferManager.shared.enqueueUpload(session: session, localURL: localURL, remotePath: destination, onResult: { result in
-                        let status = tracker.advance()
+                        let outcome: SFTPBatchTracker.Outcome = switch result {
+                        case .success: .succeeded
+                        case .failure(let error): error is CancellationError ? .cancelled : .failed
+                        }
+                        let snapshot = tracker.record(outcome)
                         Task { @MainActor in
-                            switch result {
-                            case .success:
-                                if status.isDone {
+                            if snapshot.isDone {
+                                if snapshot.succeeded > 0 {
+                                    self.loadDirectory(path: self.currentPath)
+                                }
+                                if snapshot.failed > 0 {
+                                    let cancelSuffix = snapshot.cancelled > 0 ? "，取消 \(snapshot.cancelled)" : ""
+                                    if tracker.total == 1, case .failure(let error) = result {
+                                        self.transferNotice = "上传失败: \(error.localizedDescription)"
+                                    } else {
+                                        self.transferNotice = "批量上传部分失败（成功 \(snapshot.succeeded)，失败 \(snapshot.failed)\(cancelSuffix)）"
+                                    }
+                                    self.isTransferDrawerExpanded = true
+                                } else if snapshot.cancelled > 0 {
+                                    self.transferNotice = snapshot.succeeded > 0
+                                        ? "批量上传已取消部分项目（成功 \(snapshot.succeeded)，取消 \(snapshot.cancelled)）"
+                                        : "已取消上传: \(localURL.lastPathComponent)"
+                                } else {
                                     self.transferNotice = tracker.total == 1
                                         ? "上传成功: \(localURL.lastPathComponent)"
                                         : "批量上传完成 (\(tracker.total) 个文件)"
-                                    self.loadDirectory(path: self.currentPath)
                                     DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
                                         if self.transferNotice?.hasPrefix("上传成功") == true || self.transferNotice?.hasPrefix("批量上传完成") == true {
                                             self.transferNotice = nil
                                         }
                                     }
                                 }
-                            case .failure(let error):
+                            } else if case .failure(let error) = result {
                                 if error is CancellationError {
                                     self.transferNotice = "已取消上传: \(localURL.lastPathComponent)"
                                 } else {
@@ -1477,7 +1619,7 @@ public struct SFTPView: View {
 
     /// Handle local file drop from Finder / Desktop
     private func handleDropUpload(providers: [NSItemProvider]) {
-        guard session != nil else { return }
+        guard session != nil, Self.shouldLoadDirectory(for: connectionState) else { return }
         let targetDirectory = currentPath
         Task {
             var droppedURLs: [URL] = []
@@ -1585,6 +1727,8 @@ public final class SFTPFilePromiseDelegate: NSObject, NSFilePromiseProviderDeleg
     public let item: SFTPItem
     public let session: (any SSHSessionProtocol)?
     public let onStatusChange: (@Sendable @MainActor (String) -> Void)?
+    public let onPromiseStarted: (@Sendable @MainActor () -> Void)?
+    public let onPromiseFinished: (@Sendable @MainActor () -> Void)?
     private static let promiseQueue: OperationQueue = {
         let queue = OperationQueue()
         queue.name = "com.apexterm.sftp.filepromise"
@@ -1596,11 +1740,15 @@ public final class SFTPFilePromiseDelegate: NSObject, NSFilePromiseProviderDeleg
     public init(
         item: SFTPItem,
         session: (any SSHSessionProtocol)?,
-        onStatusChange: (@Sendable @MainActor (String) -> Void)? = nil
+        onStatusChange: (@Sendable @MainActor (String) -> Void)? = nil,
+        onPromiseStarted: (@Sendable @MainActor () -> Void)? = nil,
+        onPromiseFinished: (@Sendable @MainActor () -> Void)? = nil
     ) {
         self.item = item
         self.session = session
         self.onStatusChange = onStatusChange
+        self.onPromiseStarted = onPromiseStarted
+        self.onPromiseFinished = onPromiseFinished
         super.init()
     }
 
@@ -1620,8 +1768,18 @@ public final class SFTPFilePromiseDelegate: NSObject, NSFilePromiseProviderDeleg
         let item = self.item
         let session = self.session
         let onStatusChange = self.onStatusChange
+        let onPromiseStarted = self.onPromiseStarted
+        let onPromiseFinished = self.onPromiseFinished
         nonisolated(unsafe) let completion = completionHandler
+        if let onPromiseStarted {
+            Task { @MainActor in onPromiseStarted() }
+        }
         Task.detached(priority: .userInitiated) {
+            defer {
+                if let onPromiseFinished {
+                    Task { @MainActor in onPromiseFinished() }
+                }
+            }
             do {
                 _ = try await SFTPDragExportHelper.exportItemToDestination(
                     item: item,
@@ -1642,9 +1800,13 @@ public final class SFTPOutlineDataSourceProxy: NSObject, NSOutlineViewDataSource
     nonisolated(unsafe) public weak var originalDataSource: (any NSOutlineViewDataSource)?
     public var items: [SFTPItem] = []
     public var session: (any SSHSessionProtocol)?
+    public var acceptsDrops: Bool = true
     public var onDropURLs: (([URL]) -> Void)?
     public var onStatusChange: (@Sendable @MainActor (String) -> Void)?
-    private var retainedPromiseProviders: [SFTPFilePromiseProvider] = []
+    private var retainedPromiseProviders: [UUID: SFTPFilePromiseProvider] = [:]
+    private var startedPromiseIDs: Set<UUID> = []
+    private var pendingSessionProviderIDs: [UUID] = []
+    private var activeSessionProviderIDs: [ObjectIdentifier: [UUID]] = [:]
 
     nonisolated override public func responds(to aSelector: Selector!) -> Bool {
         if super.responds(to: aSelector) { return true }
@@ -1677,12 +1839,21 @@ public final class SFTPOutlineDataSourceProxy: NSObject, NSOutlineViewDataSource
         }
         let sftpItem = items[row]
         guard sftpItem.name != ".." else { return nil }
+        let providerID = UUID()
         let provider = SFTPDragExportHelper.makeFilePromiseProvider(
             for: sftpItem,
             session: session,
-            onStatusChange: onStatusChange
+            onStatusChange: onStatusChange,
+            onPromiseStarted: { [weak self] in
+                self?.startedPromiseIDs.insert(providerID)
+            },
+            onPromiseFinished: { [weak self] in
+                self?.retainedPromiseProviders.removeValue(forKey: providerID)
+                self?.startedPromiseIDs.remove(providerID)
+            }
         )
-        retainedPromiseProviders.append(provider)
+        retainedPromiseProviders[providerID] = provider
+        pendingSessionProviderIDs.append(providerID)
         return provider
     }
 
@@ -1692,7 +1863,19 @@ public final class SFTPOutlineDataSourceProxy: NSObject, NSOutlineViewDataSource
         willBeginAt screenPoint: NSPoint,
         forItems draggedItems: [Any]
     ) {
+        if !pendingSessionProviderIDs.isEmpty {
+            activeSessionProviderIDs[ObjectIdentifier(session), default: []].append(contentsOf: pendingSessionProviderIDs)
+            pendingSessionProviderIDs.removeAll()
+        }
         originalDataSource?.outlineView?(outlineView, draggingSession: session, willBeginAt: screenPoint, forItems: draggedItems)
+    }
+
+    public static func clearRowDropTargets(in outlineView: NSOutlineView) {
+        outlineView.enumerateAvailableRowViews { rowView, _ in
+            if rowView.isTargetForDropOperation {
+                rowView.isTargetForDropOperation = false
+            }
+        }
     }
 
     public func outlineView(
@@ -1702,9 +1885,27 @@ public final class SFTPOutlineDataSourceProxy: NSObject, NSOutlineViewDataSource
         operation: NSDragOperation
     ) {
         originalDataSource?.outlineView?(outlineView, draggingSession: session, endedAt: screenPoint, operation: operation)
-        // Release promise provider references after Finder has had time to start/finish receiving
-        DispatchQueue.main.asyncAfter(deadline: .now() + 60.0) { [weak self] in
-            self?.retainedPromiseProviders.removeAll()
+        Self.clearRowDropTargets(in: outlineView)
+        var sessionIDs = activeSessionProviderIDs.removeValue(forKey: ObjectIdentifier(session)) ?? []
+        if !pendingSessionProviderIDs.isEmpty {
+            sessionIDs.append(contentsOf: pendingSessionProviderIDs)
+            pendingSessionProviderIDs.removeAll()
+        }
+        guard !sessionIDs.isEmpty else { return }
+        if operation == [] {
+            for id in sessionIDs where !startedPromiseIDs.contains(id) {
+                retainedPromiseProviders.removeValue(forKey: id)
+            }
+        } else {
+            // Safety cleanup ONLY for this session's providers that never received writePromiseTo.
+            // In-flight transfers (startedPromiseIDs) stay retained until their completionHandler finishes.
+            let idsToClean = sessionIDs
+            DispatchQueue.main.asyncAfter(deadline: .now() + 60.0) { [weak self] in
+                guard let self else { return }
+                for id in idsToClean where !self.startedPromiseIDs.contains(id) {
+                    self.retainedPromiseProviders.removeValue(forKey: id)
+                }
+            }
         }
     }
 
@@ -1714,6 +1915,7 @@ public final class SFTPOutlineDataSourceProxy: NSObject, NSOutlineViewDataSource
         proposedItem item: Any?,
         proposedChildIndex index: Int
     ) -> NSDragOperation {
+        guard acceptsDrops else { return [] }
         // Ignore outgoing drags originating from this SFTP outline view itself
         if let sourceOutline = info.draggingSource as? NSOutlineView, sourceOutline === outlineView {
             return []
@@ -1727,7 +1929,11 @@ public final class SFTPOutlineDataSourceProxy: NSObject, NSOutlineViewDataSource
         ) else {
             return []
         }
-        outlineView.setDropRow(-1, dropOperation: .on)
+        // NSOutlineView requires setDropItem(_:dropChildIndex:) rather than NSTableView's
+        // setDropRow(_:dropOperation:). Calling setDropRow(-1, ...) corrupts _dropRow while
+        // leaving _dropItem pointing at the hovered row, leaving rowView.isTargetForDropOperation
+        // permanently stuck in bright blue even after drop completion or directory refresh.
+        outlineView.setDropItem(nil, dropChildIndex: NSOutlineViewDropOnItemIndex)
         return .copy
     }
 
@@ -1737,6 +1943,8 @@ public final class SFTPOutlineDataSourceProxy: NSObject, NSOutlineViewDataSource
         item: Any?,
         childIndex index: Int
     ) -> Bool {
+        defer { Self.clearRowDropTargets(in: outlineView) }
+        guard acceptsDrops else { return false }
         if let sourceOutline = info.draggingSource as? NSOutlineView, sourceOutline === outlineView {
             return false
         }
@@ -1754,6 +1962,7 @@ public final class SFTPOutlineDataSourceProxy: NSObject, NSOutlineViewDataSource
 private struct SFTPOutlineViewDragDropBridge: NSViewRepresentable {
     let items: [SFTPItem]
     let session: (any SSHSessionProtocol)?
+    let acceptsDrops: Bool
     let onDropURLs: ([URL]) -> Void
     let onStatusChange: @Sendable @MainActor (String) -> Void
 
@@ -1788,9 +1997,19 @@ private struct SFTPOutlineViewDragDropBridge: NSViewRepresentable {
             }
         }
 
+        func clearRowDropTargetsIfAttached() {
+            if let ov = attachedOutlineView {
+                SFTPOutlineDataSourceProxy.clearRowDropTargets(in: ov)
+            }
+        }
+
         private func configure(outlineView: NSOutlineView) {
             if outlineView.dataSource !== proxy {
-                proxy.originalDataSource = outlineView.dataSource
+                if let existingProxy = outlineView.dataSource as? SFTPOutlineDataSourceProxy {
+                    proxy.originalDataSource = existingProxy.originalDataSource
+                } else {
+                    proxy.originalDataSource = outlineView.dataSource
+                }
                 outlineView.dataSource = proxy
             }
             outlineView.setDraggingSourceOperationMask(.copy, forLocal: false)
@@ -1817,6 +2036,7 @@ private struct SFTPOutlineViewDragDropBridge: NSViewRepresentable {
         let view = BridgeNSView(frame: .zero)
         view.proxy.items = items
         view.proxy.session = session
+        view.proxy.acceptsDrops = acceptsDrops
         view.proxy.onDropURLs = onDropURLs
         view.proxy.onStatusChange = onStatusChange
         DispatchQueue.main.async {
@@ -1828,12 +2048,22 @@ private struct SFTPOutlineViewDragDropBridge: NSViewRepresentable {
     func updateNSView(_ nsView: BridgeNSView, context: Context) {
         nsView.proxy.items = items
         nsView.proxy.session = session
+        nsView.proxy.acceptsDrops = acceptsDrops
         nsView.proxy.onDropURLs = onDropURLs
         nsView.proxy.onStatusChange = onStatusChange
         nsView.attachIfNeeded()
+        nsView.clearRowDropTargetsIfAttached()
         DispatchQueue.main.async {
             nsView.attachIfNeeded()
+            nsView.clearRowDropTargetsIfAttached()
         }
+    }
+
+    static func dismantleNSView(_ nsView: BridgeNSView, coordinator: ()) {
+        if let ov = nsView.attachedOutlineView, ov.dataSource === nsView.proxy {
+            ov.dataSource = nsView.proxy.originalDataSource
+        }
+        nsView.attachedOutlineView = nil
     }
 }
 
@@ -1873,13 +2103,17 @@ public enum SFTPDragExportHelper {
     public static func makeFilePromiseProvider(
         for item: SFTPItem,
         session: (any SSHSessionProtocol)?,
-        onStatusChange: (@Sendable @MainActor (String) -> Void)? = nil
+        onStatusChange: (@Sendable @MainActor (String) -> Void)? = nil,
+        onPromiseStarted: (@Sendable @MainActor () -> Void)? = nil,
+        onPromiseFinished: (@Sendable @MainActor () -> Void)? = nil
     ) -> SFTPFilePromiseProvider {
         let fileType = item.isDirectory ? UTType.folder.identifier : UTType.data.identifier
         let delegate = SFTPFilePromiseDelegate(
             item: item,
             session: session,
-            onStatusChange: onStatusChange
+            onStatusChange: onStatusChange,
+            onPromiseStarted: onPromiseStarted,
+            onPromiseFinished: onPromiseFinished
         )
         return SFTPFilePromiseProvider(
             fileType: fileType,

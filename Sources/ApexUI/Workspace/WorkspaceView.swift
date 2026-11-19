@@ -20,6 +20,10 @@ public final class TerminalPaneItem: Identifiable, ObservableObject {
     @Published public var isAutoReconnecting: Bool = false
     @Published public var autoReconnectAttempt: Int = 0
     private var autoReconnectTask: Task<Void, Never>?
+    private var connectAttemptId = UUID()
+    private var connectTask: Task<Void, Never>?
+    private var disconnectTask: Task<Void, Never>?
+    private var disconnectToken: UUID?
     public var onAutoReconnectRequested: ((TerminalPaneItem) -> Void)?
     @Published public var connectionState: SSHConnectionState {
         didSet {
@@ -45,6 +49,62 @@ public final class TerminalPaneItem: Identifiable, ObservableObject {
         isAutoReconnecting = false
         autoReconnectAttempt = 0
     }
+
+    func beginConnectAttempt() -> UUID {
+        connectTask?.cancel()
+        connectTask = nil
+        let attemptId = UUID()
+        connectAttemptId = attemptId
+        return attemptId
+    }
+
+    func setConnectTask(_ task: Task<Void, Never>, for attemptId: UUID) {
+        guard connectAttemptId == attemptId else {
+            task.cancel()
+            return
+        }
+        connectTask = task
+    }
+
+    func finishConnectAttempt(_ attemptId: UUID) {
+        if connectAttemptId == attemptId {
+            connectTask = nil
+        }
+    }
+
+    func isCurrentConnectAttempt(_ attemptId: UUID) -> Bool {
+        connectAttemptId == attemptId
+    }
+
+    func waitForPendingDisconnect() async {
+        guard let pending = disconnectTask, let token = disconnectToken else { return }
+        await pending.value
+        if disconnectToken == token {
+            disconnectTask = nil
+            disconnectToken = nil
+        }
+    }
+
+    public func cancelCurrentConnection() {
+        guard !isTornDown else { return }
+        cancelAutoReconnect()
+        connectAttemptId = UUID()
+        connectTask?.cancel()
+        connectTask = nil
+        connectionState = .disconnected
+        let client = sshClient
+        let prevDisconnect = disconnectTask
+        let token = UUID()
+        disconnectToken = token
+        disconnectTask = Task { @MainActor [weak self] in
+            await prevDisconnect?.value
+            await client.disconnect()
+            if self?.disconnectToken == token {
+                self?.disconnectTask = nil
+                self?.disconnectToken = nil
+            }
+        }
+    }
     
     /// Explicitly tears down the pane, cancelling pending auto-reconnect timers, closing audit logs,
     /// clearing scrollback memory, detaching SSH callbacks, and disconnecting the underlying session.
@@ -52,6 +112,12 @@ public final class TerminalPaneItem: Identifiable, ObservableObject {
         guard !isTornDown else { return }
         isTornDown = true
         cancelAutoReconnect()
+        connectAttemptId = UUID()
+        connectTask?.cancel()
+        connectTask = nil
+        disconnectTask?.cancel()
+        disconnectTask = nil
+        disconnectToken = nil
         onAutoReconnectRequested = nil
         onConnectionStateChanged = nil
         sshClient.setOutputHandler { _ in }
@@ -116,6 +182,11 @@ public final class TerminalPaneItem: Identifiable, ObservableObject {
             }
             Task { @MainActor [weak self] in
                 guard let self = self, !self.isTornDown else { return }
+                if self.disconnectTask != nil {
+                    if self.connectTask != nil || state != .disconnected {
+                        return
+                    }
+                }
                 self.connectionState = state
                 if case .disconnected = state,
                    self.hasEverConnected,
@@ -223,14 +294,19 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
             self?.connect(pane: pane)
         }
 
+        attachMetricsHandler(to: self.sshClient)
+        
+        registerDirectoryLinkage(for: self.sshClient, paneId: primaryPane.id)
+    }
+
+    private func attachMetricsHandler(to client: SSHSessionProtocol) {
         let metricsHistory = self.metricsHistory
-        self.sshClient.setMetricsHandler { snapshot in
-            Task { @MainActor in
+        client.setMetricsHandler { [weak self] snapshot in
+            Task { @MainActor [weak self] in
+                guard let self = self, !self.isTornDown else { return }
                 metricsHistory.append(snapshot)
             }
         }
-        
-        registerDirectoryLinkage(for: self.sshClient)
     }
 
     private var linkageRefreshTask: Task<Void, Never>? = nil
@@ -239,25 +315,42 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
         linkageRefreshTask?.cancel()
         linkageRefreshTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 600_000_000)
-            guard let self = self, self.isDirectoryLinkageEnabled, !Task.isCancelled else { return }
+            guard let self = self, !self.isTornDown, self.isDirectoryLinkageEnabled, !Task.isCancelled else { return }
             NotificationCenter.default.post(
                 name: NSNotification.Name("SFTPDirectoryRefreshNeeded"),
-                object: self.currentRemotePath
+                object: self.currentRemotePath,
+                userInfo: ["tabId": self.id]
             )
         }
     }
 
-    public func registerDirectoryLinkage(for client: SSHSessionProtocol) {
+    public func registerDirectoryLinkage(for client: SSHSessionProtocol, paneId: UUID? = nil) {
         client.setDirectoryChangeHandler { [weak self] path in
             Task { @MainActor [weak self] in
-                guard let self = self else { return }
-                let needsHomeResolution = self.currentRemotePath == "~" || self.currentRemotePath.hasPrefix("~/")
-                guard self.isDirectoryLinkageEnabled || needsHomeResolution else { return }
-                if self.currentRemotePath != path {
+                guard let self = self, !self.isTornDown else { return }
+                if let paneId, let activeId = self.activePaneId ?? self.panes.first?.id, activeId != paneId {
+                    return
+                }
+                if self.isDirectoryLinkageEnabled {
+                    if self.currentRemotePath != path {
+                        self.linkageRefreshTask?.cancel()
+                        self.currentRemotePath = path
+                    } else {
+                        self.scheduleDirectoryLinkageRefresh()
+                    }
+                    return
+                }
+                if self.currentRemotePath == "~", path.hasPrefix("/") {
                     self.linkageRefreshTask?.cancel()
                     self.currentRemotePath = path
-                } else if self.isDirectoryLinkageEnabled {
-                    self.scheduleDirectoryLinkageRefresh()
+                } else if self.currentRemotePath.hasPrefix("~/"), path.hasPrefix("/") {
+                    let suffix = String(self.currentRemotePath.dropFirst(2))
+                    let trimmedBase = path.hasSuffix("/") && path.count > 1 ? String(path.dropLast()) : path
+                    let resolved = trimmedBase == "/" ? "/\(suffix)" : "\(trimmedBase)/\(suffix)"
+                    if self.currentRemotePath != resolved {
+                        self.linkageRefreshTask?.cancel()
+                        self.currentRemotePath = resolved
+                    }
                 }
             }
         }
@@ -271,20 +364,26 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
             terminfoProbeTask?.cancel()
             terminfoWarning = nil
         }
+        let attemptId = p.beginConnectAttempt()
         p.connectionState = .connecting(step: "正在连接")
         if p.id == (activePane?.id ?? panes.first?.id) {
             self.connectionState = .connecting(step: "正在连接")
         }
-        Task {
+        let task = Task { @MainActor in
+            defer { p.finishConnectAttempt(attemptId) }
             do {
+                await p.waitForPendingDisconnect()
+                guard p.isCurrentConnectAttempt(attemptId), !p.isTornDown, !self.isTornDown else { return }
                 let shouldRunStartupBootstrap = !p.hasEverConnected
                 try await p.sshClient.connect()
+                guard p.isCurrentConnectAttempt(attemptId), !p.isTornDown, !self.isTornDown else { return }
                 let dims = p.ringBuffer.dimensions
                 try? await p.sshClient.resizeTerminal(columns: dims.columns, rows: dims.rows)
                 p.connectionState = p.sshClient.connectionState
                 if p.id == (self.activePane?.id ?? self.panes.first?.id) {
                     self.connectionState = p.sshClient.connectionState
                 }
+                guard p.connectionState == .connected else { return }
                 if isPrimaryPane {
                     self.probeTerminfo(client: p.sshClient)
                 }
@@ -303,17 +402,27 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
                 for t in autoTunnels {
                     if !SSHTunnelManager.shared.state(for: t.id).isRunning {
                         let pw = await SSHTunnelManager.resolveSecret(for: self.session)
+                        guard p.isCurrentConnectAttempt(attemptId), !p.isTornDown, !self.isTornDown else { return }
                         let sshpass = (self.sshClient as? NativeSSHSession)?.sshpassExecutablePath
                         try? SSHTunnelManager.shared.startTunnel(id: t.id, session: self.session, password: pw, privateKeyPath: self.session.privateKeyPath, sshpassPath: sshpass)
                     }
                 }
-            } catch {
-                p.connectionState = .failed(error.localizedDescription)
+            } catch is CancellationError {
+                guard p.isCurrentConnectAttempt(attemptId), !p.isTornDown, !self.isTornDown else { return }
+                p.connectionState = .disconnected
                 if p.id == (self.activePane?.id ?? self.panes.first?.id) {
-                    self.connectionState = .failed(error.localizedDescription)
+                    self.connectionState = .disconnected
+                }
+            } catch {
+                guard p.isCurrentConnectAttempt(attemptId), !p.isTornDown, !self.isTornDown else { return }
+                let nextState: SSHConnectionState = p.sshClient.wasUserInitiatedDisconnect ? .disconnected : .failed(error.localizedDescription)
+                p.connectionState = nextState
+                if p.id == (self.activePane?.id ?? self.panes.first?.id) {
+                    self.connectionState = nextState
                 }
             }
         }
+        p.setConnectTask(task, for: attemptId)
     }
     
     public func reconnect(pane: TerminalPaneItem) {
@@ -359,7 +468,8 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
             return
         }
         let newClient = SSHClientFactory.makeClient(for: session)
-        newClient.setTerminalType(sshClient.terminalType)
+        let inheritedTerminalType = (activePane ?? panes.first)?.sshClient.terminalType ?? sshClient.terminalType
+        newClient.setTerminalType(inheritedTerminalType)
         
         let newPane = TerminalPaneItem(session: session, sshClient: newClient, title: "\(session.name) (分屏)", initialState: .connecting(step: "连接中"))
         newPane.onConnectionStateChanged = { [weak self, weak newPane] newState in
@@ -375,13 +485,14 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
         self.activePaneId = newPane.id
         self.splitMode = mode
         self.paneSplitRatio = 0.5
-        registerDirectoryLinkage(for: newClient)
+        registerDirectoryLinkage(for: newClient, paneId: newPane.id)
         
         connect(pane: newPane)
     }
     
     public func closePane(id: UUID) {
         guard let idx = panes.firstIndex(where: { $0.id == id }) else { return }
+        let wasPrimary = idx == 0
         let pane = panes[idx]
         pane.tearDown()
         panes.remove(at: idx)
@@ -393,6 +504,9 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
         if let remaining = panes.first {
             remaining.title = session.name
             activePaneId = remaining.id
+            if wasPrimary {
+                attachMetricsHandler(to: remaining.sshClient)
+            }
         }
     }
     
@@ -482,9 +596,8 @@ public struct WorkspaceView: View {
                         HStack(spacing: 4) {
                             ForEach(activeTabs) { tab in
                                 TabButton(
-                                    title: tab.displayTitle,
+                                    tab: tab,
                                     isSelected: tab.id == currentTab?.id,
-                                    colorHex: tab.session.colorHex,
                                     onSelect: { selectedTabId = tab.id },
                                     onClose: { closeTab(tab) },
                                     onDuplicate: { duplicateTab(tab) },
@@ -711,10 +824,8 @@ public struct WorkspaceView: View {
         .navigationSubtitle(currentTab.map { $0.session.isLocal ? "本机 Shell (\($0.session.username))" : "\($0.session.username)@\($0.session.host)" } ?? "SSH 与文件工作台")
         .toolbar { workspaceToolbar }
         .overlay(alignment: .topTrailing) {
-            if let tab = currentTab, let primaryPane = tab.panes.first {
-                MetricsDetailOverlay(presentation: metricsDetail, pane: primaryPane,
-                                     historyStore: tab.metricsHistory,
-                                     monitoringEnabled: tab.session.agentlessMonitorEnabled)
+            if let tab = currentTab {
+                WorkspaceMetricsDetailHost(presentation: metricsDetail, tab: tab)
             }
         }
         .onChange(of: selectedTabId) { _, _ in metricsDetail.isPresented = false }
@@ -841,14 +952,7 @@ public struct WorkspaceView: View {
                     Label("复制会话", systemImage: "plus.square.on.square")
                 }
                 .help("复制此会话到新标签页 (⌘T)")
-                Menu {
-                    Button("垂直分屏", systemImage: "rectangle.split.2x1") { tab.split(mode: .vertical) }
-                    Button("水平分屏", systemImage: "rectangle.split.1x2") { tab.split(mode: .horizontal) }
-                } label: {
-                    Label("分屏", systemImage: "rectangle.split.2x1")
-                }
-                .disabled(tab.panes.count >= 2)
-                .help("分屏 (⌘D / ⌘⇧D)")
+                WorkspaceSplitToolbarMenu(tab: tab)
                 
                 Button(action: { isTunnelModalPresented = true }) {
                     Label("端口转发", systemImage: "arrow.triangle.swap")
@@ -866,10 +970,7 @@ public struct WorkspaceView: View {
                 .help("Linux/macOS 远程进程与服务监视控制中心 (⌘⌥K)")
             }
             ToolbarItem(placement: .primaryAction) {
-                if let primaryPane = tab.panes.first {
-                    WorkspaceMetricsView(pane: primaryPane, historyStore: tab.metricsHistory, monitoringEnabled: tab.session.agentlessMonitorEnabled,
-                                         presentation: metricsDetail)
-                }
+                WorkspaceMetricsToolbarHost(tab: tab, presentation: metricsDetail)
             }
             ToolbarItemGroup(placement: .primaryAction) {
                 Toggle(isOn: $isQuickCommandBarVisible) {
@@ -1062,6 +1163,53 @@ public struct WorkspaceView: View {
         let curIdx = activeTabs.firstIndex(where: { $0.id == selectedTabId }) ?? 0
         let prevIdx = (curIdx - 1 + activeTabs.count) % activeTabs.count
         selectedTabId = activeTabs[prevIdx].id
+    }
+}
+
+private struct WorkspaceSplitToolbarMenu: View {
+    @ObservedObject var tab: TerminalTabItem
+
+    var body: some View {
+        Menu {
+            Button("垂直分屏", systemImage: "rectangle.split.2x1") { tab.split(mode: .vertical) }
+            Button("水平分屏", systemImage: "rectangle.split.1x2") { tab.split(mode: .horizontal) }
+        } label: {
+            Label("分屏", systemImage: "rectangle.split.2x1")
+        }
+        .disabled(tab.panes.count >= 2)
+        .help("分屏 (⌘D / ⌘⇧D)")
+    }
+}
+
+private struct WorkspaceMetricsToolbarHost: View {
+    @ObservedObject var tab: TerminalTabItem
+    let presentation: MetricsDetailPresentation
+
+    var body: some View {
+        if let primaryPane = tab.panes.first {
+            WorkspaceMetricsView(
+                pane: primaryPane,
+                historyStore: tab.metricsHistory,
+                monitoringEnabled: tab.session.agentlessMonitorEnabled,
+                presentation: presentation
+            )
+        }
+    }
+}
+
+private struct WorkspaceMetricsDetailHost: View {
+    let presentation: MetricsDetailPresentation
+    @ObservedObject var tab: TerminalTabItem
+
+    var body: some View {
+        if let primaryPane = tab.panes.first {
+            MetricsDetailOverlay(
+                presentation: presentation,
+                pane: primaryPane,
+                historyStore: tab.metricsHistory,
+                monitoringEnabled: tab.session.agentlessMonitorEnabled
+            )
+        }
     }
 }
 
@@ -1348,11 +1496,15 @@ private struct WorkspaceActiveTabSplitView: View {
                     )
                     
                     // Integrated SFTP Panel with live observed bindings
+                    let activeTargetPane = tab.activePane ?? tab.panes.first
                     SFTPView(
                         currentPath: $tab.currentRemotePath,
                         isLinkageEnabled: $tab.isDirectoryLinkageEnabled,
-                        session: tab.sshClient
+                        session: activeTargetPane?.sshClient ?? tab.sshClient,
+                        connectionState: activeTargetPane?.connectionState ?? tab.connectionState,
+                        tabID: tab.id
                     )
+                    .id(activeTargetPane?.id ?? tab.id)
                     .frame(height: max(0, geometry.size.height * (1.0 - splitRatio) - 8))
                 }
             }
@@ -1439,7 +1591,11 @@ private struct PaneContainerView: View {
                                 case .success:
                                     dropTransferIsError = false
                                     dropTransferNotice = "已上传 \(fileName) 至 \(targetDir)"
-                                    NotificationCenter.default.post(name: NSNotification.Name("SFTPDirectoryRefreshNeeded"), object: dest)
+                                    NotificationCenter.default.post(
+                                        name: NSNotification.Name("SFTPDirectoryRefreshNeeded"),
+                                        object: dest,
+                                        userInfo: ["tabId": tab.id]
+                                    )
                                     DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) {
                                         if dropTransferNotice == "已上传 \(fileName) 至 \(targetDir)" {
                                             dropTransferNotice = nil
@@ -1471,8 +1627,31 @@ private struct PaneContainerView: View {
                     }
                 }
                 
-                // Reconnect floating prompt on disconnect or failure
-                if case .disconnected = pane.connectionState {
+                // Connecting / Reconnect floating prompt
+                if case .connecting(let step) = pane.connectionState, !tab.session.isLocal {
+                    VStack {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text(step.isEmpty || step == "正在连接" ? "正在连接 \(tab.session.username)@\(tab.session.host):\(tab.session.port)…" : step)
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundColor(ApexStyle.primary)
+                                .lineLimit(1)
+                            Button("取消") {
+                                pane.cancelCurrentConnection()
+                            }
+                            .buttonStyle(.borderless)
+                            .font(.system(size: 11))
+                            .foregroundColor(ApexStyle.secondary)
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .apexGlassCard(cornerRadius: 12, material: .regularMaterial, borderColor: ApexStyle.warning.opacity(0.4), shadowRadius: 8)
+                        .padding(.top, 12)
+                        Spacer()
+                    }
+                    .transition(.opacity)
+                } else if case .disconnected = pane.connectionState {
                     VStack {
                         HStack(spacing: 8) {
                             Circle().fill(pane.isAutoReconnecting ? ApexStyle.warning : ApexStyle.secondary).frame(width: 8, height: 8)
@@ -1694,7 +1873,18 @@ private struct WorkspaceBottomStatusBar: View {
             Spacer()
             
             if showsDirectoryControls {
-                Text("\(L10n.currentDirectory): \(tab.currentRemotePath)")
+                let activeState = (tab.activePane ?? tab.panes.first)?.connectionState ?? tab.connectionState
+                let pathText: String = {
+                    switch activeState {
+                    case .connected:
+                        return tab.currentRemotePath
+                    case .connecting:
+                        return "等待连接…"
+                    case .disconnected, .failed:
+                        return "—"
+                    }
+                }()
+                Text("\(L10n.currentDirectory): \(pathText)")
                     .font(.caption.monospaced())
                     .foregroundColor(ApexStyle.secondary)
                     .lineLimit(1)
@@ -1721,30 +1911,44 @@ private struct ConnectionStatusView: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Circle()
-                .fill(statusColor)
-                .frame(width: 7, height: 7)
-                .shadow(color: statusColor.opacity(0.6), radius: 2)
+            if case .connecting = pane.connectionState {
+                ProgressView()
+                    .controlSize(.mini)
+                    .scaleEffect(0.75)
+                    .frame(width: 9, height: 9)
+            } else {
+                Circle()
+                    .fill(statusColor)
+                    .frame(width: 7, height: 7)
+                    .shadow(color: statusColor.opacity(0.6), radius: 2)
+            }
             Text("\(statusText) · \(tab.session.username)@\(tab.session.host):\(tab.session.port)")
                 .font(.caption.monospaced())
                 .lineLimit(1)
-                .help(statusText)
+                .help(helpText)
         }
     }
 
     private var statusText: String {
-        let state = pane.connectionState
-        switch state {
+        switch pane.connectionState {
         case .disconnected: return "已断开"
-        case .connecting: return "连接中"
+        case .connecting: return "正在连接"
         case .connected: return "已连接"
         case .failed(let message): return "连接失败：\(message)"
         }
     }
 
+    private var helpText: String {
+        switch pane.connectionState {
+        case .connecting(let step) where !step.isEmpty:
+            return step
+        default:
+            return statusText
+        }
+    }
+
     private var statusColor: Color {
-        let state = pane.connectionState
-        switch state {
+        switch pane.connectionState {
         case .disconnected: return ApexStyle.secondary
         case .connecting: return ApexStyle.warning
         case .connected: return ApexStyle.success
@@ -1755,9 +1959,8 @@ private struct ConnectionStatusView: View {
 
 struct TabButton: View {
     @ObservedObject private var themeSettings = AppSettings.shared
-    let title: String
+    @ObservedObject var tab: TerminalTabItem
     let isSelected: Bool
-    let colorHex: String?
     let onSelect: () -> Void
     let onClose: () -> Void
     let onDuplicate: () -> Void
@@ -1772,17 +1975,33 @@ struct TabButton: View {
     @State private var isCloseHovered: Bool = false
     
     private var dotColor: Color {
-        Color(hex: colorHex ?? "#0A84FF") ?? .blue
+        switch tab.connectionState {
+        case .connected:
+            return Color(hex: tab.session.colorHex ?? "#0A84FF") ?? .blue
+        case .connecting:
+            return ApexStyle.warning
+        case .disconnected:
+            return ApexStyle.secondary.opacity(0.55)
+        case .failed:
+            return ApexStyle.error
+        }
     }
     
     var body: some View {
         HStack(spacing: 7) {
-            Circle()
-                .fill(dotColor)
-                .frame(width: 7, height: 7)
-                .shadow(color: dotColor.opacity(isSelected ? 0.6 : 0.2), radius: isSelected ? 3 : 1)
+            if case .connecting = tab.connectionState {
+                ProgressView()
+                    .controlSize(.mini)
+                    .scaleEffect(0.65)
+                    .frame(width: 8, height: 8)
+            } else {
+                Circle()
+                    .fill(dotColor)
+                    .frame(width: 7, height: 7)
+                    .shadow(color: dotColor.opacity(isSelected ? 0.6 : 0.2), radius: isSelected ? 3 : 1)
+            }
             
-            Text(title)
+            Text(tab.displayTitle)
                 .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
                 .foregroundColor(isSelected ? ApexStyle.primary : (isHovered ? ApexStyle.primary.opacity(0.85) : ApexStyle.secondary))
                 .lineLimit(1)

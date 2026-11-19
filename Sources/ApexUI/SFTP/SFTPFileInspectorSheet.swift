@@ -15,6 +15,7 @@ public struct SFTPFileInspectorSheet: View {
     @State private var checksumError: String?
     @State private var expectedDigestInput: String = ""
     @State private var copyFeedback: String?
+    @State private var checksumTask: Task<Void, Never>?
 
     public init(item: SFTPItem, session: SSHSessionProtocol?) {
         self.item = item
@@ -177,6 +178,10 @@ public struct SFTPFileInspectorSheet: View {
                 computeChecksum()
             }
         }
+        .onDisappear {
+            checksumTask?.cancel()
+            checksumTask = nil
+        }
     }
 
     @ViewBuilder
@@ -202,14 +207,16 @@ public struct SFTPFileInspectorSheet: View {
 
     private func computeChecksum() {
         guard !item.isDirectory else { return }
+        checksumTask?.cancel()
         isComputingChecksum = true
         computedDigest = nil
         checksumError = nil
 
         let currentAlgo = algorithm
-        Task {
+        checksumTask = Task {
             let digest = await SFTPInspectorHelper.computeRemoteChecksum(for: item, algorithm: currentAlgo, session: session)
             await MainActor.run {
+                guard !Task.isCancelled, self.algorithm == currentAlgo else { return }
                 self.isComputingChecksum = false
                 if let digest = digest {
                     self.computedDigest = digest

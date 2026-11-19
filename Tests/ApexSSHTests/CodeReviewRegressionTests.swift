@@ -1773,4 +1773,489 @@ final class CodeReviewRegressionTests: XCTestCase {
         XCTAssertTrue(proxy.outlineView(outlineView, acceptDrop: finderDropInfo, item: nil, childIndex: -1))
         XCTAssertEqual(droppedIntoSFTP, [hostFileA, hostFileB])
     }
+
+    // MARK: - TC-REV-65: SFTPView incoming file drag across rows never leaves NSTableRowView.isTargetForDropOperation stuck in blue
+    @MainActor
+    func testSFTPViewDragAcrossRowsNeverSticksRowDropTargetHighlight() async throws {
+        final class WindowDragInfo: NSObject, NSDraggingInfo {
+            let window: NSWindow
+            let location: NSPoint
+            let pasteboard: NSPasteboard
+            let sequence: Int
+
+            init(window: NSWindow, location: NSPoint, pasteboard: NSPasteboard, sequence: Int) {
+                self.window = window
+                self.location = location
+                self.pasteboard = pasteboard
+                self.sequence = sequence
+                super.init()
+            }
+
+            var draggingDestinationWindow: NSWindow? { window }
+            var draggingSourceOperationMask: NSDragOperation { .copy }
+            var draggingLocation: NSPoint { location }
+            var draggedImageLocation: NSPoint { location }
+            var draggedImage: NSImage? { nil }
+            var draggingPasteboard: NSPasteboard { pasteboard }
+            var draggingSource: Any? { nil }
+            var draggingSequenceNumber: Int { sequence }
+            func slideDraggedImage(to screenPoint: NSPoint) {}
+            var animatesToDestination: Bool = false
+            var draggingFormation: NSDraggingFormation = .default
+            var numberOfValidItemsForDrop: Int = 1
+            func enumerateDraggingItems(
+                options enumOpts: NSDraggingItemEnumerationOptions = [],
+                for view: NSView?,
+                classes classArray: [AnyClass],
+                searchOptions: [NSPasteboard.ReadingOptionKey: Any] = [:],
+                using block: @escaping (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void
+            ) {}
+            var springLoadingHighlight: NSSpringLoadingHighlight { .none }
+            func resetSpringLoading() {}
+        }
+
+        let sessionModel = Session(name: "DropHighlightGuard", host: "10.0.0.89", port: 22, username: "root")
+        let mockSession = MockSSHSession(session: sessionModel)
+        try await mockSession.connect()
+
+        let workDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tc-rev-65-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: workDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workDir) }
+
+        for name in ["config-mate.tar", "iotedge-20260918.1.tar", "jdk17.tar", "sprixin-iotedge.tar.gz"] {
+            let localSeed = workDir.appendingPathComponent(name)
+            try "payload-\(name)".write(to: localSeed, atomically: true, encoding: .utf8)
+            try await mockSession.uploadFile(localURL: localSeed, remotePath: "/root/\(name)", progress: { _ in })
+        }
+
+        var path = "/root"
+        let pathBinding = Binding<String>(get: { path }, set: { path = $0 })
+        let sftpView = SFTPView(
+            currentPath: pathBinding,
+            isLinkageEnabled: .constant(false),
+            session: mockSession,
+            connectionState: .connected
+        )
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 720, height: 420),
+            styleMask: [.titled, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        let hostingView = NSHostingView(rootView: sftpView)
+        window.contentView = hostingView
+        window.makeKeyAndOrderFront(nil)
+        defer {
+            window.contentView = nil
+            window.orderOut(nil)
+        }
+
+        func findSFTPOutlineView(in view: NSView) -> NSOutlineView? {
+            if let ov = view as? NSOutlineView, ov.tableColumns.count == 4 { return ov }
+            for child in view.subviews {
+                if let found = findSFTPOutlineView(in: child) { return found }
+            }
+            return nil
+        }
+
+        let deadline = Date().addingTimeInterval(3.0)
+        var outlineView: NSOutlineView?
+        while Date() < deadline {
+            try await Task.sleep(for: .milliseconds(50))
+            hostingView.layoutSubtreeIfNeeded()
+            if let ov = findSFTPOutlineView(in: hostingView),
+               ov.numberOfRows >= 4,
+               ov.dataSource is SFTPOutlineDataSourceProxy {
+                outlineView = ov
+                break
+            }
+        }
+
+        let ov = try XCTUnwrap(outlineView, "Mounted SFTPView must attach SFTPOutlineDataSourceProxy to 4-column NSOutlineView")
+        _ = hostingView.bitmapImageRepForCachingDisplay(in: hostingView.bounds)
+
+        let pb = NSPasteboard.withUniqueName()
+        defer { pb.releaseGlobally() }
+        let uploadCandidate = workDir.appendingPathComponent("incoming-upload.bin")
+        try "incoming".write(to: uploadCandidate, atomically: true, encoding: .utf8)
+        pb.writeObjects([uploadCandidate as NSURL])
+
+        let row1Point = ov.convert(NSPoint(x: 60, y: ov.rect(ofRow: 1).midY), to: nil)
+        let row2Point = ov.convert(NSPoint(x: 60, y: ov.rect(ofRow: 2).midY), to: nil)
+
+        // Drag enters over row 1 (iotedge-20260918.1.tar), moves across row 2 (jdk17.tar), then exits
+        XCTAssertEqual(ov.draggingEntered(WindowDragInfo(window: window, location: row1Point, pasteboard: pb, sequence: 101)), .copy)
+        XCTAssertEqual(ov.draggingUpdated(WindowDragInfo(window: window, location: row1Point, pasteboard: pb, sequence: 101)), .copy)
+        XCTAssertEqual(ov.draggingUpdated(WindowDragInfo(window: window, location: row2Point, pasteboard: pb, sequence: 101)), .copy)
+        for row in 0..<ov.numberOfRows {
+            let rowView = try XCTUnwrap(ov.rowView(atRow: row, makeIfNecessary: true))
+            XCTAssertFalse(rowView.isTargetForDropOperation, "Row \(row) must never become an individual drop target during directory drag")
+            XCTAssertFalse(rowView.isSelected, "Row \(row) must not become selected as a side effect of validateDrop")
+        }
+
+        ov.draggingExited(WindowDragInfo(window: window, location: .zero, pasteboard: pb, sequence: 101))
+        for row in 0..<ov.numberOfRows {
+            let rowView = try XCTUnwrap(ov.rowView(atRow: row, makeIfNecessary: true))
+            XCTAssertFalse(rowView.isTargetForDropOperation, "Row \(row) must remain clear after draggingExited")
+        }
+
+        // Verify defensive cleanup on directory refresh if any rowView ever had isTargetForDropOperation set
+        let poisonedRow = try XCTUnwrap(ov.rowView(atRow: 1, makeIfNecessary: true))
+        poisonedRow.isTargetForDropOperation = true
+        NotificationCenter.default.post(name: NSNotification.Name("SFTPDirectoryRefreshNeeded"), object: "/root")
+        let refreshDeadline = Date().addingTimeInterval(2.0)
+        while Date() < refreshDeadline && poisonedRow.isTargetForDropOperation {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertFalse(poisonedRow.isTargetForDropOperation, "Directory refresh must clear any stale row drop-target highlight")
+    }
+
+    // MARK: - TC-REV-66: SFTPView isolates cross-tab refresh notifications and clears stale state when disconnected
+    @MainActor
+    func testSFTPViewTabIsolationAndDisconnectedCleanup() async throws {
+        final class CountingSFTPSession: SSHSessionProtocol, @unchecked Sendable {
+            let session: Session
+            private let lock = NSLock()
+            private var _listCount = 0
+            private var _state: SSHConnectionState = .connected
+
+            var listCount: Int { lock.withLock { _listCount } }
+            var connectionState: SSHConnectionState { lock.withLock { _state } }
+
+            init(session: Session) { self.session = session }
+            func setStateChangeHandler(_ handler: @Sendable @escaping (SSHConnectionState) -> Void) {}
+            func setOutputHandler(_ handler: @Sendable @escaping (Data) -> Void) {}
+            func setMetricsHandler(_ handler: @Sendable @escaping (ServerMetricsSnapshot) -> Void) {}
+            func setDirectoryChangeHandler(_ handler: @Sendable @escaping (String) -> Void) {}
+            func connect() async throws { lock.withLock { _state = .connected } }
+            func disconnect() async { lock.withLock { _state = .disconnected } }
+            func sendInput(_ data: Data) async throws {}
+            func sendInputSync(_ data: Data) {}
+            func resizeTerminal(columns: Int, rows: Int) async throws {}
+            func listDirectory(path: String) async throws -> [SFTPItem] {
+                lock.withLock { _listCount += 1 }
+                return [SFTPItem(name: "alpha.txt", path: "\(path)/alpha.txt", isDirectory: false, size: 12, permissions: 0o644)]
+            }
+            func downloadFile(remotePath: String, localURL: URL, progress: @Sendable @escaping (Double) -> Void) async throws {}
+            func uploadFile(localURL: URL, remotePath: String, progress: @Sendable @escaping (Double) -> Void) async throws {}
+        }
+
+        final class HarnessState: ObservableObject {
+            @Published var path = "/root"
+            @Published var connectionState: SSHConnectionState = .connected
+        }
+
+        struct TabHarness: View {
+            @ObservedObject var state: HarnessState
+            let session: SSHSessionProtocol
+            let tabID: UUID
+            var body: some View {
+                SFTPView(
+                    currentPath: $state.path,
+                    isLinkageEnabled: .constant(false),
+                    session: session,
+                    connectionState: state.connectionState,
+                    tabID: tabID
+                )
+            }
+        }
+
+        let tabA = UUID()
+        let tabB = UUID()
+        let session = CountingSFTPSession(session: Session(name: "TabA", host: "10.0.0.1", username: "root"))
+        let state = HarnessState()
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 360),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        let host = NSHostingView(rootView: TabHarness(state: state, session: session, tabID: tabA).apexTheme())
+        window.contentView = host
+        host.layoutSubtreeIfNeeded()
+        defer {
+            window.contentView = nil
+            window.orderOut(nil)
+        }
+
+        let initDeadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while session.listCount < 1 && ContinuousClock.now < initDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let baselineCount = session.listCount
+        XCTAssertGreaterThanOrEqual(baselineCount, 1, "Initial connected SFTPView must load directory")
+
+        // Refresh notification tagged for a DIFFERENT tab must be ignored (even for matching path or "~")
+        NotificationCenter.default.post(
+            name: NSNotification.Name("SFTPDirectoryRefreshNeeded"),
+            object: "/root",
+            userInfo: ["tabId": tabB]
+        )
+        NotificationCenter.default.post(
+            name: NSNotification.Name("SFTPDirectoryRefreshNeeded"),
+            object: "~",
+            userInfo: ["tabId": tabB]
+        )
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(session.listCount, baselineCount, "SFTPView must ignore refresh notifications from another tab")
+
+        // Refresh notification tagged for THIS tab must trigger a reload
+        NotificationCenter.default.post(
+            name: NSNotification.Name("SFTPDirectoryRefreshNeeded"),
+            object: "/root",
+            userInfo: ["tabId": tabA]
+        )
+        let matchDeadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while session.listCount <= baselineCount && ContinuousClock.now < matchDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let afterMatchCount = session.listCount
+        XCTAssertGreaterThan(afterMatchCount, baselineCount, "Matching tabId refresh notification must reload directory")
+
+        // Transitioning to .disconnected must stop further loads on refresh notifications
+        state.connectionState = .disconnected
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(80))
+        NotificationCenter.default.post(
+            name: NSNotification.Name("SFTPDirectoryRefreshNeeded"),
+            object: "/root",
+            userInfo: ["tabId": tabA]
+        )
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(session.listCount, afterMatchCount, "Disconnected SFTPView must not query listDirectory")
+    }
+
+    // MARK: - TC-REV-67: SFTPBatchTracker records succeeded, failed, and cancelled outcomes accurately
+    func testSFTPBatchTrackerTracksPartialFailureAndCancellation() {
+        let tracker = SFTPBatchTracker(total: 3)
+        let completionCount = OSAllocatedUnfairLock(initialState: 0)
+        tracker.addCompletionHandler {
+            completionCount.withLock { $0 += 1 }
+        }
+
+        let s1 = tracker.record(.succeeded)
+        XCTAssertEqual(s1.completed, 1)
+        XCTAssertEqual(s1.succeeded, 1)
+        XCTAssertEqual(s1.failed, 0)
+        XCTAssertEqual(s1.cancelled, 0)
+        XCTAssertFalse(s1.isDone)
+        XCTAssertEqual(completionCount.withLock { $0 }, 0)
+
+        let s2 = tracker.record(.failed)
+        XCTAssertEqual(s2.completed, 2)
+        XCTAssertEqual(s2.succeeded, 1)
+        XCTAssertEqual(s2.failed, 1)
+        XCTAssertEqual(s2.cancelled, 0)
+        XCTAssertFalse(s2.isDone)
+        XCTAssertEqual(completionCount.withLock { $0 }, 0)
+
+        let s3 = tracker.record(.cancelled)
+        XCTAssertEqual(s3.completed, 3)
+        XCTAssertEqual(s3.succeeded, 1)
+        XCTAssertEqual(s3.failed, 1)
+        XCTAssertEqual(s3.cancelled, 1)
+        XCTAssertTrue(s3.isDone)
+        XCTAssertEqual(completionCount.withLock { $0 }, 1, "Completion handler must fire exactly once on final record")
+    }
+
+    // MARK: - TC-REV-68: SFTPOutlineDataSourceProxy rejects drops when disconnected and tracks file promise lifecycle
+    @MainActor
+    func testSFTPOutlineProxyRejectsDropsWhenDisconnectedAndTracksPromiseLifecycle() async throws {
+        final class MinimalDragInfo: NSObject, NSDraggingInfo {
+            let pb: NSPasteboard
+            init(pb: NSPasteboard) { self.pb = pb; super.init() }
+            var draggingDestinationWindow: NSWindow? { nil }
+            var draggingSourceOperationMask: NSDragOperation { .copy }
+            var draggingLocation: NSPoint { .zero }
+            var draggedImageLocation: NSPoint { .zero }
+            var draggedImage: NSImage? { nil }
+            var draggingPasteboard: NSPasteboard { pb }
+            var draggingSource: Any? { nil }
+            var draggingSequenceNumber: Int { 1 }
+            func slideDraggedImage(to screenPoint: NSPoint) {}
+            var animatesToDestination: Bool = false
+            var draggingFormation: NSDraggingFormation = .default
+            var numberOfValidItemsForDrop: Int = 1
+            func enumerateDraggingItems(
+                options enumOpts: NSDraggingItemEnumerationOptions = [],
+                for view: NSView?,
+                classes classArray: [AnyClass],
+                searchOptions: [NSPasteboard.ReadingOptionKey: Any] = [:],
+                using block: @escaping (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void
+            ) {}
+            var springLoadingHighlight: NSSpringLoadingHighlight { .none }
+            func resetSpringLoading() {}
+        }
+
+        let outlineView = NSOutlineView()
+        let proxy = SFTPOutlineDataSourceProxy()
+        var droppedURLs: [URL] = []
+        proxy.onDropURLs = { droppedURLs.append(contentsOf: $0) }
+
+        let fileURL = tempDir.appendingPathComponent("upload.txt")
+        try "hello".write(to: fileURL, atomically: true, encoding: .utf8)
+        let pb = NSPasteboard.withUniqueName()
+        defer { pb.releaseGlobally() }
+        pb.writeObjects([fileURL as NSURL])
+        let dragInfo = MinimalDragInfo(pb: pb)
+
+        // When disconnected (acceptsDrops = false), validateDrop and acceptDrop must reject
+        proxy.acceptsDrops = false
+        XCTAssertEqual(proxy.outlineView(outlineView, validateDrop: dragInfo, proposedItem: nil, proposedChildIndex: -1), [])
+        XCTAssertFalse(proxy.outlineView(outlineView, acceptDrop: dragInfo, item: nil, childIndex: -1))
+        XCTAssertTrue(droppedURLs.isEmpty, "Disconnected proxy must never invoke onDropURLs")
+
+        // When connected (acceptsDrops = true), validateDrop and acceptDrop accept
+        proxy.acceptsDrops = true
+        XCTAssertEqual(proxy.outlineView(outlineView, validateDrop: dragInfo, proposedItem: nil, proposedChildIndex: -1), .copy)
+        XCTAssertTrue(proxy.outlineView(outlineView, acceptDrop: dragInfo, item: nil, childIndex: -1))
+        XCTAssertEqual(droppedURLs, [fileURL])
+
+        // Verify SFTPFilePromiseDelegate started/finished lifecycle callbacks around writePromiseTo
+        let mockSession = MockSSHSession(session: Session(name: "PromiseTest", host: "10.0.0.1", username: "root"))
+        try await mockSession.connect()
+        try await mockSession.uploadFile(localURL: fileURL, remotePath: "/root/upload.txt", progress: { _ in })
+
+        let item = SFTPItem(name: "upload.txt", path: "/root/upload.txt", isDirectory: false, size: 5, permissions: 0o644)
+        let events = OSAllocatedUnfairLock(initialState: [String]())
+        let finishedExp = expectation(description: "promise finished callback")
+        let provider = SFTPDragExportHelper.makeFilePromiseProvider(
+            for: item,
+            session: mockSession,
+            onPromiseStarted: {
+                events.withLock { $0.append("started") }
+            },
+            onPromiseFinished: {
+                events.withLock { $0.append("finished") }
+                finishedExp.fulfill()
+            }
+        )
+        let delegate = try XCTUnwrap(provider.delegate as? SFTPFilePromiseDelegate)
+        let destURL = tempDir.appendingPathComponent("exported-upload.txt")
+        let writeExp = expectation(description: "writePromiseTo completion")
+        delegate.filePromiseProvider(provider, writePromiseTo: destURL) { err in
+            XCTAssertNil(err)
+            writeExp.fulfill()
+        }
+        await fulfillment(of: [writeExp, finishedExp], timeout: 3.0)
+        XCTAssertEqual(events.withLock { $0 }, ["started", "finished"])
+        XCTAssertEqual(try String(contentsOf: destURL, encoding: .utf8), "hello")
+    }
+
+    // MARK: - TC-REV-69: TransferManager.cancelAllTasks() preserves concurrency slot accounting
+    @MainActor
+    func testTransferManagerCancelAllPreservesConcurrencySlotAccounting() async throws {
+        let manager = TransferManager(maxConcurrentTransfers: 2)
+        let session = MockSSHSession(session: Session(name: "CancelSlotTest", host: "127.0.0.1", username: "root"))
+
+        let counters = OSAllocatedUnfairLock(initialState: (current: 0, maxObserved: 0, wave1Started: 0))
+        let releaseWave1 = OSAllocatedUnfairLock(initialState: [CheckedContinuation<Void, Never>]())
+
+        session.customUploadHandler = { _, remotePath, progress in
+            let isWave1 = remotePath.contains("wave1")
+            counters.withLock { state in
+                state.current += 1
+                if state.current > state.maxObserved { state.maxObserved = state.current }
+                if isWave1 { state.wave1Started += 1 }
+            }
+            defer {
+                counters.withLock { $0.current -= 1 }
+            }
+            if isWave1 {
+                // Hold the slot even after Task cancellation until test releases it,
+                // proving cancelAllTasks() does NOT prematurely zero runningTransferCount.
+                await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                    releaseWave1.withLock { $0.append(cont) }
+                }
+            } else {
+                progress(0.5)
+                try await Task.sleep(for: .milliseconds(40))
+                progress(1.0)
+            }
+        }
+
+        let payloadURL = tempDir.appendingPathComponent("slot-test.bin")
+        try Data(repeating: 0xAB, count: 1024).write(to: payloadURL)
+
+        // Start 2 wave1 uploads to saturate both slots
+        _ = manager.enqueueUpload(session: session, localURL: payloadURL, remotePath: "/tmp/wave1_0.bin")
+        _ = manager.enqueueUpload(session: session, localURL: payloadURL, remotePath: "/tmp/wave1_1.bin")
+
+        let startDeadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while counters.withLock({ $0.wave1Started }) < 2 && ContinuousClock.now < startDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(counters.withLock { $0.wave1Started }, 2)
+
+        // Cancel all while wave1 tasks still hold their slots, then immediately enqueue wave2
+        manager.cancelAllTasks()
+
+        var wave2Exps: [XCTestExpectation] = []
+        for i in 0..<4 {
+            let exp = expectation(description: "wave2_\(i)")
+            wave2Exps.append(exp)
+            _ = manager.enqueueUpload(session: session, localURL: payloadURL, remotePath: "/tmp/wave2_\(i).bin") {
+                exp.fulfill()
+            }
+        }
+
+        // Give the scheduler a moment — wave2 must NOT start while wave1 still holds both slots
+        try await Task.sleep(for: .milliseconds(60))
+        XCTAssertLessThanOrEqual(counters.withLock { $0.maxObserved }, 2,
+                                 "cancelAllTasks() must NOT zero runningTransferCount while cancelled tasks still hold slots")
+
+        // Now release wave1 slots so wave2 can drain cleanly
+        let continuations = releaseWave1.withLock { list -> [CheckedContinuation<Void, Never>] in
+            let copy = list
+            list.removeAll()
+            return copy
+        }
+        for cont in continuations { cont.resume() }
+
+        await fulfillment(of: wave2Exps, timeout: 5.0)
+        XCTAssertLessThanOrEqual(counters.withLock { $0.maxObserved }, 2,
+                                 "Total concurrent transfers must never exceed maxConcurrentTransfers=2")
+    }
+
+    // MARK: - TC-REV-70: CertificateFile paths with spaces are quoted and App Store credentialed commands omit BatchMode=yes
+    func testNativeSSHCertificateFileQuotingAndAppStoreBatchModeGuard() throws {
+        let spacedCertSession = Session(
+            name: "SpacedCert",
+            host: "10.0.0.5",
+            username: "qa",
+            authMethod: .certificate(
+                keychainRef: "/Users/qa/My Keys/id_ed25519",
+                certificatePath: "/Users/qa/My Keys/id_ed25519-cert.pub",
+                passphraseRef: nil
+            )
+        )
+        let spacedClient = NativeSSHSession(session: spacedCertSession)
+        let spacedArgs = spacedClient.sshAuthArgs()
+        XCTAssertTrue(
+            spacedArgs.contains("CertificateFile=\"/Users/qa/My Keys/id_ed25519-cert.pub\""),
+            "CertificateFile containing spaces must be quoted for OpenSSH -o option parsing, got: \(spacedArgs)"
+        )
+
+        let plainClient = NativeSSHSession(session: certSession(passphraseRef: nil))
+        let plainArgs = plainClient.sshAuthArgs()
+        XCTAssertTrue(
+            plainArgs.contains("CertificateFile=/keys/id_ed25519-cert.pub"),
+            "Plain CertificateFile paths without spaces/quotes should stay unquoted, got: \(plainArgs)"
+        )
+
+        // Verify App Store credentialed paths (agentless probe, executeCommand, testConnection) do not force BatchMode=yes
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let sshSource = try String(contentsOf: root.appendingPathComponent("Sources/ApexSSH/NativeSSHSession.swift"), encoding: .utf8)
+        let guardCount = sshSource.components(separatedBy: "(hasStoreAuth ? [] : [\"-o\", \"BatchMode=yes\"])").count - 1
+        XCTAssertGreaterThanOrEqual(
+            guardCount, 3,
+            "startAgentlessProbeLoop, executeCommand, and testConnection must all omit BatchMode=yes when App Store auth secret is present"
+        )
+    }
 }

@@ -2,6 +2,29 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.23.7] - 2026-11-19
+
+### 🐞 问题修复 (Bug Fixes)
+- **修复 SFTP 外部文件拖入后行视图蓝色高亮卡死 (`SFTPView.swift`)**：
+  - 解决外部文件拖入 SFTP 文件列表并完成上传后，目标行的蓝色拖放高亮（`isTargetForDropOperation`）持续卡死且手动刷新列表无法清除的缺陷；改为使用 `NSOutlineView.setDropItem(nil, dropChildIndex: NSOutlineViewDropOnItemIndex)` 正确清除拖放目标状态，并增加兜底清理逻辑；
+- **修复 Tab/分屏切换时 SFTP 视图跨主机串台风险 (`SFTPView.swift` & `WorkspaceView.swift`)**：
+  - 为 `SFTPView` 补齐 `.id` 身份绑定并在连接断开态清空残留的旧主机文件列表，消除切换 Tab 或分屏时短暂展示上一主机目录内容或向错误会话发起操作的风险；
+- **加固 SSH 握手生命周期与取消重连竞态 (`NativeSSHSession.swift`)**：
+  - 引入 `attemptId` 作用域取消机制、`Task.isCancelled` 入口校验与 `disconnectToken` 串行化控制，彻底修复取消连接后立即重连时的状态机 TOCTOU 与竞态覆盖问题；
+- **修复 App Store 渠道密码/口令会话认证失败 (`NativeSSHSession.swift`)**：
+  - 修复 App Store 渠道下同时下发 `BatchMode=yes` 与 `ApexSSHBridge`（`SSH_ASKPASS_REQUIRE=force`）导致密码与私钥口令认证被 OpenSSH 直接拒绝的问题；
+- **修复 PTY 握手、资源回收与路径转义等底层隐患 (`NativeSSHSession.swift`)**：
+  - 将 PTY 自动填充密码严格限定在握手阶段，防止会话建立后误触发；修复握手失败或 PTY EOF 时租约与子进程泄漏；移除 100ms `usleep` 阻塞避免丢失真实退出码；修复 `CertificateFile` 路径含空格时未转义导致认证失败的问题，并加固 `@unchecked Sendable` 锁保护与 `dup` 文件描述符安全；
+- **全面加固 SFTP 传输与文件操作健壮性 (`SFTPView.swift` & `TransferManager.swift` & `SFTPFileInspectorSheet.swift`)**：
+  - 修复批量传输部分失败时错误提示被后续成功提示覆盖、拖拽 FilePromise 60 秒全局释放竞态、代理链卸载未恢复、并发目录刷新竞态与断连态未拒收拖放的问题；
+  - 修复 `TransferManager.cancelAllTasks()` 并发槽位计数偏差、文件检验器异步任务取消缺失与在线编辑器防重入问题；
+- **修复工作区主分屏关闭与多窗格联动异常 (`WorkspaceView.swift`)**：
+  - 修复关闭主分屏后服务器监控指标断流与工具栏状态过期的问题，并防止多窗格或跨 Tab 间目录联动越界覆盖。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- 新增 `CodeReviewRegressionTests` `TC-REV-65 ~ TC-REV-70` 与 `SSHConnectionLifecycleTests` `TC-CONN-01 ~ TC-CONN-11`，完整覆盖 SSH 握手取消重连竞态、App Store 桥接认证、`CertificateFile` 空格路径转义、SFTP 拖放高亮清理、跨主机隔离、传输槽位计数与主分屏关闭监控接管；
+- 全量 `swift test` 自动化测试 636 例（621 通过 / 15 跳过 / 0 失败），8 大 Release 性能基准全部达标，Swift 6 模式零警告。
+
 ## [v1.23.6] - 2026-11-10
 
 ### 🐞 问题修复与双向拖拽增强 (Bug Fixes & Improvements)

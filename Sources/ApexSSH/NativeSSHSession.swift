@@ -288,10 +288,11 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         self.connectionLogDirectory = tempDir
         self.sandboxPaths = SandboxSSHPaths(home: sandboxHomeURL ?? URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true),
             temporary: tempDir)
-        if let jumpId = session.jumpServerId, Thread.isMainThread {
-            self.resolvedJumpServer = MainActor.assumeIsolated {
-                SessionStore.shared.sessions.first(where: { $0.id == jumpId })
+        if !session.effectiveJumpServerChain.isEmpty, Thread.isMainThread {
+            let resolved = MainActor.assumeIsolated {
+                SSHArgumentBuilder.resolveJumpChain(for: session, availableSessions: SessionStore.shared.sessions)
             }
+            self.resolvedJumpChain = resolved.hops
             self.didResolveJumpServer = true
         }
     }
@@ -484,24 +485,36 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         return command.grants
     }
 
-    private var resolvedJumpServer: Session?
+    private var resolvedJumpChain: [Session] = []
     private var didResolveJumpServer = false
     public var customJumpSession: Session? {
-        get { stateLock.withLock { resolvedJumpServer } }
+        get { stateLock.withLock { resolvedJumpChain.first } }
         set {
             stateLock.withLock {
-                resolvedJumpServer = newValue
+                resolvedJumpChain = newValue.map { [$0] } ?? []
+                didResolveJumpServer = true
+            }
+        }
+    }
+
+    public var customJumpChain: [Session] {
+        get { stateLock.withLock { resolvedJumpChain } }
+        set {
+            stateLock.withLock {
+                resolvedJumpChain = newValue
                 didResolveJumpServer = true
             }
         }
     }
 
     public func jumpServerArgs() -> [String] {
-        let jumpSession = stateLock.withLock { resolvedJumpServer }
-        guard let jumpSession else { return [] }
-        let host = jumpSession.host.contains(":") && !jumpSession.host.hasPrefix("[") ? "[\(jumpSession.host)]" : jumpSession.host
-        let target = "\(jumpSession.username)@\(host):\(jumpSession.port)"
-        return ["-J", target]
+        let hops = stateLock.withLock { resolvedJumpChain }
+        return SSHArgumentBuilder.jumpFlagArguments(hops: hops, proxyCommand: session.proxyCommand)
+    }
+
+    public func advancedConnectionArgs(channel: SSHInvocationChannel) -> [String] {
+        let hops = stateLock.withLock { resolvedJumpChain }
+        return SSHArgumentBuilder.buildAdvancedOptions(for: session, channel: channel, resolvedJumpHops: hops)
     }
 
     private func resolvePasswordIfNeeded() async {
@@ -515,14 +528,18 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     }
 
     private func resolveJumpServerIfNeeded() async {
-        if stateLock.withLock({ resolvedJumpServer != nil || didResolveJumpServer }) { return }
-        guard let jumpId = session.jumpServerId else {
+        await resolveJumpChainIfNeeded()
+    }
+
+    private func resolveJumpChainIfNeeded() async {
+        if stateLock.withLock({ !resolvedJumpChain.isEmpty || didResolveJumpServer }) { return }
+        guard !session.effectiveJumpServerChain.isEmpty else {
             stateLock.withLock { didResolveJumpServer = true }
             return
         }
-        let found: Session? = await withCheckedContinuation { continuation in
+        let found: [Session] = await withCheckedContinuation { continuation in
             let resumed = OSAllocatedUnfairLock(initialState: false)
-            @Sendable func resumeOnce(_ value: Session?) {
+            @Sendable func resumeOnce(_ value: [Session]) {
                 let shouldResume = resumed.withLock { state -> Bool in
                     guard !state else { return false }
                     state = true
@@ -533,15 +550,15 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
                 }
             }
             Task { @MainActor in
-                let matched = SessionStore.shared.sessions.first(where: { $0.id == jumpId })
-                resumeOnce(matched)
+                let result = SSHArgumentBuilder.resolveJumpChain(for: session, availableSessions: SessionStore.shared.sessions)
+                resumeOnce(result.hops)
             }
             DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + .milliseconds(25)) {
-                resumeOnce(nil)
+                resumeOnce([])
             }
         }
         stateLock.withLock {
-            if let found { self.resolvedJumpServer = found }
+            if !found.isEmpty { self.resolvedJumpChain = found }
             self.didResolveJumpServer = true
         }
     }
@@ -644,7 +661,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             "-E", logPath
         ]
         sshArgs.append(contentsOf: sshAuthArgs(privateKeyURL: keyAccess?.url, certificateURL: certAccess?.url))
-        sshArgs.append(contentsOf: jumpServerArgs())
+        sshArgs.append(contentsOf: advancedConnectionArgs(channel: .interactiveSSH))
         sshArgs.append(contentsOf: [
             "-p", "\(session.port)",
             "\(session.username)@\(session.host)"
@@ -1700,7 +1717,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         let cmd = "printf '%s\\n' \"$HOME\""
         let ctrlArgs = controlMasterArguments
         let authArgs = sshAuthArgs(privateKeyURL: keyAccess?.url, certificateURL: certAccess?.url)
-        let jumpArgs = jumpServerArgs()
+        let jumpArgs = advancedConnectionArgs(channel: .nonInteractiveSSH)
         if let pw = currentResolvedPassword, !pw.isEmpty, let sshpass = sshpassExecutablePath {
             process.executableURL = URL(fileURLWithPath: sshpass)
             process.arguments = sshpassArguments(secret: pw, tool: "/usr/bin/ssh") + [
@@ -1910,7 +1927,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
                 }
                 defer { certAccess?.close() }
                 let authArgs = self.sshAuthArgs(privateKeyURL: keyAccess?.url, certificateURL: certAccess?.url)
-                let jumpArgs = self.jumpServerArgs()
+                let jumpArgs = self.advancedConnectionArgs(channel: .nonInteractiveSSH)
                 let pw = self.currentResolvedPassword
                 let hasStoreAuth = self.distributionChannel == .appStore && !(pw?.isEmpty ?? true)
                 if let pw = pw, !pw.isEmpty, let passBin = sshpass {
@@ -2003,7 +2020,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         let certAccess = try? self.acquireCertificateAccess()
         defer { certAccess?.close() }
         let authArgs = self.sshAuthArgs(privateKeyURL: keyAccess?.url, certificateURL: certAccess?.url)
-        let jumpArgs = self.jumpServerArgs()
+        let jumpArgs = self.advancedConnectionArgs(channel: .nonInteractiveSSH)
         let pw = self.currentResolvedPassword
         let hasStoreAuth = self.distributionChannel == .appStore && !(pw?.isEmpty ?? true)
         if let pw = pw, !pw.isEmpty, let passBin = sshpass {
@@ -2085,7 +2102,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         defer { certAccess?.close() }
         
         let authArgs = self.sshAuthArgs(privateKeyURL: keyAccess?.url, certificateURL: certAccess?.url)
-        let jumpArgs = self.jumpServerArgs()
+        let jumpArgs = self.advancedConnectionArgs(channel: .nonInteractiveSSH)
         
         let probeCommand = "uname -s -m 2>/dev/null || echo ok"
         let baseSSHArgs = [
@@ -2276,7 +2293,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         ] + controlMasterArguments
         
         let authArgs = sshAuthArgs(privateKeyURL: keyAccess?.url, certificateURL: certAccess?.url)
-        let jumpArgs = jumpServerArgs()
+        let jumpArgs = advancedConnectionArgs(channel: .nonInteractiveSSH)
         if let pw = currentResolvedPassword, !pw.isEmpty, let passBin = sshpass {
             process.executableURL = URL(fileURLWithPath: passBin)
             process.arguments = sshpassArguments(secret: pw, tool: "/usr/bin/ssh") + [
@@ -2434,7 +2451,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             "-o", "ServerAliveCountMax=3"
         ]
         baseArgs.append(contentsOf: sshAuthArgs(privateKeyURL: keyAccess?.url, certificateURL: certAccess?.url))
-        baseArgs.append(contentsOf: jumpServerArgs())
+        baseArgs.append(contentsOf: advancedConnectionArgs(channel: .scp))
         // Modern scp uses SFTP: the remote path is already one argv operand.
         // Shell quote characters would become part of the filename.
         let escapedRemote = resolvedRemotePath
@@ -2486,7 +2503,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             "-o", "ServerAliveCountMax=3"
         ]
         baseArgs.append(contentsOf: sshAuthArgs(privateKeyURL: keyAccess?.url, certificateURL: certAccess?.url))
-        baseArgs.append(contentsOf: jumpServerArgs())
+        baseArgs.append(contentsOf: advancedConnectionArgs(channel: .scp))
         // Modern scp uses SFTP: the remote path is already one argv operand.
         // Shell quote characters would become part of the filename.
         let escapedRemote = resolvedRemotePath
@@ -2685,7 +2702,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         ] + controlMasterArguments
         
         let authArgs = sshAuthArgs(privateKeyURL: keyAccess?.url, certificateURL: certAccess?.url)
-        let jumpArgs = jumpServerArgs()
+        let jumpArgs = advancedConnectionArgs(channel: .nonInteractiveSSH)
         if let pw = currentResolvedPassword, !pw.isEmpty, let passBin = sshpass {
             process.executableURL = URL(fileURLWithPath: passBin)
             process.arguments = sshpassArguments(secret: pw, tool: "/usr/bin/ssh") + [

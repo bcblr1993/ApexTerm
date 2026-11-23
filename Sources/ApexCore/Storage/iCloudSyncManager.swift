@@ -112,6 +112,7 @@ public final class iCloudSyncManager: ObservableObject {
                 break
             }
             s.environmentVariables = SessionStartupHelper.sanitizeEnvironmentForCloud(s.environmentVariables)
+            s.proxyCommand = SessionStartupHelper.sanitizeProxyCommand(s.proxyCommand)
             safeSessions.append(s)
         }
         sanitized.sessions = safeSessions

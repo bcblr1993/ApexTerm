@@ -564,8 +564,11 @@ public final class NativeTerminalView: NSTextView {
             if oldValue !== ringBuffer {
                 resizeDebounceTask?.cancel()
                 resizeDebounceTask = nil
+                syncWatchdogTask?.cancel()
+                syncWatchdogTask = nil
                 pendingDimensions = nil
                 lastReportedDimensions = nil
+                lastPromptNavigationLine = nil
                 lastCommittedIndex = 0
                 activeLineStartLocation = 0
                 renderedScreenRows = nil
@@ -587,7 +590,9 @@ public final class NativeTerminalView: NSTextView {
     private var renderedScreenRows: [NSAttributedString]?
     private var renderedScreenLines: [String]?
     private var resizeDebounceTask: Task<Void, Never>? = nil
+    private var syncWatchdogTask: Task<Void, Never>? = nil
     private var pendingDimensions: (cols: Int, rows: Int)?
+    private var lastPromptNavigationLine: Int? = nil
     
     private let parser = VTParser()
     private let keywordHighlighter = KeywordHighlighter()
@@ -732,6 +737,117 @@ public final class NativeTerminalView: NSTextView {
             self.enclosingScrollView?.reflectScrolledClipView(clipView)
             CATransaction.commit()
         }
+    }
+
+    /// Scrolls the viewport to bring a committed lifetime line index into view near the top edge.
+    @discardableResult
+    public func scrollToLineIndex(_ targetLine: Int) -> Bool {
+        guard ringBuffer?.isInAlternateScreen != true,
+              let storage = self.textStorage,
+              storage.length > 0 else {
+            return false
+        }
+        if targetLine >= Int(lastCommittedIndex) {
+            isPinnedToBottom = true
+            scrollToBottom(forceLayout: true)
+            lastPromptNavigationLine = nil
+            return true
+        }
+
+        let visibleCount = max(0, renderedCommittedLineLengths.count - renderedLineHead)
+        let oldestLine = Int(lastCommittedIndex) - visibleCount
+        let relIndex = max(0, targetLine - oldestLine)
+        if relIndex >= visibleCount {
+            isPinnedToBottom = true
+            scrollToBottom(forceLayout: true)
+            lastPromptNavigationLine = nil
+            return true
+        }
+
+        var charOffset = 0
+        let endIdx = min(renderedCommittedLineLengths.count, renderedLineHead + relIndex)
+        if endIdx > renderedLineHead {
+            for idx in renderedLineHead..<endIdx {
+                charOffset += renderedCommittedLineLengths[idx]
+            }
+        }
+        charOffset = min(max(0, charOffset), max(0, storage.length - 1))
+
+        if let layoutManager = self.layoutManager,
+           let clipView = self.enclosingScrollView?.contentView {
+            layoutManager.ensureLayout(forCharacterRange: NSRange(location: charOffset, length: 1))
+            let glyphIndex = layoutManager.glyphIndexForCharacter(at: charOffset)
+            let fragRect = layoutManager.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil)
+            let maxY = max(0, self.frame.height - clipView.bounds.height)
+            let targetY = min(maxY, max(0, fragRect.minY + textContainerInset.height - 6))
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            clipView.scroll(to: NSPoint(x: 0, y: targetY))
+            self.enclosingScrollView?.reflectScrolledClipView(clipView)
+            CATransaction.commit()
+            self.isPinnedToBottom = self.isScrolledToBottom()
+        } else {
+            self.scrollRangeToVisible(NSRange(location: charOffset, length: 1))
+        }
+        lastPromptNavigationLine = targetLine
+        return true
+    }
+
+    public func currentTopVisibleLineIndex() -> Int {
+        guard let buffer = ringBuffer else { return 0 }
+        if isScrolledToBottom() && lastPromptNavigationLine == nil {
+            return Int(buffer.totalCommittedCount)
+        }
+        if let navLine = lastPromptNavigationLine {
+            return navLine
+        }
+        guard let layoutManager = self.layoutManager,
+              let textContainer = self.textContainer,
+              let storage = self.textStorage,
+              storage.length > 0,
+              let clipView = self.enclosingScrollView?.contentView else {
+            return Int(lastCommittedIndex)
+        }
+        let visibleCount = max(0, renderedCommittedLineLengths.count - renderedLineHead)
+        let oldestLine = Int(lastCommittedIndex) - visibleCount
+        let point = NSPoint(x: 0, y: max(0, clipView.bounds.origin.y - textContainerInset.height + 8))
+        let glyphIdx = layoutManager.glyphIndex(for: point, in: textContainer)
+        let charIdx = layoutManager.characterIndexForGlyph(at: glyphIdx)
+        var running = 0
+        for offset in 0..<visibleCount {
+            let len = renderedCommittedLineLengths[renderedLineHead + offset]
+            if charIdx < running + len {
+                return oldestLine + offset
+            }
+            running += len
+        }
+        return Int(lastCommittedIndex)
+    }
+
+    @discardableResult
+    public func jumpToPreviousPrompt() -> Bool {
+        guard let buffer = ringBuffer, !buffer.isInAlternateScreen else { return false }
+        let refLine = currentTopVisibleLineIndex()
+        guard let prev = buffer.shellIntegration.previousPromptLine(before: refLine) else {
+            return false
+        }
+        return scrollToLineIndex(prev)
+    }
+
+    @discardableResult
+    public func jumpToNextPrompt() -> Bool {
+        guard let buffer = ringBuffer, !buffer.isInAlternateScreen else { return false }
+        let refLine = currentTopVisibleLineIndex()
+        if let next = buffer.shellIntegration.nextPromptLine(after: refLine) {
+            return scrollToLineIndex(next)
+        }
+        if !isScrolledToBottom() || lastPromptNavigationLine != nil {
+            isPinnedToBottom = true
+            scrollToBottom(forceLayout: true)
+            lastPromptNavigationLine = nil
+            return true
+        }
+        return false
     }
     
     /// Notify remote PTY of new dimensions with debounce (prevents SIGWINCH storm during drag)
@@ -1082,7 +1198,10 @@ public final class NativeTerminalView: NSTextView {
         stopCursorBlink()
         resizeDebounceTask?.cancel()
         resizeDebounceTask = nil
+        syncWatchdogTask?.cancel()
+        syncWatchdogTask = nil
         pendingDimensions = nil
+        lastPromptNavigationLine = nil
         NotificationCenter.default.removeObserver(self)
         NSWorkspace.shared.notificationCenter.removeObserver(self)
         if let settingsObserver {
@@ -1105,6 +1224,7 @@ public final class NativeTerminalView: NSTextView {
     isolated deinit {
         cursorBlinkTimer?.invalidate()
         resizeDebounceTask?.cancel()
+        syncWatchdogTask?.cancel()
         NotificationCenter.default.removeObserver(self)
         NSWorkspace.shared.notificationCenter.removeObserver(self)
         if let settingsObserver { NotificationCenter.default.removeObserver(settingsObserver) }
@@ -1627,6 +1747,7 @@ public final class NativeTerminalView: NSTextView {
     }
     
     override public func scrollWheel(with event: NSEvent) {
+        lastPromptNavigationLine = nil
         if abs(event.scrollingDeltaY) > 0.1,
            sendMouseReport(event, button: event.scrollingDeltaY > 0 ? 64 : 65) { return }
         if let buffer = ringBuffer, buffer.isInAlternateScreen {
@@ -1679,14 +1800,27 @@ public final class NativeTerminalView: NSTextView {
     override public func performKeyEquivalent(with event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
         if window?.firstResponder === self,
-           modifiers == [.command], event.charactersIgnoringModifiers?.lowercased() == "v" {
-            _ = pasteFromClipboard()
-            return true
+           modifiers == [.command] {
+            if event.charactersIgnoringModifiers?.lowercased() == "v" {
+                _ = pasteFromClipboard()
+                return true
+            }
+            if ringBuffer?.isInAlternateScreen != true {
+                if event.keyCode == 126 {
+                    _ = jumpToPreviousPrompt()
+                    return true
+                }
+                if event.keyCode == 125 {
+                    _ = jumpToNextPrompt()
+                    return true
+                }
+            }
         }
         return super.performKeyEquivalent(with: event)
     }
 
     override public func keyDown(with event: NSEvent) {
+        lastPromptNavigationLine = nil
         if ringBuffer?.isInAlternateScreen != true {
             self.isPinnedToBottom = true
         }
@@ -1701,6 +1835,16 @@ public final class NativeTerminalView: NSTextView {
 
         // 0. Handle Cmd shortcuts: Cmd+K (Clear), Cmd+F (Find), Cmd+G (Next Match), Cmd+Shift+G (Prev Match)
         if event.modifierFlags.contains(.command) {
+            if shortcutModifiers == [.command], ringBuffer?.isInAlternateScreen != true {
+                if event.keyCode == 126 {
+                    _ = jumpToPreviousPrompt()
+                    return
+                }
+                if event.keyCode == 125 {
+                    _ = jumpToNextPrompt()
+                    return
+                }
+            }
             if let chars = event.charactersIgnoringModifiers?.lowercased() {
                 if shortcutModifiers == [.command] || shortcutModifiers == [.command, .shift] {
                     if chars == "+" || chars == "=" {
@@ -2314,6 +2458,20 @@ public final class NativeTerminalView: NSTextView {
     public func refresh() {
         guard let buffer = ringBuffer else { return }
         handleBellIfNeeded()
+
+        if buffer.isSynchronizedOutputActive {
+            if syncWatchdogTask == nil {
+                syncWatchdogTask = Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: .milliseconds(125))
+                    guard !Task.isCancelled, let self else { return }
+                    self.syncWatchdogTask = nil
+                    self.scheduleRefresh()
+                }
+            }
+            return
+        }
+        syncWatchdogTask?.cancel()
+        syncWatchdogTask = nil
 
         if let screenLines = buffer.screenLines {
             let lineHeight = layoutManager?.defaultLineHeight(for: cachedBaseFont) ?? 16

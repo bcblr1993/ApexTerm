@@ -21,7 +21,11 @@ public struct SessionEditModal: View {
     @State private var certificatePath: String = ""
     @State private var passphrase: String = ""
     @State private var selectedVaultKeyId: UUID? = nil
-    @State private var jumpServerId: UUID? = nil
+    @State private var jumpServerChain: [UUID] = []
+    @State private var forwardAgent: Bool = false
+    @State private var compression: Bool = false
+    @State private var proxyCommand: String = ""
+    @State private var isAdvancedSSHExpanded: Bool = false
     @State private var folder: String = "常用会话"
     @State private var tags: String = ""
     @State private var colorHex: String = "#0A84FF"
@@ -162,10 +166,66 @@ public struct SessionEditModal: View {
 
                     let otherSessions = Self.jumpHostCandidates(from: SessionStore.shared.sessions, excluding: initialSession?.id)
                     if !otherSessions.isEmpty {
-                        Picker("跳板机 (Jump Host)", selection: $jumpServerId) {
-                            Text("无 (直连)").tag(UUID?.none)
-                            ForEach(otherSessions) { s in
-                                Text("\(s.name) (\(s.host))").tag(UUID?.some(s.id))
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                Text("跳板机链 (ProxyJump)")
+                                Spacer()
+                                if jumpServerChain.count < SSHArgumentBuilder.maxJumpHops {
+                                    let availableToAdd = otherSessions.filter { !jumpServerChain.contains($0.id) }
+                                    if !availableToAdd.isEmpty {
+                                        Menu("添加跳板机…") {
+                                            ForEach(availableToAdd) { s in
+                                                Button("\(s.name) (\(s.host))") {
+                                                    jumpServerChain.append(s.id)
+                                                }
+                                            }
+                                        }
+                                        .menuStyle(.borderlessButton)
+                                        .fixedSize()
+                                        .accessibilityIdentifier("session.addJumpHostMenu")
+                                    }
+                                }
+                            }
+
+                            if jumpServerChain.isEmpty {
+                                Text("直连目标主机（可按顺序添加最多 \(SSHArgumentBuilder.maxJumpHops) 级跳板机）")
+                                    .font(.caption)
+                                    .foregroundStyle(ApexStyle.secondary)
+                            } else {
+                                ForEach(Array(jumpServerChain.enumerated()), id: \.element) { index, hopId in
+                                    let hopSession = SessionStore.shared.sessions.first(where: { $0.id == hopId })
+                                    HStack(spacing: 6) {
+                                        Text("\(index + 1).")
+                                            .font(.caption.monospaced())
+                                            .foregroundStyle(ApexStyle.accent)
+                                        Text(hopSession.map { "\($0.name) (\($0.username)@\($0.host):\($0.port))" } ?? "未知跳板机 (\(hopId.uuidString.prefix(8)))")
+                                            .font(.system(size: 11.5, design: .monospaced))
+                                            .lineLimit(1)
+                                        Spacer()
+                                        if index > 0 {
+                                            ApexIconButton(icon: "arrow.up", label: "上移跳板机", size: 20, iconSize: 10) {
+                                                jumpServerChain.swapAt(index, index - 1)
+                                            }
+                                        }
+                                        if index + 1 < jumpServerChain.count {
+                                            ApexIconButton(icon: "arrow.down", label: "下移跳板机", size: 20, iconSize: 10) {
+                                                jumpServerChain.swapAt(index, index + 1)
+                                            }
+                                        }
+                                        ApexIconButton(icon: "xmark", label: "移除跳板机", size: 20, iconSize: 9, tint: ApexStyle.error) {
+                                            jumpServerChain.removeAll(where: { $0 == hopId })
+                                        }
+                                    }
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                    .background(ApexStyle.subtleSurface, in: RoundedRectangle(cornerRadius: 6))
+                                }
+                            }
+
+                            if let jumpCycleMessage {
+                                Text(jumpCycleMessage)
+                                    .font(.caption)
+                                    .foregroundStyle(ApexStyle.error)
                             }
                         }
                     }
@@ -428,6 +488,36 @@ public struct SessionEditModal: View {
                     Text("远端缺少终端描述导致长命令不换行时，改为 xterm")
                         .font(.caption)
                         .foregroundStyle(ApexStyle.secondary)
+
+                    DisclosureGroup("高级 SSH 选项 (-A / -C / ProxyCommand)", isExpanded: $isAdvancedSSHExpanded) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Toggle("SSH Agent 转发 (-A)", isOn: $forwardAgent)
+                                .accessibilityIdentifier("session.forwardAgentToggle")
+                            Text("仅在受信任的远端主机启用，开启后远端可使用本机 SSH Agent 密钥认证。")
+                                .font(.caption2)
+                                .foregroundStyle(ApexStyle.secondary)
+
+                            Toggle("启用链路压缩 (-C)", isOn: $compression)
+                                .accessibilityIdentifier("session.compressionToggle")
+
+                            TextField("自定义 ProxyCommand (如 nc -X 5 -x 127.0.0.1:1080 %h %p)", text: $proxyCommand)
+                                .accessibilityLabel("自定义 ProxyCommand")
+                                .accessibilityIdentifier("session.proxyCommand")
+                                .font(.system(.body, design: .monospaced))
+
+                            if let sandboxWarn = ProxyCommandValidator.sandboxWarning(for: proxyCommand, isAppStore: DistributionChannel.current == .appStore) {
+                                Label(sandboxWarn, systemImage: "exclamationmark.triangle.fill")
+                                    .font(.caption2)
+                                    .foregroundStyle(ApexStyle.warning)
+                            }
+                            if !proxyCommand.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !jumpServerChain.isEmpty {
+                                Text("已配置 ProxyCommand 时将优先使用 ProxyCommand，并自动忽略跳板机链 (-J)。")
+                                    .font(.caption2)
+                                    .foregroundStyle(ApexStyle.warning)
+                            }
+                        }
+                        .padding(.top, 6)
+                    }
                 }
 
                 // 5. 登录启动与环境变量
@@ -462,7 +552,7 @@ public struct SessionEditModal: View {
                 ) {
                     runConnectionTest()
                 }
-                .disabled(isTestingConnection || host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !isValidPort || authValidationMessage != nil)
+                .disabled(isTestingConnection || host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !isValidPort || authValidationMessage != nil || jumpCycleMessage != nil)
                 .accessibilityLabel("测试连接")
                 .accessibilityIdentifier("session.testConnectionButton")
                 .overlay(alignment: .leading) {
@@ -496,7 +586,7 @@ public struct SessionEditModal: View {
                     .help(result.isSuccess ? "连接正常" : (result.errorMessage ?? "连接失败"))
                     .accessibilityIdentifier("session.testResultBanner")
                     .transition(.opacity)
-                } else if let message = saveError ?? authValidationMessage ?? envValidationMessage {
+                } else if let message = saveError ?? jumpCycleMessage ?? authValidationMessage ?? envValidationMessage {
                     Text(message)
                         .font(.caption)
                         .foregroundStyle(saveError != nil ? ApexStyle.error : ApexStyle.warning)
@@ -524,7 +614,7 @@ public struct SessionEditModal: View {
                 ) {
                     saveSession()
                 }
-                .disabled(host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !isValidPort || authValidationMessage != nil || envValidationMessage != nil)
+                .disabled(host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !isValidPort || authValidationMessage != nil || envValidationMessage != nil || jumpCycleMessage != nil)
                 .keyboardShortcut(.defaultAction)
             }
             .padding(.horizontal, 20)
@@ -556,7 +646,10 @@ public struct SessionEditModal: View {
             testResult = nil
             cachedCertificateInfo = Self.inspectCertificateFile(atPath: newValue)
         }
-        .onChange(of: jumpServerId) { _, _ in testResult = nil }
+        .onChange(of: jumpServerChain) { _, _ in testResult = nil }
+        .onChange(of: forwardAgent) { _, _ in testResult = nil }
+        .onChange(of: compression) { _, _ in testResult = nil }
+        .onChange(of: proxyCommand) { _, _ in testResult = nil }
     }
 
     nonisolated public static func inspectCertificateFile(atPath rawPath: String) -> SSHCertificateInfo {
@@ -605,6 +698,15 @@ public struct SessionEditModal: View {
 
     private var envValidationMessage: String? {
         Self.environmentValidationMessage(for: environmentVariablesText)
+    }
+
+    private var jumpCycleMessage: String? {
+        guard !jumpServerChain.isEmpty else { return nil }
+        let sessionId = initialSession?.id ?? UUID()
+        if SSHArgumentBuilder.hasJumpCycle(startingAt: sessionId, jumpChain: jumpServerChain, allSessions: SessionStore.shared.sessions) {
+            return "跳板机链存在环形依赖，请移除冲突节点"
+        }
+        return nil
     }
 
     nonisolated public static func environmentValidationMessage(for text: String) -> String? {
@@ -703,6 +805,7 @@ public struct SessionEditModal: View {
             effectiveSecret = nil
         }
 
+        let trimmedProxyCmd = proxyCommand.trimmingCharacters(in: .whitespacesAndNewlines)
         let candidateSession = Session(
             id: initialSession?.id ?? UUID(),
             name: name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? trimmedHost : name.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -710,7 +813,11 @@ public struct SessionEditModal: View {
             port: portInt,
             username: effectiveUsername,
             authMethod: candidateAuthMethod,
-            jumpServerId: jumpServerId
+            jumpServerId: jumpServerChain.first,
+            jumpServerChain: jumpServerChain,
+            forwardAgent: forwardAgent,
+            compression: compression,
+            proxyCommand: trimmedProxyCmd.isEmpty ? nil : trimmedProxyCmd
         )
 
         isTestingConnection = true
@@ -747,7 +854,11 @@ public struct SessionEditModal: View {
         startupCommand = s.startupCommand ?? ""
         environmentVariablesText = SessionStartupHelper.formatEnvLines(s.environmentVariables)
         
-        jumpServerId = s.jumpServerId
+        jumpServerChain = s.effectiveJumpServerChain
+        forwardAgent = s.forwardAgent
+        compression = s.compression
+        proxyCommand = s.proxyCommand ?? ""
+        isAdvancedSSHExpanded = s.forwardAgent || s.compression || !(s.proxyCommand?.isEmpty ?? true)
         
         switch s.authMethod {
         case .password(let ref):
@@ -852,6 +963,11 @@ public struct SessionEditModal: View {
         
         let trimmedInitDir = initialWorkingDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedStartupCmd = startupCommand.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedProxyCmd = proxyCommand.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let jumpCycleMessage {
+            saveError = jumpCycleMessage
+            return
+        }
         let parsedEnv = SessionStartupHelper.parseEnvLines(environmentVariablesText)
         if !parsedEnv.invalidKeys.isEmpty {
             saveError = "环境变量名无效：\(parsedEnv.invalidKeys.joined(separator: ", "))"
@@ -868,7 +984,11 @@ public struct SessionEditModal: View {
             folder: Self.canonicalFolder(folder, existing: Self.existingFolders(sessions: SessionStore.shared.sessions, extraFolders: SessionStore.shared.folders)),
             tags: Self.parseTags(tags),
             colorHex: colorHex,
-            jumpServerId: jumpServerId,
+            jumpServerId: jumpServerChain.first,
+            jumpServerChain: jumpServerChain,
+            forwardAgent: forwardAgent,
+            compression: compression,
+            proxyCommand: trimmedProxyCmd.isEmpty ? nil : trimmedProxyCmd,
             agentlessMonitorEnabled: agentlessMonitor,
             sftpAutoSyncEnabled: sftpAutoSync,
             keepAliveIntervalSeconds: keepAliveInterval,

@@ -23,6 +23,44 @@ public struct TerminalCell: Equatable, Sendable {
     }
 }
 
+/// Parsed remote clipboard write request delivered via OSC 52.
+public struct OSC52WriteRequest: Sendable, Equatable {
+    public let selection: String
+    public let text: String
+    public let byteCount: Int
+
+    public init(selection: String, text: String, byteCount: Int) {
+        self.selection = selection
+        self.text = text
+        self.byteCount = byteCount
+    }
+}
+
+/// Safe parser for OSC 52 (`<selection>;<base64>`) payloads.
+/// Rejects clipboard read queries (`?`) and enforces a strict decoded size limit.
+public enum OSC52Parser {
+    public static let defaultMaxDecodedBytes = 100 * 1024
+
+    public static func parse(payload: String, maxDecodedBytes: Int = defaultMaxDecodedBytes) -> OSC52WriteRequest? {
+        guard let semicolonIndex = payload.firstIndex(of: ";") else { return nil }
+        let selection = String(payload[..<semicolonIndex])
+        let dataSlice = payload[payload.index(after: semicolonIndex)...]
+        let trimmed = dataSlice.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Security guardrail: never allow remote processes to query or read local clipboard.
+        if trimmed == "?" || trimmed.isEmpty { return nil }
+        let compactBase64 = String(trimmed.unicodeScalars.filter { !CharacterSet.whitespacesAndNewlines.contains($0) })
+        guard !compactBase64.isEmpty else { return nil }
+        if (compactBase64.count * 3) / 4 > maxDecodedBytes + 3 { return nil }
+        guard let decoded = Data(base64Encoded: compactBase64),
+              !decoded.isEmpty,
+              decoded.count <= maxDecodedBytes else {
+            return nil
+        }
+        guard let text = String(data: decoded, encoding: .utf8) else { return nil }
+        return OSC52WriteRequest(selection: selection, text: text, byteCount: decoded.count)
+    }
+}
+
 /// High-performance circular line buffer for terminal scrollback history with real-time update notifications
 public final class TerminalRingBuffer: @unchecked Sendable {
     private var historyLimit: Int
@@ -127,6 +165,10 @@ public final class TerminalRingBuffer: @unchecked Sendable {
     }
     
     public var onUpdate: (@Sendable () -> Void)?
+    public var onOSC52WriteRequest: (@Sendable (OSC52WriteRequest) -> Void)?
+
+    public static let synchronizedOutputWatchdogTimeout: Duration = .milliseconds(120)
+    public static let maxUnclosedOSCChars: Int = 163_840
     
     public func setHistoryLimit(_ requestedLimit: Int) {
         lock.lock()
@@ -155,6 +197,28 @@ public final class TerminalRingBuffer: @unchecked Sendable {
     private var _isClearPending: Bool = false
     private var _isBellPending: Bool = false
     private var _isBracketedPasteEnabled: Bool = false
+    private var _isSynchronizedOutputActive: Bool = false
+    private var _syncOutputStartedAt: ContinuousClock.Instant? = nil
+
+    /// Whether DEC synchronized output mode (?2026h) is currently active, auto-resetting past watchdog timeout.
+    public var isSynchronizedOutputActive: Bool {
+        isSynchronizedOutputActive(now: .now, timeout: Self.synchronizedOutputWatchdogTimeout)
+    }
+
+    public func isSynchronizedOutputActive(
+        now: ContinuousClock.Instant,
+        timeout: Duration = TerminalRingBuffer.synchronizedOutputWatchdogTimeout
+    ) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard _isSynchronizedOutputActive else { return false }
+        if let startedAt = _syncOutputStartedAt, startedAt.duration(to: now) >= timeout {
+            _isSynchronizedOutputActive = false
+            _syncOutputStartedAt = nil
+            return false
+        }
+        return true
+    }
     
     /// Whether the remote shell has enabled bracketed paste mode (DEC private mode 2004)
     public var isBracketedPasteEnabled: Bool {
@@ -287,10 +351,18 @@ public final class TerminalRingBuffer: @unchecked Sendable {
 
     /// Append streaming raw output from terminal PTY
     public func appendStream(_ text: String) {
+        var osc52Requests: [OSC52WriteRequest] = []
         lock.lock()
         defer {
             let updateHandler = onUpdate
+            let osc52Handler = onOSC52WriteRequest
+            let requestsToDeliver = osc52Requests
             lock.unlock()
+            if let osc52Handler, !requestsToDeliver.isEmpty {
+                for request in requestsToDeliver {
+                    osc52Handler(request)
+                }
+            }
             updateHandler?()
         }
         
@@ -411,8 +483,20 @@ public final class TerminalRingBuffer: @unchecked Sendable {
                 } else if nextChar == "]" { // OSC Sequence
                     let payloadStart = fullText.index(after: next)
                     var j = payloadStart
+                    var oscLen = 0
+                    var exceededOscCap = false
                     while j < fullText.endIndex && fullText[j] != "\u{0007}" && fullText[j] != "\u{001B}" {
                         j = fullText.index(after: j)
+                        oscLen += 1
+                        if oscLen > Self.maxUnclosedOSCChars {
+                            exceededOscCap = true
+                            break
+                        }
+                    }
+                    if exceededOscCap {
+                        // Drop oversized unclosed OSC stream so malformed output cannot stall parsing or inflate memory.
+                        i = j
+                        continue
                     }
                     let payloadEnd = j
                     if j < fullText.endIndex && fullText[j] == "\u{001B}" {
@@ -429,12 +513,18 @@ public final class TerminalRingBuffer: @unchecked Sendable {
                         break
                     }
                     let oscPayload = String(fullText[payloadStart..<payloadEnd])
-                    let currentActive = isEditingActiveLine ? renderCellsToString(activeCells) : activeLine
-                    shellIntegration.handleOSCPayload(
-                        oscPayload,
-                        currentLineIndex: Int(_totalCommittedCount),
-                        activeLineText: currentActive
-                    )
+                    if oscPayload.hasPrefix("52;") {
+                        if let request = OSC52Parser.parse(payload: String(oscPayload.dropFirst(3))) {
+                            osc52Requests.append(request)
+                        }
+                    } else {
+                        let currentActive = isEditingActiveLine ? renderCellsToString(activeCells) : activeLine
+                        shellIntegration.handleOSCPayload(
+                            oscPayload,
+                            currentLineIndex: Int(_totalCommittedCount),
+                            activeLineText: currentActive
+                        )
+                    }
                     i = fullText.index(after: j)
                     continue
                 } else if "()*+-./".contains(nextChar) {
@@ -669,6 +759,16 @@ public final class TerminalRingBuffer: @unchecked Sendable {
                 _isApplicationCursorKeys = isSet
             case 2004:
                 _isBracketedPasteEnabled = isSet
+            case 2026:
+                if isSet {
+                    if !_isSynchronizedOutputActive {
+                        _syncOutputStartedAt = .now
+                    }
+                    _isSynchronizedOutputActive = true
+                } else {
+                    _isSynchronizedOutputActive = false
+                    _syncOutputStartedAt = nil
+                }
             case 25:
                 _isCursorHidden = !isSet
                 _screenRevision += 1
@@ -1064,6 +1164,8 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         _isCursorHidden = false; _isApplicationCursorKeys = false
         _isBracketedPasteEnabled = false; _mouseTrackingMode = 0; _isSGRMouseEnabled = false
         _isBellPending = false
+        _isSynchronizedOutputActive = false
+        _syncOutputStartedAt = nil
         shellIntegration.reset()
         _screenRevision += 1; _isClearPending = true
     }
@@ -1083,6 +1185,8 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         currentStyle = SGRStyle(foreground: nil, index: nil, bold: false)
         _isBellPending = false
         _isClearPending = true
+        _isSynchronizedOutputActive = false
+        _syncOutputStartedAt = nil
         shellIntegration.reset()
         let updateHandler = onUpdate
         lock.unlock()

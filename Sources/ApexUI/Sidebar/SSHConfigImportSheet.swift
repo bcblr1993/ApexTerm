@@ -268,6 +268,11 @@ public struct SSHConfigImportSheet: View {
             }
             importedCount += 1
         }
+
+        if toImport.contains(where: { !$0.proxyJump.isEmpty }) {
+            let resolved = SSHConfigParser.resolveProxyJumpChains(hosts: toImport, sessions: store.sessions)
+            store.replaceAllSessions(resolved)
+        }
         
         importResultNotice = "已成功导入 \(importedCount) 台主机到分组 [\(resolvedFolder)]！"
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {

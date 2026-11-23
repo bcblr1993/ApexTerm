@@ -115,6 +115,7 @@ public enum SessionBundleExporter {
         }
 
         copy.environmentVariables = SessionStartupHelper.sanitizeEnvironmentForCloud(copy.environmentVariables)
+        copy.proxyCommand = SessionStartupHelper.sanitizeProxyCommand(copy.proxyCommand)
         return copy
     }
 
@@ -216,14 +217,18 @@ public enum SessionBundleExporter {
             }
         }
 
-        // Remap jumpServerId if a jump host was matched to an existing session ID
+        // Remap jumpServerId / jumpServerChain if jump hosts were matched to existing session IDs
         for incoming in pack.sessions {
-            if let oldJumpId = incoming.jumpServerId,
-               let mappedJumpId = sessionIdRemap[oldJumpId],
-               mappedJumpId != oldJumpId,
-               let targetSessionId = sessionIdRemap[incoming.id],
-               var targetSession = store.sessions.first(where: { $0.id == targetSessionId }) {
-                targetSession.jumpServerId = mappedJumpId
+            let incomingChain = incoming.effectiveJumpServerChain
+            guard !incomingChain.isEmpty,
+                  let targetSessionId = sessionIdRemap[incoming.id],
+                  var targetSession = store.sessions.first(where: { $0.id == targetSessionId }) else {
+                continue
+            }
+            let mappedChain = incomingChain.map { sessionIdRemap[$0] ?? $0 }
+            if mappedChain != targetSession.effectiveJumpServerChain {
+                targetSession.jumpServerChain = mappedChain
+                targetSession.jumpServerId = mappedChain.first
                 store.updateSession(targetSession)
             }
         }
@@ -358,14 +363,31 @@ public enum SessionBundleExporter {
                 break
             }
 
-            if let jumpId = session.jumpServerId {
-                if let jumpAlias = aliasBySessionId[jumpId] {
-                    lines.append("    ProxyJump \(jumpAlias)")
-                } else if let jumpSession = remoteSessions.first(where: { $0.id == jumpId }) {
-                    let jumpSpec = jumpSession.port == 22
-                        ? "\(jumpSession.username)@\(jumpSession.host)"
-                        : "\(jumpSession.username)@\(jumpSession.host):\(jumpSession.port)"
-                    lines.append("    ProxyJump \(jumpSpec)")
+            if session.forwardAgent {
+                lines.append("    ForwardAgent yes")
+            }
+            if session.compression {
+                lines.append("    Compression yes")
+            }
+
+            if let sanitizedProxy = SessionStartupHelper.sanitizeProxyCommand(session.proxyCommand), !sanitizedProxy.isEmpty {
+                lines.append("    ProxyCommand \(sanitizedProxy)")
+            } else {
+                let jumpChain = session.effectiveJumpServerChain
+                if !jumpChain.isEmpty {
+                    let hopSpecs: [String] = jumpChain.compactMap { jumpId in
+                        if let jumpAlias = aliasBySessionId[jumpId] {
+                            return jumpAlias
+                        } else if let jumpSession = remoteSessions.first(where: { $0.id == jumpId }) {
+                            return jumpSession.port == 22
+                                ? "\(jumpSession.username)@\(jumpSession.host)"
+                                : "\(jumpSession.username)@\(jumpSession.host):\(jumpSession.port)"
+                        }
+                        return nil
+                    }
+                    if !hopSpecs.isEmpty {
+                        lines.append("    ProxyJump \(hopSpecs.joined(separator: ","))")
+                    }
                 }
             }
 

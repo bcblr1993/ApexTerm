@@ -7,6 +7,7 @@ public struct QuickEditorView: View {
     @ObservedObject private var themeSettings = AppSettings.shared
     public let item: SFTPItem
     @Binding public var content: String
+    public let initialLine: Int?
     public let onSave: (String) async throws -> Void
     public let onReload: () async throws -> String
     @Environment(\.dismiss) private var dismiss
@@ -28,11 +29,13 @@ public struct QuickEditorView: View {
     public init(
         item: SFTPItem,
         content: Binding<String>,
+        initialLine: Int? = nil,
         onSave: @escaping (String) async throws -> Void,
         onReload: @escaping () async throws -> String
     ) {
         self.item = item
         self._content = content
+        self.initialLine = initialLine
         self.onSave = onSave
         self.onReload = onReload
     }
@@ -146,7 +149,21 @@ public struct QuickEditorView: View {
             
             Divider()
             
-            NativeCodeEditor(text: $content, showsFindBar: $isSearchVisible, isReloading: isReloading, palette: editorPalette)
+            let detectedLanguage = SyntaxLanguage.detect(filename: item.name)
+            let isSystemDark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            let effectiveDark = themeSettings.followsSystemAppearance ? isSystemDark : themeSettings.themePreset.isDark
+            let effectiveHighlightPalette = themeSettings.followsSystemAppearance ? nil : themeSettings.themePreset.palette
+
+            NativeCodeEditor(
+                text: $content,
+                showsFindBar: $isSearchVisible,
+                isReloading: isReloading,
+                palette: editorPalette,
+                language: detectedLanguage,
+                highlightPalette: effectiveHighlightPalette,
+                isDarkTheme: effectiveDark,
+                jumpToLine: initialLine
+            )
                 .onChange(of: content) { _, newValue in
                     hasUnsavedChanges = newValue != initialContent
                     lineCount = 1 + newValue.utf8.reduce(0) { $0 + ($1 == 10 ? 1 : 0) }

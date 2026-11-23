@@ -62,6 +62,7 @@ public struct ShortcutsSheetView: View {
             items: [
                 ShortcutItem(keys: ["⌘", "R"], description: "重新连接当前会话"),
                 ShortcutItem(keys: ["⌘", "F"], description: "在终端与文件列表中快速搜索"),
+                ShortcutItem(keys: ["⌘", "↑ / ↓"], description: "跳转上一条 / 下一条命令提示符 (OSC 133)"),
                 ShortcutItem(keys: ["⌘", "K"], description: "彻底清屏并重置回滚历史"),
                 ShortcutItem(keys: ["⌃", "C"], description: "发送中断信号 (SIGINT)"),
                 ShortcutItem(keys: ["⌃", "D"], description: "发送 EOF / 登出当前 Shell"),
@@ -77,6 +78,7 @@ public struct ShortcutsSheetView: View {
             icon: "folder",
             items: [
                 ShortcutItem(keys: ["⌘", "L"], description: "快速聚焦远程路径输入框"),
+                ShortcutItem(keys: ["⌘", "⇧", "F"], description: "在远端目录按文件名或内容搜索 (SFTP)"),
                 ShortcutItem(keys: ["⌘", "⇧", "."], description: "切换显示 / 隐藏点开头的隐藏文件 (.dotfile)"),
                 ShortcutItem(keys: ["书签图标"], description: "快速跳转 ~、/var/log、/etc、/tmp 或收藏当前目录"),
                 ShortcutItem(keys: ["文件拖拽"], description: "直接将本地文件拖拽至终端或 SFTP 面板上传")

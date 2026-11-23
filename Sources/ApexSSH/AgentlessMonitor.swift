@@ -55,6 +55,180 @@ public final class AgentlessMonitor: Sendable {
         fi
         """
     }
+
+    // MARK: - Container & Dynamic Systemd Agentless Commands (v1.24.0)
+
+    public struct ContainerProbeResult: Sendable, Equatable {
+        public let runtime: ContainerRuntime?
+        public let items: [ContainerItem]
+        public let errorMessage: String?
+
+        public init(runtime: ContainerRuntime?, items: [ContainerItem], errorMessage: String? = nil) {
+            self.runtime = runtime
+            self.items = items
+            self.errorMessage = errorMessage
+        }
+    }
+
+    public static func posixSingleQuoted(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    /// Strict whitelist for container IDs or names (`[A-Za-z0-9_.-]`, non-empty, never flag-prefixed).
+    public static func isValidContainerID(_ id: String) -> Bool {
+        guard !id.isEmpty, id.count <= 128, !id.hasPrefix("-"), !id.hasPrefix(".") else { return false }
+        return id.unicodeScalars.allSatisfy { scalar in
+            (scalar.value >= 48 && scalar.value <= 57) // 0-9
+                || (scalar.value >= 65 && scalar.value <= 90) // A-Z
+                || (scalar.value >= 97 && scalar.value <= 122) // a-z
+                || scalar == "_" || scalar == "." || scalar == "-"
+        }
+    }
+
+    /// Strict whitelist for systemd unit names (`[A-Za-z0-9@_.:-]`, non-empty, never flag-prefixed).
+    public static func isValidSystemdUnitName(_ unit: String) -> Bool {
+        guard !unit.isEmpty, unit.count <= 128, !unit.hasPrefix("-"), !unit.hasPrefix(".") else { return false }
+        return unit.unicodeScalars.allSatisfy { scalar in
+            (scalar.value >= 48 && scalar.value <= 57)
+                || (scalar.value >= 65 && scalar.value <= 90)
+                || (scalar.value >= 97 && scalar.value <= 122)
+                || scalar == "@" || scalar == "_" || scalar == "." || scalar == ":" || scalar == "-"
+        }
+    }
+
+    public static let noContainerRuntimeSentinel = "---NO-CONTAINER-RUNTIME---"
+
+    /// Auto-detects Docker or Podman on remote hosts and outputs tab-separated container rows.
+    public static let containerListProbeCommand = """
+    if command -v docker >/dev/null 2>&1; then
+        echo "---RUNTIME:docker---"
+        docker ps -a --format '{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.State}}\t{{.Status}}\t{{.Ports}}' 2>&1
+    elif command -v podman >/dev/null 2>&1; then
+        echo "---RUNTIME:podman---"
+        podman ps -a --format '{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.State}}\t{{.Status}}\t{{.Ports}}' 2>&1
+    else
+        echo "---NO-CONTAINER-RUNTIME---"
+    fi
+    """
+
+    public static func parseContainerProbeResult(_ raw: String) -> ContainerProbeResult {
+        var runtime: ContainerRuntime? = nil
+        var items: [ContainerItem] = []
+        var diagnosticLines: [String] = []
+
+        for rawLine in raw.components(separatedBy: .newlines) {
+            let trimmed = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty { continue }
+            if trimmed == noContainerRuntimeSentinel {
+                return ContainerProbeResult(runtime: nil, items: [], errorMessage: nil)
+            }
+            if trimmed == "---RUNTIME:docker---" {
+                runtime = .docker
+                continue
+            }
+            if trimmed == "---RUNTIME:podman---" {
+                runtime = .podman
+                continue
+            }
+            if rawLine.contains("\t") {
+                let cols = rawLine.split(separator: "\t", omittingEmptySubsequences: false).map {
+                    String($0).trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+                if cols.count >= 5, !cols[0].isEmpty {
+                    let item = ContainerItem(
+                        id: cols[0],
+                        name: cols[1].isEmpty ? cols[0] : cols[1],
+                        image: cols[2],
+                        state: cols[3],
+                        status: cols[4],
+                        ports: cols.count > 5 ? cols[5] : "",
+                        runtime: runtime ?? .docker
+                    )
+                    items.append(item)
+                    continue
+                }
+            }
+            diagnosticLines.append(trimmed)
+        }
+
+        let errorMessage = (items.isEmpty && !diagnosticLines.isEmpty)
+            ? diagnosticLines.joined(separator: "\n")
+            : nil
+        return ContainerProbeResult(runtime: runtime, items: items, errorMessage: errorMessage)
+    }
+
+    public static func parseContainerOutput(_ raw: String) -> (runtime: ContainerRuntime?, items: [ContainerItem]) {
+        let parsed = parseContainerProbeResult(raw)
+        return (parsed.runtime, parsed.items)
+    }
+
+    public static func containerActionCommand(runtime: ContainerRuntime, id: String, action: ContainerAction) -> String? {
+        guard isValidContainerID(id) else { return nil }
+        return "\(runtime.rawValue) \(action.rawValue) \(posixSingleQuoted(id)) 2>&1"
+    }
+
+    public static func containerLogsCommand(runtime: ContainerRuntime, id: String, tail: Int = 200) -> String? {
+        guard isValidContainerID(id) else { return nil }
+        let clampedTail = min(max(1, tail), 2000)
+        return "\(runtime.rawValue) logs --tail \(clampedTail) \(posixSingleQuoted(id)) 2>&1"
+    }
+
+    public static func containerExecCommand(runtime: ContainerRuntime, id: String) -> String? {
+        guard isValidContainerID(id) else { return nil }
+        return "\(runtime.rawValue) exec -it \(posixSingleQuoted(id)) /bin/sh -c 'command -v bash >/dev/null 2>&1 && exec bash || exec sh'"
+    }
+
+    /// Dynamically lists loaded systemd services on Linux hosts.
+    public static let systemdDynamicProbeCommand = """
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl list-units --type=service --all --no-pager --no-legend --plain 2>/dev/null | head -120
+    fi
+    """
+
+    public static func parseSystemdDynamicOutput(_ raw: String) -> [SystemdServiceItem] {
+        var items: [SystemdServiceItem] = []
+        var seen: Set<String> = []
+        for rawLine in raw.components(separatedBy: .newlines) {
+            var trimmed = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.hasPrefix("●") {
+                trimmed = String(trimmed.dropFirst()).trimmingCharacters(in: .whitespaces)
+            }
+            if trimmed.isEmpty || trimmed.hasPrefix("UNIT ") || trimmed.hasPrefix("---") { continue }
+            let parts = trimmed.split(whereSeparator: { $0.isWhitespace })
+            guard parts.count >= 4 else { continue }
+            var unit = String(parts[0])
+            if unit.hasSuffix(".service") {
+                unit = String(unit.dropLast(".service".count))
+            }
+            guard !unit.isEmpty, isValidSystemdUnitName(unit), seen.insert(unit).inserted else { continue }
+            let activeState = String(parts[2]).lowercased()
+            let subState = String(parts[3]).lowercased()
+            items.append(SystemdServiceItem(name: unit, activeState: activeState, subState: subState))
+        }
+        return items.sorted { lhs, rhs in
+            let lhsPriority = (lhs.activeState == "failed" ? 0 : (lhs.isRunning ? 1 : 2))
+            let rhsPriority = (rhs.activeState == "failed" ? 0 : (rhs.isRunning ? 1 : 2))
+            if lhsPriority != rhsPriority { return lhsPriority < rhsPriority }
+            return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+        }
+    }
+
+    public static func systemdActionCommand(unit: String, action: SystemdServiceAction) -> String? {
+        let trimmed = unit.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard isValidSystemdUnitName(trimmed) else { return nil }
+        let probeItem = SystemdServiceItem(name: trimmed, activeState: "active")
+        if action == .stop && probeItem.isProtectedForStop {
+            return nil
+        }
+        return "systemctl \(action.rawValue) \(posixSingleQuoted(trimmed)) 2>&1"
+    }
+
+    public static func systemdJournalCommand(unit: String, lines: Int = 100) -> String? {
+        let trimmed = unit.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard isValidSystemdUnitName(trimmed) else { return nil }
+        let clamped = min(max(1, lines), 1000)
+        return "journalctl -u \(posixSingleQuoted(trimmed)) -n \(clamped) --no-pager 2>&1"
+    }
     
     // Previous CPU state for calculating deltas: (idle, total)
     public struct CpuTickState: Sendable {

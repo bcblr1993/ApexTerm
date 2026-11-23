@@ -76,8 +76,23 @@ public struct Session: Identifiable, Codable, Sendable, Equatable, Hashable {
     public var tags: [String]
     public var colorHex: String?
     
-    // Jump Server / ProxyJump
+    // Jump Server / ProxyJump & Advanced SSH Options
     public var jumpServerId: UUID?
+    public var jumpServerChain: [UUID]
+    public var forwardAgent: Bool
+    public var compression: Bool
+    public var proxyCommand: String?
+
+    /// Ordered jump host IDs combining explicit `jumpServerChain` with legacy single `jumpServerId`.
+    public var effectiveJumpServerChain: [UUID] {
+        if !jumpServerChain.isEmpty {
+            return jumpServerChain
+        }
+        if let legacy = jumpServerId {
+            return [legacy]
+        }
+        return []
+    }
     
     // Features configuration
     public var agentlessMonitorEnabled: Bool
@@ -99,7 +114,8 @@ public struct Session: Identifiable, Codable, Sendable, Equatable, Hashable {
     
     public enum CodingKeys: String, CodingKey {
         case id, name, host, port, username, authMethod, sessionType
-        case folder, tags, colorHex, jumpServerId
+        case folder, tags, colorHex, jumpServerId, jumpServerChain
+        case forwardAgent, compression, proxyCommand
         case agentlessMonitorEnabled, sftpAutoSyncEnabled, keepAliveIntervalSeconds, terminalType
         case initialWorkingDirectory, startupCommand, environmentVariables
         case createdAt, lastConnectedAt
@@ -117,6 +133,10 @@ public struct Session: Identifiable, Codable, Sendable, Equatable, Hashable {
         tags: [String] = [],
         colorHex: String? = nil,
         jumpServerId: UUID? = nil,
+        jumpServerChain: [UUID] = [],
+        forwardAgent: Bool = false,
+        compression: Bool = false,
+        proxyCommand: String? = nil,
         agentlessMonitorEnabled: Bool = true,
         sftpAutoSyncEnabled: Bool = true,
         keepAliveIntervalSeconds: Int = 30,
@@ -137,7 +157,21 @@ public struct Session: Identifiable, Codable, Sendable, Equatable, Hashable {
         self.folder = folder
         self.tags = tags
         self.colorHex = colorHex
-        self.jumpServerId = jumpServerId
+        let normalizedChain: [UUID]
+        if !jumpServerChain.isEmpty {
+            var seen: Set<UUID> = []
+            normalizedChain = jumpServerChain.filter { $0 != id && seen.insert($0).inserted }
+        } else if let jumpServerId, jumpServerId != id {
+            normalizedChain = [jumpServerId]
+        } else {
+            normalizedChain = []
+        }
+        self.jumpServerChain = normalizedChain
+        self.jumpServerId = normalizedChain.first
+        self.forwardAgent = forwardAgent
+        self.compression = compression
+        let cleanProxy = proxyCommand?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.proxyCommand = (cleanProxy?.isEmpty == true) ? nil : cleanProxy
         self.agentlessMonitorEnabled = agentlessMonitorEnabled
         self.sftpAutoSyncEnabled = sftpAutoSyncEnabled
         self.keepAliveIntervalSeconds = keepAliveIntervalSeconds
@@ -151,7 +185,8 @@ public struct Session: Identifiable, Codable, Sendable, Equatable, Hashable {
     
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.id = try container.decode(UUID.self, forKey: .id)
+        let decodedId = try container.decode(UUID.self, forKey: .id)
+        self.id = decodedId
         self.name = try container.decode(String.self, forKey: .name)
         self.host = try container.decode(String.self, forKey: .host)
         self.port = try container.decode(Int.self, forKey: .port)
@@ -161,7 +196,24 @@ public struct Session: Identifiable, Codable, Sendable, Equatable, Hashable {
         self.folder = try container.decodeIfPresent(String.self, forKey: .folder)
         self.tags = try container.decodeIfPresent([String].self, forKey: .tags) ?? []
         self.colorHex = try container.decodeIfPresent(String.self, forKey: .colorHex)
-        self.jumpServerId = try container.decodeIfPresent(UUID.self, forKey: .jumpServerId)
+        let decodedLegacyJump = try container.decodeIfPresent(UUID.self, forKey: .jumpServerId)
+        let decodedChain = try container.decodeIfPresent([UUID].self, forKey: .jumpServerChain) ?? []
+        if !decodedChain.isEmpty {
+            var seen: Set<UUID> = []
+            let cleanChain = decodedChain.filter { $0 != decodedId && seen.insert($0).inserted }
+            self.jumpServerChain = cleanChain
+            self.jumpServerId = decodedLegacyJump ?? cleanChain.first
+        } else if let legacy = decodedLegacyJump, legacy != decodedId {
+            self.jumpServerChain = [legacy]
+            self.jumpServerId = legacy
+        } else {
+            self.jumpServerChain = []
+            self.jumpServerId = nil
+        }
+        self.forwardAgent = try container.decodeIfPresent(Bool.self, forKey: .forwardAgent) ?? false
+        self.compression = try container.decodeIfPresent(Bool.self, forKey: .compression) ?? false
+        let rawProxy = try container.decodeIfPresent(String.self, forKey: .proxyCommand)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.proxyCommand = (rawProxy?.isEmpty == true) ? nil : rawProxy
         self.agentlessMonitorEnabled = try container.decodeIfPresent(Bool.self, forKey: .agentlessMonitorEnabled) ?? true
         self.sftpAutoSyncEnabled = try container.decodeIfPresent(Bool.self, forKey: .sftpAutoSyncEnabled) ?? true
         self.keepAliveIntervalSeconds = try container.decodeIfPresent(Int.self, forKey: .keepAliveIntervalSeconds) ?? 30
@@ -187,7 +239,17 @@ public struct Session: Identifiable, Codable, Sendable, Equatable, Hashable {
         try container.encodeIfPresent(folder, forKey: .folder)
         try container.encode(tags, forKey: .tags)
         try container.encodeIfPresent(colorHex, forKey: .colorHex)
-        try container.encodeIfPresent(jumpServerId, forKey: .jumpServerId)
+        try container.encodeIfPresent(jumpServerId ?? jumpServerChain.first, forKey: .jumpServerId)
+        if !jumpServerChain.isEmpty {
+            try container.encode(jumpServerChain, forKey: .jumpServerChain)
+        }
+        if forwardAgent {
+            try container.encode(forwardAgent, forKey: .forwardAgent)
+        }
+        if compression {
+            try container.encode(compression, forKey: .compression)
+        }
+        try container.encodeIfPresent(proxyCommand, forKey: .proxyCommand)
         try container.encode(agentlessMonitorEnabled, forKey: .agentlessMonitorEnabled)
         try container.encode(sftpAutoSyncEnabled, forKey: .sftpAutoSyncEnabled)
         try container.encode(keepAliveIntervalSeconds, forKey: .keepAliveIntervalSeconds)

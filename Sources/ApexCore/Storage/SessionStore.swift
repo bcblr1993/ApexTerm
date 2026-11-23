@@ -152,9 +152,12 @@ public final class SessionStore: ObservableObject {
         let target = sessions.first(where: { $0.id == id })
         sessions.removeAll(where: { $0.id == id })
 
-        // Clear dangling jumpServerId references on remaining sessions
-        for idx in sessions.indices where sessions[idx].jumpServerId == id {
-            sessions[idx].jumpServerId = nil
+        // Clear dangling jumpServerId / jumpServerChain references on remaining sessions
+        for idx in sessions.indices {
+            if sessions[idx].jumpServerId == id || sessions[idx].jumpServerChain.contains(id) {
+                sessions[idx].jumpServerChain.removeAll(where: { $0 == id })
+                sessions[idx].jumpServerId = sessions[idx].jumpServerChain.first
+            }
         }
 
         // Clean up session-owned Keychain secrets if no remaining session still shares the reference
@@ -224,16 +227,19 @@ public final class SessionStore: ObservableObject {
         return try encoder.encode(sessions)
     }
     
-    /// Sanitizes dangling or self-referential `jumpServerId` links across a session array.
+    /// Sanitizes dangling or self-referential `jumpServerId` / `jumpServerChain` links across a session array.
     public static func sanitizeJumpServerReferences(in sessions: [Session]) -> [Session] {
         let validIds = Set(sessions.map(\.id))
         return sessions.map { session in
             var copy = session
             let trimmedFolder = copy.folder?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             copy.folder = trimmedFolder.isEmpty ? "常用会话" : trimmedFolder
-            if let jumpId = copy.jumpServerId, (jumpId == copy.id || !validIds.contains(jumpId)) {
-                copy.jumpServerId = nil
+            var seen: Set<UUID> = []
+            let cleanChain = copy.effectiveJumpServerChain.filter { jid in
+                jid != copy.id && validIds.contains(jid) && seen.insert(jid).inserted
             }
+            copy.jumpServerChain = Array(cleanChain.prefix(SSHArgumentBuilder.maxJumpHops))
+            copy.jumpServerId = copy.jumpServerChain.first
             return copy
         }
     }

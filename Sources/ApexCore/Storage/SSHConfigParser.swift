@@ -11,6 +11,10 @@ public struct SSHConfigHost: Identifiable, Sendable, Equatable, Hashable {
     public let certificateFile: String?
     public let remoteCommand: String?
     public let environmentVariables: [String: String]
+    public let forwardAgent: Bool
+    public let compression: Bool
+    public let proxyCommand: String?
+    public let proxyJump: [String]
     
     public init(
         id: UUID = UUID(),
@@ -21,7 +25,11 @@ public struct SSHConfigHost: Identifiable, Sendable, Equatable, Hashable {
         identityFile: String? = nil,
         certificateFile: String? = nil,
         remoteCommand: String? = nil,
-        environmentVariables: [String: String] = [:]
+        environmentVariables: [String: String] = [:],
+        forwardAgent: Bool = false,
+        compression: Bool = false,
+        proxyCommand: String? = nil,
+        proxyJump: [String] = []
     ) {
         self.id = id
         self.hostPattern = hostPattern
@@ -32,6 +40,10 @@ public struct SSHConfigHost: Identifiable, Sendable, Equatable, Hashable {
         self.certificateFile = certificateFile
         self.remoteCommand = remoteCommand
         self.environmentVariables = environmentVariables
+        self.forwardAgent = forwardAgent
+        self.compression = compression
+        self.proxyCommand = proxyCommand
+        self.proxyJump = proxyJump
     }
     
     /// Converts this parsed config entry into a ready-to-use ApexTerm Session
@@ -57,6 +69,9 @@ public struct SSHConfigHost: Identifiable, Sendable, Equatable, Hashable {
             authMethod: auth,
             folder: folder,
             tags: ["ssh-config", "imported"],
+            forwardAgent: forwardAgent,
+            compression: compression,
+            proxyCommand: proxyCommand,
             agentlessMonitorEnabled: true,
             sftpAutoSyncEnabled: true,
             startupCommand: remoteCommand,
@@ -107,6 +122,10 @@ public struct SSHConfigHost: Identifiable, Sendable, Equatable, Hashable {
             tags: mergedTags,
             colorHex: existing.colorHex,
             jumpServerId: existing.jumpServerId,
+            jumpServerChain: existing.effectiveJumpServerChain,
+            forwardAgent: forwardAgent || existing.forwardAgent,
+            compression: compression || existing.compression,
+            proxyCommand: proxyCommand ?? existing.proxyCommand,
             agentlessMonitorEnabled: existing.agentlessMonitorEnabled,
             sftpAutoSyncEnabled: existing.sftpAutoSyncEnabled,
             keepAliveIntervalSeconds: existing.keepAliveIntervalSeconds,
@@ -156,6 +175,10 @@ public final class SSHConfigParser: Sendable {
         var currentCertificateFile: String? = nil
         var currentRemoteCommand: String? = nil
         var currentEnvVars: [String: String] = [:]
+        var currentForwardAgent: Bool? = nil
+        var currentCompression: Bool? = nil
+        var currentProxyCommand: String? = nil
+        var currentProxyJump: [String] = []
         var portWasSet = false
         // `Match` blocks are conditional; their directives must not leak into the preceding Host.
         var insideMatchBlock = false
@@ -178,7 +201,11 @@ public final class SSHConfigParser: Sendable {
                     identityFile: currentIdentityFile,
                     certificateFile: currentCertificateFile,
                     remoteCommand: currentRemoteCommand,
-                    environmentVariables: currentEnvVars
+                    environmentVariables: currentEnvVars,
+                    forwardAgent: currentForwardAgent ?? false,
+                    compression: currentCompression ?? false,
+                    proxyCommand: currentProxyCommand,
+                    proxyJump: currentProxyJump
                 )
                 results.append(entry)
             }
@@ -190,6 +217,10 @@ public final class SSHConfigParser: Sendable {
             currentCertificateFile = nil
             currentRemoteCommand = nil
             currentEnvVars = [:]
+            currentForwardAgent = nil
+            currentCompression = nil
+            currentProxyCommand = nil
+            currentProxyJump = []
             portWasSet = false
         }
         
@@ -279,6 +310,39 @@ public final class SSHConfigParser: Sendable {
                 for (k, v) in parsed.variables where currentEnvVars[k] == nil {
                     currentEnvVars[k] = v
                 }
+
+            case "forwardagent":
+                if currentForwardAgent == nil {
+                    let lower = cleanValue.lowercased()
+                    if ["yes", "true", "1"].contains(lower) {
+                        currentForwardAgent = true
+                    } else if ["no", "false", "0"].contains(lower) {
+                        currentForwardAgent = false
+                    }
+                }
+
+            case "compression":
+                if currentCompression == nil {
+                    let lower = cleanValue.lowercased()
+                    if ["yes", "true", "1"].contains(lower) {
+                        currentCompression = true
+                    } else if ["no", "false", "0"].contains(lower) {
+                        currentCompression = false
+                    }
+                }
+
+            case "proxycommand":
+                if currentProxyCommand == nil && cleanValue.lowercased() != "none" && !cleanValue.isEmpty {
+                    currentProxyCommand = cleanValue
+                }
+
+            case "proxyjump":
+                if currentProxyJump.isEmpty && cleanValue.lowercased() != "none" && !cleanValue.isEmpty {
+                    currentProxyJump = cleanValue
+                        .split(separator: ",")
+                        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                        .filter { !$0.isEmpty }
+                }
                 
             default:
                 break
@@ -287,5 +351,63 @@ public final class SSHConfigParser: Sendable {
         
         flushCurrent()
         return results
+    }
+
+    /// Resolves parsed `ProxyJump` aliases (e.g., `bastion,mid`) against existing sessions by name or `user@host[:port]`.
+    public static func resolveProxyJumpChains(hosts: [SSHConfigHost], sessions: [Session]) -> [Session] {
+        var updated = sessions
+        let hostByPattern = Dictionary(hosts.map { ($0.hostPattern.lowercased(), $0) }, uniquingKeysWith: { first, _ in first })
+        for idx in updated.indices {
+            let patternKey = updated[idx].name.lowercased()
+            guard let configHost = hostByPattern[patternKey], !configHost.proxyJump.isEmpty else { continue }
+            var chain: [UUID] = []
+            for hopSpec in configHost.proxyJump {
+                if let match = matchSession(forProxyJumpSpec: hopSpec, in: updated, excluding: updated[idx].id) {
+                    if !chain.contains(match.id) {
+                        chain.append(match.id)
+                    }
+                }
+            }
+            if !chain.isEmpty {
+                updated[idx].jumpServerChain = Array(chain.prefix(SSHArgumentBuilder.maxJumpHops))
+                updated[idx].jumpServerId = updated[idx].jumpServerChain.first
+            }
+        }
+        return updated
+    }
+
+    private static func matchSession(forProxyJumpSpec spec: String, in sessions: [Session], excluding selfId: UUID) -> Session? {
+        let trimmed = spec.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if let byName = sessions.first(where: { $0.id != selfId && !$0.isLocal && $0.name.caseInsensitiveCompare(trimmed) == .orderedSame }) {
+            return byName
+        }
+        // Parse optional user@host:port specifier
+        var userPart: String? = nil
+        var remainder = trimmed
+        if let atIdx = remainder.firstIndex(of: "@") {
+            userPart = String(remainder[..<atIdx])
+            remainder = String(remainder[remainder.index(after: atIdx)...])
+        }
+        var hostPart = remainder
+        var portPart: Int? = nil
+        if hostPart.hasPrefix("["), let close = hostPart.firstIndex(of: "]") {
+            let inner = String(hostPart[hostPart.index(after: hostPart.startIndex)..<close])
+            let after = hostPart[hostPart.index(after: close)...]
+            hostPart = inner
+            if after.hasPrefix(":"), let p = Int(after.dropFirst()) {
+                portPart = p
+            }
+        } else if let colon = hostPart.lastIndex(of: ":"), hostPart.firstIndex(of: ":") == colon,
+                  let p = Int(hostPart[hostPart.index(after: colon)...]) {
+            hostPart = String(hostPart[..<colon])
+            portPart = p
+        }
+        return sessions.first { s in
+            s.id != selfId && !s.isLocal
+                && s.host.caseInsensitiveCompare(hostPart) == .orderedSame
+                && (userPart == nil || s.username.caseInsensitiveCompare(userPart!) == .orderedSame)
+                && (portPart == nil || s.port == portPart!)
+        }
     }
 }

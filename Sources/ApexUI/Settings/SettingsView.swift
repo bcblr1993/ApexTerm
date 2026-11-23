@@ -255,6 +255,17 @@ private struct BehaviorSettingsTab: View {
                         .font(.caption)
                         .foregroundColor(ApexStyle.secondary)
                 }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Picker("远端剪贴板写入 (OSC 52)", selection: $settings.osc52ClipboardPolicy) {
+                        ForEach(OSC52ClipboardPolicy.allCases) { policy in
+                            Text(policy.displayName).tag(policy)
+                        }
+                    }
+                    Text("允许 tmux、Neovim 等远端程序将内容写入本机剪贴板（永久禁止远端读取本机剪贴板，单次上限 100 KB）。")
+                        .font(.caption)
+                        .foregroundColor(ApexStyle.secondary)
+                }
             } header: {
                 Text(L10n.settingsTabBehavior)
             }

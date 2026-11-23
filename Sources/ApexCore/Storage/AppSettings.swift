@@ -36,6 +36,24 @@ public enum TerminalBellMode: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// Security policy for remote terminal clipboard writes (OSC 52).
+/// Clipboard read queries (`OSC 52 ; c ; ?`) are always rejected regardless of policy.
+public enum OSC52ClipboardPolicy: String, CaseIterable, Identifiable, Sendable {
+    case deny = "deny"
+    case ask = "ask"
+    case allow = "allow"
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .deny: return "拒绝 (Deny)"
+        case .ask: return "每次询问 (Ask)"
+        case .allow: return "允许写入 (Allow)"
+        }
+    }
+}
+
 /// Terminal theme presets
 public enum TerminalThemePreset: String, CaseIterable, Identifiable, Sendable {
     case nativeLight = "经典白色（默认）"
@@ -84,6 +102,7 @@ public final class AppSettings: ObservableObject {
         static let isRightClickPasteEnabled = "settings.terminal.rightClickPaste"
         static let scrollbackMaxLines = "settings.terminal.scrollbackLines"
         static let bellMode = "settings.terminal.bellMode"
+        static let osc52ClipboardPolicy = "settings.terminal.osc52Policy"
         static let showHiddenFiles = "settings.sftp.showHiddenFiles"
         static let sftpAutoSyncEnabled = "settings.sftp.autoSync"
         static let defaultDownloadDirectory = "settings.sftp.downloadDir"
@@ -162,6 +181,9 @@ public final class AppSettings: ObservableObject {
     }
     @Published public var bellMode: TerminalBellMode {
         didSet { defaults.set(bellMode.rawValue, forKey: Keys.bellMode) }
+    }
+    @Published public var osc52ClipboardPolicy: OSC52ClipboardPolicy {
+        didSet { defaults.set(osc52ClipboardPolicy.rawValue, forKey: Keys.osc52ClipboardPolicy) }
     }
     
     // SFTP & Files
@@ -247,6 +269,12 @@ public final class AppSettings: ObservableObject {
         } else {
             self.bellMode = .audible
         }
+
+        if let rawPolicy = defaults.string(forKey: Keys.osc52ClipboardPolicy), let policy = OSC52ClipboardPolicy(rawValue: rawPolicy) {
+            self.osc52ClipboardPolicy = policy
+        } else {
+            self.osc52ClipboardPolicy = .ask
+        }
         
         self.showHiddenFiles = defaults.object(forKey: Keys.showHiddenFiles) != nil
             ? defaults.bool(forKey: Keys.showHiddenFiles)
@@ -299,6 +327,7 @@ public final class AppSettings: ObservableObject {
         isRightClickPasteEnabled = true
         scrollbackMaxLines = 10_000
         bellMode = .audible
+        osc52ClipboardPolicy = .ask
         showHiddenFiles = true
         sftpAutoSyncEnabled = true
         defaultDownloadDirectory = defaultDownloadPath

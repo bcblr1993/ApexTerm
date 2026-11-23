@@ -145,6 +145,24 @@ public struct SFTPView: View {
     @State private var symlinkNameText = ""
     @State private var isShowingSymlinkAlert = false
 
+    // Remote search (find / grep -F) & Archive / Extract (v1.24.0)
+    @State private var isRemoteSearchVisible = false
+    @State private var remoteSearchMode: SFTPSearchMode = .filename
+    @State private var remoteSearchQuery = ""
+    @State private var remoteSearchHits: [SFTPSearchHit] = []
+    @State private var isSearchingRemote = false
+    @State private var remoteSearchError: String? = nil
+    @State private var remoteSearchTask: Task<Void, Never>? = nil
+    @FocusState private var isRemoteSearchFocused: Bool
+    @State private var editorInitialLine: Int? = nil
+
+    @State private var archiveTargetItems: [SFTPItem] = []
+    @State private var archiveFormat: SFTPArchiveFormat = .tarGz
+    @State private var archiveOutputName: String = ""
+    @State private var isShowingArchiveAlert = false
+    @State private var itemToExtract: SFTPItem? = nil
+    @State private var isShowingExtractConfirm = false
+
     public init(
         currentPath: Binding<String>,
         isLinkageEnabled: Binding<Bool> = .constant(true),
@@ -341,6 +359,21 @@ public struct SFTPView: View {
             .labelStyle(.iconOnly)
             .help("筛选当前文件夹")
 
+            ApexIconButton(
+                icon: "doc.text.magnifyingglass",
+                label: "远端搜索 (⌘⇧F)",
+                size: 24,
+                iconSize: 11,
+                isSelected: isRemoteSearchVisible
+            ) {
+                isRemoteSearchVisible.toggle()
+                if isRemoteSearchVisible {
+                    isRemoteSearchFocused = true
+                }
+            }
+            .help("在远端目录按文件名或内容搜索 (⌘⇧F)")
+            .disabled(connectionState != .connected)
+
             // Transfer records drawer toggle button
             TransferToolbarButton(isExpanded: $isTransferDrawerExpanded, compact: compact)
         }
@@ -364,10 +397,19 @@ public struct SFTPView: View {
             .background(ApexStyle.surface)
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { toolbarWidth = $0 }
             .background {
-                Button("") { showHiddenFiles.toggle() }
-                    .keyboardShortcut(".", modifiers: [.command, .shift])
-                    .frame(width: 0, height: 0)
-                    .opacity(0)
+                Group {
+                    Button("") { showHiddenFiles.toggle() }
+                        .keyboardShortcut(".", modifiers: [.command, .shift])
+                    Button("") {
+                        isRemoteSearchVisible.toggle()
+                        if isRemoteSearchVisible {
+                            isRemoteSearchFocused = true
+                        }
+                    }
+                    .keyboardShortcut("f", modifiers: [.command, .shift])
+                }
+                .frame(width: 0, height: 0)
+                .opacity(0)
             }
 
             Divider()
@@ -471,6 +513,10 @@ public struct SFTPView: View {
 
             Divider()
 
+            }
+
+            if isRemoteSearchVisible {
+                remoteSearchBar
             }
             // Files table with Drag & Drop upload & download
             ZStack {
@@ -689,6 +735,8 @@ public struct SFTPView: View {
         .onDisappear {
             loadGeneration &+= 1
             loadTask?.cancel()
+            remoteSearchTask?.cancel()
+            remoteSearchTask = nil
         }
         .onAppear {
             showHiddenFiles = themeSettings.showHiddenFiles
@@ -707,6 +755,10 @@ public struct SFTPView: View {
             } else if newState != .connected {
                 loadGeneration &+= 1
                 loadTask?.cancel()
+                remoteSearchTask?.cancel()
+                remoteSearchTask = nil
+                isSearchingRemote = false
+                remoteSearchHits = []
                 isLoading = false
                 items = []
                 displayItems = []
@@ -743,6 +795,7 @@ public struct SFTPView: View {
             QuickEditorView(
                 item: item,
                 content: $editorContent,
+                initialLine: editorInitialLine,
                 onSave: { newContent in
                     try await saveEditedFileAsync(item, content: newContent)
                 },
@@ -750,6 +803,30 @@ public struct SFTPView: View {
                     try await reloadFileContentAsync(item)
                 }
             )
+        }
+        .alert(archiveFormat.menuTitle, isPresented: $isShowingArchiveAlert) {
+            TextField("归档文件名", text: $archiveOutputName)
+                .autocorrectionDisabled()
+            Button("压缩") {
+                performArchive(items: archiveTargetItems, format: archiveFormat, archiveName: archiveOutputName)
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("将在 \(currentPath) 中把选中的 \(archiveTargetItems.count) 个项目打包为 \(archiveFormat.fileExtension)")
+        }
+        .confirmationDialog(
+            "解压到当前目录？",
+            isPresented: $isShowingExtractConfirm,
+            presenting: itemToExtract
+        ) { item in
+            Button("解压「\(item.name)」到 \(currentPath)") {
+                performExtract(item)
+            }
+            Button("取消", role: .cancel) {
+                itemToExtract = nil
+            }
+        } message: { item in
+            Text("将把「\(item.name)」解压至 \(currentPath)（同名文件可能被覆盖）。")
         }
         .sheet(item: $inspectingItem) { item in
             SFTPFileInspectorSheet(item: item, session: session)
@@ -925,6 +1002,28 @@ public struct SFTPView: View {
                     symlinkNameText = "\(item.name)-link"
                     isShowingSymlinkAlert = true
                 }
+                Divider()
+                Menu("压缩 / 解压") {
+                    Button(SFTPArchiveFormat.tarGz.menuTitle) {
+                        archiveTargetItems = [item]
+                        archiveFormat = .tarGz
+                        archiveOutputName = "\(item.name).tar.gz"
+                        isShowingArchiveAlert = true
+                    }
+                    Button(SFTPArchiveFormat.zip.menuTitle) {
+                        archiveTargetItems = [item]
+                        archiveFormat = .zip
+                        archiveOutputName = "\(item.name).zip"
+                        isShowingArchiveAlert = true
+                    }
+                    if !item.isDirectory && SFTPRemoteOperations.isSupportedArchiveName(item.name) {
+                        Divider()
+                        Button("解压到当前目录...") {
+                            itemToExtract = item
+                            isShowingExtractConfirm = true
+                        }
+                    }
+                }
                 Button(role: .destructive) {
                     selectedPaths = [item.path]
                     itemToDelete = item
@@ -947,6 +1046,20 @@ public struct SFTPView: View {
         if !selectedItems.isEmpty {
             Button("下载选中的 \(selectedItems.count) 个项目") {
                 downloadBatchAction(selectedItems)
+            }
+            Menu("压缩选中的 \(selectedItems.count) 个项目") {
+                Button(SFTPArchiveFormat.tarGz.menuTitle) {
+                    archiveTargetItems = selectedItems
+                    archiveFormat = .tarGz
+                    archiveOutputName = "archive.tar.gz"
+                    isShowingArchiveAlert = true
+                }
+                Button(SFTPArchiveFormat.zip.menuTitle) {
+                    archiveTargetItems = selectedItems
+                    archiveFormat = .zip
+                    archiveOutputName = "archive.zip"
+                    isShowingArchiveAlert = true
+                }
             }
             Divider()
             Button(role: .destructive) {
@@ -1372,7 +1485,7 @@ public struct SFTPView: View {
         }
     }
 
-    private func openEditor(_ item: SFTPItem) {
+    private func openEditor(_ item: SFTPItem, lineNumber: Int? = nil) {
         guard !isOpeningEditor else { return }
         guard item.size <= 1_000_000 else {
             transferNotice = "文件超过 1 MB，请先下载后编辑"
@@ -1380,6 +1493,7 @@ public struct SFTPView: View {
         }
         guard let session, Self.shouldLoadDirectory(for: connectionState) else { return }
         isOpeningEditor = true
+        editorInitialLine = lineNumber
         Task {
             let localURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
             defer { try? FileManager.default.removeItem(at: localURL) }
@@ -1396,6 +1510,231 @@ public struct SFTPView: View {
                 transferNotice = "读取失败：\(error.localizedDescription)"
             }
             isOpeningEditor = false
+        }
+    }
+
+    // MARK: - Remote Search & Archive Operations (v1.24.0)
+
+    private var remoteSearchBar: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Picker("搜索模式", selection: $remoteSearchMode) {
+                    ForEach(SFTPSearchMode.allCases) { mode in
+                        Text(mode.rawValue).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 150)
+
+                TextField(
+                    remoteSearchMode == .filename ? "在 \(currentPath) 搜索文件名 (find)..." : "在 \(currentPath) 搜索文件内容 (grep -F)...",
+                    text: $remoteSearchQuery
+                )
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 12, design: .monospaced))
+                .focused($isRemoteSearchFocused)
+                .onSubmit {
+                    performRemoteSearch()
+                }
+                .onExitCommand {
+                    closeRemoteSearch()
+                }
+
+                if isSearchingRemote {
+                    ProgressView()
+                        .controlSize(.small)
+                        .scaleEffect(0.7)
+                    ApexActionButton("取消", tint: ApexStyle.secondary, size: .small) {
+                        remoteSearchTask?.cancel()
+                        remoteSearchTask = nil
+                        isSearchingRemote = false
+                    }
+                } else {
+                    ApexActionButton("搜索", icon: "magnifyingglass", tint: ApexStyle.accent, size: .small) {
+                        performRemoteSearch()
+                    }
+                    .disabled(remoteSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || connectionState != .connected)
+                }
+
+                ApexIconButton(icon: "xmark", label: "关闭远端搜索", size: 22, iconSize: 10) {
+                    closeRemoteSearch()
+                }
+            }
+            .padding(.horizontal, ApexStyle.s4)
+            .padding(.vertical, 6)
+            .background(ApexStyle.subtleSurface)
+
+            if let err = remoteSearchError {
+                HStack {
+                    Text(err)
+                        .font(.caption)
+                        .foregroundColor(ApexStyle.error)
+                    Spacer()
+                }
+                .padding(.horizontal, ApexStyle.s4)
+                .padding(.bottom, 6)
+                .background(ApexStyle.subtleSurface)
+            } else if !remoteSearchHits.isEmpty {
+                Divider()
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(remoteSearchHits) { hit in
+                            Button {
+                                handleRemoteSearchHitClick(hit)
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Image(systemName: hit.lineNumber != nil ? "doc.text" : "doc.viewfinder")
+                                        .font(.system(size: 11))
+                                        .foregroundColor(ApexStyle.accent)
+                                    Text(hit.path)
+                                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                        .foregroundColor(ApexStyle.primary)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                    if let line = hit.lineNumber {
+                                        Text(":\(line)")
+                                            .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+                                            .foregroundColor(ApexStyle.accent)
+                                            .padding(.horizontal, 5)
+                                            .padding(.vertical, 1)
+                                            .background(ApexStyle.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 3))
+                                    }
+                                    if let snippet = hit.snippet, !snippet.isEmpty {
+                                        Text(snippet)
+                                            .font(.system(size: 10.5, design: .monospaced))
+                                            .foregroundColor(ApexStyle.secondary)
+                                            .lineLimit(1)
+                                            .truncationMode(.tail)
+                                    }
+                                    Spacer()
+                                }
+                                .padding(.horizontal, ApexStyle.s4)
+                                .padding(.vertical, 5)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            Divider()
+                        }
+                    }
+                }
+                .frame(maxHeight: 165)
+                .background(ApexStyle.surface)
+            }
+            Divider()
+        }
+    }
+
+    private func closeRemoteSearch() {
+        remoteSearchTask?.cancel()
+        remoteSearchTask = nil
+        isSearchingRemote = false
+        isRemoteSearchFocused = false
+        isRemoteSearchVisible = false
+    }
+
+    private func performRemoteSearch() {
+        let query = remoteSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty,
+              let s = session,
+              Self.shouldLoadDirectory(for: connectionState),
+              let cmd = SFTPRemoteOperations.searchCommand(basePath: currentPath, query: query, mode: remoteSearchMode) else {
+            return
+        }
+        remoteSearchTask?.cancel()
+        isSearchingRemote = true
+        remoteSearchError = nil
+        let mode = remoteSearchMode
+        remoteSearchTask = Task {
+            do {
+                let raw = try await s.executeCommand(cmd)
+                guard !Task.isCancelled else { return }
+                let hits = SFTPRemoteOperations.parseSearchOutput(raw, mode: mode)
+                await MainActor.run {
+                    self.remoteSearchHits = hits
+                    self.isSearchingRemote = false
+                    if hits.isEmpty {
+                        self.remoteSearchError = "未找到匹配结果（深度上限 5 层，最多 200 条）"
+                    }
+                }
+            } catch {
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    self.isSearchingRemote = false
+                    self.remoteSearchError = "搜索失败: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    private func handleRemoteSearchHitClick(_ hit: SFTPSearchHit) {
+        let parentDir = hit.parentDirectory
+        if parentDir != currentPath {
+            currentPath = parentDir
+        }
+        let targetItem = items.first(where: { $0.path == hit.path })
+            ?? SFTPItem(name: hit.fileName, path: hit.path, isDirectory: false, isSymlink: false, size: 0, permissions: 0o644, modificationDate: Date())
+        if hit.lineNumber != nil {
+            openEditor(targetItem, lineNumber: hit.lineNumber)
+        } else {
+            selectedPaths = [hit.path]
+        }
+    }
+
+    private func performArchive(items targetItems: [SFTPItem], format: SFTPArchiveFormat, archiveName: String) {
+        guard let s = session, Self.shouldLoadDirectory(for: connectionState) else { return }
+        let names = targetItems.map(\.name)
+        guard let cmd = SFTPRemoteOperations.archiveCommand(
+            items: names,
+            inDirectory: currentPath,
+            format: format,
+            archiveName: archiveName
+        ) else {
+            transferNotice = "归档名称或选中项无效"
+            return
+        }
+        transferNotice = "正在压缩 \(archiveName)..."
+        Task {
+            do {
+                let output = try await s.executeCommand(cmd).trimmingCharacters(in: .whitespacesAndNewlines)
+                await MainActor.run {
+                    if output.localizedCaseInsensitiveContains("not found") || output.localizedCaseInsensitiveContains("error") {
+                        self.transferNotice = "压缩失败: \(output)"
+                    } else {
+                        self.transferNotice = "已压缩生成 \(archiveName)"
+                        self.loadDirectory(path: self.currentPath)
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    self.transferNotice = "压缩失败: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    private func performExtract(_ item: SFTPItem) {
+        guard let s = session, Self.shouldLoadDirectory(for: connectionState) else { return }
+        guard let cmd = SFTPRemoteOperations.extractCommand(archivePath: item.path, targetDirectory: currentPath) else {
+            transferNotice = "不支持该压缩包格式"
+            return
+        }
+        transferNotice = "正在解压 \(item.name)..."
+        Task {
+            do {
+                let output = try await s.executeCommand(cmd).trimmingCharacters(in: .whitespacesAndNewlines)
+                await MainActor.run {
+                    if output.localizedCaseInsensitiveContains("not found") || output.localizedCaseInsensitiveContains("cannot open") {
+                        self.transferNotice = "解压失败: \(output)"
+                    } else {
+                        self.transferNotice = "已解压 \(item.name) 至当前目录"
+                        self.loadDirectory(path: self.currentPath)
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    self.transferNotice = "解压失败: \(error.localizedDescription)"
+                }
+            }
         }
     }
 

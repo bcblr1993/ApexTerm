@@ -9,9 +9,13 @@ public struct ProcessInspectorView: View {
     public let session: Session
     public let sshClient: SSHSessionProtocol?
     @Binding public var isPresented: Bool
+    public var onOpenContainerShell: ((Session, String) -> Void)? = nil
     
     @State private var processes: [ProcessDetailItem] = []
     @State private var services: [SystemdServiceItem] = []
+    @State private var containers: [ContainerItem] = []
+    @State private var containerRuntime: ContainerRuntime? = nil
+    @State private var containerErrorMessage: String? = nil
     @State private var listeningPorts: [ListeningPortItem] = []
     @State private var inspectorMode: InspectorMode = .processes
     @State private var searchText: String = ""
@@ -22,9 +26,14 @@ public struct ProcessInspectorView: View {
     @State private var showingKillConfirmation: Bool = false
     @State private var selectedSignal: ProcessSignal = .sigterm
     @State private var statusFeedback: String?
+    @State private var activeLogTarget: RemoteLogTarget? = nil
+    @State private var pendingContainerAction: (container: ContainerItem, action: ContainerAction)? = nil
+    @State private var showingContainerActionConfirm: Bool = false
+    @State private var showingAllSystemdServices: Bool = false
 
     public enum InspectorMode: String, CaseIterable, Identifiable {
         case processes = "活跃进程"
+        case containers = "容器"
         case listeningPorts = "监听端口"
 
         public var id: String { rawValue }
@@ -39,10 +48,16 @@ public struct ProcessInspectorView: View {
         public var id: String { rawValue }
     }
     
-    public init(session: Session, sshClient: SSHSessionProtocol?, isPresented: Binding<Bool>) {
+    public init(
+        session: Session,
+        sshClient: SSHSessionProtocol?,
+        isPresented: Binding<Bool>,
+        onOpenContainerShell: ((Session, String) -> Void)? = nil
+    ) {
         self.session = session
         self.sshClient = sshClient
         self._isPresented = isPresented
+        self.onOpenContainerShell = onOpenContainerShell
     }
     
     public var body: some View {
@@ -63,10 +78,13 @@ public struct ProcessInspectorView: View {
             
             Divider()
             
-            // Main Process or Listening Ports Table
-            if inspectorMode == .processes {
+            // Main Process, Container, or Listening Ports Table
+            switch inspectorMode {
+            case .processes:
                 processTable
-            } else {
+            case .containers:
+                containersTable
+            case .listeningPorts:
                 listeningPortsTable
             }
             
@@ -97,6 +115,32 @@ public struct ProcessInspectorView: View {
             Button("取消", role: .cancel) {}
         } message: { proc in
             Text("确定要向进程 \(proc.command) (PID: \(proc.pid), 用户: \(proc.user)) 发送信号吗？")
+        }
+        .confirmationDialog(
+            "容器操作确认",
+            isPresented: $showingContainerActionConfirm,
+            presenting: pendingContainerAction
+        ) { req in
+            Button("确认\(req.action.displayName) \(req.container.name)", role: req.action == .stop ? .destructive : .none) {
+                executeContainerAction(req.container, action: req.action)
+            }
+            Button("取消", role: .cancel) {}
+        } message: { req in
+            Text("确定要对容器 \(req.container.name) (\(req.container.shortId)) 执行 \(req.action.rawValue) 吗？")
+        }
+        .sheet(item: $activeLogTarget) { target in
+            RemoteLogViewerSheet(
+                target: target,
+                sshClient: sshClient,
+                onServiceMutated: { fetchProcessData() }
+            )
+            .apexTheme()
+        }
+        .sheet(isPresented: $showingAllSystemdServices) {
+            SystemdAllServicesSheet(services: services) { svc in
+                activeLogTarget = .systemd(svc)
+            }
+            .apexTheme()
         }
     }
     
@@ -153,28 +197,50 @@ public struct ProcessInspectorView: View {
     private var systemdServicesStrip: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                Text("核心服务:")
+                Text("Systemd 服务:")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundColor(ApexStyle.secondary)
                 
-                ForEach(services) { svc in
-                    HStack(spacing: 5) {
-                        Circle()
-                            .fill(svc.isRunning ? ApexStyle.success : ApexStyle.error)
-                            .frame(width: 7, height: 7)
-                        Text(svc.name)
-                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                        Text(svc.activeState)
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundColor(svc.isRunning ? ApexStyle.success : ApexStyle.secondary)
+                ForEach(services.prefix(12)) { svc in
+                    Button {
+                        activeLogTarget = .systemd(svc)
+                    } label: {
+                        HStack(spacing: 5) {
+                            Circle()
+                                .fill(svc.isRunning ? ApexStyle.success : (svc.activeState == "failed" ? ApexStyle.error : ApexStyle.secondary))
+                                .frame(width: 7, height: 7)
+                            Text(svc.name)
+                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                .foregroundColor(ApexStyle.primary)
+                            Text(svc.activeState)
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundColor(svc.isRunning ? ApexStyle.success : (svc.activeState == "failed" ? ApexStyle.error : ApexStyle.secondary))
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(ApexStyle.subtleSurface, in: RoundedRectangle(cornerRadius: 6))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 6)
+                                .stroke(ApexStyle.border.opacity(0.5), lineWidth: 1)
+                        }
                     }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(ApexStyle.subtleSurface, in: RoundedRectangle(cornerRadius: 6))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 6)
-                            .stroke(ApexStyle.border.opacity(0.5), lineWidth: 1)
+                    .buttonStyle(.plain)
+                    .help("点击查看 \(svc.name) 的 journalctl 日志与启停控制")
+                }
+
+                if services.count > 12 {
+                    Button {
+                        showingAllSystemdServices = true
+                    } label: {
+                        Text("全部 \(services.count) 项…")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(ApexStyle.accent)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(ApexStyle.accent.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
                     }
+                    .buttonStyle(.plain)
+                    .help("查看全部动态发现的 Systemd 服务")
                 }
             }
             .padding(.horizontal, ApexStyle.s4)
@@ -188,10 +254,11 @@ public struct ProcessInspectorView: View {
         HStack(spacing: 12) {
             Picker("视图", selection: $inspectorMode) {
                 Text("活跃进程 (\(processes.count))").tag(InspectorMode.processes)
+                Text("容器 (\(containers.count))").tag(InspectorMode.containers)
                 Text("监听端口 (\(listeningPorts.count))").tag(InspectorMode.listeningPorts)
             }
             .pickerStyle(.segmented)
-            .frame(width: 210)
+            .frame(width: 300)
             .accessibilityIdentifier("processInspector.modePicker")
 
             HStack(spacing: 6) {
@@ -199,7 +266,7 @@ public struct ProcessInspectorView: View {
                     .foregroundColor(ApexStyle.secondary)
                     .font(.system(size: 11))
                 TextField(
-                    inspectorMode == .processes ? "搜索 PID / 进程名 / 用户 / 参数..." : "搜索端口 / 进程 / 协议 / 公网...",
+                    searchPlaceholder,
                     text: $searchText
                 )
                     .textFieldStyle(.plain)
@@ -243,6 +310,16 @@ public struct ProcessInspectorView: View {
                     iconSize: 11
                 ) {
                     sortAscending.toggle()
+                }
+            } else if inspectorMode == .containers {
+                let runningCount = filteredContainers.filter(\.isRunning).count
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(runningCount > 0 ? ApexStyle.success : ApexStyle.secondary)
+                        .frame(width: 7, height: 7)
+                    Text("\(containerRuntime?.displayName ?? "容器") · 运行中: \(runningCount)/\(filteredContainers.count)")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(ApexStyle.secondary)
                 }
             } else {
                 let publicCount = filteredListeningPorts.filter(\.isPubliclyExposed).count
@@ -323,6 +400,79 @@ public struct ProcessInspectorView: View {
         }
     }
     
+    // MARK: - Containers Table
+    private var containersTable: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Text("容器名 / ID")
+                    .frame(width: 175, alignment: .leading)
+                Text("镜像")
+                    .frame(width: 145, alignment: .leading)
+                Text("状态")
+                    .frame(width: 78, alignment: .leading)
+                Text("运行时长")
+                    .frame(width: 110, alignment: .leading)
+                Text("端口映射")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text("操作")
+                    .frame(width: 122, alignment: .trailing)
+            }
+            .font(.system(size: 10.5, weight: .semibold))
+            .foregroundColor(ApexStyle.secondary)
+            .padding(.horizontal, ApexStyle.s4)
+            .padding(.vertical, 6)
+            .background(ApexStyle.subtleSurface.opacity(0.6))
+
+            Divider()
+
+            if filteredContainers.isEmpty {
+                VStack(spacing: 12) {
+                    Spacer()
+                    Image(systemName: "shippingbox")
+                        .font(.system(size: 28))
+                        .foregroundColor(ApexStyle.secondary.opacity(0.5))
+                    if let containerErrorMessage, !containerErrorMessage.isEmpty {
+                        Text(containerErrorMessage)
+                            .font(.system(size: 11.5, design: .monospaced))
+                            .foregroundColor(ApexStyle.error)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 24)
+                    } else {
+                        Text(isLoading ? "正在探测远程 Docker / Podman 容器..." : (containerRuntime == nil ? "未在远端检测到 Docker 或 Podman 引擎" : "未找到匹配的容器"))
+                            .font(.system(size: 12))
+                            .foregroundColor(ApexStyle.secondary)
+                    }
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(filteredContainers) { container in
+                            ContainerRowView(
+                                container: container,
+                                onExecShell: {
+                                    if let cmd = AgentlessMonitor.containerExecCommand(runtime: container.runtime, id: container.id) {
+                                        isPresented = false
+                                        onOpenContainerShell?(session, cmd)
+                                    }
+                                },
+                                onViewLogs: {
+                                    activeLogTarget = .container(container)
+                                },
+                                onRequestAction: { action in
+                                    pendingContainerAction = (container, action)
+                                    showingContainerActionConfirm = true
+                                }
+                            )
+                            Divider()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // MARK: - Listening Ports Table
     private var listeningPortsTable: some View {
         VStack(spacing: 0) {
@@ -386,11 +536,7 @@ public struct ProcessInspectorView: View {
     // MARK: - Footer Bar
     private var footerBar: some View {
         HStack {
-            Text(
-                inspectorMode == .processes
-                    ? "共展示 \(filteredProcesses.count) 个活跃进程 · 点击行可查看完整命令"
-                    : "共检测到 \(filteredListeningPorts.count) 个监听端口 · 支持一键生成本地端口转发隧道 (-L)"
-            )
+            Text(footerSummaryText)
                 .font(.system(size: 11))
                 .foregroundColor(ApexStyle.secondary)
             
@@ -435,6 +581,37 @@ public struct ProcessInspectorView: View {
         return result
     }
 
+    private var searchPlaceholder: String {
+        switch inspectorMode {
+        case .processes: return "搜索 PID / 进程名 / 用户 / 参数..."
+        case .containers: return "搜索容器名 / 镜像 / 端口 / 状态..."
+        case .listeningPorts: return "搜索端口 / 进程 / 协议 / 公网..."
+        }
+    }
+
+    private var footerSummaryText: String {
+        switch inspectorMode {
+        case .processes:
+            return "共展示 \(filteredProcesses.count) 个活跃进程 · 点击行可查看完整命令"
+        case .containers:
+            return "共检测到 \(filteredContainers.count) 个容器 · 支持一键进入容器终端 (exec) 与查看日志"
+        case .listeningPorts:
+            return "共检测到 \(filteredListeningPorts.count) 个监听端口 · 支持一键生成本地端口转发隧道 (-L)"
+        }
+    }
+
+    private var filteredContainers: [ContainerItem] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return containers }
+        return containers.filter {
+            $0.name.localizedCaseInsensitiveContains(query)
+                || $0.shortId.localizedCaseInsensitiveContains(query)
+                || $0.image.localizedCaseInsensitiveContains(query)
+                || $0.state.localizedCaseInsensitiveContains(query)
+                || $0.ports.localizedCaseInsensitiveContains(query)
+        }
+    }
+
     private var filteredListeningPorts: [ListeningPortItem] {
         ListeningPortParser.filter(listeningPorts, query: searchText)
     }
@@ -461,6 +638,9 @@ public struct ProcessInspectorView: View {
             // Sample fallback processes if offline
             var fetchedItems: [ProcessDetailItem] = []
             var fetchedServices: [SystemdServiceItem] = []
+            var fetchedContainers: [ContainerItem] = []
+            var fetchedContainerRuntime: ContainerRuntime? = nil
+            var fetchedContainerError: String? = nil
             var fetchedPorts: [ListeningPortItem] = []
             
             if let client = sshClient, client.isConnected {
@@ -469,10 +649,22 @@ public struct ProcessInspectorView: View {
                     fetchedItems = ProcessListParser.parsePSOutput(raw)
                 }
                 
-                let monitored = ["nginx", "docker", "redis", "mysql", "sshd", "postgresql"]
-                let svcCmd = AgentlessMonitor.systemdServicesProbeCommand(services: monitored)
-                if let rawSvc = try? await client.executeCommand(svcCmd) {
-                    fetchedServices = ProcessListParser.parseSystemdServices(rawSvc, monitoredServices: monitored)
+                if let rawDynamicSvc = try? await client.executeCommand(AgentlessMonitor.systemdDynamicProbeCommand) {
+                    fetchedServices = AgentlessMonitor.parseSystemdDynamicOutput(rawDynamicSvc)
+                }
+                if fetchedServices.isEmpty {
+                    let monitored = ["nginx", "docker", "redis", "mysql", "sshd", "postgresql"]
+                    let svcCmd = AgentlessMonitor.systemdServicesProbeCommand(services: monitored)
+                    if let rawSvc = try? await client.executeCommand(svcCmd) {
+                        fetchedServices = ProcessListParser.parseSystemdServices(rawSvc, monitoredServices: monitored)
+                    }
+                }
+
+                if let rawContainers = try? await client.executeCommand(AgentlessMonitor.containerListProbeCommand) {
+                    let parsed = AgentlessMonitor.parseContainerProbeResult(rawContainers)
+                    fetchedContainerRuntime = parsed.runtime
+                    fetchedContainers = parsed.items
+                    fetchedContainerError = parsed.errorMessage
                 }
 
                 let portsCmd = AgentlessMonitor.listeningPortsProbeCommand
@@ -497,6 +689,11 @@ public struct ProcessInspectorView: View {
                     SystemdServiceItem(name: "redis", activeState: "active"),
                     SystemdServiceItem(name: "sshd", activeState: "active")
                 ]
+                fetchedContainerRuntime = .docker
+                fetchedContainers = [
+                    ContainerItem(id: "a1b2c3d4e5f6", name: "api-gateway", image: "nginx:1.27-alpine", state: "running", status: "Up 3 days", ports: "0.0.0.0:80->80/tcp", runtime: .docker),
+                    ContainerItem(id: "f6e5d4c3b2a1", name: "redis-cache", image: "redis:7-alpine", state: "running", status: "Up 3 days", ports: "127.0.0.1:6379->6379/tcp", runtime: .docker)
+                ]
                 fetchedPorts = [
                     ListeningPortItem(proto: "TCP", bindAddress: "0.0.0.0", port: 22, pid: 684, processName: "sshd"),
                     ListeningPortItem(proto: "TCP", bindAddress: "0.0.0.0", port: 80, pid: 4096, processName: "nginx"),
@@ -507,10 +704,16 @@ public struct ProcessInspectorView: View {
             
             let finalItems = fetchedItems
             let finalServices = fetchedServices
+            let finalContainers = fetchedContainers
+            let finalRuntime = fetchedContainerRuntime
+            let finalContainerError = fetchedContainerError
             let finalPorts = fetchedPorts
             await MainActor.run {
                 self.processes = finalItems
                 self.services = finalServices
+                self.containers = finalContainers
+                self.containerRuntime = finalRuntime
+                self.containerErrorMessage = finalContainerError
                 self.listeningPorts = finalPorts
                 self.isLoading = false
             }
@@ -551,6 +754,35 @@ public struct ProcessInspectorView: View {
             if feedback.hasPrefix("已向 PID") {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
                 fetchProcessData()
+            }
+        }
+    }
+
+    private func executeContainerAction(_ container: ContainerItem, action: ContainerAction) {
+        guard let client = sshClient, client.isConnected else {
+            statusFeedback = "连接未就绪，无法操作容器"
+            return
+        }
+        guard let cmd = AgentlessMonitor.containerActionCommand(runtime: container.runtime, id: container.id, action: action) else {
+            statusFeedback = "容器标识校验失败，已拦截不安全命令"
+            return
+        }
+        isLoading = true
+        Task {
+            do {
+                let output = try await client.executeCommand(cmd).trimmingCharacters(in: .whitespacesAndNewlines)
+                await MainActor.run {
+                    self.isLoading = false
+                    self.statusFeedback = output.isEmpty
+                        ? "已对容器 \(container.name) 执行 \(action.rawValue)"
+                        : "[\(container.name)] \(output)"
+                }
+                fetchProcessData()
+            } catch {
+                await MainActor.run {
+                    self.isLoading = false
+                    self.statusFeedback = "容器操作失败: \(error.localizedDescription)"
+                }
             }
         }
     }

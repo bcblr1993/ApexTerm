@@ -178,4 +178,33 @@ public enum SessionStartupHelper: Sendable {
         }
         return safe
     }
+
+    /// Scrubs embedded credentials/tokens/private keys from `ProxyCommand` before iCloud sync or `.aetherpack` sharing.
+    public static func sanitizeProxyCommand(_ rawCommand: String?) -> String? {
+        guard let trimmed = rawCommand?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else {
+            return nil
+        }
+        if trimmed.contains("PRIVATE KEY") {
+            return nil
+        }
+        var sanitized = trimmed
+        let patterns: [(String, String)] = [
+            // Inline URL credentials: http(s)://user:pass@host -> http(s)://user:<REDACTED>@host
+            (#"(https?|socks5h?)://([^:\s/@]+):([^@\s]+)@"#, "$1://$2:<REDACTED>@"),
+            // key=value secrets
+            (#"(?i)\b(password|passwd|secret|token|api[-_]?key|access[-_]?key)\s*=\s*("[^"]*"|'[^']*'|[^\s]+)"#, "$1=<REDACTED>"),
+            // CLI flag secrets: --token xxx / --api-key xxx / --password xxx
+            (#"(?i)(--?(?:password|passwd|secret|token|api[-_]?key|access[-_]?key))\s+("[^"]*"|'[^']*'|[^\s]+)"#, "$1 <REDACTED>"),
+            // Authorization header tokens
+            (#"(?i)(authorization\s*:\s*)(?:bearer\s+|basic\s+)?("[^"]*"|'[^']*'|[^\s"']+)"#, "$1<REDACTED>")
+        ]
+        for (pattern, replacement) in patterns {
+            if let regex = try? NSRegularExpression(pattern: pattern, options: []) {
+                let nsRange = NSRange(sanitized.startIndex..<sanitized.endIndex, in: sanitized)
+                sanitized = regex.stringByReplacingMatches(in: sanitized, options: [], range: nsRange, withTemplate: replacement)
+            }
+        }
+        return sanitized
+    }
 }

@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import ApexCore
 
 /// AppKit owns editing, undo, IME, selection and the standard find bar.
 struct NativeCodeEditor: NSViewRepresentable {
@@ -8,6 +9,10 @@ struct NativeCodeEditor: NSViewRepresentable {
     var isReloading: Bool
     /// Theme colors; nil keeps the system text colors (used when following the system appearance).
     var palette: EditorPalette? = nil
+    var language: SyntaxLanguage = .plain
+    var highlightPalette: ThemePalette? = nil
+    var isDarkTheme: Bool = false
+    var jumpToLine: Int? = nil
 
     struct EditorPalette: Equatable {
         let background: NSColor
@@ -70,6 +75,8 @@ struct NativeCodeEditor: NSViewRepresentable {
     }
 
     static func dismantleNSView(_ scroll: NSScrollView, coordinator: Coordinator) {
+        coordinator.highlightTask?.cancel()
+        coordinator.highlightTask = nil
         coordinator.findObservation?.invalidate()
         coordinator.findObservation = nil
         (scroll.documentView as? NSTextView)?.delegate = nil
@@ -78,11 +85,13 @@ struct NativeCodeEditor: NSViewRepresentable {
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         context.coordinator.parent = self
         guard let editor = scroll.documentView as? NSTextView else { return }
+        var textReplaced = false
         if editor.string != text {
             let selection = editor.selectedRange()
             editor.string = text
             editor.setSelectedRange(NSRange(location: min(selection.location, (text as NSString).length), length: 0))
             context.coordinator.ruler?.reindex()
+            textReplaced = true
         }
         editor.isEditable = !isReloading
         editor.backgroundColor = palette?.background ?? .textBackgroundColor
@@ -96,6 +105,17 @@ struct NativeCodeEditor: NSViewRepresentable {
             ruler.labelColor = palette?.gutterText ?? .secondaryLabelColor
             ruler.needsDisplay = true
         }
+        let paletteKey = "\(highlightPalette?.surface ?? "sys")_\(isDarkTheme)"
+        if textReplaced || context.coordinator.lastLanguage != language || context.coordinator.lastPaletteKey != paletteKey {
+            context.coordinator.applyHighlighting(to: editor)
+        }
+        if let line = jumpToLine, line > 0, !context.coordinator.didJumpToInitialLine, !editor.string.isEmpty {
+            context.coordinator.didJumpToInitialLine = true
+            DispatchQueue.main.async { [weak editor] in
+                guard let editor else { return }
+                Self.scrollEditor(editor, toLine: line)
+            }
+        }
         if context.coordinator.lastFindVisibility != showsFindBar {
             context.coordinator.lastFindVisibility = showsFindBar
             let action = NSMenuItem()
@@ -104,17 +124,71 @@ struct NativeCodeEditor: NSViewRepresentable {
         }
     }
 
+    private static func scrollEditor(_ editor: NSTextView, toLine targetLine: Int) {
+        let nsText = editor.string as NSString
+        guard nsText.length > 0 else { return }
+        var currentLine = 1
+        var offset = 0
+        while currentLine < targetLine && offset < nsText.length {
+            let lineRange = nsText.lineRange(for: NSRange(location: offset, length: 0))
+            offset = NSMaxRange(lineRange)
+            currentLine += 1
+        }
+        let clampedLoc = min(offset, max(0, nsText.length - 1))
+        let targetRange = nsText.lineRange(for: NSRange(location: clampedLoc, length: 0))
+        editor.setSelectedRange(targetRange)
+        editor.scrollRangeToVisible(targetRange)
+    }
+
     @MainActor
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: NativeCodeEditor
         weak var ruler: CodeLineRuler?
         var lastFindVisibility = false
         var findObservation: NSKeyValueObservation?
+        var highlightTask: Task<Void, Never>?
+        var lastLanguage: SyntaxLanguage = .plain
+        var lastPaletteKey: String = ""
+        var didJumpToInitialLine = false
+
         init(_ parent: NativeCodeEditor) { self.parent = parent }
+
         func textDidChange(_ notification: Notification) {
             guard let editor = notification.object as? NSTextView else { return }
             parent.text = editor.string
             ruler?.reindex()
+            scheduleHighlighting(for: editor)
+        }
+
+        func scheduleHighlighting(for editor: NSTextView) {
+            highlightTask?.cancel()
+            highlightTask = Task { @MainActor [weak self, weak editor] in
+                try? await Task.sleep(for: .milliseconds(80))
+                guard !Task.isCancelled, let self, let editor else { return }
+                self.applyHighlighting(to: editor)
+            }
+        }
+
+        func applyHighlighting(to editor: NSTextView) {
+            guard let layoutManager = editor.layoutManager,
+                  let storage = editor.textStorage else { return }
+            lastLanguage = parent.language
+            lastPaletteKey = "\(parent.highlightPalette?.surface ?? "sys")_\(parent.isDarkTheme)"
+
+            let fullRange = NSRange(location: 0, length: storage.length)
+            if fullRange.length > 0 {
+                layoutManager.removeTemporaryAttribute(.foregroundColor, forCharacterRange: fullRange)
+            }
+            let tokens = SyntaxHighlighter.tokenize(editor.string, language: parent.language)
+            guard !tokens.isEmpty else { return }
+
+            let activePalette = parent.highlightPalette
+                ?? (parent.isDarkTheme ? TerminalThemePreset.modern.palette : TerminalThemePreset.nativeLight.palette)
+            for token in tokens {
+                guard token.range.location + token.range.length <= storage.length else { continue }
+                let color = SyntaxHighlighter.color(for: token.kind, palette: activePalette, isDark: parent.isDarkTheme)
+                layoutManager.addTemporaryAttribute(.foregroundColor, value: color, forCharacterRange: token.range)
+            }
         }
     }
 }

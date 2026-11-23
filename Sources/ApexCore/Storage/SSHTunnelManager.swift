@@ -158,7 +158,8 @@ public final class SSHTunnelManager: ObservableObject {
         tunnel: SSHTunnel,
         session: Session,
         privateKeyPath: String? = nil,
-        jumpSession: Session? = nil
+        jumpSession: Session? = nil,
+        jumpChain: [Session] = []
     ) -> [String] {
         let interval = session.keepAliveIntervalSeconds > 0 ? min(max(session.keepAliveIntervalSeconds, 5), 60) : 15
         var args = [
@@ -190,10 +191,12 @@ public final class SSHTunnelManager: ObservableObject {
         if let keyPath = privateKeyPath ?? session.privateKeyPath, !keyPath.isEmpty {
             args.append(contentsOf: ["-i", expandPath(keyPath)])
         }
-        if let jump = jumpSession, !jump.host.isEmpty {
-            let jHost = SSHTunnel.formatForwardingHost(jump.host)
-            args.append(contentsOf: ["-J", "\(jump.username)@\(jHost):\(jump.port)"])
-        }
+        let effectiveHops: [Session] = !jumpChain.isEmpty ? jumpChain : (jumpSession.map { [$0] } ?? [])
+        args.append(contentsOf: SSHArgumentBuilder.buildAdvancedOptions(
+            for: session,
+            channel: .nonInteractiveSSH,
+            resolvedJumpHops: effectiveHops
+        ))
         
         // Port & host
         let destHost = SSHTunnel.formatForwardingHost(session.host)
@@ -261,11 +264,14 @@ public final class SSHTunnelManager: ObservableObject {
         stopTunnel(id: id)
         activeStates[id] = .starting
         
-        let resolvedJump = jumpSession ?? session.jumpServerId.flatMap { jid in
-            SessionStore.shared.sessions.first(where: { $0.id == jid })
+        let resolvedChain: [Session]
+        if let jumpSession {
+            resolvedChain = [jumpSession]
+        } else {
+            resolvedChain = SSHArgumentBuilder.resolveJumpChain(for: session, availableSessions: SessionStore.shared.sessions).hops
         }
         var binaryPath = "/usr/bin/ssh"
-        var sshArgs = Self.buildSSHArguments(tunnel: tunnel, session: session, privateKeyPath: privateKeyPath, jumpSession: resolvedJump)
+        var sshArgs = Self.buildSSHArguments(tunnel: tunnel, session: session, privateKeyPath: privateKeyPath, jumpChain: resolvedChain)
         
         if let pw = password, !pw.isEmpty, let sshpass = sshpassPath, FileManager.default.isExecutableFile(atPath: sshpass) {
             binaryPath = sshpass

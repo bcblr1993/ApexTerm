@@ -42,6 +42,46 @@ public final class TerminalPaneItem: Identifiable, ObservableObject {
     public var onConnectionStateChanged: ((SSHConnectionState) -> Void)?
     public private(set) var logger: SessionLogger?
     public private(set) var isTornDown: Bool = false
+    @Published public var pendingOSC52Request: OSC52WriteRequest? = nil
+    @Published public var isOSC52SessionAllowed: Bool = false
+    public var onWriteClipboard: (String) -> Void = { text in
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    public func handleOSC52WriteRequest(
+        _ request: OSC52WriteRequest,
+        policy: OSC52ClipboardPolicy = AppSettings.shared.osc52ClipboardPolicy
+    ) {
+        guard !isTornDown else { return }
+        switch policy {
+        case .deny:
+            pendingOSC52Request = nil
+        case .allow:
+            onWriteClipboard(request.text)
+        case .ask:
+            if isOSC52SessionAllowed {
+                onWriteClipboard(request.text)
+            } else {
+                pendingOSC52Request = request
+            }
+        }
+    }
+
+    public func allowPendingOSC52Once() {
+        guard let req = pendingOSC52Request else { return }
+        onWriteClipboard(req.text)
+        pendingOSC52Request = nil
+    }
+
+    public func allowPendingOSC52ForSession() {
+        isOSC52SessionAllowed = true
+        allowPendingOSC52Once()
+    }
+
+    public func denyPendingOSC52() {
+        pendingOSC52Request = nil
+    }
     
     public func cancelAutoReconnect() {
         autoReconnectTask?.cancel()
@@ -125,6 +165,8 @@ public final class TerminalPaneItem: Identifiable, ObservableObject {
         sshClient.setDirectoryChangeHandler { _ in }
         sshClient.setMetricsHandler { _ in }
         ringBuffer.onUpdate = nil
+        ringBuffer.onOSC52WriteRequest = nil
+        pendingOSC52Request = nil
         ringBuffer.finishStream()
         ringBuffer.clear()
         logger?.close()
@@ -166,6 +208,11 @@ public final class TerminalPaneItem: Identifiable, ObservableObject {
         
         let ringBuffer = self.ringBuffer
         let sessionLogger = self.logger
+        ringBuffer.onOSC52WriteRequest = { [weak self] request in
+            Task { @MainActor [weak self] in
+                self?.handleOSC52WriteRequest(request)
+            }
+        }
         self.sshClient.setOutputHandler { data in
             ringBuffer.appendData(data)
             sessionLogger?.appendData(data)
@@ -894,7 +941,18 @@ public struct WorkspaceView: View {
                 ProcessInspectorView(
                     session: tab.session,
                     sshClient: tab.activePane?.sshClient ?? tab.sshClient,
-                    isPresented: $isProcessInspectorPresented
+                    isPresented: $isProcessInspectorPresented,
+                    onOpenContainerShell: { hostSession, execCommand in
+                        var containerSession = hostSession
+                        containerSession.initialWorkingDirectory = nil
+                        containerSession.startupCommand = execCommand
+                        let client = SSHClientFactory.makeClient(for: containerSession)
+                        let newTab = TerminalTabItem(session: containerSession, sshClient: client)
+                        newTab.customTitle = "\(hostSession.name) · 容器终端"
+                        activeTabs.append(newTab)
+                        selectedTabId = newTab.id
+                        newTab.connect()
+                    }
                 )
                 .apexTheme()
             }
@@ -1734,6 +1792,52 @@ private struct PaneContainerView: View {
                         Spacer()
                     }
                     .transition(.opacity)
+                } else if let osc52 = pane.pendingOSC52Request {
+                    VStack {
+                        let preview = osc52.text
+                            .replacingOccurrences(of: "\r", with: " ")
+                            .replacingOccurrences(of: "\n", with: " ")
+                        let truncated = preview.count > 80 ? String(preview.prefix(80)) + "…" : preview
+                        HStack(spacing: 8) {
+                            Image(systemName: "doc.on.clipboard")
+                                .foregroundColor(ApexStyle.accent)
+                                .accessibilityHidden(true)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("\(pane.session.name) 请求写入剪贴板 (\(osc52.byteCount) B)")
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundColor(ApexStyle.primary)
+                                    .lineLimit(1)
+                                Text(truncated)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundColor(ApexStyle.secondary)
+                                    .lineLimit(1)
+                            }
+                            Spacer(minLength: 8)
+                            Button("允许一次") {
+                                pane.allowPendingOSC52Once()
+                            }
+                            .apexProminentButton()
+                            .controlSize(.small)
+                            Button("本次会话允许") {
+                                pane.allowPendingOSC52ForSession()
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            Button("拒绝") {
+                                pane.denyPendingOSC52()
+                            }
+                            .buttonStyle(.borderless)
+                            .font(.system(size: 11))
+                            .foregroundColor(ApexStyle.secondary)
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .apexGlassCard(cornerRadius: 12, material: .regularMaterial, borderColor: ApexStyle.accent.opacity(0.4), shadowRadius: 8)
+                        .padding(.horizontal, ApexStyle.s4)
+                        .padding(.top, 12)
+                        Spacer()
+                    }
+                    .transition(.opacity)
                 } else if let notice = dropTransferNotice {
                     VStack {
                         HStack(spacing: 8) {
@@ -1827,6 +1931,33 @@ private struct WorkspaceBottomStatusBar: View {
                 .menuStyle(.borderlessButton)
                 .fixedSize()
                 .help("OSC 133 Shell 集成：最近命令执行状态与耗时记录")
+
+                if lastRecord.isFailed {
+                    Button {
+                        let output = pane.ringBuffer.extractLastOSC133CommandOutput()
+                            ?? CommandBoundaryDetector.extractLastCommandOutput(from: pane.ringBuffer.allLines())
+                            ?? lastRecord.commandText
+                        if let output, !output.isEmpty {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(output, forType: .string)
+                            NotificationCenter.default.post(
+                                name: NSNotification.Name("ShowStatusToast"),
+                                object: "已复制失败命令输出 (\(output.count) 字符)"
+                            )
+                        }
+                    } label: {
+                        Text("exit \(lastRecord.exitCode ?? 1)")
+                            .font(.caption.monospaced())
+                            .foregroundColor(ApexStyle.error)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(ApexStyle.error.opacity(0.14), in: Capsule())
+                            .overlay(Capsule().stroke(ApexStyle.error.opacity(0.35), lineWidth: 0.75))
+                    }
+                    .buttonStyle(.plain)
+                    .help("点击复制失败命令完整输出 (⌘⌥C)")
+                    .accessibilityLabel("复制失败命令输出")
+                }
             }
             
             if showsDirectoryControls {

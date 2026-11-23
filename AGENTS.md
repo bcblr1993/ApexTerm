@@ -153,6 +153,14 @@ swift test
      5. `TC-TERM-08`：「切换并重连」降级目标（`xterm-256color`/`linux`→`xterm`，`xterm`→`vt100`）不会回到缺失类型。
    - 任何单项未通过立即熔断打包流水线。
 
+13. **现代终端协议、无代理容器运维、高级 SSH 选项与 SFTP 运维门禁 (RG-15: Modern Terminal, Agentless Containers, Advanced SSH & SFTP Ops Gate - 每版必测)**：
+   - 每次发布新版本前，**必须无条件通过 `v1.24.0` 新增 4 大自动化测试套件（含 TC-V24-01 ~ TC-V24-20）**：
+     1. `ModernTerminalProtocolTests`（`TC-V24-01 ~ 06`）：覆盖 OSC 52 解码/100KB 上限/160KB 未闭合流防护、`?` 剪贴板读取拒绝、`deny/ask/allow` 策略路由、DEC 2026 同步帧抑制与 120ms 看门狗自动释放、分片序列重装配、OSC 133 提示符书签导航与非零退出码输出提取；
+     2. `AgentlessContainerOpsTests`（`TC-V24-07 ~ 11`）：覆盖 Docker/Podman 制表符输出解析与无引擎空态、容器 ID/Systemd Unit 注入拦截、核心 Systemd 服务（`sshd` 等）禁 stop 护栏、`exec`/`logs`/`journalctl` 与动态发现解析、无权限 stderr 透传；
+     3. `SSHAdvancedOptionsTests`（`TC-V24-12 ~ 16`）：覆盖旧版 Session 向下兼容、多跳 `-J`/`-A`（仅交互 SSH，绝不下发至 `scp`）/`-C`/`ProxyCommand` 与环路检测、`~/.ssh/config` 首值优先语义、iCloud/`.aetherpack` 对 `ProxyCommand` 脱敏与 `jumpServerChain` UUID 重映射、App Store 沙盒校验告警；
+     4. `SFTPOpsAndHighlightTests`（`TC-V24-17 ~ 20`）：覆盖含空格/引号/中文路径的 `.tar.gz`/`.zip` 打包解压安全转义、`find`/`grep -F` 远端搜索命令构建与冒号保真解析、`SyntaxHighlighter` 对 YAML/JSON/Shell/Dockerfile/Nginx 高亮识别与 >512KB 自动降级耗时断言（<5ms）。
+   - 任何单项未通过立即熔断打包流水线。
+
 ---
 
 ## 🔏 五、构建、Apple 签名与安全公证规范 (Code Signing Standards)

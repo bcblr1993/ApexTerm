@@ -2,6 +2,41 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.24.0] - 2026-11-23
+
+### ✨ 新增特性 (Features)
+- **现代终端协议套件（OSC 52 / DEC 2026 / OSC 133 导航与输出复制）**：
+  - 新增 `OSC 52` 剪贴板写入策略控制（支持 `deny` / `ask`（默认）/ `allow`，永久拦截 `?` 剪贴板读取探测），强制 100 KB 单次解码上限与 160 KB 未闭合流式拦截；触发 `ask` 时在终端面板顶部展示简洁确认条，支持仅本次允许、本会话允许或拒绝。
+  - 新增 `DEC 2026` 同步输出帧缓冲与 120 ms 看门狗兜底刷新（`TerminalViewBridge` 采用单定时器合并），消除全屏重绘与应用滚动撕裂。
+  - 新增 `OSC 133` 提示符书签上下跳转快捷键（`⌘ ↑` / `⌘ ↓`，在备用屏幕应用内自动跳过）及底部状态栏可点击非零 `exit <code>` 胶囊，一键提取上一条命令完整输出。
+- **无代理容器与动态 Systemd 运维闭环**：
+  - 在进程检查器扩展「容器」视图，通过无代理 SSH 命令自动发现远端 Docker / Podman 容器列表，支持启停、重启、查看实时日志以及一键开启新标签页执行交互式容器 Shell（`exec`）。
+  - 新增远端 Systemd 服务动态发现面板、完整服务列表弹窗与 `journalctl` 日志查看，并内置关键系统单元（`sshd`、`ssh`、`systemd-journald`、`systemd-udevd`、`dbus`、`systemd-logind`）防误停护栏。
+- **多跳跳板链与高级 SSH 连接选项**：
+  - 扩展向后兼容的多跳跳板链（`jumpServerChain` 最多 5 跳、自动环路检测）与高级连接参数（`ForwardAgent` `-A`、`Compression` `-C`、`ProxyCommand`），覆盖会话编辑表单、`~/.ssh/config` 首值优先导入/导出，并严格限定 `-A` 仅用于交互式 SSH 会话而不下发至 `scp` 或后台监控探针。
+  - 新增 `ProxyCommandValidator` 提供 App Store 沙盒合规提示，并在 iCloud 同步与 `.aetherpack` 导出中执行 `ProxyCommand` 凭据脱敏与跳板链 UUID 重映射。
+- **SFTP 远端归档、全局搜索与零依赖语法高亮**：
+  - SFTP 文件浏览器右键菜单支持单选/多选文件安全打包（`.tar.gz` / `.zip`）与归档解压（`.tar.gz` / `.tgz` / `.tar` / `.zip`）。
+  - 新增 `⌘ ⇧ F` 远端目录 `find` / `grep -F` 搜索栏，支持模糊路径与内容精确检索并点击结果直达内置编辑器对应行。
+  - 新增零外部依赖单趟正则 `SyntaxHighlighter`（支持 YAML、JSON、TOML、Shell、Nginx、Dockerfile、INI），通过 `NSLayoutManager` 临时属性渲染着色（无撤销栈污染）并在文件超过 512 KB 时自动旁路降级。
+
+### ⚡️ 体验优化 (Improvements)
+- 抽取共享 `SSHArgumentBuilder` 统一交互会话与 SSH 隧道的命令行参数组装，消除双份拼装分歧。
+- 更新快捷键速查面板及行为设置页，补充 `⌘ ↑ / ↓`、`⌘ ⇧ F` 说明与 OSC 52 剪贴板策略开关（保持设置窗口 6 个工具栏标签紧凑布局）。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- **RG-15 (`v1.24.0` 核心功能门禁)**：`ModernTerminalProtocolTests`、`AgentlessContainerOpsTests`、`SSHAdvancedOptionsTests`、`SFTPOpsAndHighlightTests` 共 20 项用例（`TC-V24-01 ~ TC-V24-20`）20/20 全部通过。
+- **全量测试门禁 (`swift test --jobs 2`)**：共执行 656 项用例（641 通过 / 15 环境跳过 / 0 失败），Swift 6 编译零警告。
+- **8 大 Release 性能基准测试 (`swift test -c release --jobs 2 --filter FullPerformanceBenchmarkTests`, 8/8 通过)**：
+  - `[Benchmark 1]` RingBuffer 写入吞吐：`1,930,386 行/秒`（`195.14 MB/秒`）
+  - `[Benchmark 2]` ANSI / TrueColor 颜色解析：`346,536 spans/秒`（`2.886 μs/span`）
+  - `[Benchmark 3]` 内存水位与驻留集（RSS）：Release 初始 `36.58 MB`、峰值 `107.08 MB`（Debug 初始 `216.50 MB`、峰值 `247.19 MB`，均满足 `≤ 250 MB` 门禁）
+  - `[Benchmark 4]` 16 线程并发写入吞吐：`2,642,862 writes/秒`
+  - `[Benchmark 5]` 64 核 Linux 指标解析：`15,026 次/秒`
+  - `[Benchmark 6]` OpenSSH 500 主机批量解析：`152,721 hosts/秒`
+  - `[Benchmark 7]` SFTP 100 任务并发调度：`1,030 tasks/秒`
+  - `[Benchmark 8]` 终端按键直通延迟：`5.48 μs`（`182,459 keys/秒`）
+
 ## [v1.23.7] - 2026-11-19
 
 ### 🐞 问题修复 (Bug Fixes)

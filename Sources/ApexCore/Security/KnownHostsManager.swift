@@ -81,7 +81,10 @@ public struct KnownHostEntry: Identifiable, Codable, Sendable, Equatable {
 
     /// Checks whether this entry matches a target host and port according to OpenSSH `known_hosts` conventions.
     public func matchesEndpoint(host: String, port: Int = 22) -> Bool {
-        let cleanHost = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        var cleanHost = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if cleanHost.hasPrefix("[") && cleanHost.hasSuffix("]") && cleanHost.count > 2 {
+            cleanHost = String(cleanHost.dropFirst().dropLast())
+        }
         guard !cleanHost.isEmpty, !isHashed else { return false }
 
         let bracketed = "[\(cleanHost)]:\(port)"
@@ -313,7 +316,10 @@ public final class KnownHostsManager: ObservableObject, @unchecked Sendable {
         guard FileManager.default.fileExists(atPath: fileURL.path) else { return 0 }
         let content = try String(contentsOf: fileURL, encoding: .utf8)
         let lines = content.components(separatedBy: "\n")
-        let cleanHost = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        var cleanHost = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if cleanHost.hasPrefix("[") && cleanHost.hasSuffix("]") && cleanHost.count > 2 {
+            cleanHost = String(cleanHost.dropFirst().dropLast())
+        }
         guard !cleanHost.isEmpty else { return 0 }
         let bracketed = "[\(cleanHost)]:\(port)"
 

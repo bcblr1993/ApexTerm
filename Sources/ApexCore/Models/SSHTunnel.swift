@@ -75,9 +75,11 @@ public struct SSHTunnel: Identifiable, Codable, Sendable, Equatable, Hashable {
         self.name = name
         self.type = type
         self.sessionId = sessionId
-        self.bindHost = bindHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "127.0.0.1" : bindHost
+        let trimmedBind = bindHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.bindHost = trimmedBind.isEmpty ? "127.0.0.1" : trimmedBind
         self.bindPort = bindPort
-        self.targetHost = targetHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "localhost" : targetHost
+        let trimmedTarget = targetHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.targetHost = trimmedTarget.isEmpty ? "localhost" : trimmedTarget
         self.targetPort = targetPort
         self.autoStart = autoStart
     }
@@ -109,11 +111,14 @@ public struct SSHTunnel: Identifiable, Codable, Sendable, Equatable, Hashable {
     /// Validates ports and host parameters
     public var isValid: Bool {
         guard bindPort >= 1 && bindPort <= 65535 else { return false }
+        let cleanBind = bindHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanBind.isEmpty, !cleanBind.contains(where: \.isWhitespace) else { return false }
         if type == .dynamic {
-            return !bindHost.isEmpty
+            return true
         } else {
             guard targetPort >= 1 && targetPort <= 65535 else { return false }
-            return !bindHost.isEmpty && !targetHost.isEmpty
+            let cleanTarget = targetHost.trimmingCharacters(in: .whitespacesAndNewlines)
+            return !cleanTarget.isEmpty && !cleanTarget.contains(where: \.isWhitespace)
         }
     }
 }

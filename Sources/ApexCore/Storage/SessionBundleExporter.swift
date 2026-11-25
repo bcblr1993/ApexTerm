@@ -738,6 +738,8 @@ public enum SessionBundleExporter {
         // 1. Import referenced Key Vault identities (deduplicated by SHA-256 fingerprint)
         var vaultRefRemap: [String: String] = [:]
         var vaultPassRefByNewPrivRef: [String: String] = [:]
+        var fallbackVaultPEMByOrigRef: [String: String] = [:]
+        var fallbackVaultPassByOrigRef: [String: String] = [:]
         var importedVaultKeys = 0
 
         if options.importCredentials {
@@ -763,6 +765,11 @@ public enum SessionBundleExporter {
                             vaultPassRefByNewPrivRef[created.keychainPrivateKeyRef] = passRef
                         }
                         importedVaultKeys += 1
+                    }
+                } else if !record.privateKeyPEM.isEmpty {
+                    fallbackVaultPEMByOrigRef[record.originalPrivateKeyRef] = record.privateKeyPEM
+                    if let pass = record.passphrase, !pass.isEmpty {
+                        fallbackVaultPassByOrigRef[record.originalPrivateKeyRef] = pass
                     }
                 }
             }
@@ -842,6 +849,8 @@ public enum SessionBundleExporter {
                         importCredentials: options.importCredentials,
                         vaultRefRemap: vaultRefRemap,
                         vaultPassRefByNewPrivRef: vaultPassRefByNewPrivRef,
+                        fallbackVaultPEMByOrigRef: fallbackVaultPEMByOrigRef,
+                        fallbackVaultPassByOrigRef: fallbackVaultPassByOrigRef,
                         secretSaver: saver
                     )
                     if appliedCred { importedCredentials += 1 }
@@ -869,6 +878,8 @@ public enum SessionBundleExporter {
                         importCredentials: options.importCredentials,
                         vaultRefRemap: vaultRefRemap,
                         vaultPassRefByNewPrivRef: vaultPassRefByNewPrivRef,
+                        fallbackVaultPEMByOrigRef: fallbackVaultPEMByOrigRef,
+                        fallbackVaultPassByOrigRef: fallbackVaultPassByOrigRef,
                         secretSaver: saver
                     )
                     if appliedCred { importedCredentials += 1 }
@@ -893,6 +904,8 @@ public enum SessionBundleExporter {
                     importCredentials: options.importCredentials,
                     vaultRefRemap: vaultRefRemap,
                     vaultPassRefByNewPrivRef: vaultPassRefByNewPrivRef,
+                    fallbackVaultPEMByOrigRef: fallbackVaultPEMByOrigRef,
+                    fallbackVaultPassByOrigRef: fallbackVaultPassByOrigRef,
                     secretSaver: saver
                 )
                 if appliedCred { importedCredentials += 1 }
@@ -919,8 +932,9 @@ public enum SessionBundleExporter {
                     didModifyJumpChain = true
                 }
             }
-            if didModifyJumpChain {
-                store.replaceAllSessions(patched)
+            let sanitized = SessionStore.sanitizeJumpServerReferences(in: patched)
+            if didModifyJumpChain || sanitized != store.sessions {
+                store.replaceAllSessions(sanitized)
             }
         }
 
@@ -1044,6 +1058,8 @@ public enum SessionBundleExporter {
         importCredentials: Bool,
         vaultRefRemap: [String: String],
         vaultPassRefByNewPrivRef: [String: String],
+        fallbackVaultPEMByOrigRef: [String: String],
+        fallbackVaultPassByOrigRef: [String: String],
         secretSaver: (String, String) throws -> String
     ) throws -> Bool {
         var didImportAny = false
@@ -1072,12 +1088,25 @@ public enum SessionBundleExporter {
         case .privateKey(let keyPath, _):
             var resolvedKeyRef = keyPath
             var vaultLinkedPassRef: String? = nil
+            var fallbackVaultPass: String? = nil
 
             if importCredentials,
-               let origVaultRef = bundleCredentials.sessionVaultKeyRefs[sourceSessionID],
-               let newVaultRef = vaultRefRemap[origVaultRef] {
-                resolvedKeyRef = newVaultRef
-                vaultLinkedPassRef = vaultPassRefByNewPrivRef[newVaultRef]
+               let origVaultRef = bundleCredentials.sessionVaultKeyRefs[sourceSessionID] {
+                if let newVaultRef = vaultRefRemap[origVaultRef] {
+                    resolvedKeyRef = newVaultRef
+                    vaultLinkedPassRef = vaultPassRefByNewPrivRef[newVaultRef]
+                    didImportAny = true
+                } else if let fallbackPEM = fallbackVaultPEMByOrigRef[origVaultRef], !fallbackPEM.isEmpty {
+                    resolvedKeyRef = fallbackPEM
+                    fallbackVaultPass = fallbackVaultPassByOrigRef[origVaultRef]
+                    didImportAny = true
+                }
+            }
+            if resolvedKeyRef.isEmpty,
+               importCredentials,
+               let rawPEM = bundleCredentials.sessionPrivateKeysPEM[sourceSessionID],
+               !rawPEM.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                resolvedKeyRef = rawPEM
                 didImportAny = true
             } else if resolvedKeyRef.isEmpty,
                       case .privateKey(let existingKeyRef, _) = existingAuthMethod {
@@ -1086,7 +1115,7 @@ public enum SessionBundleExporter {
 
             let savedPassRef: String?
             if importCredentials,
-               let pass = bundleCredentials.sessionPassphrases[sourceSessionID],
+               let pass = bundleCredentials.sessionPassphrases[sourceSessionID] ?? fallbackVaultPass,
                !pass.isEmpty {
                 if let vaultPassRef = vaultLinkedPassRef {
                     savedPassRef = vaultPassRef
@@ -1115,12 +1144,25 @@ public enum SessionBundleExporter {
             var resolvedKeyRef = keyPath
             var resolvedCertPath = certPath
             var vaultLinkedPassRef: String? = nil
+            var fallbackVaultPass: String? = nil
 
             if importCredentials,
-               let origVaultRef = bundleCredentials.sessionVaultKeyRefs[sourceSessionID],
-               let newVaultRef = vaultRefRemap[origVaultRef] {
-                resolvedKeyRef = newVaultRef
-                vaultLinkedPassRef = vaultPassRefByNewPrivRef[newVaultRef]
+               let origVaultRef = bundleCredentials.sessionVaultKeyRefs[sourceSessionID] {
+                if let newVaultRef = vaultRefRemap[origVaultRef] {
+                    resolvedKeyRef = newVaultRef
+                    vaultLinkedPassRef = vaultPassRefByNewPrivRef[newVaultRef]
+                    didImportAny = true
+                } else if let fallbackPEM = fallbackVaultPEMByOrigRef[origVaultRef], !fallbackPEM.isEmpty {
+                    resolvedKeyRef = fallbackPEM
+                    fallbackVaultPass = fallbackVaultPassByOrigRef[origVaultRef]
+                    didImportAny = true
+                }
+            }
+            if resolvedKeyRef.isEmpty,
+               importCredentials,
+               let rawPEM = bundleCredentials.sessionPrivateKeysPEM[sourceSessionID],
+               !rawPEM.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                resolvedKeyRef = rawPEM
                 didImportAny = true
             } else if resolvedKeyRef.isEmpty,
                       case .certificate(let existingKeyRef, let existingCertPath, _) = existingAuthMethod {
@@ -1132,7 +1174,7 @@ public enum SessionBundleExporter {
 
             let savedPassRef: String?
             if importCredentials,
-               let pass = bundleCredentials.sessionPassphrases[sourceSessionID],
+               let pass = bundleCredentials.sessionPassphrases[sourceSessionID] ?? fallbackVaultPass,
                !pass.isEmpty {
                 if let vaultPassRef = vaultLinkedPassRef {
                     savedPassRef = vaultPassRef

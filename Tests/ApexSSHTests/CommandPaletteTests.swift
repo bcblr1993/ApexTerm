@@ -188,4 +188,15 @@ final class CommandPaletteTests: XCTestCase {
             XCTAssertNotNil(results)
         }
     }
+
+    // MARK: - TC-PAL-09: Multi-Token Search & Non-Positive maxResults Guard
+    func testMultiTokenSearchAndMaxResultsGuard() {
+        let items = sampleItems
+        XCTAssertTrue(CommandPaletteSearchEngine.search(items: items, query: "", maxResults: 0).isEmpty)
+        XCTAssertTrue(CommandPaletteSearchEngine.search(items: items, query: "终端", maxResults: -5).isEmpty)
+
+        let multi = CommandPaletteSearchEngine.search(items: items, query: "数据库 192.168.10.1")
+        XCTAssertEqual(multi.count, 1)
+        XCTAssertEqual(multi.first?.title, "生产数据库网关")
+    }
 }

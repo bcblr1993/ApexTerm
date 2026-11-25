@@ -276,4 +276,40 @@ final class iCloudSyncTests: XCTestCase {
         
         XCTAssertNotNil(manager.lastSyncDate)
     }
+
+    // MARK: - TC-ICLOUD-09: Redacts Inline Whitespace/PEM Passwords, Temporary Strategy Isolation & Trigger/Bookmark Dedup
+    @MainActor
+    func testSanitizeInlinePasswordTemporaryStrategyAndMergeDedup() async throws {
+        let inlinePasswordSession = Session(
+            name: "InlinePW",
+            host: "192.0.2.40",
+            username: "ops",
+            authMethod: .password(keychainRef: "my inline password")
+        )
+        let sanitized = iCloudSyncManager.sanitizeForCloud(payload: iCloudSyncPayload(sessions: [inlinePasswordSession]))
+        XCTAssertEqual(sanitized.sessions.first?.authMethod, .password(keychainRef: ""))
+
+        let backend = FileSystemCloudStorageBackend(cloudDirectory: cloudDirectory)
+        let localStore = SessionStore(baseDirectory: tempDirectory)
+        let triggerId = UUID()
+        localStore.replaceAllTriggers([Trigger(id: triggerId, name: "T1", regexPattern: "err", action: .highlight(colorHex: "#FF0000"))])
+        let remotePayload = iCloudSyncPayload(
+            triggers: [Trigger(id: triggerId, name: "T1-Renamed", regexPattern: "err", action: .highlight(colorHex: "#FF0000"))],
+            bookmarks: [SFTPBookmark(name: "Preset", path: "/tmp", isPreset: true), SFTPBookmark(name: "App", path: "/opt/app", isPreset: false)]
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try backend.writePayloadData(try encoder.encode(remotePayload))
+
+        let manager = iCloudSyncManager(storageBackend: backend, sessionStore: localStore, conflictStrategy: .smartMerge)
+        let res = try await manager.syncNow(withTemporaryStrategy: .overwriteCloud)
+        XCTAssertEqual(manager.conflictStrategy, .smartMerge, "Temporary strategy must not mutate persisted conflictStrategy")
+        XCTAssertEqual(res.uploadedSessionsCount, 0)
+
+        // Now smartMerge against a payload with matching trigger ID and preset bookmark
+        try backend.writePayloadData(try encoder.encode(remotePayload))
+        _ = try await manager.syncNow(withTemporaryStrategy: .smartMerge)
+        XCTAssertEqual(localStore.triggers.count, 1, "Duplicate trigger ID must not be inserted twice")
+        XCTAssertFalse(manager.bookmarkManager.customBookmarks.contains(where: { $0.isPreset }))
+    }
 }

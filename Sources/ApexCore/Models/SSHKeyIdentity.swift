@@ -50,13 +50,18 @@ public struct SSHKeyIdentity: Identifiable, Codable, Sendable, Equatable, Hashab
     
     /// Generates standard OpenSSH command to append this public key to the remote host's ~/.ssh/authorized_keys
     public func generateDeployCommand() -> String {
-        let cleanPub = publicKeyOpenSSH.replacingOccurrences(of: "'", with: "'\\''")
+        let singleLinePub = publicKeyOpenSSH
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        let cleanPub = singleLinePub.replacingOccurrences(of: "'", with: "'\\''")
         return "umask 077; test -d ~/.ssh || mkdir -p ~/.ssh; chmod 700 ~/.ssh; echo '\(cleanPub)' >> ~/.ssh/authorized_keys; chmod 600 ~/.ssh/authorized_keys"
     }
     
     /// Computes SHA256 OpenSSH fingerprint from base64 public key bytes
     public static func computeFingerprint(from openSSHPubKey: String) -> String {
-        let parts = openSSHPubKey.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
+        let parts = openSSHPubKey.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }
         guard parts.count >= 2, let keyData = Data(base64Encoded: parts[1]) else {
             // Fallback SHA256 of the raw string if not standard space-delimited
             let hash = SHA256.hash(data: Data(openSSHPubKey.utf8))
@@ -70,10 +75,13 @@ public struct SSHKeyIdentity: Identifiable, Codable, Sendable, Equatable, Hashab
     
     /// Detects algorithm from public key string
     public static func detectAlgorithm(from pubKey: String) -> SSHKeyAlgorithm {
-        let lower = pubKey.lowercased()
-        if lower.contains("ssh-ed25519") {
+        let keyTypeToken = pubKey
+            .components(separatedBy: .whitespacesAndNewlines)
+            .first(where: { !$0.isEmpty })?
+            .lowercased() ?? pubKey.lowercased()
+        if keyTypeToken.contains("ed25519") {
             return .ed25519
-        } else if lower.contains("ecdsa") {
+        } else if keyTypeToken.contains("ecdsa") {
             return .ecdsa
         } else {
             return .rsa

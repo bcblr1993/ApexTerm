@@ -50,6 +50,7 @@ public final class KeychainStore: @unchecked Sendable {
     /// (`ssh_<UUID>` / `passphrase_<UUID>`) moves to a fresh account the caller must persist.
     @discardableResult
     public func save(key: String, secret: String) throws -> String {
+        guard !key.isEmpty else { throw KeychainError.saveFailed(errSecParam) }
         guard let data = secret.data(using: .utf8) else { return key }
         let attributes: [String: Any] = [
             kSecValueData as String: data,
@@ -90,6 +91,7 @@ public final class KeychainStore: @unchecked Sendable {
     
     /// Synchronously retrieves a password or private key from Keychain without biometric challenge
     public func getSync(key: String) throws -> String {
+        guard !key.isEmpty else { throw KeychainError.itemNotFound }
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: serviceName,

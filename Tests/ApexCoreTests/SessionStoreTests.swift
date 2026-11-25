@@ -112,4 +112,55 @@ final class SessionStoreTests: XCTestCase {
         let store = SessionStore(baseDirectory: tempDirectory)
         XCTAssertEqual(store.sessions.count, 0)
     }
+
+    @MainActor
+    func testSessionDecoderNormalizesJumpServerIdAndDiamondDAG() throws {
+        let sessionId = UUID()
+        let hopA = UUID()
+        let hopB = UUID()
+        let json = """
+        {
+          "id": "\(sessionId.uuidString)",
+          "name": "Target",
+          "host": "192.0.2.50",
+          "port": 22,
+          "username": "ops",
+          "authMethod": { "agent": {} },
+          "jumpServerId": "\(sessionId.uuidString)",
+          "jumpServerChain": ["\(hopA.uuidString)", "\(hopB.uuidString)", "\(hopA.uuidString)"]
+        }
+        """
+        let decoded = try JSONDecoder().decode(Session.self, from: Data(json.utf8))
+        XCTAssertEqual(decoded.jumpServerChain, [hopA, hopB])
+        XCTAssertEqual(decoded.jumpServerId, hopA)
+
+        // Diamond DAG: S -> [B, A] and A -> [B] is acyclic
+        let bSession = Session(id: hopB, name: "B", host: "192.0.2.10", username: "u")
+        let aSession = Session(id: hopA, name: "A", host: "192.0.2.11", username: "u", jumpServerChain: [hopB])
+        let sSession = Session(id: sessionId, name: "S", host: "192.0.2.12", username: "u", jumpServerChain: [hopB, hopA])
+        XCTAssertFalse(SSHArgumentBuilder.hasJumpCycle(startingAt: sSession.id, jumpChain: [hopB, hopA], allSessions: [bSession, aSession, sSession]))
+
+        // Transitive cycle: S -> A -> B -> S
+        let cycB = Session(id: hopB, name: "B", host: "192.0.2.10", username: "u", jumpServerChain: [sessionId])
+        let resolved = SSHArgumentBuilder.resolveJumpChain(for: sSession, availableSessions: [aSession, cycB, sSession])
+        XCTAssertTrue(resolved.hasCycle)
+    }
+
+    @MainActor
+    func testSFTPBookmarkManagerReplaceFiltersPresetsAndDuplicates() {
+        let suite = "apexterm-bm-test-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let manager = SFTPBookmarkManager(defaults: defaults)
+        manager.replaceCustomBookmarks([
+            SFTPBookmark(name: "Preset Leak", path: "/tmp", isPreset: true),
+            SFTPBookmark(name: "Empty", path: "   ", isPreset: false),
+            SFTPBookmark(name: "App Logs", path: " /var/log/app ", isPreset: false),
+            SFTPBookmark(name: "Dup Logs", path: "/var/log/app", isPreset: false)
+        ])
+        XCTAssertEqual(manager.customBookmarks.count, 1)
+        XCTAssertEqual(manager.customBookmarks.first?.name, "App Logs")
+        XCTAssertEqual(manager.customBookmarks.first?.path, "/var/log/app")
+    }
 }

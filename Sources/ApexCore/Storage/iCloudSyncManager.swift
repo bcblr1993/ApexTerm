@@ -32,6 +32,7 @@ public final class iCloudSyncManager: ObservableObject {
     public let deviceName: String
     
     private var autoSyncTimer: Timer? = nil
+    private var isSyncing = false
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
     
@@ -91,9 +92,13 @@ public final class iCloudSyncManager: ObservableObject {
         for var s in payload.sessions {
             switch s.authMethod {
             case .password(let keychainRef):
-                // Ensure keychainRef is only a reference UUID, not a plaintext password containing spaces or markers
+                // Ensure keychainRef is only a reference identifier, never an inline multi-word password or PEM.
                 let safeRef = keychainRef.trimmingCharacters(in: .whitespacesAndNewlines)
-                s.authMethod = .password(keychainRef: safeRef)
+                if safeRef.contains("PRIVATE KEY") || safeRef.contains(where: \.isWhitespace) {
+                    s.authMethod = .password(keychainRef: "")
+                } else {
+                    s.authMethod = .password(keychainRef: safeRef)
+                }
             case .privateKey(let keychainRef, let passphraseRef):
                 // If keychainRef accidentally contains raw private key PEM markers, redact it to a safe reference
                 if keychainRef.contains("PRIVATE KEY") {
@@ -121,18 +126,25 @@ public final class iCloudSyncManager: ObservableObject {
     
     // MARK: - Primary Synchronization
     
-    /// Executes a synchronization cycle with a temporary conflict resolution strategy, guaranteed to restore on return or throw.
+    /// Executes a synchronization cycle with a temporary conflict resolution strategy without mutating persisted settings.
     @discardableResult
     public func syncNow(withTemporaryStrategy strategy: iCloudConflictStrategy) async throws -> iCloudSyncResult {
-        let previous = conflictStrategy
-        conflictStrategy = strategy
-        defer { conflictStrategy = previous }
-        return try await syncNow()
+        try await performSync(strategy: strategy)
     }
 
     /// Executes a full synchronization cycle according to the configured conflict resolution strategy
     @discardableResult
     public func syncNow() async throws -> iCloudSyncResult {
+        try await performSync(strategy: conflictStrategy)
+    }
+
+    private func performSync(strategy: iCloudConflictStrategy) async throws -> iCloudSyncResult {
+        guard !isSyncing else {
+            throw iCloudSyncError.mergeFailed("已有同步任务正在进行中")
+        }
+        isSyncing = true
+        defer { isSyncing = false }
+
         guard storageBackend.isCloudAvailable() else {
             let err = iCloudSyncError.cloudUnavailable("当前未检测到活跃的 iCloud 容器或 iCloud Drive 未登录")
             syncStatus = .unavailable(reason: err.localizedDescription)
@@ -166,7 +178,7 @@ public final class iCloudSyncManager: ObservableObject {
                 throw err
             }
             
-            switch conflictStrategy {
+            switch strategy {
             case .smartMerge:
                 result = try await performSmartMerge(with: remotePayload)
             case .overwriteCloud:
@@ -263,12 +275,13 @@ public final class iCloudSyncManager: ObservableObject {
         let finalSnippets = Array(mergedSnippetsDict.values).sorted { $0.title < $1.title }
         
         // 3. Merge Bookmarks
-        var bookmarkPaths = Set(localPayload.bookmarks.map(\.path))
-        var finalBookmarks = localPayload.bookmarks
-        for b in remotePayload.bookmarks {
-            if !bookmarkPaths.contains(b.path) {
+        var bookmarkPaths = Set(localPayload.bookmarks.filter { !$0.isPreset }.map(\.path))
+        var finalBookmarks = localPayload.bookmarks.filter { !$0.isPreset && !$0.path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        for b in remotePayload.bookmarks where !b.isPreset {
+            let trimmedPath = b.path.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedPath.isEmpty && !bookmarkPaths.contains(trimmedPath) {
                 finalBookmarks.append(b)
-                bookmarkPaths.insert(b.path)
+                bookmarkPaths.insert(trimmedPath)
             }
         }
         
@@ -285,11 +298,13 @@ public final class iCloudSyncManager: ObservableObject {
         let finalTunnels = Array(mergedTunnelsDict.values).sorted { $0.name < $1.name }
         
         // 5. Merge Triggers
+        var triggerIds = Set(localPayload.triggers.map(\.id))
         var triggerNames = Set(localPayload.triggers.map(\.name))
         var finalTriggers = localPayload.triggers
         for trig in remotePayload.triggers {
-            if !triggerNames.contains(trig.name) {
+            if !triggerIds.contains(trig.id) && !triggerNames.contains(trig.name) {
                 finalTriggers.append(trig)
+                triggerIds.insert(trig.id)
                 triggerNames.insert(trig.name)
             }
         }

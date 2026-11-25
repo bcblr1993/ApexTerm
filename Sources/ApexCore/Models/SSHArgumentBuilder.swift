@@ -39,13 +39,35 @@ public enum SSHArgumentBuilder: Sendable {
         var seen: Set<UUID> = [session.id]
         var resolved: [Session] = []
 
+        func containsTransitiveCycle(_ id: UUID, visiting: inout Set<UUID>, safe: inout Set<UUID>) -> Bool {
+            if id == session.id || visiting.contains(id) {
+                return true
+            }
+            if safe.contains(id) {
+                return false
+            }
+            visiting.insert(id)
+            defer { visiting.remove(id) }
+            if let node = sessionById[id] {
+                for nextId in node.effectiveJumpServerChain {
+                    if containsTransitiveCycle(nextId, visiting: &visiting, safe: &safe) {
+                        return true
+                    }
+                }
+            }
+            safe.insert(id)
+            return false
+        }
+
+        var safeNodes: Set<UUID> = []
         for jumpId in chainIds {
             if seen.contains(jumpId) {
                 return (resolved, true)
             }
             seen.insert(jumpId)
             guard let hop = sessionById[jumpId], !hop.host.isEmpty else { continue }
-            if hop.effectiveJumpServerChain.contains(where: { seen.contains($0) }) {
+            var visiting: Set<UUID> = []
+            if containsTransitiveCycle(hop.id, visiting: &visiting, safe: &safeNodes) {
                 return (resolved, true)
             }
             resolved.append(hop)
@@ -64,30 +86,37 @@ public enum SSHArgumentBuilder: Sendable {
     ) -> Bool {
         guard !jumpChain.isEmpty else { return false }
         let sessionById = Dictionary(uniqueKeysWithValues: allSessions.map { ($0.id, $0) })
-        var seen: Set<UUID> = [sessionId]
+        var seenDirect: Set<UUID> = [sessionId]
+        var safeNodes: Set<UUID> = []
 
         func dfs(_ id: UUID, visiting: inout Set<UUID>) -> Bool {
-            if visiting.contains(id) || seen.contains(id) {
+            if id == sessionId || visiting.contains(id) {
                 return true
+            }
+            if safeNodes.contains(id) {
+                return false
             }
             visiting.insert(id)
             defer { visiting.remove(id) }
-            guard let node = sessionById[id] else { return false }
+            guard let node = sessionById[id] else {
+                safeNodes.insert(id)
+                return false
+            }
             for nextId in node.effectiveJumpServerChain {
                 if dfs(nextId, visiting: &visiting) {
                     return true
                 }
             }
+            safeNodes.insert(id)
             return false
         }
 
         for hopId in jumpChain {
-            if seen.contains(hopId) { return true }
+            if !seenDirect.insert(hopId).inserted { return true }
             var visiting: Set<UUID> = []
             if dfs(hopId, visiting: &visiting) {
                 return true
             }
-            seen.insert(hopId)
         }
         return false
     }

@@ -185,4 +185,42 @@ final class SSHTunnelTests: XCTestCase {
         let reloaded = SSHTunnelManager(baseDirectory: tempDirectory)
         XCTAssertEqual(reloaded.tunnels.first?.autoStart, true)
     }
+
+    // MARK: - TC-TUN-09: BindHost Normalization, Wildcard Conflict, sshpass Special-Char Password, and replaceAllTunnels Cleanup
+    @MainActor
+    func testBindHostNormalizationWildcardConflictsAndSpecialCharPassword() throws {
+        let sidA = UUID()
+        let sidB = UUID()
+
+        let local127 = SSHTunnel(name: "L1", type: .local, sessionId: sidA, bindHost: " 127.0.0.1 ", bindPort: 18080, targetHost: " 192.0.2.10 ", targetPort: 80)
+        XCTAssertEqual(local127.bindHost, "127.0.0.1")
+        XCTAssertEqual(local127.targetHost, "192.0.2.10")
+        XCTAssertTrue(local127.isValid)
+
+        let localhost = SSHTunnel(name: "L2", type: .local, sessionId: sidB, bindHost: "LOCALHOST", bindPort: 18080, targetPort: 80)
+        let wildcard = SSHTunnel(name: "D1", type: .dynamic, sessionId: sidB, bindHost: "0.0.0.0", bindPort: 18080)
+        XCTAssertTrue(SSHTunnelManager.hasPortConflict(localhost, existing: local127))
+        XCTAssertTrue(SSHTunnelManager.hasPortConflict(wildcard, existing: local127))
+
+        // Remote (-R) tunnels on different sessions do not conflict
+        let remoteA = SSHTunnel(name: "RA", type: .remote, sessionId: sidA, bindHost: "0.0.0.0", bindPort: 19000, targetPort: 3000)
+        let remoteB = SSHTunnel(name: "RB", type: .remote, sessionId: sidB, bindHost: "0.0.0.0", bindPort: 19000, targetPort: 3000)
+        XCTAssertFalse(SSHTunnelManager.hasPortConflict(remoteA, existing: remoteB))
+
+        // Invalid whitespace inside host rejected
+        let badHost = SSHTunnel(name: "Bad", type: .local, sessionId: sidA, bindHost: "127.0.0.1 evil", bindPort: 18081, targetPort: 80)
+        XCTAssertFalse(badHost.isValid)
+
+        // Special-char password passed literally to sshpass without expansion
+        let pwSession = Session(name: "SpecialPW", host: "192.0.2.15", username: "ops", authMethod: .password(keychainRef: "ssh_1"))
+        let args = SSHTunnelManager.sshpassArguments(secret: "p@$$w0rd'\"中文", session: pwSession)
+        XCTAssertEqual(args, ["-p", "p@$$w0rd'\"中文", "/usr/bin/ssh"])
+
+        // replaceAllTunnels cleans activeStates of removed tunnels
+        let manager = SSHTunnelManager(baseDirectory: tempDirectory)
+        try manager.addTunnel(local127)
+        manager.setSimulatedState(id: local127.id, state: .active)
+        manager.replaceAllTunnels([])
+        XCTAssertEqual(manager.state(for: local127.id), .stopped)
+    }
 }

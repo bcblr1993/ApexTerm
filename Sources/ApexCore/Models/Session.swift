@@ -202,7 +202,7 @@ public struct Session: Identifiable, Codable, Sendable, Equatable, Hashable {
             var seen: Set<UUID> = []
             let cleanChain = decodedChain.filter { $0 != decodedId && seen.insert($0).inserted }
             self.jumpServerChain = cleanChain
-            self.jumpServerId = decodedLegacyJump ?? cleanChain.first
+            self.jumpServerId = cleanChain.first
         } else if let legacy = decodedLegacyJump, legacy != decodedId {
             self.jumpServerChain = [legacy]
             self.jumpServerId = legacy

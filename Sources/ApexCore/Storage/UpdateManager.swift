@@ -125,23 +125,36 @@ public final class UpdateManager: ObservableObject {
     /// Compares two semver strings like "1.2.1" and "1.2.0" or "v2.0.0" and "1.9.9"
     /// Returns true if `v1` is strictly newer/higher than `v2`.
     nonisolated public static func isVersion(_ v1: String, higherThan v2: String) -> Bool {
-        let clean1 = v1.trimmingCharacters(in: CharacterSet(charactersIn: "vV \t\r\n"))
-        let clean2 = v2.trimmingCharacters(in: CharacterSet(charactersIn: "vV \t\r\n"))
-        
-        guard let core1 = clean1.split(separator: "-").first,
-              let core2 = clean2.split(separator: "-").first else { return false }
-        let parts1 = core1.split(separator: ".").compactMap { Int($0) }
-        let parts2 = core2.split(separator: ".").compactMap { Int($0) }
-        
-        let maxCount = max(parts1.count, parts2.count)
+        func parse(_ raw: String) -> (parts: [Int], isPreRelease: Bool)? {
+            let trimmed = raw.trimmingCharacters(in: CharacterSet(charactersIn: "vV \t\r\n"))
+            guard !trimmed.isEmpty, !trimmed.hasPrefix("-") else { return nil }
+            let withoutBuild = trimmed.split(separator: "+", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? trimmed
+            let splitPre = withoutBuild.split(separator: "-", maxSplits: 1, omittingEmptySubsequences: false)
+            let core = String(splitPre[0])
+            let rawParts = core.split(separator: ".", omittingEmptySubsequences: false)
+            guard !rawParts.isEmpty else { return nil }
+            var nums: [Int] = []
+            nums.reserveCapacity(rawParts.count)
+            for token in rawParts {
+                guard !token.isEmpty, token.allSatisfy(\.isNumber), let num = Int(token) else {
+                    return nil
+                }
+                nums.append(num)
+            }
+            let hasPre = splitPre.count > 1 && !splitPre[1].isEmpty
+            return (nums, hasPre)
+        }
+
+        guard let parsed1 = parse(v1), let parsed2 = parse(v2) else { return false }
+        let maxCount = max(parsed1.parts.count, parsed2.parts.count)
         for i in 0..<maxCount {
-            let p1 = i < parts1.count ? parts1[i] : 0
-            let p2 = i < parts2.count ? parts2[i] : 0
+            let p1 = i < parsed1.parts.count ? parsed1.parts[i] : 0
+            let p2 = i < parsed2.parts.count ? parsed2.parts[i] : 0
             if p1 > p2 { return true }
             if p1 < p2 { return false }
         }
         // SemVer: a final release outranks a pre-release of the same core (1.2.0 > 1.2.0-beta).
-        return !clean1.contains("-") && clean2.contains("-")
+        return !parsed1.isPreRelease && parsed2.isPreRelease
     }
     
     /// Trigger an update check. If `manual` is true, prompts sheet even when up-to-date.
@@ -261,6 +274,11 @@ public final class UpdateManager: ObservableObject {
             
             // Clean up temporary downloaded archive
             try? FileManager.default.removeItem(at: downloadedArchive)
+
+            guard isDownloading else {
+                try? FileManager.default.removeItem(at: stagedAppURL.deletingLastPathComponent())
+                return
+            }
             
             self.currentStagedAppURL = stagedAppURL
             self.isDownloading = false
@@ -479,6 +497,12 @@ public final class UpdateManager: ObservableObject {
         let stagingDir = fileManager.temporaryDirectory
             .appendingPathComponent("ApexTerm_Staging_\(UUID().uuidString)")
         try fileManager.createDirectory(at: stagingDir, withIntermediateDirectories: true)
+        var succeeded = false
+        defer {
+            if !succeeded {
+                try? fileManager.removeItem(at: stagingDir)
+            }
+        }
         
         let pathLower = archiveURL.path.lowercased()
         let isTar = pathLower.hasSuffix(".tar.gz") || pathLower.hasSuffix(".tgz")
@@ -549,6 +573,7 @@ public final class UpdateManager: ObservableObject {
             throw NSError(domain: "UpdateManager", code: 108, userInfo: [NSLocalizedDescriptionKey: "更新包中可执行主程序缺失"])
         }
         
+        succeeded = true
         return appURL
     }
 
@@ -623,23 +648,24 @@ public final class UpdateManager: ObservableObject {
         var packageSize: Int64? = nil
         
         if let assets = gh.assets {
-            // Prefer macOS arm64 tar.gz, then any tar.gz
-            if let tarGz = assets.first(where: {
-                let lower = $0.name.lowercased()
-                return (lower.hasSuffix(".tar.gz") || lower.hasSuffix(".tgz")) && (lower.contains("arm64") || lower.contains("macos"))
-            }) ?? assets.first(where: {
-                let lower = $0.name.lowercased()
+            func isTarGz(_ name: String) -> Bool {
+                let lower = name.lowercased()
                 return lower.hasSuffix(".tar.gz") || lower.hasSuffix(".tgz")
-            }) {
+            }
+            func isArm64(_ name: String) -> Bool {
+                let lower = name.lowercased()
+                return lower.contains("arm64") || lower.contains("aarch64")
+            }
+            // Prefer arm64 tar.gz, then macos/universal tar.gz, then any tar.gz
+            if let tarGz = assets.first(where: { isTarGz($0.name) && isArm64($0.name) })
+                ?? assets.first(where: { isTarGz($0.name) && ($0.name.lowercased().contains("universal") || $0.name.lowercased().contains("macos")) })
+                ?? assets.first(where: { isTarGz($0.name) }) {
                 packageUrl = tarGz.browser_download_url
                 packageName = tarGz.name
                 packageSize = tarGz.size
-            } else if let dmg = assets.first(where: {
-                let lower = $0.name.lowercased()
-                return lower.hasSuffix(".dmg") && (lower.contains("arm64") || lower.contains("macos"))
-            }) ?? assets.first(where: {
-                $0.name.lowercased().hasSuffix(".dmg")
-            }) {
+            } else if let dmg = assets.first(where: { $0.name.lowercased().hasSuffix(".dmg") && isArm64($0.name) })
+                ?? assets.first(where: { $0.name.lowercased().hasSuffix(".dmg") && ($0.name.lowercased().contains("universal") || $0.name.lowercased().contains("macos")) })
+                ?? assets.first(where: { $0.name.lowercased().hasSuffix(".dmg") }) {
                 packageUrl = dmg.browser_download_url
                 packageName = dmg.name
                 packageSize = dmg.size
@@ -726,6 +752,9 @@ private final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, @
         session.finishTasksAndInvalidate()
         
         if let error = error {
+            if let url = url {
+                try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
+            }
             cont?.resume(throwing: error)
         } else if let url = url {
             cont?.resume(returning: url)

@@ -442,6 +442,45 @@ final class UpdateCheckTests: XCTestCase {
         XCTAssertFalse(fm.fileExists(atPath: current.path), "Transient .build/AetherTerm.app must be moved out so Dock cannot launch a duplicate instance")
         XCTAssertEqual(try String(contentsOf: target.appendingPathComponent("version"), encoding: .utf8), "new-release")
     }
+
+    func testIsVersionRejectsMalformedAndSupportsBuildMetadata() {
+        XCTAssertTrue(UpdateManager.isVersion("1.2.1+build.42", higherThan: "1.2.0"))
+        XCTAssertFalse(UpdateManager.isVersion("1.2.0+build.42", higherThan: "1.2.0"))
+        XCTAssertFalse(UpdateManager.isVersion("1.two.3", higherThan: "1.2.0"))
+        XCTAssertFalse(UpdateManager.isVersion("v1..3", higherThan: "1.2.0"))
+        XCTAssertFalse(UpdateManager.isVersion("v-1.2.3", higherThan: "1.0.0"))
+    }
+
+    func testGitHubReleaseAssetPrefersArm64OverX86_64MacOS() async throws {
+        let json = """
+        {
+          "tag_name": "v2.5.0",
+          "name": "AetherTerm v2.5.0",
+          "html_url": "https://example.com/releases/v2.5.0",
+          "assets": [
+            {
+              "name": "AetherTerm-v2.5.0-macos-x86_64.tar.gz",
+              "size": 2500000,
+              "browser_download_url": "https://example.com/x86_64.tar.gz"
+            },
+            {
+              "name": "AetherTerm-v2.5.0-macos-arm64.tar.gz",
+              "size": 2400000,
+              "browser_download_url": "https://example.com/arm64.tar.gz"
+            }
+          ]
+        }
+        """
+        let manager = UpdateManager { request in
+            (Data(json.utf8), HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+        }
+        await manager.checkForUpdates(manual: true)
+        guard case .updateAvailable(let rel) = manager.status else {
+            return XCTFail("Expected updateAvailable")
+        }
+        XCTAssertEqual(rel.packageName, "AetherTerm-v2.5.0-macos-arm64.tar.gz")
+        XCTAssertEqual(rel.packageUrl, "https://example.com/arm64.tar.gz")
+    }
 }
 
 private actor UpdateRequestGate {

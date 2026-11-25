@@ -172,4 +172,17 @@ final class KeychainSecurityStoreTests: XCTestCase {
         XCTAssertEqual(notFoundErr.localizedDescription, "Keychain item not found")
         XCTAssertTrue(bioErr.localizedDescription.contains("Biometric"))
     }
+
+    func testEmptyKeychainAccountIsRejected() throws {
+        XCTAssertThrowsError(try store.getSync(key: "")) { error in
+            guard case KeychainError.itemNotFound = error else {
+                return XCTFail("Expected .itemNotFound, got \(error)")
+            }
+        }
+        XCTAssertThrowsError(try store.save(key: "", secret: "secret")) { error in
+            guard case KeychainError.saveFailed = error else {
+                return XCTFail("Expected .saveFailed, got \(error)")
+            }
+        }
+    }
 }

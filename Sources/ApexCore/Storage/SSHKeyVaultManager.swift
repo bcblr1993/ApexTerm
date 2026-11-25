@@ -104,7 +104,10 @@ public final class SSHKeyVaultManager: ObservableObject {
         lookup: (String) -> String? = { try? KeychainStore.shared.getSync(key: $0) }
     ) -> String? {
         guard KeychainStore.isVaultPrivateKeyReference(reference),
-              let rawPEM = lookup(reference)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              let rawPEM = lookup(reference)?
+                .replacingOccurrences(of: "\r\n", with: "\n")
+                .replacingOccurrences(of: "\r", with: "\n")
+                .trimmingCharacters(in: .whitespacesAndNewlines),
               !rawPEM.isEmpty else {
             return nil
         }
@@ -142,10 +145,17 @@ public final class SSHKeyVaultManager: ObservableObject {
         passphrase: String? = nil,
         secretSaver: (String, String) throws -> String = { try KeychainStore.shared.save(key: $0, secret: $1) }
     ) throws -> SSHKeyIdentity {
-        let cleanPriv = privateKeyPEM.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanPriv = privateKeyPEM
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanPub = publicKeyOpenSSH.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanPriv.isEmpty else { throw SSHKeyVaultError.privateKeyEmpty }
         guard !cleanPub.isEmpty else { throw SSHKeyVaultError.invalidPublicKey("公钥不能为空") }
+        let pubParts = cleanPub.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }
+        guard pubParts.count >= 2, Data(base64Encoded: pubParts[1]) != nil else {
+            throw SSHKeyVaultError.invalidPublicKey("需要有效的 OpenSSH 公钥格式（如 ssh-ed25519 AAAA...）")
+        }
         
         let fp = SSHKeyIdentity.computeFingerprint(from: cleanPub)
         if keys.contains(where: { $0.fingerprintSHA256 == fp }) {

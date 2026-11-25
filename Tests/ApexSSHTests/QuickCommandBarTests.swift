@@ -145,4 +145,22 @@ final class QuickCommandBarTests: XCTestCase {
         XCTAssertEqual(store.snippets.count, initialCount)
         XCTAssertNil(store.snippets.first(where: { $0.id == custom.id }))
     }
+
+    // MARK: - TC-CMD-09: Single-Pass Interpolation Prevents Double Substitution & Supports Case-Insensitive {{DATE}}
+    func testSinglePassInterpolationAndCaseInsensitiveDate() {
+        let snippet = Snippet(
+            title: "Safe Echo",
+            command: "echo {{first}} {{second}} {{DATE}}"
+        )
+        let resolved = snippet.resolvedCommand(context: [
+            "first": "{{second}}",
+            "second": "literal_val"
+        ])
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        let today = formatter.string(from: Date())
+
+        XCTAssertEqual(resolved, "echo {{second}} literal_val \(today)")
+    }
 }

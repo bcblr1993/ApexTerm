@@ -150,4 +150,27 @@ final class KnownHostsManagerTests: XCTestCase {
         XCTAssertEqual(KnownHostsManager.filter(entries, query: "@cert-authority").count, 1)
         XCTAssertEqual(KnownHostsManager.filter(entries, query: "nonexistent").count, 0)
     }
+
+    /// TC-KH-09: Bracketed IPv6 host parameter matching and removal without double-bracketing
+    func testBracketedIPv6EndpointMatchingAndRemoval() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("kh-ipv6-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let khFile = tempDir.appendingPathComponent("known_hosts")
+        let initial = """
+        [::1]:2222 ssh-ed25519 \(sampleEd25519KeyA)
+        192.0.2.10 ssh-ed25519 \(sampleEd25519KeyB)
+        """
+        try initial.write(to: khFile, atomically: true, encoding: .utf8)
+
+        let manager = KnownHostsManager(fileURL: khFile)
+        XCTAssertTrue(manager.entries[0].matchesEndpoint(host: "[::1]", port: 2222))
+        XCTAssertTrue(manager.entries[0].matchesEndpoint(host: "::1", port: 2222))
+
+        let removed = try manager.removeEntries(matchingEndpoint: "[::1]", port: 2222)
+        XCTAssertEqual(removed, 1)
+        XCTAssertEqual(manager.entries.count, 1)
+        XCTAssertEqual(manager.entries[0].hostPattern, "192.0.2.10")
+    }
 }

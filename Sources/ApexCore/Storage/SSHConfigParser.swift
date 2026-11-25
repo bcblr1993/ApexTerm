@@ -187,8 +187,8 @@ public final class SSHConfigParser: Sendable {
             guard !currentHostPatterns.isEmpty else { return }
             for pattern in currentHostPatterns {
                 let trimmed = pattern.trimmingCharacters(in: .whitespacesAndNewlines)
-                // Filter wildcard patterns like "*" or "*.*"
-                if trimmed.isEmpty || trimmed == "*" || trimmed.contains("*") || trimmed.contains("?") {
+                // Filter wildcard and negated patterns like "*", "*.*", or "!bastion"
+                if trimmed.isEmpty || trimmed == "*" || trimmed.contains("*") || trimmed.contains("?") || trimmed.hasPrefix("!") {
                     continue
                 }
                 
@@ -270,13 +270,7 @@ public final class SSHConfigParser: Sendable {
             case "host":
                 flushCurrent()
                 insideMatchBlock = false
-                let patterns: [String]
-                if (rawValue.hasPrefix("\"") && rawValue.hasSuffix("\"")) || (rawValue.hasPrefix("'") && rawValue.hasSuffix("'")) {
-                    patterns = [cleanValue]
-                } else {
-                    patterns = cleanValue.split(whereSeparator: { $0.isWhitespace }).map { String($0).trimmingCharacters(in: CharacterSet(charactersIn: "\"'")) }
-                }
-                currentHostPatterns = patterns
+                currentHostPatterns = Self.tokenizeQuoteAware(rawValue)
                 
             case "hostname":
                 if currentHostName.isEmpty { currentHostName = cleanValue }
@@ -306,9 +300,11 @@ public final class SSHConfigParser: Sendable {
                 }
                 
             case "setenv":
-                let parsed = SessionStartupHelper.parseEnvLines(rawValue)
-                for (k, v) in parsed.variables where currentEnvVars[k] == nil {
-                    currentEnvVars[k] = v
+                for token in Self.tokenizeQuoteAware(rawValue) {
+                    let parsed = SessionStartupHelper.parseEnvLines(token)
+                    for (k, v) in parsed.variables where currentEnvVars[k] == nil {
+                        currentEnvVars[k] = v
+                    }
                 }
 
             case "forwardagent":
@@ -351,6 +347,41 @@ public final class SSHConfigParser: Sendable {
         
         flushCurrent()
         return results
+    }
+
+    /// Splits a directive value into tokens while preserving whitespace inside `'...'` or `"..."` quotes.
+    private static func tokenizeQuoteAware(_ text: String) -> [String] {
+        var tokens: [String] = []
+        var current = ""
+        var quote: Character? = nil
+        var hadTokenChars = false
+
+        for ch in text {
+            if let q = quote {
+                if ch == q {
+                    quote = nil
+                } else {
+                    current.append(ch)
+                }
+                hadTokenChars = true
+            } else if ch == "\"" || ch == "'" {
+                quote = ch
+                hadTokenChars = true
+            } else if ch.isWhitespace {
+                if hadTokenChars {
+                    tokens.append(current)
+                    current = ""
+                    hadTokenChars = false
+                }
+            } else {
+                current.append(ch)
+                hadTokenChars = true
+            }
+        }
+        if hadTokenChars {
+            tokens.append(current)
+        }
+        return tokens.filter { !$0.isEmpty }
     }
 
     /// Resolves parsed `ProxyJump` aliases (e.g., `bastion,mid`) against existing sessions by name or `user@host[:port]`.

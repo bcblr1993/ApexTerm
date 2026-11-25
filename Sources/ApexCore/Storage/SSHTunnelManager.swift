@@ -73,10 +73,25 @@ public final class SSHTunnelManager: ObservableObject {
         }
     }
     
+    nonisolated private static func normalizeBindHost(_ host: String) -> String {
+        let trimmed = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if trimmed == "localhost" { return "127.0.0.1" }
+        return trimmed
+    }
+
+    nonisolated private static func isWildcardBindHost(_ host: String) -> Bool {
+        host == "0.0.0.0" || host == "::" || host == "[::]" || host == "*"
+    }
+
     nonisolated public static func hasPortConflict(_ candidate: SSHTunnel, existing: SSHTunnel) -> Bool {
         guard candidate.id != existing.id,
-              candidate.bindPort == existing.bindPort,
-              candidate.bindHost == existing.bindHost else {
+              candidate.bindPort == existing.bindPort else {
+            return false
+        }
+        let candHost = normalizeBindHost(candidate.bindHost)
+        let existHost = normalizeBindHost(existing.bindHost)
+        let hostOverlaps = candHost == existHost || isWildcardBindHost(candHost) || isWildcardBindHost(existHost)
+        guard hostOverlaps else {
             return false
         }
         // Remote (-R) tunnels bind on the remote SSH server (scoped by sessionId),
@@ -126,6 +141,11 @@ public final class SSHTunnelManager: ObservableObject {
     }
     
     public func replaceAllTunnels(_ newTunnels: [SSHTunnel]) {
+        let newIDs = Set(newTunnels.map(\.id))
+        for existing in tunnels where !newIDs.contains(existing.id) {
+            stopTunnel(id: existing.id)
+            activeStates.removeValue(forKey: existing.id)
+        }
         self.tunnels = newTunnels
         saveTunnels()
     }
@@ -315,7 +335,7 @@ public final class SSHTunnelManager: ObservableObject {
                 return buf
             }
             Task { @MainActor [weak self] in
-                guard let self = self else { return }
+                guard let self = self, self.processes[id] === proc else { return }
                 self.processes.removeValue(forKey: id)
                 self.stderrPipes.removeValue(forKey: id)
                 

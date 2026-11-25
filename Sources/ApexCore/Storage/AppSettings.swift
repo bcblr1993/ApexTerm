@@ -233,7 +233,8 @@ public final class AppSettings: ObservableObject {
         let defaultLogDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.appendingPathComponent("AetherTerm/Logs", isDirectory: true).path ?? "~/Documents/AetherTerm/Logs"
         
         self.fontName = defaults.string(forKey: Keys.fontName) ?? "SF Mono"
-        self.fontSize = defaults.object(forKey: Keys.fontSize) != nil ? defaults.double(forKey: Keys.fontSize) : 13.0
+        let persistedFontSize = defaults.object(forKey: Keys.fontSize) != nil ? defaults.double(forKey: Keys.fontSize) : 13.0
+        self.fontSize = persistedFontSize > 0 ? persistedFontSize : 13.0
         
         if let rawShape = defaults.string(forKey: Keys.cursorShape), let shape = TerminalCursorShape(rawValue: rawShape) {
             self.cursorShape = shape
@@ -260,9 +261,10 @@ public final class AppSettings: ObservableObject {
             ? defaults.bool(forKey: Keys.isRightClickPasteEnabled)
             : true
             
-        self.scrollbackMaxLines = defaults.object(forKey: Keys.scrollbackMaxLines) != nil
+        let persistedScrollback = defaults.object(forKey: Keys.scrollbackMaxLines) != nil
             ? defaults.integer(forKey: Keys.scrollbackMaxLines)
             : 10_000
+        self.scrollbackMaxLines = max(100, persistedScrollback)
             
         if let rawBell = defaults.string(forKey: Keys.bellMode), let bell = TerminalBellMode(rawValue: rawBell) {
             self.bellMode = bell
@@ -293,11 +295,13 @@ public final class AppSettings: ObservableObject {
             self.sessionLogFormat = .plainText
         }
         self.sessionLogDirectory = defaults.string(forKey: Keys.sessionLogDirectory) ?? defaultLogDir
-        self.sessionLogMaxFileSizeMB = defaults.object(forKey: Keys.sessionLogMaxFileSizeMB) != nil ? defaults.integer(forKey: Keys.sessionLogMaxFileSizeMB) : 50
+        let persistedMaxLogMB = defaults.object(forKey: Keys.sessionLogMaxFileSizeMB) != nil ? defaults.integer(forKey: Keys.sessionLogMaxFileSizeMB) : 50
+        self.sessionLogMaxFileSizeMB = max(1, persistedMaxLogMB)
         
-        self.maxConcurrentTransfers = defaults.object(forKey: Keys.maxConcurrentTransfers) != nil
+        let persistedTransfers = defaults.object(forKey: Keys.maxConcurrentTransfers) != nil
             ? defaults.integer(forKey: Keys.maxConcurrentTransfers)
             : 3
+        self.maxConcurrentTransfers = max(1, persistedTransfers)
             
         self.checkForUpdatesOnLaunch = defaults.object(forKey: Keys.checkForUpdatesOnLaunch) != nil
             ? defaults.bool(forKey: Keys.checkForUpdatesOnLaunch)

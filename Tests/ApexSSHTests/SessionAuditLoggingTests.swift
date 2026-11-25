@@ -158,4 +158,29 @@ final class SessionAuditLoggingTests: XCTestCase {
         XCTAssertNil(CommandBoundaryDetector.extractLastCommandOutput(from: [""]))
         XCTAssertNil(CommandBoundaryDetector.extractLastCommandOutput(from: ["ubuntu@host:~$ "]))
     }
+
+    // MARK: - TC-LOG-09: Charset Escape + Control Char Stripping, Hash Output Guard & Zero maxFileSizeMB Safety
+    func testCharsetStripCommandBoundaryHashOutputAndRotationGuard() {
+        let raw = "\u{1b}(B\u{1b}[32mOK\u{1b}[0m\u{07}\u{08} done\t1\r\n"
+        let cleaned = SessionLogger.stripANSI(from: raw)
+        XCTAssertEqual(cleaned, "OK done\t1\n")
+
+        let linesWithComment = [
+            "ubuntu@cloud:~$ cat app.conf",
+            "# Server config header",
+            "port = 8080",
+            "ubuntu@cloud:~$ "
+        ]
+        let extracted = CommandBoundaryDetector.extractLastCommandOutput(from: linesWithComment)
+        XCTAssertEqual(extracted, "# Server config header\nport = 8080")
+
+        // Ensure maxFileSizeMB = 0 and slashes in host/username never crash logger
+        let session = Session(name: "Prod/Node:1", host: "192.0.2.1/2", username: "ops:admin")
+        let config = SessionLogConfig(autoLoggingEnabled: true, logDirectoryPath: tempDirectory.path, format: .plainText, maxFileSizeMB: 0)
+        let logger = SessionLogger(session: session, config: config)
+        logger.appendData(Data("hello\n".utf8))
+        let url = logger.activeFileURL
+        logger.close()
+        XCTAssertNotNil(url)
+    }
 }

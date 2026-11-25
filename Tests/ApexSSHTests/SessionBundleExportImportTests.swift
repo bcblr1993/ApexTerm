@@ -798,4 +798,109 @@ final class SessionBundleExportImportTests: XCTestCase {
         XCTAssertTrue(storeScript.contains("UTExportedTypeDeclarations"))
         XCTAssertTrue(storeScript.contains("com.apexterm.aetherpack"))
     }
+
+    /// TC-PACK-19: Special-char ($$, $PATH, quotes, backslashes) & Unicode passwords/passphrases roundtrip in appSealed & passphrase modes
+    func testSpecialCharAndUnicodeCredentialsRoundtrip() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("pack-special-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let specialPW = "p@$$w0rd'$PATH\"\\中文🔐!"
+        let specialSharePass = "口令$$#2026'\"\\🔑"
+        let pwRef = "ssh_\(UUID().uuidString)"
+        let sourceSecrets = InMemorySecretStore([pwRef: specialPW])
+        let session = Session(
+            name: "Special-Char Host",
+            host: "192.0.2.77",
+            port: 22,
+            username: "ops",
+            authMethod: .password(keychainRef: pwRef),
+            folder: "测试组"
+        )
+
+        for mode in [SharePackProtectionMode.appSealed, .passphrase] {
+            let data = try await SessionBundleExporter.exportEnvelopeData(
+                sessions: [session],
+                protectionMode: mode,
+                passphrase: mode == .passphrase ? specialSharePass : nil,
+                secretLookup: { sourceSecrets.get($0) }
+            )
+            let bundle: SharePackSecretBundle
+            if mode == .passphrase {
+                bundle = try SessionBundleExporter.decryptSharePackData(data, passphrase: specialSharePass)
+            } else {
+                bundle = try XCTUnwrap(SessionBundleExporter.inspectSharePackData(data).decryptedBundle)
+            }
+            let destStore = SessionStore(baseDirectory: tempDir.appendingPathComponent(mode.rawValue))
+            let destSecrets = InMemorySecretStore()
+            _ = try SessionBundleExporter.importDecryptedBundle(
+                bundle,
+                into: destStore,
+                secretSaver: { key, secret in destSecrets.save(key, secret: secret) }
+            )
+            guard case .password(let importedRef) = destStore.sessions.first?.authMethod else {
+                return XCTFail("Expected password authMethod")
+            }
+            XCTAssertEqual(destSecrets.get(importedRef), specialPW)
+        }
+    }
+
+    /// TC-PACK-20: Raw PEM keys, fallback vault keys without publicKeyOpenSSH/vaultManager, and dangling jump UUID sanitization on import
+    func testRawPEMFallbackVaultKeyRestoreAndDanglingJumpSanitization() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("pack-pem-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let fakePEM = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjE=\n-----END OPENSSH PRIVATE KEY-----"
+        let vaultPrivRef = "vault.priv.\(UUID().uuidString)"
+        let vaultPassRef = "vault.pass.\(UUID().uuidString)"
+        let missingJumpId = UUID()
+
+        let pemSession = Session(
+            name: "RawPEM",
+            host: "192.0.2.88",
+            username: "root",
+            authMethod: .privateKey(keychainRef: fakePEM, passphraseRef: nil),
+            jumpServerChain: [missingJumpId]
+        )
+        let vaultFallbackSession = Session(
+            name: "VaultFallback",
+            host: "192.0.2.89",
+            username: "deploy",
+            authMethod: .privateKey(keychainRef: vaultPrivRef, passphraseRef: vaultPassRef)
+        )
+
+        let sourceSecrets = InMemorySecretStore([
+            vaultPrivRef: fakePEM,
+            vaultPassRef: "vault-$$-pass"
+        ])
+        let data = try await SessionBundleExporter.exportEnvelopeData(
+            sessions: [pemSession, vaultFallbackSession],
+            protectionMode: .appSealed,
+            vaultKeys: [], // Intentionally omit vaultKeys metadata so publicKeyOpenSSH is empty
+            secretLookup: { sourceSecrets.get($0) }
+        )
+
+        let bundle = try XCTUnwrap(SessionBundleExporter.inspectSharePackData(data).decryptedBundle)
+        let destStore = SessionStore(baseDirectory: tempDir)
+        let destSecrets = InMemorySecretStore()
+        let result = try SessionBundleExporter.importDecryptedBundle(
+            bundle,
+            into: destStore,
+            vaultManager: nil,
+            secretSaver: { k, v in destSecrets.save(k, secret: v) }
+        )
+
+        XCTAssertEqual(result.importedSessions, 2)
+        XCTAssertEqual(result.importedCredentials, 2)
+
+        let importedPEM = try XCTUnwrap(destStore.sessions.first(where: { $0.name == "RawPEM" }))
+        XCTAssertEqual(importedPEM.privateKeyPath, fakePEM)
+        XCTAssertTrue(importedPEM.jumpServerChain.isEmpty, "Dangling jump UUID must be sanitized on import")
+        XCTAssertNil(importedPEM.jumpServerId)
+
+        let importedVault = try XCTUnwrap(destStore.sessions.first(where: { $0.name == "VaultFallback" }))
+        XCTAssertEqual(importedVault.privateKeyPath, fakePEM)
+        XCTAssertEqual(destSecrets.get(importedVault.passphraseRef ?? ""), "vault-$$-pass")
+    }
 }

@@ -109,4 +109,20 @@ final class SSHConfigParserEdgeCaseTests: XCTestCase {
         XCTAssertEqual(session.port, 22) // Defaults to 22
         XCTAssertEqual(session.authMethod, .agent) // Defaults to SSH agent when no key specified
     }
+
+    /// Test 6: Multi-pair SetEnv, multiple quoted Host patterns, and negated Host exclusion
+    func testMultiPairSetEnvAndQuotedHostPatternsWithNegation() {
+        let config = """
+        Host "box 1" "box 2" !excluded-box
+            HostName 192.0.2.80
+            User deploy
+            SetEnv APP_ENV="prod env" LOG_LEVEL=debug
+            SetEnv APP_ENV=ignored_second
+        """
+        let hosts = SSHConfigParser.parse(content: config)
+        XCTAssertEqual(hosts.map(\.hostPattern), ["box 1", "box 2"])
+        XCTAssertEqual(hosts[0].environmentVariables["APP_ENV"], "prod env")
+        XCTAssertEqual(hosts[0].environmentVariables["LOG_LEVEL"], "debug")
+        XCTAssertEqual(hosts[1].environmentVariables["APP_ENV"], "prod env")
+    }
 }

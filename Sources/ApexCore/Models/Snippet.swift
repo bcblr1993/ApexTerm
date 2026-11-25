@@ -22,19 +22,49 @@ public struct Snippet: Identifiable, Codable, Sendable, Equatable, Hashable {
         self.autoExecute = autoExecute
     }
     
-    /// Interpolates variables like {{host}}, {{user}}, {{date}} into command
+    /// Interpolates variables like {{host}}, {{user}}, {{date}} into command in a single pass
     public func resolvedCommand(context: [String: String]) -> String {
-        var result = command
+        var normalizedContext: [String: String] = [:]
         for (key, val) in context {
             let cleanKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
             if !cleanKey.isEmpty {
-                result = result.replacingOccurrences(of: "{{\(cleanKey)}}", with: val)
+                normalizedContext[cleanKey] = val
             }
         }
-        
+
         let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd"
-        result = result.replacingOccurrences(of: "{{date}}", with: formatter.string(from: Date()))
+        let today = formatter.string(from: Date())
+
+        guard let regex = try? NSRegularExpression(pattern: "\\{\\{([^{}]+)\\}\\}", options: []) else {
+            return command
+        }
+        let nsCommand = command as NSString
+        let matches = regex.matches(in: command, options: [], range: NSRange(location: 0, length: nsCommand.length))
+        guard !matches.isEmpty else { return command }
+
+        var result = ""
+        var cursor = 0
+        for match in matches {
+            let fullRange = match.range
+            if fullRange.location > cursor {
+                result += nsCommand.substring(with: NSRange(location: cursor, length: fullRange.location - cursor))
+            }
+            let rawKey = nsCommand.substring(with: match.range(at: 1))
+            let cleanKey = rawKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let value = normalizedContext[cleanKey] {
+                result += value
+            } else if cleanKey.lowercased() == "date" {
+                result += today
+            } else {
+                result += nsCommand.substring(with: fullRange)
+            }
+            cursor = fullRange.location + fullRange.length
+        }
+        if cursor < nsCommand.length {
+            result += nsCommand.substring(from: cursor)
+        }
         return result
     }
     

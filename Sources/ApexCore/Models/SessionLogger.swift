@@ -46,7 +46,11 @@ public final class SessionLogger: @unchecked Sendable {
     private var isClosed = false
     private var utf8Decoder = UTF8StreamDecoder()
     private static let ansiRegex = try? NSRegularExpression(
-        pattern: "\\x1B(?:\\[[0-?]*[ -/]*[@-~]|\\].*?(?:\\x07|\\x1B\\\\))",
+        pattern: "\\x1B(?:\\[[0-?]*[ -/]*[@-~]|\\].*?(?:\\x07|\\x1B\\\\)|[()\\*+][0-9A-Za-z]|[78DEHMNOPVWXYZ=<>c~}|])",
+        options: []
+    )
+    private static let controlCharRegex = try? NSRegularExpression(
+        pattern: "[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F\\x7F]",
         options: []
     )
     private static let fileTimestampFormatter: DateFormatter = {
@@ -85,9 +89,19 @@ public final class SessionLogger: @unchecked Sendable {
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             
             let dateStr = Self.fileTimestampFormatter.string(from: Date())
-            let safeName = self.sessionName.replacingOccurrences(of: "/", with: "-")
-                .replacingOccurrences(of: " ", with: "_")
-            let fileName = "\(dateStr)_\(safeName)_\(self.username)@\(self.host).log"
+            func sanitizeFilenameComponent(_ raw: String, fallback: String) -> String {
+                let cleaned = raw
+                    .replacingOccurrences(of: "/", with: "-")
+                    .replacingOccurrences(of: ":", with: "-")
+                    .replacingOccurrences(of: "\0", with: "")
+                    .replacingOccurrences(of: " ", with: "_")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                return cleaned.isEmpty ? fallback : cleaned
+            }
+            let safeName = sanitizeFilenameComponent(self.sessionName, fallback: "session")
+            let safeUser = sanitizeFilenameComponent(self.username, fallback: "user")
+            let safeHost = sanitizeFilenameComponent(self.host, fallback: "host")
+            let fileName = "\(dateStr)_\(safeName)_\(safeUser)@\(safeHost).log"
             let fileURL = dir.appendingPathComponent(fileName)
             
             if !FileManager.default.fileExists(atPath: fileURL.path) {
@@ -95,7 +109,8 @@ public final class SessionLogger: @unchecked Sendable {
             }
             self.currentFileURL = fileURL
             self.fileHandle = try? FileHandle(forWritingTo: fileURL)
-            self.currentFileSize = 0
+            let existingSize = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? NSNumber)?.uint64Value ?? 0
+            self.currentFileSize = existingSize
             
             // Header stamp
             let header = "=== AetherTerm Session Log Started at \(Date()) ===\n" +
@@ -128,7 +143,7 @@ public final class SessionLogger: @unchecked Sendable {
             self.currentFileSize += UInt64(dataToWrite.count)
             
             // Rotate if exceeds threshold
-            let limitBytes = UInt64(self.config.maxFileSizeMB) * 1024 * 1024
+            let limitBytes = UInt64(max(1, self.config.maxFileSizeMB)) * 1024 * 1024
             if self.currentFileSize >= limitBytes {
                 self.rotateLogFile()
             }
@@ -160,6 +175,13 @@ public final class SessionLogger: @unchecked Sendable {
         queue.sync {
             guard !isClosed else { return }
             isClosed = true
+            if config.format == .plainText {
+                let trailing = Self.stripANSI(from: utf8Decoder.finish())
+                if !trailing.isEmpty, let trailingData = trailing.data(using: .utf8) {
+                    fileHandle?.seekToEndOfFile()
+                    fileHandle?.write(trailingData)
+                }
+            }
             let footer = "\n=== AetherTerm Session Log Ended at \(Date()) ===\n"
             if let data = footer.data(using: .utf8) {
                 fileHandle?.seekToEndOfFile()
@@ -172,14 +194,19 @@ public final class SessionLogger: @unchecked Sendable {
     
     /// Strips ANSI CSI sequences, OSC hyperlinks, and non-printable control bytes
     public static func stripANSI(from text: String) -> String {
-        guard let regex = ansiRegex else {
-            return text
+        var stripped = text
+        if let regex = ansiRegex {
+            let range = NSRange(location: 0, length: (stripped as NSString).length)
+            stripped = regex.stringByReplacingMatches(in: stripped, options: [], range: range, withTemplate: "")
         }
-        let range = NSRange(location: 0, length: (text as NSString).length)
-        let stripped = regex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: "")
         
-        // Remove trailing carriage returns
-        return stripped.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
+        // Normalize line endings before removing remaining non-printable C0/DEL control bytes.
+        stripped = stripped.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
+        if let ctrlRegex = controlCharRegex {
+            let range = NSRange(location: 0, length: (stripped as NSString).length)
+            stripped = ctrlRegex.stringByReplacingMatches(in: stripped, options: [], range: range, withTemplate: "")
+        }
+        return stripped
     }
 }
 
@@ -199,14 +226,27 @@ public enum CommandBoundaryDetector {
         
         // Find last prompt index from bottom up
         // Standard prompt markers: $, #, >, %, ❯, ➜
-        let promptMarkers = ["$", "#", "%", "❯", "➜", ">"]
+        let inlineUnanchoredPrompts = ["❯", "➜"]
+        let anchoredPrompts = ["$", "#", "%", ">"]
         
         var promptIndices: [Int] = []
         for (i, line) in activeLines.enumerated().reversed() {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if promptMarkers.contains(where: { marker in
+            let isPrompt = inlineUnanchoredPrompts.contains { marker in
                 trimmed.hasSuffix(marker) || trimmed.contains("\(marker) ")
-            }) {
+            } || anchoredPrompts.contains { marker in
+                if trimmed.hasSuffix(marker) { return true }
+                var searchStart = trimmed.startIndex
+                while let range = trimmed.range(of: "\(marker) ", range: searchStart..<trimmed.endIndex) {
+                    if range.lowerBound > trimmed.startIndex {
+                        let prev = trimmed[trimmed.index(before: range.lowerBound)]
+                        if !prev.isWhitespace { return true }
+                    }
+                    searchStart = range.upperBound
+                }
+                return false
+            }
+            if isPrompt {
                 promptIndices.append(i)
                 if promptIndices.count >= 2 {
                     break

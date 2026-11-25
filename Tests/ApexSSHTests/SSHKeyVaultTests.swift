@@ -164,4 +164,51 @@ final class SSHKeyVaultTests: XCTestCase {
         XCTAssertEqual(manager2.keys.first?.fingerprintSHA256, "SHA256:persist")
         XCTAssertTrue(manager2.keys.first?.hasPassphrase == true)
     }
+
+    // MARK: - TC-KEY-09: Algorithm Comment Isolation, Deploy Quoting/Multiline Guard, CRLF Materialization & Pubkey Validation
+    @MainActor
+    func testAlgorithmCommentIsolationDeployQuotingAndCRLFNormalization() throws {
+        // Comment containing "ecdsa" must not override ssh-rsa key type
+        let rsaWithComment = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC7 user@ecdsa-bastion\r\n"
+        XCTAssertEqual(SSHKeyIdentity.detectAlgorithm(from: rsaWithComment), .rsa)
+        let fp = SSHKeyIdentity.computeFingerprint(from: rsaWithComment)
+        XCTAssertTrue(fp.hasPrefix("SHA256:"))
+
+        // Single quote + multiline inside publicKeyOpenSSH cannot inject shell commands
+        let trickyKey = SSHKeyIdentity(
+            name: "QuoteKey",
+            algorithm: .ed25519,
+            fingerprintSHA256: "SHA256:q",
+            publicKeyOpenSSH: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIH6jK6t+n6R5v+q1U6qW4yG6tH4x8W2x+JkL7Z9P0ABC o'connor\nrm -rf /",
+            keychainPrivateKeyRef: "vault.priv.q"
+        )
+        let cmd = trickyKey.generateDeployCommand()
+        XCTAssertFalse(cmd.contains("\n"))
+        XCTAssertTrue(cmd.contains("o'\\''connor"))
+
+        // Malformed public key throws invalidPublicKey
+        let manager = SSHKeyVaultManager(baseDirectory: tempDirectory)
+        XCTAssertThrowsError(try manager.importKey(
+            name: "BadPub",
+            privateKeyPEM: "-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----",
+            publicKeyOpenSSH: "not-a-valid-openssh-key"
+        )) { error in
+            guard case SSHKeyVaultError.invalidPublicKey = error else {
+                return XCTFail("Expected invalidPublicKey, got \(error)")
+            }
+        }
+
+        // CRLF private key materializes with LF-only line endings
+        let privRef = "vault.priv.\(UUID().uuidString)"
+        let crlfPEM = "-----BEGIN OPENSSH PRIVATE KEY-----\r\nAAAA\r\n-----END OPENSSH PRIVATE KEY-----\r\n"
+        let matDir = tempDirectory.appendingPathComponent("mat", isDirectory: true)
+        let matPath = try XCTUnwrap(SSHKeyVaultManager.materializePrivateKeyPath(
+            for: privRef,
+            directory: matDir,
+            lookup: { $0 == privRef ? crlfPEM : nil }
+        ))
+        let diskContent = try String(contentsOfFile: matPath, encoding: .utf8)
+        XCTAssertFalse(diskContent.contains("\r"))
+        XCTAssertTrue(diskContent.hasSuffix("\n"))
+    }
 }

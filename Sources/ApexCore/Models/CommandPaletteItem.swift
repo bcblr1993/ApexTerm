@@ -158,6 +158,7 @@ public enum CommandPaletteSearchEngine {
     
     /// Filters and ranks items according to the query string
     public static func search(items: [CommandPaletteItem], query: String, maxResults: Int = 30) -> [CommandPaletteItem] {
+        guard maxResults > 0 else { return [] }
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
             return Array(items.prefix(maxResults))
@@ -193,6 +194,7 @@ public enum CommandPaletteSearchEngine {
         }
         
         let lowerQuery = effectiveQuery.lowercased()
+        let queryTokens = lowerQuery.split(whereSeparator: \.isWhitespace).map(String.init)
         
         // Score items
         var scored: [(item: CommandPaletteItem, score: Int)] = []
@@ -215,6 +217,9 @@ public enum CommandPaletteSearchEngine {
                 score += 150
             } else if catLower.contains(lowerQuery) {
                 score += 100
+            } else if queryTokens.count > 1,
+                      queryTokens.allSatisfy({ titleLower.contains($0) || subLower.contains($0) || catLower.contains($0) }) {
+                score += 90
             } else if isSubsequenceMatch(pattern: lowerQuery, text: titleLower) {
                 score += 80
             } else if isSubsequenceMatch(pattern: lowerQuery, text: subLower) {
@@ -226,12 +231,15 @@ public enum CommandPaletteSearchEngine {
             }
         }
         
-        // Sort descending by score, tiebreak by title
+        // Sort descending by score, tiebreak by title then subtitle
         scored.sort { a, b in
             if a.score != b.score {
                 return a.score > b.score
             }
-            return a.item.title < b.item.title
+            if a.item.title != b.item.title {
+                return a.item.title < b.item.title
+            }
+            return a.item.subtitle < b.item.subtitle
         }
         
         return Array(scored.prefix(maxResults).map { $0.item })

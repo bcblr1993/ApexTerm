@@ -32,9 +32,11 @@ public final class SFTPBookmarkManager: ObservableObject {
     ]
 
     private let storageKey = "sftp.bookmarks.custom"
+    private let defaults: UserDefaults
     @Published public private(set) var customBookmarks: [SFTPBookmark] = []
 
-    public init() {
+    public init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
         loadCustomBookmarks()
     }
 
@@ -63,7 +65,21 @@ public final class SFTPBookmarkManager: ObservableObject {
     }
 
     public func replaceCustomBookmarks(_ newBookmarks: [SFTPBookmark]) {
-        self.customBookmarks = newBookmarks
+        var seenPaths = Set<String>()
+        var cleaned: [SFTPBookmark] = []
+        for bm in newBookmarks where !bm.isPreset {
+            let trimmedPath = bm.path.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedPath.isEmpty, seenPaths.insert(trimmedPath).inserted else { continue }
+            let trimmedName = bm.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            cleaned.append(SFTPBookmark(
+                id: bm.id,
+                name: trimmedName.isEmpty ? trimmedPath : trimmedName,
+                path: trimmedPath,
+                isPreset: false,
+                iconName: bm.iconName
+            ))
+        }
+        self.customBookmarks = cleaned
         saveCustomBookmarks()
     }
 
@@ -74,11 +90,11 @@ public final class SFTPBookmarkManager: ObservableObject {
 
     public func resetToDefaults() {
         customBookmarks.removeAll()
-        UserDefaults.standard.removeObject(forKey: storageKey)
+        defaults.removeObject(forKey: storageKey)
     }
 
     private func loadCustomBookmarks() {
-        guard let data = UserDefaults.standard.data(forKey: storageKey),
+        guard let data = defaults.data(forKey: storageKey),
               let list = try? JSONDecoder().decode([SFTPBookmark].self, from: data) else {
             return
         }
@@ -87,7 +103,7 @@ public final class SFTPBookmarkManager: ObservableObject {
 
     private func saveCustomBookmarks() {
         if let data = try? JSONEncoder().encode(customBookmarks) {
-            UserDefaults.standard.set(data, forKey: storageKey)
+            defaults.set(data, forKey: storageKey)
         }
     }
 }

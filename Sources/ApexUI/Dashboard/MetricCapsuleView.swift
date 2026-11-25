@@ -60,30 +60,46 @@ public struct MetricCapsuleView: View {
                 }
             }
         }) {
-            HStack(spacing: 12) {
+            HStack(spacing: compact ? 6 : 12) {
                 if monitoringEnabled && connectionConnecting {
                     ProgressView().controlSize(.mini)
                     Text("监控连接中")
                         .font(.system(size: 11, weight: .medium))
+                        .lineLimit(1)
                         .foregroundStyle(ApexStyle.secondary)
                 } else if monitoringEnabled && !connectionActive {
                     Image(systemName: "network.slash")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(ApexStyle.secondary)
                     Text("监控连接已中断")
+                        .font(.system(size: 11, weight: .medium))
+                        .lineLimit(1)
                         .foregroundStyle(ApexStyle.secondary)
                 } else if latest == nil {
                     Image(systemName: "waveform.path.ecg")
+                        .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(ApexStyle.accent)
                     Text(monitoringEnabled ? "监控待命" : "监控已关闭")
                         .font(.system(size: 11, weight: .medium))
+                        .lineLimit(1)
                         .foregroundStyle(ApexStyle.secondary)
                 } else if isStale {
                     Image(systemName: "clock.badge.exclamationmark")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(ApexStyle.warning)
                     Text("监控已过期")
+                        .font(.system(size: 11, weight: .medium))
+                        .lineLimit(1)
                         .foregroundStyle(ApexStyle.secondary)
                 } else if compact {
                     Image(systemName: "waveform.path.ecg")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(cpuColor)
                     Text(String(format: "CPU %.0f%%", latest?.cpuUsagePercent ?? 0))
+                        .font(.system(size: 11, weight: .medium))
                         .monospacedDigit()
+                        .lineLimit(1)
+                        .foregroundColor(ApexStyle.primary)
                 } else {
                     // CPU indicator
                     HStack(spacing: 5) {
@@ -97,6 +113,7 @@ public struct MetricCapsuleView: View {
 
                     Text(String(format: "%.1f%%", latest?.cpuUsagePercent ?? 0))
                         .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .monospacedDigit()
                         .foregroundColor(ApexStyle.primary)
                     }
 
@@ -110,6 +127,7 @@ public struct MetricCapsuleView: View {
 
                         Text(formattedMemory)
                             .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            .monospacedDigit()
                             .foregroundColor(ApexStyle.primary)
                     }
 
@@ -127,6 +145,7 @@ public struct MetricCapsuleView: View {
 
                         Text(formattedDisk)
                             .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            .monospacedDigit()
                             .foregroundColor(ApexStyle.primary)
 
                         if let badge = latest?.diskBadgeText {
@@ -136,7 +155,7 @@ public struct MetricCapsuleView: View {
                                 .padding(.vertical, 1)
                                 .background((latest?.isSSD ?? true) ? ApexStyle.accent.opacity(0.18) : ApexStyle.warning.opacity(0.18))
                                 .foregroundColor((latest?.isSSD ?? true) ? ApexStyle.accent : ApexStyle.warning)
-                                .cornerRadius(3)
+                                .clipShape(RoundedRectangle(cornerRadius: 3))
                         }
                     }
                 }
@@ -171,7 +190,6 @@ public struct MetricCapsuleView: View {
         .onHover { isCapsuleHovered = $0 }
         .accessibilityIdentifier("metrics.summary")
         .accessibilityAddTraits(isPinned ? .isSelected : [])
-        .controlSize(compact ? .regular : .small)
         .help(isPinned ? "已钉住性能监控面板，点击收起" : (isStale ? "超过 30 秒未收到新指标，详情为最后一次采样" : "查看服务器性能"))
         .modifier(InlineDetailPopover(isEnabled: externalShowingDetail == nil, isPresented: $localShowingDetail) {
             MetricDetailView(historyStore: historyStore, monitoringEnabled: monitoringEnabled, connectionActive: connectionActive, connectionConnecting: connectionConnecting)
@@ -338,15 +356,15 @@ public struct MetricDetailView: View {
     private func cpuModelBadge(_ cpuModel: String) -> some View {
         Text(cpuModel)
             .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+            .foregroundColor(ApexStyle.secondary)
             .padding(.horizontal, 5)
             .padding(.vertical, 1.5)
-            .background(ApexStyle.primary.opacity(0.06))
+            .background(ApexStyle.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 4))
             .overlay(
                 RoundedRectangle(cornerRadius: 4)
                     .stroke(ApexStyle.border.opacity(0.45), lineWidth: 0.5)
             )
-            .foregroundColor(ApexStyle.secondary)
-            .cornerRadius(4)
+            .clipShape(RoundedRectangle(cornerRadius: 4))
             .lineLimit(1)
             .truncationMode(.middle)
     }
@@ -361,10 +379,12 @@ public struct MetricDetailView: View {
                 Text(L10n.serverPerformance)
                     .accessibilityIdentifier("metrics.detail.title")
                     .font(.system(size: 12, weight: .bold))
-                    .fixedSize(horizontal: true, vertical: false)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
 
                 if !isPinned, let cpuModel = latest?.cpuModel, !cpuModel.isEmpty {
                     cpuModelBadge(cpuModel)
+                        .layoutPriority(-1)
                 }
 
                 Spacer(minLength: 4)
@@ -372,6 +392,7 @@ public struct MetricDetailView: View {
                 if !isPinned, let uptime = latest?.uptimeSeconds {
                     Text(formatUptime(uptime))
                         .font(.system(size: 11, design: .monospaced))
+                        .monospacedDigit()
                         .foregroundColor(ApexStyle.secondary)
                         .lineLimit(1)
                         .fixedSize(horizontal: true, vertical: false)
@@ -391,7 +412,7 @@ public struct MetricDetailView: View {
                     .accessibilityIdentifier("metrics.detail.pinButton")
                 }
 
-                if isPinned, let onDismiss {
+                if let onDismiss {
                     ApexIconButton(
                         icon: "xmark",
                         label: L10n.closeMonitorPanel,
@@ -405,71 +426,22 @@ public struct MetricDetailView: View {
             }
 
             if isPinned, (sessionLabel?.isEmpty == false) || (latest?.cpuModel.isEmpty == false) || latest?.uptimeSeconds != nil {
-                HStack(alignment: .center, spacing: 6) {
-                    if let sessionLabel, !sessionLabel.isEmpty {
-                        HStack(spacing: 4) {
-                            Image(systemName: "server.rack")
-                                .font(.system(size: 10, weight: .medium))
-                                .foregroundColor(ApexStyle.accent)
-                            Text(sessionLabel)
-                                .font(.system(size: 11, weight: .medium))
-                                .foregroundColor(ApexStyle.primary)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                        }
-                        .accessibilityIdentifier("metrics.detail.sessionLabel")
-                    }
-
-                    if let cpuModel = latest?.cpuModel, !cpuModel.isEmpty {
-                        cpuModelBadge(cpuModel)
-                            .layoutPriority(-1)
-                    }
-
-                    Spacer(minLength: 4)
-
-                    if let uptime = latest?.uptimeSeconds {
-                        Text(formatUptime(uptime))
-                            .font(.system(size: 10.5, design: .monospaced))
-                            .foregroundColor(ApexStyle.secondary)
-                            .lineLimit(1)
-                            .fixedSize(horizontal: true, vertical: false)
-                    }
+                ViewThatFits(in: .horizontal) {
+                    pinnedSubheaderSingleLine
+                    pinnedSubheaderCompact
                 }
             }
 
-            HStack(alignment: .center, spacing: 6) {
-                if monitoringEnabled && connectionConnecting {
-                    Label("正在连接，等待新监控数据", systemImage: "network")
-                        .font(.caption)
-                        .foregroundStyle(ApexStyle.secondary)
-                } else if monitoringEnabled && !connectionActive {
-                    Label("连接已中断，以下为最后一次采样", systemImage: "network.slash")
-                        .font(.caption)
-                        .foregroundStyle(ApexStyle.secondary)
-                } else if let snapshot = latest {
-                    let stale = date.timeIntervalSince(snapshot.timestamp) > 30
-                    HStack(spacing: 5) {
-                        Circle()
-                            .fill(stale ? ApexStyle.warning : ApexStyle.success)
-                            .frame(width: 6, height: 6)
-                            .shadow(color: (stale ? ApexStyle.warning : ApexStyle.success).opacity(0.45), radius: 2)
-                        Text(stale ? "数据已过期 · 最后采样 \(snapshot.timestamp.formatted(date: .omitted, time: .standard))" : "实时采样 · \(snapshot.timestamp.formatted(date: .omitted, time: .standard))")
-                            .font(.system(size: 11, design: .monospaced))
-                            .monospacedDigit()
-                            .contentTransition(.numericText())
-                            .foregroundStyle(ApexStyle.secondary)
-                    }
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .center, spacing: 6) {
+                    statusSummaryView(at: date)
+                        .fixedSize(horizontal: true, vertical: false)
+                    Spacer(minLength: 6)
+                    loadSummaryView(fixedWidth: true)
                 }
-
-                Spacer()
-
-                if let l1 = latest?.loadAvg1m, let l5 = latest?.loadAvg5m, let l15 = latest?.loadAvg15m {
-                    Text(String(format: "负载 %.2f · %.2f · %.2f", l1, l5, l15))
-                        .font(.system(size: 10.5, weight: .medium, design: .monospaced))
-                        .monospacedDigit()
-                        .contentTransition(.numericText())
-                        .foregroundColor(ApexStyle.secondary)
-                        .lineLimit(1)
+                VStack(alignment: .leading, spacing: 3) {
+                    statusSummaryView(at: date)
+                    loadSummaryView(fixedWidth: false)
                 }
             }
 
@@ -481,160 +453,34 @@ public struct MetricDetailView: View {
                     Text(!monitoringEnabled ? "监控已关闭，可在会话设置中开启" : connectionConnecting ? "正在连接，等待监控数据…" : connectionActive ? "等待监控数据…" : "连接已中断，暂无监控数据")
                         .font(.caption)
                         .foregroundColor(ApexStyle.secondary)
+                        .multilineTextAlignment(.center)
                 }
                 .frame(maxWidth: .infinity, minHeight: 80)
             } else {
                 // Core Resource Gauges (CPU, Memory, Swap, Disk)
-                VStack(spacing: 6) {
-                    // CPU Row
-                    HStack(spacing: 8) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "bolt.fill")
-                                .font(.system(size: 11, weight: .bold))
-                                .foregroundColor(cpuColor)
-                                .frame(width: 12)
-                            Text("CPU")
-                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                        }
-                        .frame(width: 46, alignment: .leading)
-
-                        ApexMetricProgressBar(percentage: latest?.cpuUsagePercent ?? 0, tint: cpuColor)
-
-                        Text(String(format: "%.1f%% (%d核)", latest?.cpuUsagePercent ?? 0, latest?.cpuCores ?? 1))
-                            .font(.system(size: 11, weight: .medium, design: .monospaced))
-                            .monospacedDigit()
-                            .contentTransition(.numericText())
-                            .foregroundColor(ApexStyle.primary)
-                            .lineLimit(1)
-                            .frame(width: 146, alignment: .trailing)
+                ViewThatFits(in: .horizontal) {
+                    VStack(spacing: 6) {
+                        coreGauges(compact: false)
                     }
-
-                    // Memory Row
-                    HStack(spacing: 8) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "memorychip")
-                                .font(.system(size: 11, weight: .bold))
-                                .foregroundColor(memColor)
-                                .frame(width: 12)
-                            Text("内存")
-                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                        }
-                        .frame(width: 46, alignment: .leading)
-
-                        ApexMetricProgressBar(percentage: latest?.memoryUsagePercent ?? 0, tint: memColor)
-
-                        Text(formattedMemoryShort)
-                            .font(.system(size: 11, weight: .medium, design: .monospaced))
-                            .monospacedDigit()
-                            .contentTransition(.numericText())
-                            .foregroundColor(ApexStyle.primary)
-                            .lineLimit(1)
-                            .frame(width: 146, alignment: .trailing)
-                    }
-
-                    // Swap Memory Row
-                    HStack(spacing: 8) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "arrow.triangle.2.circlepath")
-                                .font(.system(size: 10.5, weight: .bold))
-                                .foregroundColor(swapColor)
-                                .frame(width: 12)
-                            Text("交换")
-                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                        }
-                        .frame(width: 46, alignment: .leading)
-
-                        ApexMetricProgressBar(percentage: latest?.swapUsagePercent ?? 0, tint: swapColor)
-
-                        Text(formattedSwapShort)
-                            .font(.system(size: 11, weight: .medium, design: .monospaced))
-                            .monospacedDigit()
-                            .contentTransition(.numericText())
-                            .foregroundColor((latest?.swapTotalBytes ?? 0) > 0 ? ApexStyle.primary : ApexStyle.secondary)
-                            .lineLimit(1)
-                            .frame(width: 146, alignment: .trailing)
-                    }
-
-                    // Disk Row with SSD/NVMe/HDD Badge (single-line guaranteed)
-                    HStack(spacing: 8) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "internaldrive.fill")
-                                .font(.system(size: 11, weight: .bold))
-                                .foregroundColor(diskColor)
-                                .frame(width: 12)
-                            Text("磁盘")
-                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                        }
-                        .frame(width: 46, alignment: .leading)
-
-                        ApexMetricProgressBar(percentage: latest?.diskUsagePercent ?? 0, tint: diskColor)
-
-                        HStack(spacing: 4) {
-                            if let badge = latest?.diskBadgeText {
-                                Text(badge)
-                                    .font(.system(size: 9.5, weight: .bold))
-                                    .padding(.horizontal, 4)
-                                    .padding(.vertical, 1)
-                                    .background((latest?.isSSD ?? true) ? ApexStyle.accent.opacity(0.16) : ApexStyle.warning.opacity(0.18))
-                                    .foregroundColor((latest?.isSSD ?? true) ? ApexStyle.accent : ApexStyle.warning)
-                                    .cornerRadius(3)
-                                    .fixedSize(horizontal: true, vertical: false)
-                            }
-                            Text(formattedDiskShort)
-                                .font(.system(size: 11, weight: .medium, design: .monospaced))
-                                .monospacedDigit()
-                                .contentTransition(.numericText())
-                                .foregroundColor(ApexStyle.primary)
-                                .lineLimit(1)
-                                .fixedSize(horizontal: true, vertical: false)
-                        }
-                        .frame(width: 146, alignment: .trailing)
+                    VStack(spacing: 6) {
+                        coreGauges(compact: true)
                     }
                 }
                 .padding(.vertical, 2)
 
                 // Real-Time Network Throughput Card & Smooth Curve
                 VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 6) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "arrow.up.arrow.down")
-                                .font(.system(size: 10.5, weight: .bold))
-                                .foregroundColor(ApexStyle.accent)
-                            Text("网络实时吞吐")
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundColor(ApexStyle.primary)
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 6) {
+                            networkHeaderLabel
+                                .fixedSize(horizontal: true, vertical: false)
+                            Spacer(minLength: 6)
+                            networkRatePills(compact: false)
+                                .fixedSize(horizontal: true, vertical: false)
                         }
-
-                        Spacer()
-
-                        HStack(spacing: 8) {
-                            HStack(spacing: 3) {
-                                Text("↓")
-                                    .font(.system(size: 10.5, weight: .bold))
-                                    .foregroundColor(ApexStyle.success)
-                                Text(formatRate(latest?.networkRxBytesPerSec ?? 0))
-                                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                                    .monospacedDigit()
-                                    .contentTransition(.numericText())
-                                    .foregroundColor(ApexStyle.success)
-                            }
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(ApexStyle.success.opacity(0.10), in: Capsule())
-
-                            HStack(spacing: 3) {
-                                Text("↑")
-                                    .font(.system(size: 10.5, weight: .bold))
-                                    .foregroundColor(ApexStyle.accent)
-                                Text(formatRate(latest?.networkTxBytesPerSec ?? 0))
-                                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                                    .monospacedDigit()
-                                    .contentTransition(.numericText())
-                                    .foregroundColor(ApexStyle.accent)
-                            }
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(ApexStyle.accent.opacity(0.10), in: Capsule())
+                        VStack(alignment: .leading, spacing: 5) {
+                            networkHeaderLabel
+                            networkRatePills(compact: true)
                         }
                     }
 
@@ -819,85 +665,372 @@ public struct MetricDetailView: View {
                 // Top 3 Processes
                 if let procs = latest?.topProcesses, !procs.isEmpty {
                     VStack(alignment: .leading, spacing: 4) {
-                        HStack {
-                            HStack(spacing: 4) {
-                                Text("Top 进程占用")
-                                    .font(.system(size: 11, weight: .semibold))
-                                    .foregroundColor(ApexStyle.secondary)
-                                ApexIconButton(
-                                    icon: "arrow.up.right.square",
-                                    label: "打开进程与服务监视中心 (⌘⌥K)",
-                                    size: 20,
-                                    iconSize: 10
-                                ) {
-                                    // Close the popover first so the inspector sheet is not stacked under it.
-                                    if !isPinned {
-                                        if let onDismiss { onDismiss() } else { dismiss() }
-                                    }
-                                    NotificationCenter.default.post(name: NSNotification.Name("TriggerProcessInspector"), object: nil)
+                        HStack(spacing: 4) {
+                            Text("Top 进程占用")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundColor(ApexStyle.secondary)
+                                .lineLimit(1)
+                            ApexIconButton(
+                                icon: "arrow.up.right.square",
+                                label: "打开进程与服务监视中心 (⌘⌥K)",
+                                size: 20,
+                                iconSize: 10
+                            ) {
+                                // Close the popover first so the inspector sheet is not stacked under it.
+                                if !isPinned {
+                                    if let onDismiss { onDismiss() } else { dismiss() }
                                 }
+                                NotificationCenter.default.post(name: NSNotification.Name("TriggerProcessInspector"), object: nil)
                             }
                             Spacer()
-                            HStack(spacing: 0) {
-                                Text("PID")
-                                    .frame(width: 58, alignment: .leading)
-                                Spacer()
-                                Text("CPU")
-                                    .frame(width: 56, alignment: .trailing)
-                                Text("内存")
-                                    .frame(width: 42, alignment: .trailing)
-                            }
-                            .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
-                            .foregroundColor(ApexStyle.secondary.opacity(0.75))
-                            .frame(width: 180)
                         }
 
-                        VStack(spacing: 3) {
-                            ForEach(procs.prefix(3)) { p in
-                                HStack(spacing: 6) {
-                                    Text(String(p.pid))
-                                        .font(.system(size: 11, design: .monospaced))
-                                        .monospacedDigit()
-                                        .foregroundColor(ApexStyle.secondary)
-                                        .lineLimit(1)
-                                        .frame(width: 58, alignment: .leading)
-                                    Text(p.command)
-                                        .font(.system(size: 11, weight: .medium, design: .monospaced))
-                                        .lineLimit(1)
-                                        .truncationMode(.tail)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                    Text(String(format: "%.1f%%", p.cpuPercent))
-                                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                                        .monospacedDigit()
-                                        .contentTransition(.numericText())
-                                        .foregroundColor(p.cpuPercent > 50 ? ApexStyle.error : (p.cpuPercent > 20 ? ApexStyle.warning : ApexStyle.primary))
-                                        .lineLimit(1)
-                                        .frame(width: 56, alignment: .trailing)
-                                    Text(String(format: "%.1f%%", p.memPercent))
-                                        .font(.system(size: 11, design: .monospaced))
-                                        .monospacedDigit()
-                                        .contentTransition(.numericText())
-                                        .foregroundColor(ApexStyle.secondary)
-                                        .lineLimit(1)
-                                        .frame(width: 42, alignment: .trailing)
-                                }
-                                .padding(.vertical, 1)
-                            }
+                        ViewThatFits(in: .horizontal) {
+                            topProcessesTable(procs, compact: false)
+                            topProcessesTable(procs, compact: true)
                         }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 5)
-                        .background(ApexStyle.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 6))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 6)
-                                .stroke(ApexStyle.border.opacity(0.4), lineWidth: 0.75)
-                        )
                     }
                 }
             }
         }
         .padding(12)
-        .background(ApexStyle.surface)
-        .animation(ApexStyle.springSmooth, value: latest?.timestamp)
+        .background(isPinned ? ApexStyle.surface : Color.clear)
+    }
+
+    @ViewBuilder
+    private var pinnedSubheaderSingleLine: some View {
+        HStack(alignment: .center, spacing: 6) {
+            if let sessionLabel, !sessionLabel.isEmpty {
+                sessionLabelPill(sessionLabel)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+            if let cpuModel = latest?.cpuModel, !cpuModel.isEmpty {
+                cpuModelBadge(cpuModel)
+                    .frame(minWidth: 64)
+                    .layoutPriority(-1)
+            }
+            Spacer(minLength: 4)
+            if let uptime = latest?.uptimeSeconds {
+                Text(formatUptime(uptime))
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .monospacedDigit()
+                    .foregroundColor(ApexStyle.secondary)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var pinnedSubheaderCompact: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            if (sessionLabel?.isEmpty == false) || latest?.uptimeSeconds != nil {
+                HStack(alignment: .center, spacing: 6) {
+                    if let sessionLabel, !sessionLabel.isEmpty {
+                        sessionLabelPill(sessionLabel)
+                    }
+                    Spacer(minLength: 4)
+                    if let uptime = latest?.uptimeSeconds {
+                        Text(formatUptime(uptime))
+                            .font(.system(size: 10.5, design: .monospaced))
+                            .monospacedDigit()
+                            .foregroundColor(ApexStyle.secondary)
+                            .lineLimit(1)
+                    }
+                }
+            }
+            if let cpuModel = latest?.cpuModel, !cpuModel.isEmpty {
+                cpuModelBadge(cpuModel)
+            }
+        }
+    }
+
+    private func sessionLabelPill(_ label: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: "server.rack")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(ApexStyle.accent)
+            Text(label)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(ApexStyle.primary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+        .accessibilityIdentifier("metrics.detail.sessionLabel")
+    }
+
+    @ViewBuilder
+    private func statusSummaryView(at date: Date) -> some View {
+        if monitoringEnabled && connectionConnecting {
+            Label("正在连接，等待新监控数据", systemImage: "network")
+                .font(.caption)
+                .foregroundStyle(ApexStyle.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        } else if monitoringEnabled && !connectionActive {
+            Label("连接已中断，以下为最后一次采样", systemImage: "network.slash")
+                .font(.caption)
+                .foregroundStyle(ApexStyle.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        } else if let snapshot = latest {
+            let stale = date.timeIntervalSince(snapshot.timestamp) > 30
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(stale ? ApexStyle.warning : ApexStyle.success)
+                    .frame(width: 6, height: 6)
+                    .shadow(color: (stale ? ApexStyle.warning : ApexStyle.success).opacity(0.45), radius: 2)
+                Text(stale ? "数据已过期 · 最后采样 \(snapshot.timestamp.formatted(date: .omitted, time: .standard))" : "实时采样 · \(snapshot.timestamp.formatted(date: .omitted, time: .standard))")
+                    .font(.system(size: 11, design: .monospaced))
+                    .monospacedDigit()
+                    .contentTransition(.numericText())
+                    .foregroundStyle(ApexStyle.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func loadSummaryView(fixedWidth: Bool) -> some View {
+        if let l1 = latest?.loadAvg1m, let l5 = latest?.loadAvg5m, let l15 = latest?.loadAvg15m {
+            Text(String(format: "负载 %.2f · %.2f · %.2f", l1, l5, l15))
+                .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                .monospacedDigit()
+                .contentTransition(.numericText())
+                .foregroundColor(ApexStyle.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .fixedSize(horizontal: fixedWidth, vertical: false)
+        }
+    }
+
+    @ViewBuilder
+    private func coreGauges(compact: Bool) -> some View {
+        gaugeRow(icon: "bolt.fill", label: "CPU", tint: cpuColor, percentage: latest?.cpuUsagePercent ?? 0, compact: compact) {
+            Text(String(format: "%.1f%% (%d核)", latest?.cpuUsagePercent ?? 0, latest?.cpuCores ?? 1))
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .monospacedDigit()
+                .contentTransition(.numericText())
+                .foregroundColor(ApexStyle.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
+        }
+
+        gaugeRow(icon: "memorychip", label: "内存", tint: memColor, percentage: latest?.memoryUsagePercent ?? 0, compact: compact) {
+            Text(formattedMemoryShort)
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .monospacedDigit()
+                .contentTransition(.numericText())
+                .foregroundColor(ApexStyle.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
+        }
+
+        gaugeRow(icon: "arrow.triangle.2.circlepath", iconSize: 10.5, label: "交换", tint: swapColor, percentage: latest?.swapUsagePercent ?? 0, compact: compact) {
+            Text(formattedSwapShort)
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .monospacedDigit()
+                .contentTransition(.numericText())
+                .foregroundColor((latest?.swapTotalBytes ?? 0) > 0 ? ApexStyle.primary : ApexStyle.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
+        }
+
+        gaugeRow(icon: "internaldrive.fill", label: "磁盘", tint: diskColor, percentage: latest?.diskUsagePercent ?? 0, compact: compact) {
+            HStack(spacing: 4) {
+                if let badge = latest?.diskBadgeText {
+                    Text(badge)
+                        .font(.system(size: 9.5, weight: .bold))
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background((latest?.isSSD ?? true) ? ApexStyle.accent.opacity(0.16) : ApexStyle.warning.opacity(0.18))
+                        .foregroundColor((latest?.isSSD ?? true) ? ApexStyle.accent : ApexStyle.warning)
+                        .clipShape(RoundedRectangle(cornerRadius: 3))
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+                Text(formattedDiskShort)
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .monospacedDigit()
+                    .contentTransition(.numericText())
+                    .foregroundColor(ApexStyle.primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func gaugeRow<Value: View>(
+        icon: String,
+        iconSize: CGFloat = 11,
+        label: String,
+        tint: Color,
+        percentage: Double,
+        compact: Bool,
+        @ViewBuilder value: () -> Value
+    ) -> some View {
+        let labelView = HStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.system(size: iconSize, weight: .bold))
+                .foregroundColor(tint)
+                .frame(width: 12)
+            Text(label)
+                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                .lineLimit(1)
+        }
+        .frame(width: 46, alignment: .leading)
+
+        if compact {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 4) {
+                    labelView
+                    Spacer(minLength: 4)
+                    value()
+                }
+                ApexMetricProgressBar(percentage: percentage, tint: tint)
+            }
+        } else {
+            HStack(spacing: 8) {
+                labelView
+                ApexMetricProgressBar(percentage: percentage, tint: tint)
+                    .frame(minWidth: 44)
+                value()
+                    .frame(width: 140, alignment: .trailing)
+            }
+        }
+    }
+
+    private var networkHeaderLabel: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "arrow.up.arrow.down")
+                .font(.system(size: 10.5, weight: .bold))
+                .foregroundColor(ApexStyle.accent)
+            Text("网络实时吞吐")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(ApexStyle.primary)
+                .lineLimit(1)
+        }
+    }
+
+    @ViewBuilder
+    private func networkRatePills(compact: Bool) -> some View {
+        let rxPill = networkRatePill(
+            arrow: "↓",
+            rate: latest?.networkRxBytesPerSec ?? 0,
+            color: ApexStyle.success,
+            compact: compact
+        )
+        let txPill = networkRatePill(
+            arrow: "↑",
+            rate: latest?.networkTxBytesPerSec ?? 0,
+            color: ApexStyle.accent,
+            compact: compact
+        )
+        if compact {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 6) {
+                    rxPill.fixedSize(horizontal: true, vertical: false)
+                    txPill.fixedSize(horizontal: true, vertical: false)
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    rxPill
+                    txPill
+                }
+            }
+        } else {
+            HStack(spacing: 8) {
+                rxPill
+                txPill
+            }
+        }
+    }
+
+    private func networkRatePill(arrow: String, rate: Double, color: Color, compact: Bool) -> some View {
+        HStack(spacing: 3) {
+            Text(arrow)
+                .font(.system(size: 10.5, weight: .bold))
+                .foregroundColor(color)
+            Text(formatRate(rate))
+                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                .monospacedDigit()
+                .contentTransition(.numericText())
+                .foregroundColor(color)
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
+        }
+        .padding(.horizontal, compact ? 5 : 6)
+        .padding(.vertical, 2)
+        .background(color.opacity(0.10), in: Capsule())
+    }
+
+    @ViewBuilder
+    private func topProcessesTable(_ procs: [ProcessMetricItem], compact: Bool) -> some View {
+        let colSpacing: CGFloat = compact ? 4 : 6
+        let cpuWidth: CGFloat = compact ? 46 : 56
+        let memWidth: CGFloat = compact ? 36 : 42
+
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: colSpacing) {
+                if !compact {
+                    Text("PID")
+                        .frame(width: 58, alignment: .leading)
+                }
+                Text("进程")
+                    .frame(minWidth: compact ? 0 : 48, maxWidth: .infinity, alignment: .leading)
+                Text("CPU")
+                    .frame(width: cpuWidth, alignment: .trailing)
+                Text("内存")
+                    .frame(width: memWidth, alignment: .trailing)
+            }
+            .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+            .foregroundColor(ApexStyle.secondary.opacity(0.75))
+            .padding(.horizontal, 8)
+
+            VStack(spacing: 3) {
+                ForEach(procs.prefix(3)) { p in
+                    HStack(spacing: colSpacing) {
+                        if !compact {
+                            Text(String(p.pid))
+                                .font(.system(size: 11, design: .monospaced))
+                                .monospacedDigit()
+                                .foregroundColor(ApexStyle.secondary)
+                                .lineLimit(1)
+                                .frame(width: 58, alignment: .leading)
+                        }
+                        Text(p.command)
+                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .help(compact ? "\(p.command) (PID \(p.pid))" : p.command)
+                        Text(String(format: "%.1f%%", p.cpuPercent))
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            .monospacedDigit()
+                            .contentTransition(.numericText())
+                            .foregroundColor(p.cpuPercent > 50 ? ApexStyle.error : (p.cpuPercent > 20 ? ApexStyle.warning : ApexStyle.primary))
+                            .lineLimit(1)
+                            .frame(width: cpuWidth, alignment: .trailing)
+                        Text(String(format: "%.1f%%", p.memPercent))
+                            .font(.system(size: 11, design: .monospaced))
+                            .monospacedDigit()
+                            .contentTransition(.numericText())
+                            .foregroundColor(ApexStyle.secondary)
+                            .lineLimit(1)
+                            .frame(width: memWidth, alignment: .trailing)
+                    }
+                    .padding(.vertical, 1)
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(ApexStyle.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 6))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(ApexStyle.border.opacity(0.4), lineWidth: 0.75)
+            )
+        }
     }
 
     private var latest: ServerMetricsSnapshot? {

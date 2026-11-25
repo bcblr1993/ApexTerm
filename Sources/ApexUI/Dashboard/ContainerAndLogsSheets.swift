@@ -31,25 +31,30 @@ struct ContainerRowView: View {
                         .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
                         .foregroundColor(ApexStyle.primary)
                         .lineLimit(1)
+                        .truncationMode(.tail)
                     Text(container.runtime.displayName)
                         .font(.system(size: 9.5, weight: .medium))
                         .foregroundColor(ApexStyle.accent)
                         .padding(.horizontal, 5)
                         .padding(.vertical, 1)
                         .background(ApexStyle.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 3))
+                        .lineLimit(1)
+                        .fixedSize()
                 }
                 Text(container.shortId)
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundColor(ApexStyle.secondary)
+                    .lineLimit(1)
             }
-            .frame(width: 175, alignment: .leading)
+            .frame(width: 145, alignment: .leading)
+            .help("\(container.name) (\(container.shortId))")
 
             Text(container.image)
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundColor(ApexStyle.primary)
                 .lineLimit(1)
                 .truncationMode(.middle)
-                .frame(width: 145, alignment: .leading)
+                .frame(width: 120, alignment: .leading)
                 .help(container.image)
 
             HStack(spacing: 4) {
@@ -59,14 +64,16 @@ struct ContainerRowView: View {
                 Text(container.state)
                     .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
                     .foregroundColor(stateColor)
+                    .lineLimit(1)
             }
-            .frame(width: 78, alignment: .leading)
+            .frame(width: 72, alignment: .leading)
 
             Text(container.status)
                 .font(.system(size: 10.5))
                 .foregroundColor(ApexStyle.secondary)
                 .lineLimit(1)
-                .frame(width: 110, alignment: .leading)
+                .truncationMode(.tail)
+                .frame(width: 88, alignment: .leading)
                 .help(container.status)
 
             Text(container.ports.isEmpty ? "—" : container.ports)
@@ -135,7 +142,7 @@ struct ContainerRowView: View {
                     .help("启动容器")
                 }
             }
-            .frame(width: 122, alignment: .trailing)
+            .frame(width: 112, alignment: .trailing)
         }
         .padding(.horizontal, ApexStyle.s4)
         .padding(.vertical, 6)
@@ -212,9 +219,15 @@ struct RemoteLogViewerSheet: View {
                     Text(target.title)
                         .font(.system(size: 13.5, weight: .semibold))
                         .foregroundColor(ApexStyle.primary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(target.title)
                     Text(target.subtitle)
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundColor(ApexStyle.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(target.subtitle)
                 }
 
                 Spacer()
@@ -270,7 +283,7 @@ struct RemoteLogViewerSheet: View {
                     }
                 }
                 .padding(.horizontal, 8)
-                .padding(.vertical, 5)
+                .frame(height: 24)
                 .background(ApexStyle.subtleSurface, in: RoundedRectangle(cornerRadius: 6))
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(ApexStyle.border, lineWidth: 1))
                 .frame(maxWidth: 260)
@@ -291,9 +304,12 @@ struct RemoteLogViewerSheet: View {
                             Label("核心服务禁停", systemImage: "lock.fill")
                                 .font(.system(size: 10.5, weight: .medium))
                                 .foregroundColor(ApexStyle.secondary)
+                                .lineLimit(1)
+                                .fixedSize()
                                 .padding(.horizontal, 8)
-                                .padding(.vertical, 4)
+                                .frame(height: 24)
                                 .background(ApexStyle.subtleSurface, in: Capsule())
+                                .accessibilityLabel("核心系统服务 (\(svc.name)) 禁止直接停止")
                                 .help("核心系统服务 (\(svc.name)) 禁止直接停止，以防远程连接中断")
                         } else {
                             ApexActionButton("停止", icon: "stop.fill", tint: ApexStyle.error, size: .small) {
@@ -329,16 +345,20 @@ struct RemoteLogViewerSheet: View {
             Divider()
 
             HStack {
-                Text(actionFeedback ?? "只读日志视图 · 非 root 用户如提示权限不足请使用终端提权查看")
+                let footerMessage = actionFeedback ?? "只读日志视图 · 非 root 用户如提示权限不足请使用终端提权查看"
+                Text(footerMessage)
                     .font(.system(size: 11))
                     .foregroundColor(actionFeedback == nil ? ApexStyle.secondary : ApexStyle.accent)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .help(footerMessage)
                 Spacer()
-                ApexActionButton("关闭", tint: ApexStyle.secondary, size: .small) {
+                ApexActionButton("关闭", tint: ApexStyle.secondary, size: .regular) {
                     dismiss()
                 }
             }
             .padding(.horizontal, ApexStyle.s4)
-            .padding(.vertical, 8)
+            .padding(.vertical, 10)
             .background(ApexStyle.subtleSurface.opacity(0.6))
         }
         .frame(width: 720, height: 500)
@@ -450,8 +470,10 @@ struct SystemdAllServicesSheet: View {
                     .accessibilityHidden(true)
                 Text("全部 Systemd 服务 (\(services.count))")
                     .font(.system(size: 13.5, weight: .semibold))
+                    .monospacedDigit()
+                    .lineLimit(1)
                 Spacer()
-                ApexIconButton(icon: "xmark", label: "关闭", size: 24, iconSize: 11) {
+                ApexIconButton(icon: "xmark", label: "关闭", size: 26, iconSize: 11) {
                     dismiss()
                 }
                 .keyboardShortcut(.cancelAction)
@@ -469,6 +491,16 @@ struct SystemdAllServicesSheet: View {
                 TextField("搜索服务名或状态 (active / failed / inactive)...", text: $query)
                     .textFieldStyle(.plain)
                     .font(.system(size: 12))
+                if !query.isEmpty {
+                    ApexIconButton(
+                        icon: "xmark.circle.fill",
+                        label: "清空搜索",
+                        size: 18,
+                        iconSize: 10
+                    ) {
+                        query = ""
+                    }
+                }
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
@@ -478,39 +510,55 @@ struct SystemdAllServicesSheet: View {
 
             Divider()
 
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    ForEach(filtered) { svc in
-                        Button {
-                            dismiss()
-                            onSelectService(svc)
-                        } label: {
-                            HStack(spacing: 10) {
-                                Circle()
-                                    .fill(svc.isRunning ? ApexStyle.success : (svc.activeState == "failed" ? ApexStyle.error : ApexStyle.secondary))
-                                    .frame(width: 7, height: 7)
-                                Text(svc.name)
-                                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                                    .foregroundColor(ApexStyle.primary)
-                                Spacer()
-                                if svc.isProtectedForStop {
-                                    Image(systemName: "lock.fill")
+            if filtered.isEmpty {
+                ContentUnavailableView(
+                    services.isEmpty ? "未检测到 Systemd 服务" : "未找到匹配的服务",
+                    systemImage: "gearshape.2",
+                    description: Text(services.isEmpty ? "当前主机未返回可用的 Systemd 服务列表。" : "请尝试调整搜索关键字或清空搜索。")
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(filtered) { svc in
+                            Button {
+                                dismiss()
+                                onSelectService(svc)
+                            } label: {
+                                HStack(spacing: 10) {
+                                    Circle()
+                                        .fill(svc.isRunning ? ApexStyle.success : (svc.activeState == "failed" ? ApexStyle.error : ApexStyle.secondary))
+                                        .frame(width: 7, height: 7)
+                                    Text(svc.name)
+                                        .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                                        .foregroundColor(ApexStyle.primary)
+                                        .lineLimit(1)
+                                        .truncationMode(.tail)
+                                        .help(svc.name)
+                                    Spacer()
+                                    if svc.isProtectedForStop {
+                                        Image(systemName: "lock.fill")
+                                            .font(.system(size: 10))
+                                            .foregroundColor(ApexStyle.secondary)
+                                            .accessibilityLabel("核心系统服务受保护，禁止直接停止")
+                                            .help("核心系统服务受保护，禁止直接停止")
+                                    }
+                                    Text(svc.subState.isEmpty ? svc.activeState : "\(svc.activeState) (\(svc.subState))")
+                                        .font(.system(size: 11, design: .monospaced))
+                                        .foregroundColor(svc.isRunning ? ApexStyle.success : (svc.activeState == "failed" ? ApexStyle.error : ApexStyle.secondary))
+                                        .lineLimit(1)
+                                        .fixedSize(horizontal: true, vertical: false)
+                                    Image(systemName: "chevron.right")
                                         .font(.system(size: 10))
                                         .foregroundColor(ApexStyle.secondary)
                                 }
-                                Text(svc.subState.isEmpty ? svc.activeState : "\(svc.activeState) (\(svc.subState))")
-                                    .font(.system(size: 11, design: .monospaced))
-                                    .foregroundColor(svc.isRunning ? ApexStyle.success : (svc.activeState == "failed" ? ApexStyle.error : ApexStyle.secondary))
-                                Image(systemName: "chevron.right")
-                                    .font(.system(size: 10))
-                                    .foregroundColor(ApexStyle.secondary)
+                                .padding(.horizontal, ApexStyle.s4)
+                                .padding(.vertical, 8)
+                                .contentShape(Rectangle())
                             }
-                            .padding(.horizontal, ApexStyle.s4)
-                            .padding(.vertical, 8)
-                            .contentShape(Rectangle())
+                            .buttonStyle(.plain)
+                            Divider()
                         }
-                        .buttonStyle(.plain)
-                        Divider()
                     }
                 }
             }

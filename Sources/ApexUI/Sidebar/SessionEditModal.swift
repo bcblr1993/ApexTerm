@@ -235,13 +235,24 @@ public struct SessionEditModal: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(isCloning ? L10n.cloneSessionTitle : (initialSession == nil ? L10n.newSessionTitle : L10n.editSessionTitle))
                         .font(.system(size: 18, weight: .semibold))
+                        .lineLimit(1)
                     Text(isCloning ? "已预填原会话的全部连接信息，修改后保存即可创建新会话" : "填写连接信息，保存后可从侧栏快速访问")
                         .font(.caption)
                         .foregroundStyle(ApexStyle.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
                 }
                 Spacer()
+                ApexIconButton(
+                    icon: "xmark",
+                    label: "关闭 (Esc)",
+                    size: 26,
+                    iconSize: 11
+                ) {
+                    dismiss()
+                }
             }
-            .padding(20)
+            .padding(ApexStyle.s4)
             .background(ApexStyle.surface)
             
             Divider()
@@ -274,15 +285,33 @@ public struct SessionEditModal: View {
                                 if jumpServerChain.count < SSHArgumentBuilder.maxJumpHops {
                                     let availableToAdd = otherSessions.filter { !jumpServerChain.contains($0.id) }
                                     if !availableToAdd.isEmpty {
-                                        Menu("添加跳板机…") {
+                                        Menu {
                                             ForEach(availableToAdd) { s in
                                                 Button("\(s.name) (\(s.host))") {
                                                     jumpServerChain.append(s.id)
                                                 }
                                             }
+                                        } label: {
+                                            HStack(spacing: 4) {
+                                                Image(systemName: "plus")
+                                                    .font(.system(size: 10, weight: .semibold))
+                                                Text("添加跳板机…")
+                                                    .font(.system(size: 11.5, weight: .medium))
+                                                    .lineLimit(1)
+                                            }
+                                            .foregroundColor(ApexStyle.accent)
+                                            .padding(.horizontal, 8)
+                                            .padding(.vertical, 4)
+                                            .background(ApexStyle.accent.opacity(0.10), in: RoundedRectangle(cornerRadius: ApexStyle.controlRadius))
+                                            .overlay(
+                                                RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
+                                                    .stroke(ApexStyle.accent.opacity(0.25), lineWidth: 0.75)
+                                            )
                                         }
                                         .menuStyle(.borderlessButton)
+                                        .menuIndicator(.hidden)
                                         .fixedSize()
+                                        .accessibilityLabel("添加跳板机")
                                         .accessibilityIdentifier("session.addJumpHostMenu")
                                     }
                                 }
@@ -340,6 +369,7 @@ public struct SessionEditModal: View {
                         }
                     }
                     .pickerStyle(.segmented)
+                    .labelsHidden()
                     .tint(ApexStyle.buttonAccent)
                     
                     if authType == .password {
@@ -642,28 +672,23 @@ public struct SessionEditModal: View {
                 }
             }
             .formStyle(.grouped)
+            .scrollContentBackground(.hidden)
+            .background(ApexStyle.surface)
 
             Divider()
             HStack(spacing: 10) {
                 ApexActionButton(
                     isTestingConnection ? "正在测试..." : "测试连接",
-                    icon: isTestingConnection ? nil : "bolt.horizontal.circle",
+                    icon: "bolt.horizontal.circle",
                     tint: ApexStyle.secondary,
-                    size: .regular
+                    size: .regular,
+                    isLoading: isTestingConnection
                 ) {
                     runConnectionTest()
                 }
                 .disabled(isTestingConnection || host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !isValidPort || authValidationMessage != nil || jumpCycleMessage != nil)
                 .accessibilityLabel("测试连接")
                 .accessibilityIdentifier("session.testConnectionButton")
-                .overlay(alignment: .leading) {
-                    if isTestingConnection {
-                        ProgressView()
-                            .controlSize(.small)
-                            .scaleEffect(0.65)
-                            .padding(.leading, 8)
-                    }
-                }
                 
                 if let result = testResult {
                     HStack(spacing: 5) {
@@ -692,6 +717,8 @@ public struct SessionEditModal: View {
                         .font(.caption)
                         .foregroundStyle(saveError != nil ? ApexStyle.error : ApexStyle.warning)
                         .lineLimit(1)
+                        .truncationMode(.tail)
+                        .help(message)
                         .accessibilityIdentifier("session.validationMessage")
                 }
                 
@@ -718,17 +745,11 @@ public struct SessionEditModal: View {
                 .disabled(host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !isValidPort || authValidationMessage != nil || envValidationMessage != nil || jumpCycleMessage != nil)
                 .keyboardShortcut(.defaultAction)
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 14)
+            .padding(ApexStyle.s4)
             .background(ApexStyle.surface)
-            .overlay(
-                Rectangle()
-                    .frame(height: 0.75)
-                    .foregroundColor(ApexStyle.border.opacity(0.5)),
-                alignment: .top
-            )
         }
         .frame(width: 580, height: 600)
+        .background(ApexStyle.surface)
         .onAppear {
             // Populating the form flips the save button from disabled to enabled during the
             // sheet's first layout; suppress implicit animations so nothing visibly jumps.

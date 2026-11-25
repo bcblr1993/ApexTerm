@@ -44,9 +44,13 @@ public struct SSHConfigImportSheet: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("从 ~/.ssh/config 导入主机")
                         .font(.headline)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
                     Text(DistributionChannel.current == .appStore ? "选择 SSH 配置文件，预览并导入主机" : "自动扫描系统已知配置与密钥，一键导入 AetherTerm 会话库")
                         .font(.subheadline)
                         .foregroundColor(ApexStyle.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
                 }
                 Spacer()
 
@@ -62,9 +66,8 @@ public struct SSHConfigImportSheet: View {
                 ) {
                     dismiss()
                 }
-                .keyboardShortcut(.cancelAction)
             }
-            .padding(18)
+            .padding(ApexStyle.s4)
             .background(ApexStyle.surface)
             
             Divider()
@@ -91,7 +94,7 @@ public struct SSHConfigImportSheet: View {
                     )
                 }
             }
-            .padding(.horizontal, 18)
+            .padding(.horizontal, ApexStyle.s4)
             .padding(.vertical, 10)
             .background(ApexStyle.subtleSurface.opacity(0.6))
             
@@ -107,6 +110,7 @@ public struct SSHConfigImportSheet: View {
                         : "请检查 \(configPath) 中的 Host 与 HostName 配置。"))
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(ApexStyle.surface)
             } else {
                 List(discoveredHosts) { host in
                     HStack(spacing: 12) {
@@ -122,6 +126,7 @@ public struct SSHConfigImportSheet: View {
                         ))
                         .toggleStyle(.checkbox)
                         .labelsHidden()
+                        .accessibilityLabel("选择主机 \(host.hostPattern)")
                         
                         Image(systemName: "server.rack")
                             .foregroundColor(ApexStyle.accent)
@@ -131,10 +136,14 @@ public struct SSHConfigImportSheet: View {
                             HStack(spacing: 6) {
                                 Text(host.hostPattern)
                                     .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
                                 if host.hostPattern != host.hostName {
                                     Text("(\(host.hostName))")
                                         .font(.system(size: 11, design: .monospaced))
                                         .foregroundColor(ApexStyle.secondary)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
                                 }
                             }
                             
@@ -142,6 +151,7 @@ public struct SSHConfigImportSheet: View {
                                 Text("\(host.user.isEmpty ? "当前用户" : host.user):\(host.port)")
                                     .font(.system(size: 11, design: .monospaced))
                                     .foregroundColor(ApexStyle.secondary)
+                                    .lineLimit(1)
                                 
                                 if let key = host.identityFile {
                                     HStack(spacing: 3) {
@@ -149,6 +159,8 @@ public struct SSHConfigImportSheet: View {
                                             .font(.system(size: 9))
                                         Text((key as NSString).lastPathComponent)
                                             .font(.system(size: 10, design: .monospaced))
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
                                     }
                                     .foregroundColor(ApexStyle.warning)
                                 }
@@ -158,8 +170,11 @@ public struct SSHConfigImportSheet: View {
                         Spacer()
                     }
                     .padding(.vertical, 4)
+                    .listRowBackground(ApexStyle.surface)
                 }
                 .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                .background(ApexStyle.surface)
             }
             
             Divider()
@@ -170,6 +185,9 @@ public struct SSHConfigImportSheet: View {
                     Text(notice)
                         .font(.caption)
                         .foregroundColor(ApexStyle.success)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .help(notice)
                 }
                 
                 Spacer()
@@ -195,10 +213,11 @@ public struct SSHConfigImportSheet: View {
                 .keyboardShortcut(.defaultAction)
                 .disabled(selectedHostIds.isEmpty)
             }
-            .padding(16)
+            .padding(ApexStyle.s4)
             .background(ApexStyle.surface)
         }
         .frame(minWidth: 540, minHeight: 440)
+        .background(ApexStyle.surface)
         .onAppear {
             if DistributionChannel.current == .direct || UserDefaults.standard.string(forKey: Self.selectedConfigKey) != nil {
                 scanHosts()

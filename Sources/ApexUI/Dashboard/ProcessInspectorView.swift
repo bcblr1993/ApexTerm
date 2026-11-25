@@ -155,9 +155,14 @@ public struct ProcessInspectorView: View {
                 Text("进程与服务监视中心")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(ApexStyle.primary)
-                Text("\(session.username)@\(session.host) · \(session.name)")
+                    .lineLimit(1)
+                let hostSubtitle = "\(session.username)@\(session.host) · \(session.name)"
+                Text(hostSubtitle)
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundColor(ApexStyle.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(hostSubtitle)
             }
             
             Spacer()
@@ -251,58 +256,86 @@ public struct ProcessInspectorView: View {
     
     // MARK: - Filter Toolbar
     private var filterToolbar: some View {
-        HStack(spacing: 12) {
-            Picker("视图", selection: $inspectorMode) {
-                Text("活跃进程 (\(processes.count))").tag(InspectorMode.processes)
-                Text("容器 (\(containers.count))").tag(InspectorMode.containers)
-                Text("监听端口 (\(listeningPorts.count))").tag(InspectorMode.listeningPorts)
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 10) {
+                modePicker
+                toolbarSearchField
+                    .frame(minWidth: 160, maxWidth: 280)
+                Spacer(minLength: 4)
+                trailingToolbarControls
             }
-            .pickerStyle(.segmented)
-            .frame(width: 300)
-            .accessibilityIdentifier("processInspector.modePicker")
 
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundColor(ApexStyle.secondary)
-                    .font(.system(size: 11))
-                TextField(
-                    searchPlaceholder,
-                    text: $searchText
-                )
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 11.5))
-                if !searchText.isEmpty {
-                    ApexIconButton(
-                        icon: "xmark.circle.fill",
-                        label: "清空搜索",
-                        size: 18,
-                        iconSize: 10
-                    ) {
-                        searchText = ""
-                    }
+            VStack(spacing: 8) {
+                HStack(spacing: 10) {
+                    modePicker
+                    Spacer(minLength: 4)
+                    trailingToolbarControls
+                }
+                toolbarSearchField
+                    .frame(maxWidth: .infinity)
+            }
+        }
+        .padding(.horizontal, ApexStyle.s4)
+        .padding(.vertical, 8)
+        .background(ApexStyle.surface)
+    }
+
+    private var modePicker: some View {
+        Picker("视图", selection: $inspectorMode) {
+            Text("活跃进程 (\(processes.count))").monospacedDigit().tag(InspectorMode.processes)
+            Text("容器 (\(containers.count))").monospacedDigit().tag(InspectorMode.containers)
+            Text("监听端口 (\(listeningPorts.count))").monospacedDigit().tag(InspectorMode.listeningPorts)
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .fixedSize()
+        .accessibilityIdentifier("processInspector.modePicker")
+    }
+
+    private var toolbarSearchField: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .foregroundColor(ApexStyle.secondary)
+                .font(.system(size: 11))
+            TextField(
+                searchPlaceholder,
+                text: $searchText
+            )
+                .textFieldStyle(.plain)
+                .font(.system(size: 11.5))
+            if !searchText.isEmpty {
+                ApexIconButton(
+                    icon: "xmark.circle.fill",
+                    label: "清空搜索",
+                    size: 18,
+                    iconSize: 10
+                ) {
+                    searchText = ""
                 }
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(ApexStyle.subtleSurface, in: RoundedRectangle(cornerRadius: 6))
-            .overlay {
-                RoundedRectangle(cornerRadius: 6)
-                    .stroke(ApexStyle.border, lineWidth: 1)
-            }
-            .frame(maxWidth: 280)
-            
-            Spacer()
-            
-            if inspectorMode == .processes {
-                // Sort Column Picker
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(ApexStyle.subtleSurface, in: RoundedRectangle(cornerRadius: 6))
+        .overlay {
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(ApexStyle.border, lineWidth: 1)
+        }
+    }
+
+    @ViewBuilder
+    private var trailingToolbarControls: some View {
+        if inspectorMode == .processes {
+            HStack(spacing: 8) {
                 Picker("排序", selection: $sortColumn) {
                     ForEach(SortColumn.allCases) { col in
                         Text(col.rawValue).tag(col)
                     }
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 220)
-                
+                .labelsHidden()
+                .fixedSize()
+
                 ApexIconButton(
                     icon: sortAscending ? "arrow.up" : "arrow.down",
                     label: sortAscending ? "切换为降序排列" : "切换为升序排列",
@@ -311,31 +344,34 @@ public struct ProcessInspectorView: View {
                 ) {
                     sortAscending.toggle()
                 }
-            } else if inspectorMode == .containers {
-                let runningCount = filteredContainers.filter(\.isRunning).count
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(runningCount > 0 ? ApexStyle.success : ApexStyle.secondary)
-                        .frame(width: 7, height: 7)
-                    Text("\(containerRuntime?.displayName ?? "容器") · 运行中: \(runningCount)/\(filteredContainers.count)")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(ApexStyle.secondary)
-                }
-            } else {
-                let publicCount = filteredListeningPorts.filter(\.isPubliclyExposed).count
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(publicCount > 0 ? ApexStyle.warning : ApexStyle.success)
-                        .frame(width: 7, height: 7)
-                    Text("公网/全网卡暴露: \(publicCount) 项")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(ApexStyle.secondary)
-                }
             }
+        } else if inspectorMode == .containers {
+            let runningCount = filteredContainers.filter(\.isRunning).count
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(runningCount > 0 ? ApexStyle.success : ApexStyle.secondary)
+                    .frame(width: 7, height: 7)
+                Text("\(containerRuntime?.displayName ?? "容器") · 运行中: \(runningCount)/\(filteredContainers.count)")
+                    .font(.system(size: 11, weight: .medium))
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .foregroundColor(ApexStyle.secondary)
+            }
+            .fixedSize(horizontal: true, vertical: false)
+        } else {
+            let publicCount = filteredListeningPorts.filter(\.isPubliclyExposed).count
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(publicCount > 0 ? ApexStyle.warning : ApexStyle.success)
+                    .frame(width: 7, height: 7)
+                Text("公网/全网卡暴露: \(publicCount) 项")
+                    .font(.system(size: 11, weight: .medium))
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .foregroundColor(ApexStyle.secondary)
+            }
+            .fixedSize(horizontal: true, vertical: false)
         }
-        .padding(.horizontal, ApexStyle.s4)
-        .padding(.vertical, 8)
-        .background(ApexStyle.surface)
     }
     
     // MARK: - Process Table
@@ -405,17 +441,17 @@ public struct ProcessInspectorView: View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 Text("容器名 / ID")
-                    .frame(width: 175, alignment: .leading)
-                Text("镜像")
                     .frame(width: 145, alignment: .leading)
+                Text("镜像")
+                    .frame(width: 120, alignment: .leading)
                 Text("状态")
-                    .frame(width: 78, alignment: .leading)
+                    .frame(width: 72, alignment: .leading)
                 Text("运行时长")
-                    .frame(width: 110, alignment: .leading)
+                    .frame(width: 88, alignment: .leading)
                 Text("端口映射")
                     .frame(maxWidth: .infinity, alignment: .leading)
                 Text("操作")
-                    .frame(width: 122, alignment: .trailing)
+                    .frame(width: 112, alignment: .trailing)
             }
             .font(.system(size: 10.5, weight: .semibold))
             .foregroundColor(ApexStyle.secondary)
@@ -538,7 +574,10 @@ public struct ProcessInspectorView: View {
         HStack {
             Text(footerSummaryText)
                 .font(.system(size: 11))
+                .monospacedDigit()
                 .foregroundColor(ApexStyle.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
             
             Spacer()
             
@@ -546,6 +585,9 @@ public struct ProcessInspectorView: View {
                 Text(feedback)
                     .font(.system(size: 11, weight: .medium))
                     .foregroundColor(ApexStyle.accent)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .help(feedback)
             }
         }
         .padding(.horizontal, ApexStyle.s4)
@@ -814,10 +856,22 @@ private struct ProcessRowView: View {
     
     @State private var isHovered = false
     
+    private var selectedRowBackground: Color {
+        if let sel = NSColor(ApexStyle.selection).usingColorSpace(.sRGB),
+           let surf = NSColor(ApexStyle.surface).usingColorSpace(.sRGB),
+           abs(sel.redComponent - surf.redComponent) < 0.01,
+           abs(sel.greenComponent - surf.greenComponent) < 0.01,
+           abs(sel.blueComponent - surf.blueComponent) < 0.01 {
+            return ApexStyle.accent.opacity(0.16)
+        }
+        return ApexStyle.selection
+    }
+
     var body: some View {
         HStack(spacing: 8) {
             Text("\(proc.pid)")
                 .font(.system(size: 11, design: .monospaced))
+                .monospacedDigit()
                 .foregroundColor(ApexStyle.secondary)
                 .frame(width: 60, alignment: .leading)
             
@@ -841,6 +895,7 @@ private struct ProcessRowView: View {
             HStack(spacing: 4) {
                 Text(String(format: "%.1f%%", proc.cpuPercent))
                     .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .monospacedDigit()
                     .foregroundColor(ProcessInspectorView.cpuColor(proc.cpuPercent))
             }
             .frame(width: 75, alignment: .trailing)
@@ -848,6 +903,7 @@ private struct ProcessRowView: View {
             // RSS
             Text(proc.formattedRSS)
                 .font(.system(size: 11, design: .monospaced))
+                .monospacedDigit()
                 .foregroundColor(ApexStyle.primary)
                 .frame(width: 95, alignment: .trailing)
             
@@ -874,6 +930,7 @@ private struct ProcessRowView: View {
                     .font(.system(size: 10))
                     .foregroundColor(ApexStyle.secondary.opacity(0.6))
                     .frame(width: 65, alignment: .center)
+                    .accessibilityLabel("受保护的核心系统进程，禁止终止")
                     .help("受保护的核心系统进程，禁止终止")
             } else {
                 ApexActionButton("终止", tint: ApexStyle.error, size: .small) {
@@ -887,7 +944,7 @@ private struct ProcessRowView: View {
         .padding(.vertical, 5)
         .background(
             isSelected
-                ? ApexStyle.selection.opacity(0.15)
+                ? selectedRowBackground
                 : (isHovered ? ApexStyle.primary.opacity(0.04) : Color.clear)
         )
         .contentShape(Rectangle())
@@ -923,7 +980,9 @@ private struct ListeningPortRowView: View {
                 .font(.system(size: 11, weight: .semibold, design: .monospaced))
                 .foregroundColor(ApexStyle.primary)
                 .lineLimit(1)
+                .truncationMode(.middle)
                 .frame(width: 170, alignment: .leading)
+                .help(item.endpointDisplay)
 
             HStack(spacing: 4) {
                 Circle()
@@ -932,11 +991,13 @@ private struct ListeningPortRowView: View {
                 Text(item.exposureBadgeText)
                     .font(.system(size: 10, weight: .medium))
                     .foregroundColor(item.isPubliclyExposed ? ApexStyle.warning : ApexStyle.success)
+                    .lineLimit(1)
             }
             .frame(width: 96, alignment: .leading)
 
             Text(item.pid.map { "\($0)" } ?? "—")
                 .font(.system(size: 11, design: .monospaced))
+                .monospacedDigit()
                 .foregroundColor(ApexStyle.secondary)
                 .frame(width: 68, alignment: .leading)
 

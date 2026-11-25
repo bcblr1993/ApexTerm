@@ -42,6 +42,7 @@ public struct SidebarView: View {
                 Spacer()
                 Text("\(store.sessions.count) 台主机")
                     .font(.caption)
+                    .monospacedDigit()
                     .foregroundStyle(ApexStyle.secondary)
             }
             .padding(.horizontal, ApexStyle.s4)
@@ -49,9 +50,32 @@ public struct SidebarView: View {
             .padding(.bottom, ApexStyle.sRow)
 
             HStack(spacing: ApexStyle.sCompact) {
-                TextField(L10n.searchPlaceholder, text: $searchFilter)
-                    .textFieldStyle(.roundedBorder)
-                    .accessibilityLabel(L10n.searchPlaceholder)
+                HStack(spacing: 5) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 11))
+                        .foregroundColor(ApexStyle.secondary)
+                    TextField(L10n.searchPlaceholder, text: $searchFilter)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 11.5))
+                        .accessibilityLabel(L10n.searchPlaceholder)
+                    if !searchFilter.isEmpty {
+                        ApexIconButton(
+                            icon: "xmark.circle.fill",
+                            label: "清空搜索",
+                            size: 16,
+                            iconSize: 10
+                        ) {
+                            searchFilter = ""
+                        }
+                    }
+                }
+                .padding(.horizontal, 7)
+                .frame(height: 24)
+                .background(ApexStyle.subtleSurface, in: RoundedRectangle(cornerRadius: ApexStyle.controlRadius))
+                .overlay(
+                    RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
+                        .stroke(ApexStyle.border.opacity(0.7), lineWidth: 0.75)
+                )
                 
                 ApexIconButton(
                     icon: "square.and.arrow.down",
@@ -67,7 +91,7 @@ public struct SidebarView: View {
                     label: L10n.addSessionHelp,
                     size: 24,
                     iconSize: 11,
-                    isSelected: true
+                    tint: ApexStyle.accent
                 ) {
                     showingAddSheet = true
                 }
@@ -95,29 +119,18 @@ public struct SidebarView: View {
                             .font(.subheadline)
                             .foregroundStyle(ApexStyle.secondary)
                             .multilineTextAlignment(.center)
-                            .padding(.horizontal, 20)
+                            .padding(.horizontal, ApexStyle.s4)
                     }
                     
-                    HStack(spacing: 10) {
-                        ApexActionButton(
-                            L10n.openLocalTerminal,
-                            icon: "laptopcomputer",
-                            tint: ApexStyle.secondary,
-                            size: .regular
-                        ) {
-                            onConnect(Session.local())
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 10) {
+                            emptyStateButtons
                         }
-                        
-                        ApexActionButton(
-                            L10n.addFirstSessionButton,
-                            icon: "plus",
-                            tint: ApexStyle.accent,
-                            size: .regular,
-                            isProminent: true
-                        ) {
-                            showingAddSheet = true
+                        VStack(spacing: 8) {
+                            emptyStateButtons
                         }
                     }
+                    .padding(.horizontal, ApexStyle.s4)
                     
                     Spacer()
                 }
@@ -130,6 +143,7 @@ public struct SidebarView: View {
                             let local = Session.local()
                             SessionRow(
                                 session: local,
+                                isSelected: selectedSession?.id == local.id,
                                 onConnect: { onConnect(local) }
                             )
                             .tag(local.id)
@@ -151,11 +165,13 @@ public struct SidebarView: View {
                                 ),
                                 content: {
                                     ForEach(sessionsInFolder(folder)) { session in
+                                        let rowSelected = selectedSession?.id == session.id
                                         SessionRow(
                                             session: session,
+                                            isSelected: rowSelected,
                                             onConnect: { onConnect(session) }
                                         )
-                                        .fontWeight(selectedSession?.id == session.id ? .semibold : .regular)
+                                        .fontWeight(rowSelected ? .semibold : .regular)
                                         .tag(session.id)
                                         .contextMenu {
                                             Button(L10n.connectAction) {
@@ -184,13 +200,18 @@ public struct SidebarView: View {
                                             .foregroundColor(ApexStyle.secondary)
                                         Text(folder)
                                             .font(.system(size: 12, weight: .medium))
-                                        Spacer()
+                                            .foregroundColor(ApexStyle.primary)
+                                            .lineLimit(1)
+                                            .truncationMode(.tail)
+                                        Spacer(minLength: ApexStyle.s1)
                                         Text("\(sessionsInFolder(folder).count)")
                                             .font(.system(size: 10, weight: .medium))
+                                            .monospacedDigit()
                                             .foregroundColor(ApexStyle.secondary)
                                             .padding(.horizontal, 6)
                                             .padding(.vertical, 1)
                                             .background(ApexStyle.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: ApexStyle.badgeRadius))
+                                            .fixedSize(horizontal: true, vertical: false)
                                     }
                                 }
                             )
@@ -203,20 +224,25 @@ public struct SidebarView: View {
                     }
                 }
                 .listStyle(.sidebar)
+                .foregroundStyle(Color.primary)
+                .tint(ApexStyle.buttonAccent)
             }
         }
         .sheet(isPresented: $showingAddSheet) {
             SessionEditModal(session: nil) { newSession in
                 store.addSession(newSession)
             }
+            .apexTheme()
         }
         .sheet(isPresented: $showingImportSheet) {
             SSHConfigImportSheet(store: store)
+                .apexTheme()
         }
         .sheet(item: $editingSession) { session in
             SessionEditModal(session: session) { updated in
                 store.updateSession(updated)
             }
+            .apexTheme()
         }
         .sheet(item: $cloningSession) { sourceSession in
             SessionEditModal(session: sourceSession, isCloning: true) { clonedSession in
@@ -252,7 +278,7 @@ public struct SidebarView: View {
                 }
                 .padding(.horizontal, 14)
                 .padding(.vertical, 8)
-                .apexGlassCard(cornerRadius: 14, material: .regularMaterial, borderColor: Color.primary.opacity(0.12), shadowRadius: 8)
+                .apexGlassCard(cornerRadius: 14, material: .regularMaterial, borderColor: ApexStyle.border.opacity(0.55), shadowRadius: 8)
                 .padding(.bottom, 16)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
                 .allowsHitTesting(false)
@@ -332,6 +358,28 @@ public struct SidebarView: View {
         sessions.filter { normalizedFolder(of: $0) == folder && matchesSearch($0, filter: searchFilter) }
     }
     
+    @ViewBuilder
+    private var emptyStateButtons: some View {
+        ApexActionButton(
+            L10n.openLocalTerminal,
+            icon: "laptopcomputer",
+            tint: ApexStyle.secondary,
+            size: .regular
+        ) {
+            onConnect(Session.local())
+        }
+
+        ApexActionButton(
+            L10n.addFirstSessionButton,
+            icon: "plus",
+            tint: ApexStyle.accent,
+            size: .regular,
+            isProminent: true
+        ) {
+            showingAddSheet = true
+        }
+    }
+
     private func folderIcon(for folder: String) -> String {
         switch folder {
         case "生产环境", "Production": return "flame.fill"
@@ -345,6 +393,7 @@ public struct SidebarView: View {
 struct SessionRow: View {
     @ObservedObject private var themeSettings = AppSettings.shared
     let session: Session
+    let isSelected: Bool
     let onConnect: () -> Void
     
     @State private var isHovered = false
@@ -358,18 +407,22 @@ struct SessionRow: View {
             Circle()
                 .fill(dotColor)
                 .frame(width: 8, height: 8)
+                .overlay(
+                    Circle()
+                        .stroke(Color.primary.opacity(isSelected ? 0.5 : 0), lineWidth: 1)
+                )
                 .shadow(color: dotColor.opacity(isHovered ? 0.6 : 0.35), radius: isHovered ? 3.5 : 2)
                 .scaleEffect(isHovered ? 1.15 : 1.0)
             
             VStack(alignment: .leading, spacing: ApexStyle.sMicro) {
                 Text(session.name)
                     .font(.subheadline)
-                    .foregroundColor(ApexStyle.primary)
+                    .foregroundColor(isSelected ? .primary : ApexStyle.primary)
                     .lineLimit(1)
                 
                 Text(session.isLocal ? "\(L10n.localTerminalSubtitle) (\(session.username))" : "\(session.username)@\(session.host)")
                     .font(.caption.monospaced())
-                    .foregroundColor(ApexStyle.secondary)
+                    .foregroundColor(isSelected ? .secondary : ApexStyle.secondary)
                     .lineLimit(1)
             }
             
@@ -380,17 +433,17 @@ struct SessionRow: View {
                 label: "连接到 \(session.name)",
                 size: 22,
                 iconSize: 10,
-                tint: isHovered ? ApexStyle.accent : nil
+                tint: isSelected ? .primary : (isHovered ? ApexStyle.accent : nil)
             ) {
                 onConnect()
             }
-            .opacity(isHovered ? 1.0 : 0.75)
+            .opacity(isSelected || isHovered ? 1.0 : 0.75)
         }
         .padding(.vertical, 3)
         .padding(.horizontal, 4)
         .background(
             RoundedRectangle(cornerRadius: ApexStyle.badgeRadius)
-                .fill(isHovered ? ApexStyle.primary.opacity(0.04) : Color.clear)
+                .fill(isSelected ? Color.clear : (isHovered ? ApexStyle.primary.opacity(0.04) : Color.clear))
         )
         .contentShape(Rectangle())
         .onHover { h in

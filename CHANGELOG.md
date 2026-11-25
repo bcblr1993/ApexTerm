@@ -2,6 +2,37 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.26.0] - 2026-11-25
+
+### ✨ 新增特性 (Features)
+- **全应用 UI 统一对齐与视觉质量全面升级（覆盖全部 27 个核心界面）**：
+  - **SFTP 传输进度单一数据源与工具栏 24pt 基线对齐 (`SFTPView.swift`, `TransferDrawer.swift`, `TransferActivitySymbol.swift`)**：统一路径栏、书签、路径联动、上传、更多、筛选与传输入口按钮为一致的 `24pt` 控制条基线；移除文件列表中冗余的「正在批量上传」悬浮横幅与底部状态栏重复指示器，收口为单一清晰的紧凑进度条/迷你胶囊；进度数值与文件名全面采用等宽数字 (`monospacedDigit`) 与左对齐布局，避免传输过程数字与标题左右抖动，并补全窄窗下的响应式工具栏与文件属性/传输队列自适应布局。
+  - **外观主题与系统浅色/深色响应增强 (`ThemePalette.swift`, `ApexStyle.swift`, `ApexTermApp.swift`)**：修复 `Solarized` 浅色主题选区背景与卡片次级底色对比度碰撞（`#EEE8D5 → #D5CEB8`）；为 `ApexThemeModifier` 接入系统 `colorScheme` 同步驱动 `ApexStyle.systemColorScheme`，修复系统外观切换后部分控件色值滞后的问题。
+  - **终端字体发现 CoreText 加速 (`TerminalFontManager.swift`)**：采用 `CTFontManagerCopyAvailableFontFamilyNames()` 与 `CTFontDescriptor` 等宽特征集合预匹配取代主线程逐族实例化 `NSFont`，使冷启动字体枚举耗时从 ~150 ms 级降至 ~22–40 ms。
+
+### ⚡️ 体验优化 (Improvements)
+- **基础控件与交互规范收口 (`ApexStyle.swift`, `CommandPaletteItem.swift`)**：为 `ApexIconButton` 增加禁用态视觉降对比度反馈，为 `ApexPillButton` / `ApexActionButton` / `apexKeycap` 统一单行防换行约束与选中态无障碍 Trait，为 `ApexGlassCardModifier` 统一裁剪与默认边框，为命令面板条目提供确定性 `stableID(for:)`。
+- **工作区、命令面板与底部交互区优化 (`WorkspaceView.swift`, `CommandPaletteModalView.swift`, `QuickCommandBarView.swift`, `BroadcastBar.swift`)**：梳理设置弹窗通知监听、分屏工具栏间距与窄窗裁切防抖、命令面板键盘焦点与高亮稳定性、快捷命令栏/广播输入条在窄屏下的控件对齐与溢出防护。
+- **侧边栏、连接配置与监控详情弹窗对齐 (`SidebarView.swift`, `SessionEditModal.swift`, `SSHConfigImportSheet.swift`, `MetricCapsuleView.swift`, `ProcessInspectorView.swift`, `ContainerAndLogsSheets.swift`)**：统一侧边栏会话列表排版与间距、会话编辑与 SSH Config 导入表单栅格与滚动溢出、监控胶囊/进程排查/容器日志面板等宽数字与窄窗适配。
+- **设置面板与功能弹窗细节打磨 (`SettingsView.swift`, `SSHKeyVaultSettingsView.swift`, `KnownHostsSettingsView.swift`, `SSHTunnelModalView.swift`, `AboutView.swift`, `UpdateSheetView.swift`, `ShortcutsSheetView.swift`)**：对齐密钥库/已知主机/隧道弹窗操作区与滚动布局、关于与更新弹窗版本状态布局以及快捷键速查卡片对齐。
+- **高吞吐终端刷新内存回收优化 (`TerminalViewBridge.swift`, `KeywordHighlighter.swift`)**：为 `NativeTerminalView.refresh()` 包裹 `autoreleasepool`、在无启用触发器时短路 `KeywordHighlighter`、为单 Span 渲染与已提交行 UTF-16 长度统计消除多余中间分配，降低高频输出期间内存峰值。
+
+### 🐞 问题修复 (Bug Fixes)
+- **修复内置快速编辑器与代码编辑器在深浅主题下对比度失衡 (`QuickEditorView.swift`, `NativeCodeEditor.swift`)**：为 `QuickEditorView` 接入 `.apexTheme()` 与显式前景色对比度控制（含 Solarized 选区高亮回退），为 `NativeCodeEditor` 行号标尺补充 1px 分割线以明确编辑区边界。
+- **修复 SFTP 上传/筛选与窄窗布局错位 (`SFTPView.swift`, `SFTPFileInspectorSheet.swift`)**：引入结构化 `SFTPNoticeKind` 统一横幅样式，修复筛选与远端搜索栏间距错位及窄面板下的按钮挤压截断问题。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- **全量自动化测试 (`./scripts/test_vm_acceptance.sh`)**：共执行 `678` 项 XCTest 用例（`ApexSSHTests` 575 项、`ApexCoreTests` 103 项；其中 673 项通过、5 项环境条件跳过、0 失败），含 **Tart VM (`macos27`) 真实 SSH/SFTP/监控集成测试 10/10 全部通过**，以及 `UIQualityOverhaulTests`（6/6）、`TransferPanelUXTests`（6/6）与 `RG-08 ~ RG-15` 回归门禁全绿；Swift 6 `-warnings-as-errors` 零警告。
+- **8 大 Release 性能基准测试 (`swift test -c release --jobs 2 --filter FullPerformanceBenchmarkTests`, 8/8 通过)**：
+  - `[Benchmark 1]` RingBuffer 写入吞吐：`1,887,541 行/秒`（`190.81 MB/秒`）
+  - `[Benchmark 2]` ANSI / TrueColor 颜色解析：`337,138 spans/秒`（`2.966 μs/span`）
+  - `[Benchmark 3]` 内存水位与驻留集（RSS）：Release 初始 `36.47 MB`、峰值 `99.78 MB`（Debug 初始 `206.22 MB`、峰值 `224.73 MB`，均远低于 `≤ 250 MB` 门禁）
+  - `[Benchmark 4]` 16 线程并发写入吞吐：`2,091,498 writes/秒`
+  - `[Benchmark 5]` 64 核 Linux 指标解析：`14,718 次/秒`
+  - `[Benchmark 6]` OpenSSH 500 主机批量解析：`149,875 hosts/秒`
+  - `[Benchmark 7]` SFTP 100 任务并发调度：`961 tasks/秒`
+  - `[Benchmark 8]` 终端按键直通延迟：`5.43 μs`（`184,060 keys/秒`）
+
 ## [v1.25.0] - 2026-11-25
 
 ### ✨ 新增特性 (Features)

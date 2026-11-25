@@ -220,6 +220,20 @@ final class SSHConnectionLifecycleTests: XCTestCase {
         return (sshd, port)
     }
 
+    private func stopLocalSSHD(_ sshd: Process) {
+        let pid = sshd.processIdentifier
+        if pid > 0 {
+            for child in childPIDs(of: pid) {
+                _ = kill(child, SIGKILL)
+            }
+            _ = kill(pid, SIGKILL)
+        }
+        let deadline = Date().addingTimeInterval(2.0)
+        while sshd.isRunning && Date() < deadline {
+            usleep(10_000)
+        }
+    }
+
     private func childPIDs(of parent: pid_t) -> Set<pid_t> {
         var pids = [pid_t](repeating: 0, count: 64)
         let count = proc_listchildpids(parent, &pids, Int32(pids.count * MemoryLayout<pid_t>.stride))
@@ -380,12 +394,7 @@ final class SSHConnectionLifecycleTests: XCTestCase {
         try generateEd25519Key(at: userKey)
 
         let (sshd, port) = try startLocalSSHD(tempDir: tempDir, authorizedKeyPubPath: userKey.path + ".pub")
-        defer {
-            if sshd.isRunning {
-                kill(sshd.processIdentifier, SIGKILL)
-                sshd.waitUntilExit()
-            }
-        }
+        defer { stopLocalSSHD(sshd) }
 
         let accessStore = FileAccessStore(defaults: defaults)
         try accessStore.remember(userKey, readOnly: true)
@@ -474,12 +483,7 @@ final class SSHConnectionLifecycleTests: XCTestCase {
         try generateEd25519Key(at: wrongKey)
 
         let (sshd, port) = try startLocalSSHD(tempDir: tempDir, authorizedKeyPubPath: authorizedKey.path + ".pub")
-        defer {
-            if sshd.isRunning {
-                kill(sshd.processIdentifier, SIGKILL)
-                sshd.waitUntilExit()
-            }
-        }
+        defer { stopLocalSSHD(sshd) }
 
         let accessStore = FileAccessStore(defaults: defaults)
         try accessStore.remember(wrongKey, readOnly: true)
@@ -815,12 +819,7 @@ final class SSHConnectionLifecycleTests: XCTestCase {
         let userKey = tempDir.appendingPathComponent("client_ed25519")
         try generateEd25519Key(at: userKey)
         let (sshd, port) = try startLocalSSHD(tempDir: tempDir, authorizedKeyPubPath: userKey.path + ".pub")
-        defer {
-            if sshd.isRunning {
-                kill(sshd.processIdentifier, SIGKILL)
-                sshd.waitUntilExit()
-            }
-        }
+        defer { stopLocalSSHD(sshd) }
 
         let accessStore = FileAccessStore(defaults: defaults)
         try accessStore.remember(userKey, readOnly: true)

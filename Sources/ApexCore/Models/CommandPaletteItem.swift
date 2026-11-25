@@ -125,6 +125,32 @@ public struct CommandPaletteItem: Identifiable, Codable, Sendable, Equatable {
         self.shortcutHint = shortcutHint
         self.action = action
     }
+
+    /// Produces a deterministic UUID from a stable string key so rebuilt palette items retain ForEach identity.
+    public static func stableID(for key: String) -> UUID {
+        var h1: UInt64 = 0xcbf29ce484222325
+        var h2: UInt64 = 0xaf63bd4c8601b7df
+        for byte in key.utf8 {
+            h1 ^= UInt64(byte)
+            h1 &*= 0x100000001b3
+            h2 ^= UInt64(byte) &+ 0x9e3779b97f4a7c15
+            h2 &*= 0x100000001b3
+        }
+        var bytes: uuid_t = (
+            UInt8((h1 >> 56) & 0xff), UInt8((h1 >> 48) & 0xff),
+            UInt8((h1 >> 40) & 0xff), UInt8((h1 >> 32) & 0xff),
+            UInt8((h1 >> 24) & 0xff), UInt8((h1 >> 16) & 0xff),
+            UInt8((h1 >> 8) & 0xff),  UInt8(h1 & 0xff),
+            UInt8((h2 >> 56) & 0xff), UInt8((h2 >> 48) & 0xff),
+            UInt8((h2 >> 40) & 0xff), UInt8((h2 >> 32) & 0xff),
+            UInt8((h2 >> 24) & 0xff), UInt8((h2 >> 16) & 0xff),
+            UInt8((h2 >> 8) & 0xff),  UInt8(h2 & 0xff)
+        )
+        // Mark RFC 4122 version 4 & variant bits deterministically.
+        bytes.6 = (bytes.6 & 0x0f) | 0x40
+        bytes.8 = (bytes.8 & 0x3f) | 0x80
+        return UUID(uuid: bytes)
+    }
 }
 
 /// Fast search and ranking engine for Command Palette items

@@ -4,9 +4,15 @@ import ApexCore
 
 @MainActor
 public enum ApexStyle {
+    public static var systemColorScheme: ColorScheme?
     private static var palette: ThemePalette {
         if AppSettings.shared.followsSystemAppearance {
-            let dark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            let dark: Bool
+            if let systemColorScheme {
+                dark = (systemColorScheme == .dark)
+            } else {
+                dark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            }
             return (dark ? TerminalThemePreset.modern : .nativeLight).palette
         }
         return AppSettings.shared.themePreset.palette
@@ -70,7 +76,7 @@ public extension View {
     func apexGlassCard(
         cornerRadius: CGFloat = ApexStyle.radius,
         material: Material = .regularMaterial,
-        borderColor: Color = Color.primary.opacity(0.08),
+        borderColor: Color? = nil,
         shadowRadius: CGFloat = 8
     ) -> some View {
         modifier(ApexGlassCardModifier(cornerRadius: cornerRadius, material: material, borderColor: borderColor, shadowRadius: shadowRadius))
@@ -78,6 +84,8 @@ public extension View {
     
     func apexKeycap() -> some View {
         self.font(.caption2.monospaced())
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
             .padding(.horizontal, 6)
             .padding(.vertical, 2.5)
             .background(
@@ -96,13 +104,13 @@ public extension View {
 public struct ApexGlassCardModifier: ViewModifier {
     public var cornerRadius: CGFloat
     public var material: Material
-    public var borderColor: Color
+    public var borderColor: Color?
     public var shadowRadius: CGFloat
     
     public init(
         cornerRadius: CGFloat = ApexStyle.radius,
         material: Material = .regularMaterial,
-        borderColor: Color = Color.primary.opacity(0.08),
+        borderColor: Color? = nil,
         shadowRadius: CGFloat = 8
     ) {
         self.cornerRadius = cornerRadius
@@ -114,9 +122,10 @@ public struct ApexGlassCardModifier: ViewModifier {
     public func body(content: Content) -> some View {
         content
             .background(material, in: RoundedRectangle(cornerRadius: cornerRadius))
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
             .overlay(
                 RoundedRectangle(cornerRadius: cornerRadius)
-                    .stroke(borderColor, lineWidth: 1)
+                    .stroke(borderColor ?? ApexStyle.border.opacity(0.55), lineWidth: 1)
             )
             .shadow(color: Color.black.opacity(0.06), radius: shadowRadius, x: 0, y: shadowRadius > 0 ? 2 : 0)
     }
@@ -132,6 +141,7 @@ public struct ApexIconButton: View {
     let tint: Color?
     let action: () -> Void
     
+    @Environment(\.isEnabled) private var isEnabled
     @State private var isHovered = false
     
     public init(
@@ -151,12 +161,14 @@ public struct ApexIconButton: View {
         self.tint = tint
         self.action = action
     }
+
+    private var activeHover: Bool { isHovered && isEnabled }
     
     private var effectiveColor: Color {
         if let tint = tint {
-            return isHovered ? tint : tint.opacity(0.85)
+            return activeHover ? tint : tint.opacity(0.85)
         }
-        return isSelected ? ApexStyle.accent : (isHovered ? ApexStyle.primary : ApexStyle.secondary)
+        return isSelected ? ApexStyle.accent : (activeHover ? ApexStyle.primary : ApexStyle.secondary)
     }
     
     public var body: some View {
@@ -164,10 +176,10 @@ public struct ApexIconButton: View {
             ZStack {
                 let activeTint = tint ?? (isSelected ? ApexStyle.accent : ApexStyle.primary)
                 RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
-                    .fill(isSelected ? activeTint.opacity(0.18) : (isHovered ? activeTint.opacity(0.08) : Color.clear))
+                    .fill(isSelected ? activeTint.opacity(0.18) : (activeHover ? activeTint.opacity(0.08) : Color.clear))
                     .overlay(
                         RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
-                            .stroke(isSelected ? activeTint.opacity(0.35) : (isHovered ? (tint?.opacity(0.3) ?? ApexStyle.border.opacity(0.4)) : Color.clear), lineWidth: 0.75)
+                            .stroke(isSelected ? activeTint.opacity(0.35) : (activeHover ? (tint?.opacity(0.3) ?? ApexStyle.border.opacity(0.4)) : Color.clear), lineWidth: 0.75)
                     )
                 
                 Image(systemName: icon)
@@ -175,8 +187,9 @@ public struct ApexIconButton: View {
                     .foregroundColor(effectiveColor)
             }
             .frame(width: size, height: size)
-            .scaleEffect(isHovered ? 1.04 : 1.0)
-            .animation(ApexStyle.springSnappy, value: isHovered)
+            .scaleEffect(activeHover ? 1.04 : 1.0)
+            .opacity(isEnabled ? 1.0 : 0.45)
+            .animation(ApexStyle.springSnappy, value: activeHover)
             .animation(ApexStyle.springSnappy, value: isSelected)
             .contentShape(Rectangle())
         }
@@ -225,10 +238,12 @@ public struct ApexPillButton: View {
                 }
                 Text(title)
                     .font(.system(size: 11, weight: isSelected ? .semibold : .medium))
+                    .lineLimit(1)
                 
                 if let count = count {
                     Text("\(count)")
                         .font(.system(size: 9, weight: .bold))
+                        .monospacedDigit()
                         .padding(.horizontal, 4)
                         .padding(.vertical, 1)
                         .background(isSelected ? ApexStyle.accent.opacity(0.2) : ApexStyle.subtleSurface, in: Capsule())
@@ -250,6 +265,7 @@ public struct ApexPillButton: View {
             .animation(ApexStyle.hoverTransition, value: isHovered)
         }
         .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
         .onHover { hovering in
             isHovered = hovering
         }
@@ -340,6 +356,7 @@ public struct ApexActionButton: View {
                 }
                 Text(title)
                     .font(.system(size: size == .small ? 11 : 12.5, weight: isProminent ? .semibold : .medium))
+                    .lineLimit(1)
             }
             .padding(.horizontal, size == .small ? 8 : 12)
             .padding(.vertical, size == .small ? 4 : 6.5)
@@ -422,11 +439,13 @@ public struct ApexMenuTrigger: View {
 /// Tactile split divider handle with smooth hover expansion and accent glow conforming to macOS Liquid Class HIG
 public struct ApexSplitDividerHandle: View {
     public let isVertical: Bool
+    public let background: Color?
     
     @State private var isHovered = false
     
-    public init(isVertical: Bool) {
+    public init(isVertical: Bool, background: Color? = nil) {
         self.isVertical = isVertical
+        self.background = background
     }
     
     public var body: some View {
@@ -453,7 +472,7 @@ public struct ApexSplitDividerHandle: View {
                 .frame(height: 8)
             }
         }
-        .background(ApexStyle.surface)
+        .background(background ?? ApexStyle.surface)
         .contentShape(Rectangle())
         .animation(ApexStyle.springSnappy, value: isHovered)
         .onHover { hovering in
@@ -466,17 +485,31 @@ public struct ApexSplitDividerHandle: View {
 
 private struct ApexThemeModifier: ViewModifier {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
     @ObservedObject private var settings = AppSettings.shared
     func body(content: Content) -> some View {
+        let _ = syncSystemColorSchemeIfNeeded()
         content
             .preferredColorScheme(settings.followsSystemAppearance ? nil : (settings.themePreset.isDark ? .dark : .light))
             .tint(ApexStyle.accent)
             .accentColor(ApexStyle.accent)
             .foregroundStyle(ApexStyle.primary)
             .background(ApexStyle.surface)
+            .onAppear { syncSystemColorSchemeIfNeeded() }
+            .onChange(of: colorScheme) { _, newScheme in
+                if settings.followsSystemAppearance {
+                    ApexStyle.systemColorScheme = newScheme
+                }
+            }
             .transaction { transaction in
                 if reduceMotion { transaction.animation = nil }
             }
+    }
+
+    private func syncSystemColorSchemeIfNeeded() {
+        if settings.followsSystemAppearance, ApexStyle.systemColorScheme != colorScheme {
+            ApexStyle.systemColorScheme = colorScheme
+        }
     }
 }
 

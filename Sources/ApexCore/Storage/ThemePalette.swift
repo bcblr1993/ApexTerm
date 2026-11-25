@@ -65,7 +65,7 @@ public struct ThemePalette: Sendable {
     private static func buildPreset(_ preset: TerminalThemePreset) -> ThemePalette {
         switch preset {
         case .solarized:
-            return ThemePalette(surface: "#EEE8D5", sidebar: "#EEE8D5", terminal: "#FDF6E3", foreground: "#657B83", secondary: "#657B83", accent: "#268BD2", success: "#859900", warning: "#B58900", border: "#D7D1BF", selection: "#EEE8D5", ansi: ["#073642", "#DC322F", "#859900", "#B58900", "#268BD2", "#D33682", "#2AA198", "#EEE8D5", "#002B36", "#CB4B16", "#586E75", "#657B83", "#839496", "#6C71C4", "#93A1A1", "#FDF6E3"])
+            return ThemePalette(surface: "#EEE8D5", sidebar: "#EEE8D5", terminal: "#FDF6E3", foreground: "#657B83", secondary: "#657B83", accent: "#268BD2", success: "#859900", warning: "#B58900", border: "#D7D1BF", selection: "#D5CEB8", ansi: ["#073642", "#DC322F", "#859900", "#B58900", "#268BD2", "#D33682", "#2AA198", "#EEE8D5", "#002B36", "#CB4B16", "#586E75", "#657B83", "#839496", "#6C71C4", "#93A1A1", "#FDF6E3"])
         case .rosepine:
             return ThemePalette(surface: "#1F1D2E", sidebar: "#191724", terminal: "#191724", foreground: "#E0DEF4", secondary: "#908CAA", accent: "#C4A7E7", success: "#9CCFD8", warning: "#F6C177", border: "#403D52", selection: "#403D52", ansi: ["#26233A", "#EB6F92", "#31748F", "#F6C177", "#9CCFD8", "#C4A7E7", "#EBBCBA", "#E0DEF4", "#6E6A86", "#EB6F92", "#31748F", "#F6C177", "#9CCFD8", "#C4A7E7", "#EBBCBA", "#E0DEF4"])
         case .everforest:

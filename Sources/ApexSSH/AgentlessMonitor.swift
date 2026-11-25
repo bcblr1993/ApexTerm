@@ -7,12 +7,12 @@ public final class AgentlessMonitor: Sendable {
     
     /// Script payload sent to remote Linux host over lightweight SSH channel
     public static let linuxProbeCommand = """
-    cat /proc/stat /proc/meminfo /proc/net/dev 2>/dev/null; echo "---DF---"; df -k / 2>/dev/null | tail -1; echo "---UPTIME---"; cat /proc/uptime 2>/dev/null; echo "---LOAD---"; cat /proc/loadavg 2>/dev/null; echo "---TOP---"; ps -eo pid,user,%cpu,%mem,comm --sort=-%cpu 2>/dev/null | head -6; echo "---CPUMODEL---"; (grep -m1 "model name" /proc/cpuinfo 2>/dev/null || grep -m1 "Hardware" /proc/cpuinfo 2>/dev/null || uname -m) | cut -d: -f2 | sed 's/^[ \t]*//'; echo "---DISKTYPE---"; ROOT_DEV=$(df / 2>/dev/null | tail -1 | awk '{print $1}' | sed 's|/dev/||'); PARENT_DEV=$(echo "$ROOT_DEV" | sed -E 's/p?[0-9]+$//'); if [ -f "/sys/block/$PARENT_DEV/queue/rotational" ]; then if [ "$(cat /sys/block/$PARENT_DEV/queue/rotational 2>/dev/null)" = "0" ]; then if echo "$ROOT_DEV" | grep -q "nvme"; then echo "NVMe SSD"; else echo "SSD"; fi; else echo "HDD"; fi; elif echo "$ROOT_DEV" | grep -q "nvme"; then echo "NVMe SSD"; elif lsblk -d -n -o rota "/dev/$PARENT_DEV" 2>/dev/null | grep -q "0"; then echo "SSD"; elif lsblk -d -n -o rota "/dev/$PARENT_DEV" 2>/dev/null | grep -q "1"; then echo "HDD"; else echo "SSD"; fi
+    cat /proc/stat /proc/meminfo /proc/net/dev 2>/dev/null; echo "---DF---"; df -kP / 2>/dev/null | tail -1; echo "---UPTIME---"; cat /proc/uptime 2>/dev/null; echo "---LOAD---"; cat /proc/loadavg 2>/dev/null; echo "---TOP---"; ps -eo pid,user,%cpu,%mem,comm --sort=-%cpu 2>/dev/null | head -6; echo "---CPUMODEL---"; (grep -m1 "model name" /proc/cpuinfo 2>/dev/null || grep -m1 "Hardware" /proc/cpuinfo 2>/dev/null || uname -m) | cut -d: -f2 | sed 's/^[ \t]*//'; echo "---DISKTYPE---"; ROOT_DEV=$(df -P / 2>/dev/null | tail -1 | awk '{print $1}' | sed 's|/dev/||'); PARENT_DEV=$(echo "$ROOT_DEV" | sed -E 's/p?[0-9]+$//'); if [ -f "/sys/block/$PARENT_DEV/queue/rotational" ]; then if [ "$(cat /sys/block/$PARENT_DEV/queue/rotational 2>/dev/null)" = "0" ]; then if echo "$ROOT_DEV" | grep -q "nvme"; then echo "NVMe SSD"; else echo "SSD"; fi; else echo "HDD"; fi; elif echo "$ROOT_DEV" | grep -q "nvme"; then echo "NVMe SSD"; elif lsblk -d -n -o rota "/dev/$PARENT_DEV" 2>/dev/null | grep -q "0"; then echo "SSD"; elif lsblk -d -n -o rota "/dev/$PARENT_DEV" 2>/dev/null | grep -q "1"; then echo "HDD"; else echo "SSD"; fi
     """
     
     /// Script payload sent to remote macOS host
     public static let macosProbeCommand = """
-    top -l 1 -n 0 -s 0 | grep -E "CPU usage|PhysMem"; echo "---SWAP---"; sysctl -n vm.swapusage 2>/dev/null; echo "---CORES---"; sysctl -n hw.ncpu 2>/dev/null || echo "8"; echo "---DF---"; df -k / | tail -1; echo "---UPTIME---"; uptime; echo "---NET---"; netstat -ib -n 2>/dev/null | awk '$1 ~ /^en[0-9]+$/ && $3 ~ /^<Link#/ { rx += $(NF-4); tx += $(NF-1) } END { printf "en0 1500 <Link#1> 00:00:00:00:00:00 0 0 %.0f 0 0 %.0f 0\\n", rx, tx }'; echo "---TOP---"; ps -eo pid,user,%cpu,%mem,comm -r 2>/dev/null | head -6; echo "---CPUMODEL---"; sysctl -n machdep.cpu.brand_string 2>/dev/null || sysctl -n hw.model; echo "---DISKTYPE---"; if diskutil info / 2>/dev/null | grep -q "Solid State: *Yes"; then if diskutil info / 2>/dev/null | grep -E -q "Apple Fabric|PCI-Express|NVMe"; then echo "NVMe SSD"; else echo "SSD"; fi; else echo "HDD"; fi
+    top -l 1 -n 0 -s 0 | grep -E "CPU usage|PhysMem"; echo "---SWAP---"; sysctl -n vm.swapusage 2>/dev/null; echo "---CORES---"; sysctl -n hw.ncpu 2>/dev/null || echo "8"; echo "---DF---"; df -kP / | tail -1; echo "---UPTIME---"; uptime; echo "---NET---"; netstat -ib -n 2>/dev/null | awk '$1 ~ /^en[0-9]+$/ && $3 ~ /^<Link#/ { rx += $(NF-4); tx += $(NF-1) } END { printf "en0 1500 <Link#1> 00:00:00:00:00:00 0 0 %.0f 0 0 %.0f 0\\n", rx, tx }'; echo "---TOP---"; ps -eo pid,user,%cpu,%mem,comm -r 2>/dev/null | head -6; echo "---CPUMODEL---"; sysctl -n machdep.cpu.brand_string 2>/dev/null || sysctl -n hw.model; echo "---DISKTYPE---"; if diskutil info / 2>/dev/null | grep -q "Solid State: *Yes"; then if diskutil info / 2>/dev/null | grep -E -q "Apple Fabric|PCI-Express|NVMe"; then echo "NVMe SSD"; else echo "SSD"; fi; else echo "HDD"; fi
     """
     
     /// Auto-detecting multi-OS probe command
@@ -29,7 +29,7 @@ public final class AgentlessMonitor: Sendable {
     if [ "$(uname)" = "Darwin" ]; then
         ps -eo pid,user,%cpu,%mem,rss,vsz,stat,comm,command -r 2>/dev/null | head -46
     else
-        ps -eo pid,user,%cpu,%mem,rss,vsz,stat,comm,args --sort=-%cpu 2>/dev/null | head -46
+        (ps -eo pid,user,%cpu,%mem,rss,vsz,stat,comm,args --sort=-%cpu 2>/dev/null || ps -eo pid,user,%cpu,%mem,rss,vsz,stat,comm,args 2>/dev/null) | head -46
     fi
     """
 
@@ -46,7 +46,12 @@ public final class AgentlessMonitor: Sendable {
     
     /// Systemd service states query command (returns empty output on macOS/Alpine/BSD hosts without systemctl)
     public static func systemdServicesProbeCommand(services: [String] = ["nginx", "docker", "redis", "mysql", "sshd", "postgresql", "caddy"]) -> String {
-        let joined = services.joined(separator: " ")
+        let safeServices = services
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { isValidSystemdUnitName($0) }
+            .map { posixSingleQuoted($0) }
+        guard !safeServices.isEmpty else { return "" }
+        let joined = safeServices.joined(separator: " ")
         return """
         if command -v systemctl >/dev/null 2>&1; then
             for s in \(joined); do
@@ -499,16 +504,39 @@ public final class AgentlessMonitor: Sendable {
     
     private func parseMacOSUptime(_ text: String) -> UInt64 {
         var totalSec: UInt64 = 0
-        if let upRange = text.range(of: "up ") {
-            let afterUp = text[upRange.upperBound...]
-            if let comma = afterUp.firstIndex(of: ",") {
-                let part = String(afterUp[..<comma])
-                if part.contains("day") {
-                    let d = part.components(separatedBy: " ").compactMap { UInt64($0) }.first ?? 0
-                    totalSec += d * 86400
+        guard let upRange = text.range(of: "up ") else { return 3600 }
+        let afterUp = text[upRange.upperBound...]
+        let uptimeBody: Substring
+        if let usersRange = afterUp.range(of: " user") {
+            let beforeUsers = afterUp[..<usersRange.lowerBound]
+            if let lastComma = beforeUsers.lastIndex(of: ",") {
+                uptimeBody = beforeUsers[..<lastComma]
+            } else {
+                uptimeBody = beforeUsers
+            }
+        } else if let loadRange = afterUp.range(of: "load average") {
+            uptimeBody = afterUp[..<loadRange.lowerBound]
+        } else {
+            uptimeBody = afterUp
+        }
+        var daysSec: UInt64 = 0
+        var subDaySec: UInt64 = 0
+        for rawPart in uptimeBody.split(separator: ",") {
+            let part = rawPart.trimmingCharacters(in: .whitespaces)
+            if part.contains("day") {
+                let d = part.split(whereSeparator: { !$0.isNumber }).compactMap { UInt64($0) }.first ?? 0
+                daysSec += d * 86400
+            } else if part.contains("min") {
+                let m = part.split(whereSeparator: { !$0.isNumber }).compactMap { UInt64($0) }.first ?? 0
+                subDaySec += m * 60
+            } else if part.contains(":") {
+                let hm = part.split(separator: ":").compactMap { UInt64($0.trimmingCharacters(in: .whitespaces)) }
+                if hm.count == 2 {
+                    subDaySec += hm[0] * 3600 + hm[1] * 60
                 }
             }
         }
+        totalSec = daysSec > 0 ? daysSec : subDaySec
         return totalSec > 0 ? totalSec : 3600
     }
     
@@ -637,7 +665,7 @@ public final class AgentlessMonitor: Sendable {
                     let nonIdleTime = user + nice + system + irq + softirq + steal
                     let totalTime = idleTime + nonIdleTime
                     
-                    if let prev = prevCpu, totalTime > prev.total {
+                    if let prev = prevCpu, totalTime > prev.total, idleTime >= prev.idle {
                         let totalDelta = totalTime - prev.total
                         let idleDelta = idleTime - prev.idle
                         if totalDelta > 0 && totalDelta >= idleDelta {

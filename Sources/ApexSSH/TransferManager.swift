@@ -13,7 +13,15 @@ public final class TransferManager: ObservableObject {
     /// Upper bound on retained completed/failed/cancelled task records to prevent unbounded memory growth.
     public var maxCompletedHistory: Int = 200
     
+    private struct RetryContext {
+        weak var session: SSHSessionProtocol?
+        let onCompleted: (@Sendable () -> Void)?
+        let onResult: (@Sendable (Result<String, Error>) -> Void)?
+        let onDownloadResult: (@Sendable (Result<URL, Error>) -> Void)?
+    }
+
     private var activeTaskHandles: [UUID: Task<Void, Never>] = [:]
+    private var retryContexts: [UUID: RetryContext] = [:]
     private var runningTransferCount: Int = 0
     private var slotWaiters: [(id: UUID, maxConcurrent: Int, continuation: CheckedContinuation<Bool, Never>)] = []
     private var lastSpeedSampleTime: [UUID: Date] = [:]
@@ -43,6 +51,7 @@ public final class TransferManager: ObservableObject {
         let idsToRemove = Set(indicesToRemove.map { tasks[$0].id })
         for id in idsToRemove {
             activeTaskHandles.removeValue(forKey: id)
+            retryContexts.removeValue(forKey: id)
             lastSpeedSampleTime.removeValue(forKey: id)
             lastSampledBytes.removeValue(forKey: id)
         }
@@ -75,13 +84,15 @@ public final class TransferManager: ObservableObject {
 
     private func releaseTransferSlot() {
         runningTransferCount = max(0, runningTransferCount - 1)
-        while let next = slotWaiters.first {
-            if runningTransferCount < next.maxConcurrent {
-                slotWaiters.removeFirst()
+        var index = 0
+        while index < slotWaiters.count {
+            let candidate = slotWaiters[index]
+            if runningTransferCount < candidate.maxConcurrent {
+                slotWaiters.remove(at: index)
                 runningTransferCount += 1
-                next.continuation.resume(returning: true)
+                candidate.continuation.resume(returning: true)
             } else {
-                break
+                index += 1
             }
         }
     }
@@ -134,6 +145,7 @@ public final class TransferManager: ObservableObject {
             status: .queued
         )
         tasks.insert(task, at: 0)
+        retryContexts[taskId] = RetryContext(session: session, onCompleted: onCompleted, onResult: onResult, onDownloadResult: nil)
         
         let runner = Task { [weak self] in
             guard let self = self else { return }
@@ -146,6 +158,7 @@ public final class TransferManager: ObservableObject {
                 }
                 onResult?(.failure(error))
                 self.activeTaskHandles.removeValue(forKey: taskId)
+                self.pruneCompletedHistoryIfNeeded()
                 return
             }
             defer { access?.close() }
@@ -198,6 +211,7 @@ public final class TransferManager: ObservableObject {
             status: .queued
         )
         tasks.insert(task, at: 0)
+        retryContexts[taskId] = RetryContext(session: session, onCompleted: onCompleted, onResult: nil, onDownloadResult: onResult)
         
         let runner = Task { [weak self] in
             guard let self = self else { return }
@@ -210,6 +224,7 @@ public final class TransferManager: ObservableObject {
                 }
                 onResult?(.failure(error))
                 self.activeTaskHandles.removeValue(forKey: taskId)
+                self.pruneCompletedHistoryIfNeeded()
                 return
             }
             defer { access?.close() }
@@ -220,6 +235,9 @@ public final class TransferManager: ObservableObject {
     }
     
     public func cancelTask(id: UUID) {
+        guard let idx = tasks.firstIndex(where: { $0.id == id }), !tasks[idx].status.isTerminal else {
+            return
+        }
         if let waiterIdx = slotWaiters.firstIndex(where: { $0.id == id }) {
             let waiter = slotWaiters.remove(at: waiterIdx)
             waiter.continuation.resume(returning: false)
@@ -228,10 +246,8 @@ public final class TransferManager: ObservableObject {
         activeTaskHandles.removeValue(forKey: id)
         lastSpeedSampleTime.removeValue(forKey: id)
         lastSampledBytes.removeValue(forKey: id)
-        if let idx = tasks.firstIndex(where: { $0.id == id }) {
-            tasks[idx].status = .cancelled
-            tasks[idx].completedAt = Date()
-        }
+        tasks[idx].status = .cancelled
+        tasks[idx].completedAt = Date()
         pruneCompletedHistoryIfNeeded()
     }
 
@@ -244,7 +260,40 @@ public final class TransferManager: ObservableObject {
             lastSpeedSampleTime.removeValue(forKey: id)
             lastSampledBytes.removeValue(forKey: id)
         }
+        retryContexts.removeValue(forKey: id)
         tasks.removeAll { $0.id == id }
+    }
+
+    @discardableResult
+    public func retryTask(id: UUID) -> UUID? {
+        guard let task = tasks.first(where: { $0.id == id }) else { return nil }
+        switch task.status {
+        case .failed, .cancelled:
+            break
+        case .queued, .transferring, .completed:
+            return nil
+        }
+        guard let context = retryContexts[id], let session = context.session else { return nil }
+        removeTask(id: id)
+        switch task.direction {
+        case .upload:
+            return enqueueUpload(
+                session: session,
+                localURL: task.localURL,
+                remotePath: task.remotePath,
+                onCompleted: context.onCompleted,
+                onResult: context.onResult
+            )
+        case .download:
+            return enqueueDownload(
+                session: session,
+                remotePath: task.remotePath,
+                localURL: task.localURL,
+                totalBytes: task.totalBytes,
+                onCompleted: context.onCompleted,
+                onResult: context.onDownloadResult
+            )
+        }
     }
 
     public func cancelAllTasks() {
@@ -271,6 +320,7 @@ public final class TransferManager: ObservableObject {
         let terminalIds = tasks.filter { $0.status.isTerminal }.map(\.id)
         for id in terminalIds {
             activeTaskHandles.removeValue(forKey: id)
+            retryContexts.removeValue(forKey: id)
             lastSpeedSampleTime.removeValue(forKey: id)
             lastSampledBytes.removeValue(forKey: id)
         }
@@ -423,6 +473,7 @@ public final class TransferManager: ObservableObject {
                 tasks[finalIdx].status = .completed
                 tasks[finalIdx].completedAt = Date()
             }
+            retryContexts.removeValue(forKey: taskId)
             onResult?(.success(remotePath))
             onCompleted?()
             DispatchQueue.main.async {
@@ -430,7 +481,7 @@ public final class TransferManager: ObservableObject {
             }
         } catch {
             if let finalIdx = tasks.firstIndex(where: { $0.id == taskId }) {
-                if Task.isCancelled {
+                if Task.isCancelled || error is CancellationError || tasks[finalIdx].status == .cancelled {
                     tasks[finalIdx].status = .cancelled
                 } else {
                     tasks[finalIdx].status = .failed(error.localizedDescription)
@@ -514,12 +565,13 @@ public final class TransferManager: ObservableObject {
                 tasks[finalIdx].status = .completed
                 tasks[finalIdx].completedAt = Date()
             }
+            retryContexts.removeValue(forKey: taskId)
             onResult?(.success(localURL))
             onCompleted?()
         } catch {
             progressMonitor.cancel()
             if let finalIdx = tasks.firstIndex(where: { $0.id == taskId }) {
-                if Task.isCancelled {
+                if Task.isCancelled || error is CancellationError || tasks[finalIdx].status == .cancelled {
                     tasks[finalIdx].status = .cancelled
                 } else {
                     tasks[finalIdx].status = .failed(error.localizedDescription)
@@ -538,14 +590,15 @@ public final class TransferManager: ObservableObject {
     public func updateProgress(taskId: UUID, fraction: Double, transferredBytes: Int64? = nil) {
         guard let idx = tasks.firstIndex(where: { $0.id == taskId }), tasks[idx].status == .transferring else { return }
         let total = tasks[idx].totalBytes
-        let transferred: Int64
+        let computed: Int64
         if let direct = transferredBytes {
-            transferred = direct
+            computed = direct
         } else if total > 0 {
-            transferred = Int64(Double(total) * fraction)
+            computed = Int64(Double(total) * fraction)
         } else {
-            transferred = Int64(fraction * 100)
+            computed = Int64(fraction * 100)
         }
+        let transferred = max(tasks[idx].transferredBytes, computed)
         tasks[idx].transferredBytes = transferred
         
         let now = Date()

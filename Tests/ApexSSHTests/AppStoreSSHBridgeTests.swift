@@ -148,4 +148,138 @@ final class AppStoreSSHBridgeTests: XCTestCase {
         }
     }
 
+    func testAskpassBridgePreservesSpecialCharPasswordsIncludingDoubleDollarLiterally() throws {
+        let specialSecrets = [
+            "p@ss$$w0rd!'\"" + "` ",
+            "-leading-dash$$HOME$(id)",
+            "密码$$测试!#%^&*()"
+        ]
+        for secret in specialSecrets {
+            let request = try ChildProcessFileGrants(files: [], authentication: .init(kind: .password, secret: secret))
+            defer { request.close() }
+            let process = Process()
+            process.executableURL = bridge
+            process.arguments = ["qa@example.test's password: "]
+            process.environment = ProcessInfo.processInfo.environment.merging([
+                ChildProcessFileGrants.environmentKey: request.fileURL.path,
+                "SSH_ASKPASS": bridge.path,
+                "SSH_ASKPASS_REQUIRE": "force"
+            ]) { _, new in new }
+            let output = Pipe()
+            process.standardOutput = output
+            process.standardError = FileHandle.nullDevice
+            try process.run()
+            let data = try output.fileHandleForReading.readToEnd() ?? Data()
+            process.waitUntilExit()
+            XCTAssertEqual(process.terminationStatus, 0)
+            XCTAssertEqual(String(decoding: data, as: UTF8.self), secret + "\n", "Secret must never undergo $$ or shell expansion")
+        }
+    }
+
+    func testSSHPassDeliversSpecialCharPasswordIncludingDoubleDollarLiterally() throws {
+        let client = NativeSSHSession(session: Session(name: "fixture", host: "example.test", username: "qa"), distributionChannel: .direct)
+        guard let sshpass = client.sshpassExecutablePath else {
+            throw XCTSkip("sshpass binary unavailable on host")
+        }
+        let secret = "p@ss$$w0rd!'\"` !#$"
+        var master: Int32 = 0
+        var slave: Int32 = 0
+        guard openpty(&master, &slave, nil, nil, nil) == 0 else {
+            return XCTFail("openpty failed")
+        }
+        defer { close(master) }
+
+        let outPipe = Pipe()
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: sshpass)
+        process.arguments = client.sshpassArguments(secret: secret, tool: "/bin/sh") + [
+            "-c",
+            "printf 'user@host password: ' > /dev/tty; IFS= read -r pw < /dev/tty; printf '%s' \"$pw\""
+        ]
+        process.standardInput = FileHandle(fileDescriptor: slave, closeOnDealloc: false)
+        process.standardOutput = outPipe
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        close(slave)
+
+        let data = try outPipe.fileHandleForReading.readToEnd() ?? Data()
+        process.waitUntilExit()
+        XCTAssertEqual(process.terminationStatus, 0)
+        XCTAssertEqual(String(decoding: data, as: UTF8.self), secret, "sshpass must deliver exact literal bytes including $$")
+    }
+
+    func testStoreExecuteCommandFailsClosedWithoutGrant() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("apex-store-exec-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let suite = "apex-store-exec-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer {
+            defaults.removePersistentDomain(forName: suite)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let store = FileAccessStore(defaults: defaults)
+        let session = Session(
+            name: "missing-grant",
+            host: "127.0.0.1",
+            port: 22,
+            username: "qa",
+            authMethod: .privateKey(keychainRef: directory.appendingPathComponent("missing.key").path, passphraseRef: nil)
+        )
+        let client = NativeSSHSession(
+            session: session,
+            distributionChannel: .appStore,
+            fileAccessStore: store,
+            bridgeExecutableURL: bridge,
+            sandboxHomeURL: sandboxHome
+        )
+        do {
+            _ = try await client.executeCommand("echo ok")
+            XCTFail("App Store executeCommand must fail closed when key grant is missing")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("重新授权"))
+        }
+    }
+
+    @MainActor
+    func testStoreTestConnectionResolvesBookmarkWithoutPrematureFileExistsFailure() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("apex-store-testconn-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let suite = "apex-store-testconn-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer {
+            defaults.removePersistentDomain(forName: suite)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let originalKey = directory.appendingPathComponent("old.key")
+        let movedKey = directory.appendingPathComponent("moved.key")
+        try Data("test-key".utf8).write(to: movedKey)
+        let backend = BookmarkBackend(
+            make: { url, _ in Data(url.path.utf8) },
+            resolve: { _ in (movedKey, true) },
+            start: { _ in true },
+            stop: { _ in }
+        )
+        let store = FileAccessStore(defaults: defaults, backend: backend)
+        try store.remember(originalKey, readOnly: true)
+
+        let session = Session(
+            name: "moved-key-test",
+            host: "127.0.0.1",
+            port: 59998,
+            username: "qa",
+            authMethod: .privateKey(keychainRef: originalKey.path, passphraseRef: nil)
+        )
+        let client = NativeSSHSession(
+            session: session,
+            distributionChannel: .appStore,
+            fileAccessStore: store,
+            bridgeExecutableURL: bridge,
+            sandboxHomeURL: sandboxHome
+        )
+        let result = await client.testConnection(timeoutSeconds: 1)
+        XCTAssertFalse(result.isSuccess)
+        XCTAssertFalse(result.errorMessage?.contains("指定的私钥文件不存在") ?? false,
+                       "App Store testConnection must resolve bookmark instead of failing on stale raw path: \(result.errorMessage ?? "")")
+    }
+
 }

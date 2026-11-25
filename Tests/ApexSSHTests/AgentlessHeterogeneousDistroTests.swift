@@ -162,4 +162,45 @@ final class AgentlessHeterogeneousDistroTests: XCTestCase {
             XCTAssertEqual(snapshot.isSSD, expectedIsSSD)
         }
     }
+
+    func testLinuxCPUCounterRegressionDoesNotUnderflow() {
+        let raw = """
+        cpu  5000 0 1000 10000 0 0 0 0
+        cpu0 5000 0 1000 10000 0 0 0 0
+        MemTotal: 1000000 kB
+        MemAvailable: 500000 kB
+        """
+        // Previous idle is larger than current idle while total increased (counter skew)
+        var prevCpu: AgentlessMonitor.CpuTickState? = AgentlessMonitor.CpuTickState(idle: 15000, total: 15500)
+        var prevNet: AgentlessMonitor.NetTickState? = nil
+        let snapshot = monitor.parseLinuxOutput(raw, prevCpu: &prevCpu, prevNet: &prevNet)
+        XCTAssertEqual(snapshot.cpuUsagePercent, 0.0)
+    }
+
+    func testMacOSUptimeSubDayParsingAndSystemdProbeSanitization() {
+        let minutesRaw = """
+        CPU usage: 5.0% user, 5.0% sys, 90.0% idle
+        PhysMem: 8G used (1G wired, 1G compressor), 8G unused.
+        ---UPTIME---
+        21:40  up 12 mins, 2 users, load averages: 1.20 1.15 1.10
+        """
+        var net1: AgentlessMonitor.NetTickState? = nil
+        let snap1 = monitor.parseMacOSOutput(minutesRaw, prevNet: &net1)
+        XCTAssertEqual(snap1.uptimeSeconds, 12 * 60)
+
+        let hoursRaw = """
+        CPU usage: 5.0% user, 5.0% sys, 90.0% idle
+        PhysMem: 8G used (1G wired, 1G compressor), 8G unused.
+        ---UPTIME---
+        21:40  up  3:45, 2 users, load averages: 1.20 1.15 1.10
+        """
+        var net2: AgentlessMonitor.NetTickState? = nil
+        let snap2 = monitor.parseMacOSOutput(hoursRaw, prevNet: &net2)
+        XCTAssertEqual(snap2.uptimeSeconds, 3 * 3600 + 45 * 60)
+
+        let cmd = AgentlessMonitor.systemdServicesProbeCommand(services: ["nginx", "bad;rm -rf /", "redis"])
+        XCTAssertTrue(cmd.contains("'nginx'"))
+        XCTAssertTrue(cmd.contains("'redis'"))
+        XCTAssertFalse(cmd.contains("rm -rf"))
+    }
 }

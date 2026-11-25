@@ -166,4 +166,139 @@ final class TransferManagerTests: XCTestCase {
         XCTAssertEqual(task.formattedProgress, "0%")
         XCTAssertEqual(task.formattedSpeed, "1 KB/s")
     }
+
+    @MainActor
+    func testMaxConcurrentSlotAccountingAndCancelCompletedGuard() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let manager = TransferManager(maxConcurrentTransfers: 2)
+        let session = MockSSHSession(session: Session(name: "slot-test", host: "192.0.2.10", username: "qa"))
+        final class ActiveCounter: @unchecked Sendable {
+            private let lock = NSLock()
+            private var current = 0
+            var maxObserved = 0
+            func enter() {
+                lock.withLock {
+                    current += 1
+                    maxObserved = max(maxObserved, current)
+                }
+            }
+            func leave() {
+                lock.withLock { current -= 1 }
+            }
+            var peak: Int { lock.withLock { maxObserved } }
+        }
+        let counter = ActiveCounter()
+        session.customUploadHandler = { _, _, progress in
+            counter.enter()
+            try await Task.sleep(nanoseconds: 80_000_000)
+            progress(1.0)
+            counter.leave()
+        }
+
+        let payload = tempDir.appendingPathComponent("slot.bin")
+        try Data("slot-data".utf8).write(to: payload)
+
+        var expectations: [XCTestExpectation] = []
+        var ids: [UUID] = []
+        for i in 0..<5 {
+            let exp = expectation(description: "Upload \(i)")
+            expectations.append(exp)
+            let id = manager.enqueueUpload(session: session, localURL: payload, remotePath: "/tmp/slot_\(i).bin") {
+                exp.fulfill()
+            }
+            ids.append(id)
+        }
+
+        await fulfillment(of: expectations, timeout: 5.0)
+        XCTAssertLessThanOrEqual(counter.peak, 2, "Concurrent running transfers must never exceed maxConcurrentTransfers=2")
+        XCTAssertEqual(manager.activeCount, 0)
+
+        // Calling cancelTask on an already completed task must not revert it to .cancelled
+        manager.cancelTask(id: ids[0])
+        XCTAssertEqual(manager.tasks.first(where: { $0.id == ids[0] })?.status, .completed)
+    }
+
+    @MainActor
+    func testRetryFailedAndCancelledTransfers() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let manager = TransferManager(maxConcurrentTransfers: 1)
+        let session = MockSSHSession(session: Session(name: "retry-test", host: "192.0.2.10", username: "qa"))
+        final class RetryState: @unchecked Sendable {
+            private let lock = NSLock()
+            var shouldFail = true
+            var attempt = 0
+            func checkShouldFail() -> Bool { lock.withLock { shouldFail } }
+            func setShouldFail(_ v: Bool) { lock.withLock { shouldFail = v } }
+            func nextAttempt() -> Int {
+                lock.withLock {
+                    attempt += 1
+                    return attempt
+                }
+            }
+        }
+        let state = RetryState()
+        session.customUploadHandler = { _, _, progress in
+            if state.checkShouldFail() {
+                throw NSError(domain: "Test", code: 1, userInfo: [NSLocalizedDescriptionKey: "simulated failure"])
+            }
+            progress(1.0)
+        }
+
+        let file = tempDir.appendingPathComponent("retry.txt")
+        try Data("retry payload".utf8).write(to: file)
+
+        let failExp = expectation(description: "Initial upload fails")
+        let successExp = expectation(description: "Retried upload succeeds")
+        let firstId = manager.enqueueUpload(session: session, localURL: file, remotePath: "/tmp/retry.txt", onResult: { result in
+            if state.nextAttempt() == 1 {
+                if case .success = result { XCTFail("First attempt should fail") }
+                failExp.fulfill()
+            } else {
+                if case .failure(let err) = result { XCTFail("Retry should succeed: \(err)") }
+                successExp.fulfill()
+            }
+        })
+
+        await fulfillment(of: [failExp], timeout: 3.0)
+        if case .failed = manager.tasks.first(where: { $0.id == firstId })?.status {} else {
+            XCTFail("Expected failed status before retry")
+        }
+
+        state.setShouldFail(false)
+        let retriedId = try XCTUnwrap(manager.retryTask(id: firstId))
+        XCTAssertNotEqual(retriedId, firstId)
+        await fulfillment(of: [successExp], timeout: 3.0)
+        XCTAssertEqual(manager.tasks.first(where: { $0.id == retriedId })?.status, .completed)
+        XCTAssertNil(manager.retryTask(id: retriedId), "Completed task cannot be retried")
+    }
+
+    @MainActor
+    func testCancelAllTasksAndHistoryPruningPreservesActive() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let manager = TransferManager(maxConcurrentTransfers: 1, maxCompletedHistory: 2)
+        let session = MockSSHSession(session: Session(name: "cancel-all", host: "192.0.2.10", username: "qa"))
+        session.customUploadHandler = { _, _, progress in
+            try await Task.sleep(nanoseconds: 500_000_000)
+            progress(1.0)
+        }
+
+        let file = tempDir.appendingPathComponent("bulk.bin")
+        try Data("bulk".utf8).write(to: file)
+        for i in 0..<4 {
+            manager.enqueueUpload(session: session, localURL: file, remotePath: "/tmp/bulk_\(i).bin")
+        }
+        manager.cancelAllTasks()
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(manager.activeCount, 0)
+        XCTAssertLessThanOrEqual(manager.tasks.count, 2, "Pruning should keep at most maxCompletedHistory terminal records")
+    }
 }

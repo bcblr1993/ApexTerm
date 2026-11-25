@@ -37,4 +37,12 @@ final class DirectoryChangeStreamParserTests: XCTestCase {
         client.customJumpSession = Session(name: "jump", host: "::1", port: 2200, username: "qa", authMethod: .agent)
         XCTAssertEqual(client.jumpServerArgs(), ["-J", "qa@[::1]:2200"])
     }
+
+    func testOSC7UnencodedSpacesAndCJKFallback() {
+        var parser = DirectoryChangeStreamParser()
+        let chunk = "\u{1B}]7;file://prod-box/srv/my app/日志\u{07}\u{1B}]7;file:///tmp/plain space\u{1B}\\"
+        let result = parser.consume(Data(chunk.utf8))
+        XCTAssertEqual(result.paths, ["/srv/my app/日志", "/tmp/plain space"])
+        XCTAssertEqual(result.text, "")
+    }
 }

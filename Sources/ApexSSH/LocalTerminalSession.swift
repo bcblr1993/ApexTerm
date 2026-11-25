@@ -51,19 +51,19 @@ public final class LocalTerminalSession: SSHSessionProtocol, @unchecked Sendable
     public var wasUserInitiatedDisconnect: Bool { true }
     
     public func setOutputHandler(_ handler: @Sendable @escaping (Data) -> Void) {
-        self.outputHandler = handler
+        stateLock.withLock { self.outputHandler = handler }
     }
     
     public func setMetricsHandler(_ handler: @Sendable @escaping (ServerMetricsSnapshot) -> Void) {
-        self.metricsHandler = handler
+        stateLock.withLock { self.metricsHandler = handler }
     }
     
     public func setDirectoryChangeHandler(_ handler: @Sendable @escaping (String) -> Void) {
-        self.directoryChangeHandler = handler
+        stateLock.withLock { self.directoryChangeHandler = handler }
     }
     
     public func setStateChangeHandler(_ handler: @Sendable @escaping (SSHConnectionState) -> Void) {
-        self.stateChangeHandler = handler
+        stateLock.withLock { self.stateChangeHandler = handler }
     }
     
     /// Detect user's preferred login shell
@@ -113,17 +113,24 @@ public final class LocalTerminalSession: SSHSessionProtocol, @unchecked Sendable
     }
 
     public func connect() async throws {
-        if ptyMasterFd != -1 || childPid > 0 {
+        let needsCleanup = stateLock.withLock {
+            ptyMasterFd != -1 || childPid > 0 || readSource != nil || processSource != nil
+        }
+        if needsCleanup {
             await disconnect()
+        }
+        stateLock.withLock {
+            directoryStream = DirectoryChangeStreamParser()
         }
         
         connectionState = .connecting(step: "启动本地终端...")
         
         var master: Int32 = 0
         var slave: Int32 = 0
+        let dims = stateLock.withLock { currentDimensions }
         var win = winsize(
-            ws_row: UInt16(currentDimensions.rows),
-            ws_col: UInt16(currentDimensions.columns),
+            ws_row: UInt16(dims.rows),
+            ws_col: UInt16(dims.columns),
             ws_xpixel: 0,
             ws_ypixel: 0
         )
@@ -219,10 +226,13 @@ public final class LocalTerminalSession: SSHSessionProtocol, @unchecked Sendable
             let bytesRead = read(master, &buffer, buffer.count)
             if bytesRead > 0 {
                 let data = Data(buffer[0..<bytesRead])
-                self.outputHandler?(data)
-                let parsed = self.directoryStream.consume(data)
-                for path in parsed.paths {
-                    self.directoryChangeHandler?(path)
+                let (outHandler, dirHandler, paths) = self.stateLock.withLock { () -> ((@Sendable (Data) -> Void)?, (@Sendable (String) -> Void)?, [String]) in
+                    let parsed = self.directoryStream.consume(data)
+                    return (self.outputHandler, self.directoryChangeHandler, parsed.paths)
+                }
+                outHandler?(data)
+                for path in paths {
+                    dirHandler?(path)
                 }
             } else {
                 let err = errno
@@ -234,20 +244,18 @@ public final class LocalTerminalSession: SSHSessionProtocol, @unchecked Sendable
         }
         
         source.setCancelHandler { [weak self] in
-            guard let self = self else { return }
-            self.stateLock.withLock {
-                if self.ptyMasterFd != -1 {
-                    close(self.ptyMasterFd)
-                    self.ptyMasterFd = -1
+            if let self {
+                self.stateLock.withLock {
+                    if self.ptyMasterFd == master {
+                        self.ptyMasterFd = -1
+                    }
+                    close(master)
                 }
-            }
-            Task { @MainActor [weak self] in
-                self?.connectionState = .disconnected
+                self.connectionState = .disconnected
+            } else {
+                close(master)
             }
         }
-        
-        self.readSource = source
-        source.resume()
         
         // Setup process exit listener
         let procSource = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: queue)
@@ -256,7 +264,11 @@ public final class LocalTerminalSession: SSHSessionProtocol, @unchecked Sendable
                 await self?.disconnect()
             }
         }
-        self.processSource = procSource
+        stateLock.withLock {
+            self.readSource = source
+            self.processSource = procSource
+        }
+        source.resume()
         procSource.resume()
         
         self.connectionState = .connected
@@ -264,20 +276,22 @@ public final class LocalTerminalSession: SSHSessionProtocol, @unchecked Sendable
     }
     
     public func terminatePTYProcess() {
-        metricsTimer?.cancel()
-        metricsTimer = nil
-
-        if let procSource = processSource {
-            procSource.cancel()
-            processSource = nil
+        let (timer, procSource, readSrc, pid, fd) = stateLock.withLock {
+            () -> (Task<Void, Never>?, DispatchSourceProcess?, DispatchSourceRead?, pid_t, Int32) in
+            let t = metricsTimer; metricsTimer = nil
+            let pSrc = processSource; processSource = nil
+            let rSrc = readSource; readSource = nil
+            let child = childPid; childPid = -1
+            let master = ptyMasterFd; ptyMasterFd = -1
+            return (t, pSrc, rSrc, child, master)
+        }
+        timer?.cancel()
+        procSource?.cancel()
+        readSrc?.cancel()
+        if readSrc == nil, fd != -1 {
+            close(fd)
         }
 
-        if let readSource = readSource {
-            readSource.cancel()
-            self.readSource = nil
-        }
-
-        let pid = stateLock.withLock { self.childPid }
         if pid > 0 {
             kill(-pid, SIGHUP)
             kill(pid, SIGHUP)
@@ -291,13 +305,6 @@ public final class LocalTerminalSession: SSHSessionProtocol, @unchecked Sendable
             kill(-pid, SIGKILL)
             kill(pid, SIGKILL)
             waitpid(pid, &status, WNOHANG)
-            stateLock.withLock { self.childPid = -1 }
-        }
-
-        let fd = stateLock.withLock { self.ptyMasterFd }
-        if fd != -1 {
-            close(fd)
-            stateLock.withLock { self.ptyMasterFd = -1 }
         }
 
         connectionState = .disconnected
@@ -308,23 +315,26 @@ public final class LocalTerminalSession: SSHSessionProtocol, @unchecked Sendable
     }
     
     deinit {
-        metricsTimer?.cancel()
-        if let procSource = processSource {
-            procSource.cancel()
+        let (timer, procSource, readSrc, pid, fd) = stateLock.withLock {
+            () -> (Task<Void, Never>?, DispatchSourceProcess?, DispatchSourceRead?, pid_t, Int32) in
+            let t = metricsTimer; metricsTimer = nil
+            let pSrc = processSource; processSource = nil
+            let rSrc = readSource; readSource = nil
+            let child = childPid; childPid = -1
+            let master = ptyMasterFd; ptyMasterFd = -1
+            return (t, pSrc, rSrc, child, master)
         }
-        if let readSource = readSource {
-            readSource.cancel()
+        timer?.cancel()
+        procSource?.cancel()
+        readSrc?.cancel()
+        if readSrc == nil, fd != -1 {
+            close(fd)
         }
-        let pid = stateLock.withLock { self.childPid }
         if pid > 0 {
             kill(-pid, SIGKILL)
             kill(pid, SIGKILL)
             var status: Int32 = 0
             waitpid(pid, &status, WNOHANG)
-        }
-        let fd = stateLock.withLock { self.ptyMasterFd }
-        if fd != -1 {
-            close(fd)
         }
     }
     
@@ -351,14 +361,18 @@ public final class LocalTerminalSession: SSHSessionProtocol, @unchecked Sendable
     }
     
     public func resizeTerminal(columns: Int, rows: Int) async throws {
-        currentDimensions = (columns, rows)
-        let fd = stateLock.withLock { self.ptyMasterFd }
-        let pid = stateLock.withLock { self.childPid }
+        let validCols = max(10, columns)
+        let validRows = max(3, rows)
+        let (fd, pid) = stateLock.withLock { () -> (Int32, pid_t) in
+            currentDimensions = (validCols, validRows)
+            return (ptyMasterFd >= 0 ? dup(ptyMasterFd) : -1, childPid)
+        }
         guard fd != -1 else { return }
+        defer { close(fd) }
         
         var win = winsize(
-            ws_row: UInt16(rows),
-            ws_col: UInt16(columns),
+            ws_row: UInt16(validRows),
+            ws_col: UInt16(validCols),
             ws_xpixel: 0,
             ws_ypixel: 0
         )
@@ -462,6 +476,12 @@ public final class LocalTerminalSession: SSHSessionProtocol, @unchecked Sendable
     
     public func removeDirectory(remotePath: String, recursive: Bool) async throws {
         let target = Self.expandPath(remotePath)
+        if !recursive {
+            let entries = try FileManager.default.contentsOfDirectory(atPath: target)
+            if !entries.isEmpty {
+                throw POSIXError(.ENOTEMPTY)
+            }
+        }
         try FileManager.default.removeItem(atPath: target)
     }
     

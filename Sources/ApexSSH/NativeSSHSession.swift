@@ -432,6 +432,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         let binaryPath: String
         let arguments: [String]
         let grants: ChildProcessFileGrants
+        let hasAuthentication: Bool
     }
 
     func prepareStoreCommand(binaryPath: String, arguments: [String], accesses: [FileAccessLease?], authenticationSecret: String? = nil) throws -> PreparedStoreCommand? {
@@ -468,7 +469,8 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         // controlling-terminal ioctl is forbidden by App Sandbox.
         return PreparedStoreCommand(binaryPath: bridgeExecutableURL.path,
                                     arguments: bridgeArguments,
-                                    grants: grants)
+                                    grants: grants,
+                                    hasAuthentication: authentication != nil)
     }
 
     private func configureStoreProcess(_ process: Process, accesses: [FileAccessLease?]) throws -> ChildProcessFileGrants? {
@@ -531,15 +533,23 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         await resolveJumpChainIfNeeded()
     }
 
+    private var sshDestinationHost: String {
+        let trimmed = session.host.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("[") && trimmed.hasSuffix("]") && trimmed.count >= 2 {
+            return String(trimmed.dropFirst().dropLast())
+        }
+        return trimmed
+    }
+
     private func resolveJumpChainIfNeeded() async {
         if stateLock.withLock({ !resolvedJumpChain.isEmpty || didResolveJumpServer }) { return }
         guard !session.effectiveJumpServerChain.isEmpty else {
             stateLock.withLock { didResolveJumpServer = true }
             return
         }
-        let found: [Session] = await withCheckedContinuation { continuation in
+        let resolution: (hops: [Session], completed: Bool) = await withCheckedContinuation { continuation in
             let resumed = OSAllocatedUnfairLock(initialState: false)
-            @Sendable func resumeOnce(_ value: [Session]) {
+            @Sendable func resumeOnce(_ value: ([Session], Bool)) {
                 let shouldResume = resumed.withLock { state -> Bool in
                     guard !state else { return false }
                     state = true
@@ -551,15 +561,17 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             }
             Task { @MainActor in
                 let result = SSHArgumentBuilder.resolveJumpChain(for: session, availableSessions: SessionStore.shared.sessions)
-                resumeOnce(result.hops)
+                resumeOnce((result.hops, true))
             }
-            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + .milliseconds(25)) {
-                resumeOnce([])
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + .milliseconds(250)) {
+                resumeOnce(([], false))
             }
         }
         stateLock.withLock {
-            if !found.isEmpty { self.resolvedJumpChain = found }
-            self.didResolveJumpServer = true
+            if resolution.completed {
+                if !resolution.hops.isEmpty { self.resolvedJumpChain = resolution.hops }
+                self.didResolveJumpServer = true
+            }
         }
     }
     
@@ -664,9 +676,10 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         sshArgs.append(contentsOf: advancedConnectionArgs(channel: .interactiveSSH))
         sshArgs.append(contentsOf: [
             "-p", "\(session.port)",
-            "\(session.username)@\(session.host)"
+            "\(session.username)@\(sshDestinationHost)"
         ])
         
+        let usesSSHPAss = (currentResolvedPassword?.isEmpty == false) && (sshpassExecutablePath != nil)
         if let pw = currentResolvedPassword, !pw.isEmpty, let sshpass = sshpassExecutablePath {
             binaryPath = sshpass
             sshArgs = sshpassArguments(secret: pw, tool: "/usr/bin/ssh") + sshArgs
@@ -680,6 +693,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         }
         defer { if !transferredKeyAccess { storeCommand?.grants.close() } }
         if let command = storeCommand { binaryPath = command.binaryPath; sshArgs = command.arguments }
+        let usesExternalAuthHelper = usesSSHPAss || (storeCommand?.hasAuthentication ?? false)
 
         var master: Int32 = 0
         var slave: Int32 = 0
@@ -816,8 +830,8 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
                         var didAutoFeed = false
                         let isPrompt = str.range(of: #"[pP]assword\s*:"#, options: .regularExpression) != nil ||
                                        str.range(of: #"[pP]assphrase.*:"#, options: .regularExpression) != nil
-                        // Fallback auto-feed password only during handshake before the session is established.
-                        if isPrompt {
+                        // Fallback auto-feed password only when no external secret helper (sshpass / SSH_ASKPASS) is active.
+                        if isPrompt && !usesExternalAuthHelper {
                             let secretToSend: String? = self.stateLock.withLock {
                                 guard self.activeAttemptId == attemptId,
                                       !self.isActiveAttemptEstablished,
@@ -837,11 +851,22 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
                             }
                         }
 
-                        if !didAutoFeed {
+                        if !didAutoFeed && !usesExternalAuthHelper {
                             let needsInteractiveInput =
                                 str.localizedCaseInsensitiveContains("continue connecting") ||
                                 str.localizedCaseInsensitiveContains("verification code") ||
                                 isPrompt
+                            if needsInteractiveInput {
+                                self.transitionConnectionState(
+                                    for: attemptId,
+                                    to: .connecting(step: "等待终端交互输入确认..."),
+                                    requirePending: true
+                                )
+                            }
+                        } else if !didAutoFeed {
+                            let needsInteractiveInput =
+                                str.localizedCaseInsensitiveContains("continue connecting") ||
+                                str.localizedCaseInsensitiveContains("verification code")
                             if needsInteractiveInput {
                                 self.transitionConnectionState(
                                     for: attemptId,
@@ -1544,34 +1569,89 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             return (s, descriptor)
         }
         source?.cancel()
+        await cleanupControlSocketAsync()
         terminatePTYProcess()
         // Once a read source owns the descriptor, only its cancel handler closes it.
         // Closing twice can close an unrelated descriptor reused by another connection.
         if source == nil, master >= 0 { close(master) }
+    }
 
-        // Clean up multiplex socket without blocking the caller if the socket is wedged
-        let socket = controlSocketPath
-        if FileManager.default.fileExists(atPath: socket) {
-            let controlOpt = controlSocketOption
-            let destination = "\(session.username)@\(session.host)"
-            DispatchQueue.global(qos: .utility).async { [weak self] in
-                let proc = Process()
+    private static func performControlSocketExit(
+        socket: String,
+        controlOpt: String,
+        destination: String,
+        port: Int,
+        distributionChannel: DistributionChannel,
+        bridgeExecutableURL: URL,
+        sandboxPaths: SandboxSSHPaths
+    ) {
+        guard controlOpt != "ControlPath=none",
+              FileManager.default.fileExists(atPath: socket) else {
+            return
+        }
+        let proc = Process()
+        let args = ["-O", "exit", "-o", controlOpt, "-p", "\(port)", destination]
+        var grants: ChildProcessFileGrants?
+        if distributionChannel == .appStore,
+           FileManager.default.isExecutableFile(atPath: bridgeExecutableURL.path) {
+            do {
+                try sandboxPaths.prepare()
+                let preparedArgs = try sandboxPaths.arguments(prependingTo: args, tool: "ssh")
+                let createdGrants = try ChildProcessFileGrants(files: [], authentication: nil)
+                grants = createdGrants
+                proc.executableURL = bridgeExecutableURL
+                proc.arguments = ["--tool", "ssh"] + preparedArgs
+                var env = ProcessInfo.processInfo.environment
+                env[ChildProcessFileGrants.environmentKey] = createdGrants.fileURL.path
+                proc.environment = env
+            } catch {
                 proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-                proc.arguments = ["-O", "exit", "-o", controlOpt, destination]
-                proc.standardInput = FileHandle.nullDevice
-                proc.standardOutput = FileHandle.nullDevice
-                proc.standardError = FileHandle.nullDevice
-                let grants = try? self?.configureStoreProcess(proc, accesses: [])
-                defer { grants?.close() }
-                if (try? proc.run()) != nil {
-                    for _ in 0..<20 where proc.isRunning {
-                        usleep(10_000)
-                    }
-                    if proc.isRunning {
-                        kill(proc.processIdentifier, SIGKILL)
-                    }
-                }
-                try? FileManager.default.removeItem(atPath: socket)
+                proc.arguments = args
+            }
+        } else {
+            proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+            proc.arguments = args
+        }
+        defer { grants?.close() }
+        proc.standardInput = FileHandle.nullDevice
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        if (try? proc.run()) != nil {
+            for _ in 0..<30 where proc.isRunning {
+                usleep(10_000)
+            }
+            if proc.isRunning {
+                kill(proc.processIdentifier, SIGKILL)
+                proc.waitUntilExit()
+            }
+        }
+        try? FileManager.default.removeItem(atPath: socket)
+    }
+
+    private func cleanupControlSocketAsync() async {
+        let socket = controlSocketPath
+        let controlOpt = controlSocketOption
+        guard controlOpt != "ControlPath=none",
+              FileManager.default.fileExists(atPath: socket) else {
+            return
+        }
+        let destination = "\(session.username)@\(sshDestinationHost)"
+        let port = session.port
+        let channel = distributionChannel
+        let bridgeURL = bridgeExecutableURL
+        let paths = sandboxPaths
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                Self.performControlSocketExit(
+                    socket: socket,
+                    controlOpt: controlOpt,
+                    destination: destination,
+                    port: port,
+                    distributionChannel: channel,
+                    bridgeExecutableURL: bridgeURL,
+                    sandboxPaths: paths
+                )
+                continuation.resume()
             }
         }
     }
@@ -1598,7 +1678,26 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         pr?.cancel()
         source?.cancel()
         if source == nil, master >= 0 { close(master) }
-        _ = unlink(controlSocketPath)
+        let socket = controlSocketPath
+        let controlOpt = controlSocketOption
+        if controlOpt != "ControlPath=none", FileManager.default.fileExists(atPath: socket) {
+            let destination = "\(session.username)@\(sshDestinationHost)"
+            let port = session.port
+            let channel = distributionChannel
+            let bridgeURL = bridgeExecutableURL
+            let paths = sandboxPaths
+            DispatchQueue.global(qos: .utility).async {
+                Self.performControlSocketExit(
+                    socket: socket,
+                    controlOpt: controlOpt,
+                    destination: destination,
+                    port: port,
+                    distributionChannel: channel,
+                    bridgeExecutableURL: bridgeURL,
+                    sandboxPaths: paths
+                )
+            }
+        }
         defer { grants?.close(); keyAccess?.close(); certAccess?.close() }
         guard pid > 0 else { return }
         Self.killProcessTreeAndReap(pid, maxWaitIterations: 25)
@@ -1718,24 +1817,26 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         let ctrlArgs = controlMasterArguments
         let authArgs = sshAuthArgs(privateKeyURL: keyAccess?.url, certificateURL: certAccess?.url)
         let jumpArgs = advancedConnectionArgs(channel: .nonInteractiveSSH)
-        if let pw = currentResolvedPassword, !pw.isEmpty, let sshpass = sshpassExecutablePath {
+        let pw = currentResolvedPassword
+        let hasStoreAuth = distributionChannel == .appStore && !(pw?.isEmpty ?? true)
+        if let pw = pw, !pw.isEmpty, let sshpass = sshpassExecutablePath {
             process.executableURL = URL(fileURLWithPath: sshpass)
             process.arguments = sshpassArguments(secret: pw, tool: "/usr/bin/ssh") + [
                 "-o", "StrictHostKeyChecking=accept-new",
                 "-o", "ConnectTimeout=5",
             ] + authArgs + jumpArgs + ctrlArgs + [
                 "-p", "\(session.port)",
-                "\(session.username)@\(session.host)",
+                "\(session.username)@\(sshDestinationHost)",
                 cmd
             ]
         } else {
             process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-            process.arguments = [
+            process.arguments = (hasStoreAuth ? [] : ["-o", "BatchMode=yes"]) + [
                 "-o", "StrictHostKeyChecking=accept-new",
                 "-o", "ConnectTimeout=5",
             ] + authArgs + jumpArgs + ctrlArgs + [
                 "-p", "\(session.port)",
-                "\(session.username)@\(session.host)",
+                "\(session.username)@\(sshDestinationHost)",
                 cmd
             ]
         }
@@ -1937,7 +2038,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
                         "-o", "ConnectTimeout=3",
                     ] + authArgs + jumpArgs + ctrlArgs + [
                         "-p", "\(self.session.port)",
-                        "\(self.session.username)@\(self.session.host)",
+                        "\(self.session.username)@\(self.sshDestinationHost)",
                         AgentlessMonitor.autoProbeCommand
                     ]
                 } else {
@@ -1947,7 +2048,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
                         "-o", "ConnectTimeout=3",
                     ] + authArgs + jumpArgs + ctrlArgs + [
                         "-p", "\(self.session.port)",
-                        "\(self.session.username)@\(self.session.host)",
+                        "\(self.session.username)@\(self.sshDestinationHost)",
                         AgentlessMonitor.autoProbeCommand
                     ]
                 }
@@ -2014,10 +2115,9 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         let sshpass = self.sshpassExecutablePath
         let ctrlArgs = controlMasterArguments
         
-        let keyAccess: FileAccessLease?
-        keyAccess = try? self.acquirePrivateKeyAccess()
+        let keyAccess = try self.acquirePrivateKeyAccess()
         defer { keyAccess?.close() }
-        let certAccess = try? self.acquireCertificateAccess()
+        let certAccess = try self.acquireCertificateAccess()
         defer { certAccess?.close() }
         let authArgs = self.sshAuthArgs(privateKeyURL: keyAccess?.url, certificateURL: certAccess?.url)
         let jumpArgs = self.advancedConnectionArgs(channel: .nonInteractiveSSH)
@@ -2030,7 +2130,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
                 "-o", "ConnectTimeout=5",
             ] + authArgs + jumpArgs + ctrlArgs + [
                 "-p", "\(self.session.port)",
-                "\(self.session.username)@\(self.session.host)",
+                "\(self.session.username)@\(self.sshDestinationHost)",
                 command
             ]
         } else {
@@ -2040,13 +2140,13 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
                 "-o", "ConnectTimeout=5",
             ] + authArgs + jumpArgs + ctrlArgs + [
                 "-p", "\(self.session.port)",
-                "\(self.session.username)@\(self.session.host)",
+                "\(self.session.username)@\(self.sshDestinationHost)",
                 command
             ]
         }
         
         process.standardError = FileHandle.nullDevice
-        let grants = try? self.configureStoreProcess(process, accesses: [keyAccess, certAccess])
+        let grants = try self.configureStoreProcess(process, accesses: [keyAccess, certAccess])
         defer { grants?.close() }
         let outData = try await Self.runProbeProcess(process)
         return String(data: outData, encoding: .utf8) ?? ""
@@ -2069,13 +2169,15 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         
         let start = Date()
         
-        if let keyPath = self.session.privateKeyPath, !keyPath.isEmpty {
+        if let keyPath = self.session.privateKeyPath, !keyPath.isEmpty,
+           distributionChannel != .appStore || KeychainStore.isVaultPrivateKeyReference(keyPath) {
             let expanded = Self.expandPath(keyPath)
             if !FileManager.default.fileExists(atPath: expanded) {
                 return SSHTestConnectionResult(isSuccess: false, latencyMs: 0, errorMessage: "指定的私钥文件不存在: \(keyPath)")
             }
         }
-        if let certPath = self.session.certificatePath, !certPath.isEmpty {
+        if let certPath = self.session.certificatePath, !certPath.isEmpty,
+           distributionChannel != .appStore {
             let expanded = Self.expandPath(certPath)
             if !FileManager.default.fileExists(atPath: expanded) {
                 return SSHTestConnectionResult(isSuccess: false, latencyMs: 0, errorMessage: "指定的证书文件不存在: \(certPath)")
@@ -2112,7 +2214,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             "-o", "ControlMaster=no",
         ] + authArgs + jumpArgs + [
             "-p", "\(self.session.port)",
-            "\(self.session.username)@\(self.session.host)",
+            "\(self.session.username)@\(self.sshDestinationHost)",
             probeCommand
         ]
         
@@ -2294,22 +2396,24 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         
         let authArgs = sshAuthArgs(privateKeyURL: keyAccess?.url, certificateURL: certAccess?.url)
         let jumpArgs = advancedConnectionArgs(channel: .nonInteractiveSSH)
-        if let pw = currentResolvedPassword, !pw.isEmpty, let passBin = sshpass {
+        let pw = currentResolvedPassword
+        let hasStoreAuth = distributionChannel == .appStore && !(pw?.isEmpty ?? true)
+        if let pw = pw, !pw.isEmpty, let passBin = sshpass {
             process.executableURL = URL(fileURLWithPath: passBin)
             process.arguments = sshpassArguments(secret: pw, tool: "/usr/bin/ssh") + [
                 "-o", "StrictHostKeyChecking=accept-new",
             ] + authArgs + jumpArgs + ctrlArgs + [
                 "-p", "\(session.port)",
-                "\(session.username)@\(session.host)",
+                "\(session.username)@\(sshDestinationHost)",
                 cmd
             ]
         } else {
             process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-            process.arguments = [
+            process.arguments = (hasStoreAuth ? [] : ["-o", "BatchMode=yes"]) + [
                 "-o", "StrictHostKeyChecking=accept-new",
             ] + authArgs + jumpArgs + ctrlArgs + [
                 "-p", "\(session.port)",
-                "\(session.username)@\(session.host)",
+                "\(session.username)@\(sshDestinationHost)",
                 cmd
             ]
         }
@@ -2354,7 +2458,8 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     static func parseDirectoryListing(_ output: String, path: String) -> [SFTPItem] {
         var items: [SFTPItem] = []
         let lines = output.components(separatedBy: "\n")
-        for line in lines {
+        for rawLine in lines {
+            let line = rawLine.trimmingCharacters(in: CharacterSet(charactersIn: "\r"))
             let parts = line.split(whereSeparator: { $0.isWhitespace })
             guard parts.count >= 7 else { continue }
             let perms = String(parts[0])
@@ -2364,9 +2469,14 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             let isLink = perms.hasPrefix("l")
             let size = UInt64(parts[4]) ?? 0
             
-            // Check if parts[5] is a unix epoch timestamp (--time-style=+%s)
-            let isEpoch = parts[5].allSatisfy { $0.isNumber } && parts[5].count >= 9
-            let nameIndex = isEpoch ? 6 : (parts.count >= 9 ? 8 : 7)
+            // Check if parts[5] is a unix epoch timestamp (--time-style=+%s or -D '%s')
+            let isEpoch = !parts[5].isEmpty && parts[5].allSatisfy(\.isNumber)
+            let isISO = !isEpoch
+                && parts.count >= 8
+                && parts[5].count == 10
+                && parts[5].filter({ $0 == "-" }).count == 2
+                && parts[6].contains(":")
+            let nameIndex = isEpoch ? 6 : (isISO ? 7 : (parts.count >= 9 ? 8 : 7))
             guard parts.count > nameIndex else { continue }
             
             // Keep the original filename suffix; joining tokens destroys repeated spaces.
@@ -2465,8 +2575,9 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             process.executableURL = URL(fileURLWithPath: passBin)
             process.arguments = sshpassArguments(secret: pw, tool: "/usr/bin/scp") + baseArgs
         } else {
+            let hasStoreAuth = distributionChannel == .appStore && !(currentResolvedPassword?.isEmpty ?? true)
             process.executableURL = URL(fileURLWithPath: "/usr/bin/scp")
-            process.arguments = baseArgs
+            process.arguments = (hasStoreAuth ? [] : ["-o", "BatchMode=yes"]) + baseArgs
         }
         let errPipe = Pipe()
         process.standardOutput = FileHandle.nullDevice
@@ -2517,8 +2628,9 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             process.executableURL = URL(fileURLWithPath: passBin)
             process.arguments = sshpassArguments(secret: pw, tool: "/usr/bin/scp") + baseArgs
         } else {
+            let hasStoreAuth = distributionChannel == .appStore && !(currentResolvedPassword?.isEmpty ?? true)
             process.executableURL = URL(fileURLWithPath: "/usr/bin/scp")
-            process.arguments = baseArgs
+            process.arguments = (hasStoreAuth ? [] : ["-o", "BatchMode=yes"]) + baseArgs
         }
         let errPipe = Pipe()
         process.standardOutput = FileHandle.nullDevice
@@ -2703,22 +2815,24 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         
         let authArgs = sshAuthArgs(privateKeyURL: keyAccess?.url, certificateURL: certAccess?.url)
         let jumpArgs = advancedConnectionArgs(channel: .nonInteractiveSSH)
-        if let pw = currentResolvedPassword, !pw.isEmpty, let passBin = sshpass {
+        let pw = currentResolvedPassword
+        let hasStoreAuth = distributionChannel == .appStore && !(pw?.isEmpty ?? true)
+        if let pw = pw, !pw.isEmpty, let passBin = sshpass {
             process.executableURL = URL(fileURLWithPath: passBin)
             process.arguments = sshpassArguments(secret: pw, tool: "/usr/bin/ssh") + [
                 "-o", "StrictHostKeyChecking=accept-new",
             ] + authArgs + jumpArgs + ctrlArgs + [
                 "-p", "\(session.port)",
-                "\(session.username)@\(session.host)",
+                "\(session.username)@\(sshDestinationHost)",
                 cmd
             ]
         } else {
             process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-            process.arguments = [
+            process.arguments = (hasStoreAuth ? [] : ["-o", "BatchMode=yes"]) + [
                 "-o", "StrictHostKeyChecking=accept-new",
             ] + authArgs + jumpArgs + ctrlArgs + [
                 "-p", "\(session.port)",
-                "\(session.username)@\(session.host)",
+                "\(session.username)@\(sshDestinationHost)",
                 cmd
             ]
         }
@@ -2757,28 +2871,46 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         "'" + value.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
     }
 
+    private func quoteRemoteShellOperand(_ value: String) async -> String {
+        if value == "~" || value.hasPrefix("~/") {
+            let resolved = await resolveRemotePathForTransfer(value)
+            if resolved.hasPrefix("/") {
+                return Self.quoteRemotePath(resolved)
+            }
+            return SFTPRemoteOperations.shellQuotedRemotePath(value)
+        }
+        return Self.quoteRemotePath(value)
+    }
+
     public func removeFile(remotePath: String) async throws {
-        try await executeRemoteCommand("rm -f \(Self.quoteRemotePath(remotePath))")
+        let target = await quoteRemoteShellOperand(remotePath)
+        try await executeRemoteCommand("rm -f -- \(target)")
     }
 
     public func removeDirectory(remotePath: String, recursive: Bool) async throws {
-        let command = recursive ? "rm -rf" : "rmdir"
-        try await executeRemoteCommand("\(command) \(Self.quoteRemotePath(remotePath))")
+        let command = recursive ? "rm -rf --" : "rmdir --"
+        let target = await quoteRemoteShellOperand(remotePath)
+        try await executeRemoteCommand("\(command) \(target)")
     }
 
     public func createDirectory(remotePath: String) async throws {
-        try await executeRemoteCommand("mkdir -p \(Self.quoteRemotePath(remotePath))")
+        let target = await quoteRemoteShellOperand(remotePath)
+        try await executeRemoteCommand("mkdir -p -- \(target)")
     }
 
     public func createFile(remotePath: String) async throws {
-        try await executeRemoteCommand("touch \(Self.quoteRemotePath(remotePath))")
+        let target = await quoteRemoteShellOperand(remotePath)
+        try await executeRemoteCommand("touch -- \(target)")
     }
 
     public func rename(oldPath: String, newPath: String) async throws {
-        try await executeRemoteCommand("mv \(Self.quoteRemotePath(oldPath)) \(Self.quoteRemotePath(newPath))")
+        let oldTarget = await quoteRemoteShellOperand(oldPath)
+        let newTarget = await quoteRemoteShellOperand(newPath)
+        try await executeRemoteCommand("mv -- \(oldTarget) \(newTarget)")
     }
 
     public func changePermissions(remotePath: String, permissions: String) async throws {
-        try await executeRemoteCommand("chmod \(Self.quoteRemotePath(permissions)) \(Self.quoteRemotePath(remotePath))")
+        let target = await quoteRemoteShellOperand(remotePath)
+        try await executeRemoteCommand("chmod -- \(Self.quoteRemotePath(permissions)) \(target)")
     }
 }

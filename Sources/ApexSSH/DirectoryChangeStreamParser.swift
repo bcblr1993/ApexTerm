@@ -28,9 +28,10 @@ struct DirectoryChangeStreamParser {
                 return (text, paths)
             }
             let payload = String(body[..<end])
-            if payload.hasPrefix("7;file://"),
-               let url = URL(string: String(payload.dropFirst(2))), url.scheme == "file" {
-                paths.append(url.path)
+            if payload.hasPrefix("7;file://") {
+                if let path = Self.parseOSC7FileURLPath(String(payload.dropFirst(2))) {
+                    paths.append(path)
+                }
             } else if payload.hasPrefix("0;") || payload.hasPrefix("2;") {
                 if let path = NativeSSHSession.directoryFromWindowTitle(String(payload.dropFirst(2))) {
                     paths.append(path)
@@ -42,5 +43,17 @@ struct DirectoryChangeStreamParser {
         text += pending
         pending = ""
         return (text, paths)
+    }
+
+    /// Parses an OSC 7 `file://[host]/path` URI, falling back gracefully when shells emit unencoded spaces or CJK.
+    private static func parseOSC7FileURLPath(_ uriString: String) -> String? {
+        if let url = URL(string: uriString), url.scheme == "file" {
+            return url.path
+        }
+        guard uriString.hasPrefix("file://") else { return nil }
+        let afterScheme = uriString.dropFirst("file://".count)
+        guard let slashIdx = afterScheme.firstIndex(of: "/") else { return nil }
+        let rawPath = String(afterScheme[slashIdx...])
+        return rawPath.removingPercentEncoding ?? rawPath
     }
 }

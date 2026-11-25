@@ -66,6 +66,13 @@ final class SFTPOpsAndHighlightTests: XCTestCase {
         XCTAssertEqual(contentHits[0].path, "/app/config.json")
         XCTAssertEqual(contentHits[0].lineNumber, 42)
         XCTAssertEqual(contentHits[0].snippet, "\"endpoint\": \"http://127.0.0.1:8080/api:v1\"")
+
+        let colonPathOutput = "/var/log/app:v1/err:2026.log:17:status=500:timeout"
+        let colonHits = SFTPRemoteOperations.parseSearchOutput(colonPathOutput, mode: .content)
+        XCTAssertEqual(colonHits.count, 1)
+        XCTAssertEqual(colonHits[0].path, "/var/log/app:v1/err:2026.log")
+        XCTAssertEqual(colonHits[0].lineNumber, 17)
+        XCTAssertEqual(colonHits[0].snippet, "status=500:timeout")
     }
 
     // MARK: - TC-V24-19: SyntaxHighlighter tokenizes YAML, JSON, Shell, Dockerfile & Nginx accurately

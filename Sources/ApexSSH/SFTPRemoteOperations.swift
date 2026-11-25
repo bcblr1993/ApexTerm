@@ -188,18 +188,32 @@ public enum SFTPRemoteOperations: Sendable {
             case .filename:
                 hits.append(SFTPSearchHit(path: line, lineNumber: nil, snippet: nil))
             case .content:
-                // Format: <path>:<lineNumber>:<matched content>
-                guard let firstColon = line.firstIndex(of: ":") else { continue }
-                let path = String(line[..<firstColon])
-                let afterFirst = line[line.index(after: firstColon)...]
-                guard let secondColon = afterFirst.firstIndex(of: ":") else { continue }
-                let lineStr = String(afterFirst[..<secondColon])
-                guard let lineNum = Int(lineStr) else { continue }
-                let snippet = String(afterFirst[afterFirst.index(after: secondColon)...])
-                    .trimmingCharacters(in: .whitespaces)
-                hits.append(SFTPSearchHit(path: path, lineNumber: lineNum, snippet: snippet))
+                // Format: <path>:<lineNumber>:<matched content> (paths may themselves contain `:`)
+                guard let hit = parseContentSearchLine(line) else { continue }
+                hits.append(hit)
             }
         }
         return hits
+    }
+
+    private static func parseContentSearchLine(_ line: String) -> SFTPSearchHit? {
+        var searchStart = line.startIndex
+        while searchStart < line.endIndex,
+              let firstColon = line[searchStart...].firstIndex(of: ":") {
+            let afterFirst = line.index(after: firstColon)
+            guard afterFirst < line.endIndex else { return nil }
+            if let secondColon = line[afterFirst...].firstIndex(of: ":") {
+                let lineStr = String(line[afterFirst..<secondColon])
+                if !lineStr.isEmpty, lineStr.allSatisfy(\.isNumber), let lineNum = Int(lineStr) {
+                    let path = String(line[..<firstColon])
+                    guard !path.isEmpty else { return nil }
+                    let snippet = String(line[line.index(after: secondColon)...])
+                        .trimmingCharacters(in: .whitespaces)
+                    return SFTPSearchHit(path: path, lineNumber: lineNum, snippet: snippet)
+                }
+            }
+            searchStart = afterFirst
+        }
+        return nil
     }
 }

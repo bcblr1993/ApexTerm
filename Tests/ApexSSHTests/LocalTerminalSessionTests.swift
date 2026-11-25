@@ -386,4 +386,33 @@ final class LocalTerminalSessionTests: XCTestCase {
         await fulfillment(of: [throughputExp], timeout: 8.0)
         await session.disconnect()
     }
+
+    func testLocalNonRecursiveRemoveDirectoryRejectsNonEmptyDirAndRapidReconnect() async throws {
+        let session = LocalTerminalSession()
+        let tempDir = NSTemporaryDirectory() + "ApexLocalNonEmpty_\(UUID().uuidString)"
+        try await session.createDirectory(remotePath: tempDir)
+        defer { try? FileManager.default.removeItem(atPath: tempDir) }
+
+        let filePath = tempDir + "/keep.txt"
+        try await session.createFile(remotePath: filePath)
+
+        do {
+            try await session.removeDirectory(remotePath: tempDir, recursive: false)
+            XCTFail("Non-recursive removeDirectory must fail on non-empty directory")
+        } catch {
+            XCTAssertTrue(FileManager.default.fileExists(atPath: filePath))
+        }
+
+        try await session.removeFile(remotePath: filePath)
+        try await session.removeDirectory(remotePath: tempDir, recursive: false)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: tempDir))
+
+        // Rapid connect/disconnect/connect lifecycle must not double-close descriptors or fail
+        for _ in 0..<3 {
+            try await session.connect()
+            XCTAssertEqual(session.connectionState, .connected)
+            await session.disconnect()
+            XCTAssertEqual(session.connectionState, .disconnected)
+        }
+    }
 }

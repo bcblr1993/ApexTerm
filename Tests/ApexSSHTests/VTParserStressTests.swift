@@ -106,4 +106,55 @@ final class VTParserStressTests: XCTestCase {
         XCTAssertTrue(reconstructed.contains("Unfinished"))
         XCTAssertTrue(reconstructed.contains("Unknown"))
     }
+
+    func testSGRColonSubparametersEmptySemicolonResetAndEscStripping() {
+        let parser = VTParser()
+        // Empty semicolon resets style (";32m"), colon TrueColor (38:2::R:G:B), colon 256 (48:5:N), curly underline (4:3 / 4:0)
+        let raw = "\u{1B}[1;31mRed\u{1B}[;32mGreen\u{1B}[38:2::10:20:30;48:5:220;4:3mStyled\u{1B}[4:0mNoUL\u{1B}[<u\u{1B}(B\u{1B}%G\u{1B}Pdcs-ignored\u{1B}\\End"
+        let spans = parser.parseANSI(raw)
+        XCTAssertEqual(spans.map(\.text).joined(), "RedGreenStyledNoULEnd")
+        XCTAssertEqual(spans[0].isBold, true)
+        XCTAssertEqual(spans[1].isBold, false)
+        XCTAssertEqual(spans[1].ansiColorIndex, 2)
+        XCTAssertEqual(spans[2].foregroundColorHex, "#0A141E")
+        XCTAssertEqual(spans[2].isUnderlined, true)
+        XCTAssertEqual(spans[3].isUnderlined, false)
+
+        // ESC starting a new CSI aborts unclosed OSC without swallowing the next CSI
+        let aborted = parser.parseANSI("\u{1B}]0;title\u{1B}[33mYellow\u{1B}[0m")
+        XCTAssertEqual(aborted.map(\.text).joined(), "Yellow")
+        XCTAssertEqual(aborted.first?.ansiColorIndex, 3)
+    }
+
+    func testRingBufferMultiLineSGRAndAlternateScreenEdgeCases() {
+        let buffer = TerminalRingBuffer(maxLines: 50)
+        buffer.setDimensions(columns: 10, rows: 4)
+
+        // Multi-line active SGR color persists across newlines in normal mode
+        buffer.appendStream("\u{1B}[32mline1\r\nline2\r\n\u{1B}[0mplain\r\n")
+        let lines = buffer.allLines()
+        XCTAssertEqual(lines.count, 3)
+        XCTAssertTrue(lines[0].contains("\u{1B}[0;32mline1\u{1B}[0m"))
+        XCTAssertTrue(lines[1].contains("\u{1B}[0;32mline2\u{1B}[0m"))
+        XCTAssertEqual(lines[2], "plain")
+
+        // Oversized unclosed OSC (>160KB) must drop trailing bytes cleanly without printing garbage
+        let oversizedOSC = "\u{1B}]52;c;" + String(repeating: "A", count: 170_000)
+        buffer.appendStream(oversizedOSC)
+        buffer.appendStream("clean-after-osc\r\n")
+        XCTAssertEqual(buffer.allLines().last, "clean-after-osc")
+
+        // 3-byte charset / DECALN sequences must not leak trailing character
+        buffer.appendStream("\u{1B}%G\u{1B}#8ok\r\n")
+        XCTAssertEqual(buffer.allLines().last, "ok")
+
+        // Alternate screen CNL (E), CPL (F), and deferred-wrap 1K clamping
+        buffer.appendStream("\u{1B}[?1049h\u{1B}[1;1H0123456789\u{1B}[1K")
+        XCTAssertEqual(buffer.screenLines?[0], "")
+        buffer.appendStream("\u{1B}[1;1H0123456789\u{1B}[1;5H\u{1B}[1K")
+        XCTAssertEqual(buffer.screenLines?[0], "     56789")
+        buffer.appendStream("\u{1B}[1;5H\u{1B}[2Erow2\u{1B}[1Frow1")
+        XCTAssertEqual(buffer.screenLines?[1], "row1")
+        XCTAssertEqual(buffer.screenLines?[2], "row2")
+    }
 }

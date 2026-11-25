@@ -195,6 +195,7 @@ public final class TerminalRingBuffer: @unchecked Sendable {
     }
     
     private var _totalCommittedCount: Int64 = 0
+    private var _minRewoundCommittedCount: Int64? = nil
     private var _isClearPending: Bool = false
     private var _isBellPending: Bool = false
     private var _isBracketedPasteEnabled: Bool = false
@@ -237,6 +238,15 @@ public final class TerminalRingBuffer: @unchecked Sendable {
             return true
         }
         return false
+    }
+
+    /// Atomically consume the lowest committed line index invalidated by normal-mode cursor rewind.
+    public func consumeRewindCommittedIndex() -> Int64? {
+        lock.lock()
+        defer { lock.unlock() }
+        let watermark = _minRewoundCommittedCount
+        _minRewoundCommittedCount = nil
+        return watermark
     }
 
     /// Atomically consume and reset pending terminal bell (\u{07}) flag
@@ -471,6 +481,14 @@ public final class TerminalRingBuffer: @unchecked Sendable {
                         i = terminator.upperBound
                         continue
                     }
+                    if fullText.distance(from: payloadStart, to: fullText.endIndex) > Self.maxUnclosedOSCChars {
+                        var dropEnd = payloadStart
+                        while dropEnd < fullText.endIndex && fullText[dropEnd] != "\n" && fullText[dropEnd] != "\r\n" {
+                            dropEnd = fullText.index(after: dropEnd)
+                        }
+                        i = dropEnd
+                        continue
+                    }
                     pendingSequence = String(fullText[escapeStart...])
                     break
                 } else if nextChar == "c" {
@@ -491,11 +509,25 @@ public final class TerminalRingBuffer: @unchecked Sendable {
                         }
                     }
                     if exceededOscCap {
-                        // Drop oversized unclosed OSC stream so malformed output cannot stall parsing or inflate memory.
+                        // Drop oversized unclosed OSC stream through end of payload/line so trailing bytes never print as text.
+                        while j < fullText.endIndex && fullText[j] != "\u{0007}" && fullText[j] != "\n" && fullText[j] != "\r\n" {
+                            if fullText[j] == "\u{001B}" {
+                                let afterEsc = fullText.index(after: j)
+                                if afterEsc < fullText.endIndex && fullText[afterEsc] == "\\" {
+                                    j = fullText.index(after: afterEsc)
+                                }
+                                break
+                            }
+                            j = fullText.index(after: j)
+                        }
+                        if j < fullText.endIndex && fullText[j] == "\u{0007}" {
+                            j = fullText.index(after: j)
+                        }
                         i = j
                         continue
                     }
                     let payloadEnd = j
+                    var oscAbortedByNewESC = false
                     if j < fullText.endIndex && fullText[j] == "\u{001B}" {
                         let afterEsc = fullText.index(after: j)
                         if afterEsc < fullText.endIndex && fullText[afterEsc] == "\\" {
@@ -503,6 +535,8 @@ public final class TerminalRingBuffer: @unchecked Sendable {
                         } else if afterEsc == fullText.endIndex {
                             pendingSequence = String(fullText[escapeStart...])
                             break
+                        } else {
+                            oscAbortedByNewESC = true
                         }
                     }
                     if j == fullText.endIndex {
@@ -522,9 +556,9 @@ public final class TerminalRingBuffer: @unchecked Sendable {
                             activeLineText: currentActive
                         )
                     }
-                    i = fullText.index(after: j)
+                    i = oscAbortedByNewESC ? j : fullText.index(after: j)
                     continue
-                } else if "()*+-./".contains(nextChar) {
+                } else if "()*+-./%# ".contains(nextChar) {
                     // Charset designation has a third byte; it can arrive in another PTY packet.
                     let designator = fullText.index(after: next)
                     if designator == fullText.endIndex {
@@ -577,6 +611,9 @@ public final class TerminalRingBuffer: @unchecked Sendable {
                 }
                 if isEditingActiveLine {
                     putCell(styledCell(ch))
+                } else if currentStyle != SGRStyle(foreground: nil, index: nil, bold: false) {
+                    ensureEditingMode()
+                    putCell(styledCell(ch))
                 } else {
                     activeLine.append(ch)
                 }
@@ -627,6 +664,7 @@ public final class TerminalRingBuffer: @unchecked Sendable {
             buffer[lastIndex] = ""
             count -= 1
             _totalCommittedCount -= 1
+            _minRewoundCommittedCount = min(_minRewoundCommittedCount ?? _totalCommittedCount, _totalCommittedCount)
             activeCells = parseLineToCells(popped)
         }
     }
@@ -844,6 +882,8 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         case "B": screenRow = min(screenRows - 1, screenRow + amount); _screenRevision += 1
         case "C": screenColumn = min(screenColumns - 1, screenColumn + amount); _screenRevision += 1
         case "D": screenColumn = max(0, screenColumn - amount); _screenRevision += 1
+        case "E": screenRow = min(screenRows - 1, screenRow + amount); screenColumn = 0; _screenRevision += 1
+        case "F": screenRow = max(0, screenRow - amount); screenColumn = 0; _screenRevision += 1
         case "G": screenColumn = min(screenColumns - 1, max(0, amount - 1)); _screenRevision += 1
         case "d": screenRow = min(screenRows - 1, max(0, amount - 1)); _screenRevision += 1
         case "J":
@@ -858,13 +898,13 @@ public final class TerminalRingBuffer: @unchecked Sendable {
                 if screenRow > 0 {
                     for row in 0..<screenRow { eraseScreenCells(&grid[row], from: 0, through: screenColumns) }
                 }
-                eraseScreenCells(&grid[screenRow], from: 0, through: screenColumn + 1)
+                eraseScreenCells(&grid[screenRow], from: 0, through: min(screenColumns, screenColumn + 1))
             }
             screen = grid; _screenRevision += 1
         case "K":
             if first == 2 { eraseScreenCells(&grid[screenRow], from: 0, through: screenColumns) }
             else if first == 0 { eraseScreenCells(&grid[screenRow], from: screenColumn, through: screenColumns) }
-            else if first == 1 { eraseScreenCells(&grid[screenRow], from: 0, through: screenColumn + 1) }
+            else if first == 1 { eraseScreenCells(&grid[screenRow], from: 0, through: min(screenColumns, screenColumn + 1)) }
             screen = grid; _screenRevision += 1
         case "r":
             let top = (values.count > 0 && values[0] > 0) ? values[0] : 1
@@ -995,11 +1035,13 @@ public final class TerminalRingBuffer: @unchecked Sendable {
                 head = 0
                 count = 0
                 _totalCommittedCount = 0
+                _minRewoundCommittedCount = nil
                 activeLine = ""
                 activeCells.removeAll(keepingCapacity: true)
                 belowActiveRows.removeAll(keepingCapacity: true)
                 isEditingActiveLine = false
                 cursorCol = 0
+                shellIntegration.reset()
                 _isClearPending = true
             }
         case "K": // Erase in Line
@@ -1014,7 +1056,7 @@ public final class TerminalRingBuffer: @unchecked Sendable {
                 for k in 0..<limit {
                     activeCells[k] = TerminalCell(char: " ", fgHex: nil, isBold: false)
                 }
-            } else if param.contains("2") {
+            } else if param == "2" {
                 // Erase entire line
                 activeCells.removeAll(keepingCapacity: true)
             }
@@ -1204,7 +1246,7 @@ public final class TerminalRingBuffer: @unchecked Sendable {
     }
 
     private func resetTerminalState() {
-        head = 0; count = 0; _totalCommittedCount = 0
+        head = 0; count = 0; _totalCommittedCount = 0; _minRewoundCommittedCount = nil
         buffer = [String](repeating: "", count: historyLimit)
         activeLine = ""; activeCells.removeAll(keepingCapacity: false)
         belowActiveRows.removeAll(keepingCapacity: false)
@@ -1229,6 +1271,7 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         head = 0
         count = 0
         _totalCommittedCount = 0
+        _minRewoundCommittedCount = nil
         buffer = [String](repeating: "", count: historyLimit)
         activeLine = ""
         activeCells.removeAll(keepingCapacity: false)

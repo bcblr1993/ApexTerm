@@ -58,7 +58,7 @@ public final class VTParser: Sendable {
                     var isValidCsi = true
                     while j < raw.endIndex && !raw[j].isLetter && raw[j] != "@" && raw[j] != "~" {
                         let c = raw[j]
-                        if (c.isNumber || c == ";" || c == ":" || c == "?" || c == ">") && !hasSpaceBeforeQ {
+                        if (c.isNumber || c == ";" || c == ":" || c == "?" || c == ">" || c == "<" || c == "=") && !hasSpaceBeforeQ {
                             csiParam.append(c)
                             j = raw.index(after: j)
                         } else if c == " ", !hasSpaceBeforeQ,
@@ -73,7 +73,7 @@ public final class VTParser: Sendable {
                     }
                     if isValidCsi && j < raw.endIndex {
                         let finalChar = raw[j]
-                        if finalChar == "m" && !hasSpaceBeforeQ && !csiParam.hasPrefix("?") && !csiParam.hasPrefix(">") { // SGR color/style
+                        if finalChar == "m" && !hasSpaceBeforeQ && !csiParam.hasPrefix("?") && !csiParam.hasPrefix(">") && !csiParam.hasPrefix("<") && !csiParam.hasPrefix("=") { // SGR color/style
                             style.apply(param: csiParam)
                         }
                         i = j
@@ -90,9 +90,24 @@ public final class VTParser: Sendable {
                         let next = raw.index(after: j)
                         if next < raw.endIndex && raw[next] == "\\" {
                             j = next
+                        } else {
+                            // ESC started a new sequence rather than terminating OSC with ST
+                            i = j
+                            continue
                         }
                     }
                     i = j
+                } else if nextIndex < raw.endIndex && "P^_X".contains(raw[nextIndex]) { // DCS/PM/APC/SOS
+                    let payloadStart = raw.index(after: nextIndex)
+                    if let terminator = raw.range(of: "\u{1B}\\", range: payloadStart..<raw.endIndex) {
+                        i = terminator.upperBound
+                        continue
+                    }
+                    i = raw.endIndex
+                    continue
+                } else if nextIndex < raw.endIndex && "()*+-./%# ".contains(raw[nextIndex]) { // 3-byte ESC sequence
+                    let designator = raw.index(after: nextIndex)
+                    i = designator < raw.endIndex ? designator : nextIndex
                 } else {
                     i = nextIndex
                 }

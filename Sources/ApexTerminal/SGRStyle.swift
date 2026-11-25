@@ -16,7 +16,11 @@ struct SGRStyle: Equatable {
 
     mutating func apply(param: String) {
         if !param.contains(":") {
-            apply(param.split(separator: ";").compactMap { Int($0) })
+            if param.isEmpty {
+                apply([0])
+            } else {
+                apply(param.split(separator: ";", omittingEmptySubsequences: false).compactMap { $0.isEmpty ? 0 : Int($0) })
+            }
             return
         }
         var codes: [Int] = []

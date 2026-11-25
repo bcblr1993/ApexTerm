@@ -1,5 +1,6 @@
 import XCTest
 import AppKit
+@testable import ApexCore
 @testable import ApexTerminal
 
 final class TerminalCopyAndContextMenuTests: XCTestCase {
@@ -262,5 +263,221 @@ final class TerminalCopyAndContextMenuTests: XCTestCase {
         buffer.appendStream("\u{1B}[999B")
         view.refresh()
         XCTAssertEqual(buffer.committedLineCount, beforeHugeCUU)
+    }
+
+    @MainActor
+    func testCopyOnSelectDisabledDoesNotAutoCopyWhileCmdCAndMenuCopyWork() throws {
+        let pasteboard = NSPasteboard.general
+        let savedItems = (pasteboard.pasteboardItems ?? []).map { original in
+            let copy = NSPasteboardItem()
+            for type in original.types {
+                if let data = original.data(forType: type) { copy.setData(data, forType: type) }
+            }
+            return copy
+        }
+        defer {
+            pasteboard.clearContents()
+            pasteboard.writeObjects(savedItems)
+        }
+        pasteboard.clearContents()
+        pasteboard.setString("sentinel-clip", forType: .string)
+
+        let view = NativeTerminalView()
+        view.isCopyOnSelectEnabled = false
+        view.textStorage?.setAttributedString(NSAttributedString(string: "hello terminal world"))
+
+        let rangeVal = NSValue(range: NSRange(location: 0, length: 5))
+        view.setSelectedRanges([rangeVal], affinity: .downstream, stillSelecting: false)
+        XCTAssertEqual(pasteboard.string(forType: .string), "sentinel-clip")
+
+        _ = view.menu(for: NSEvent())
+        XCTAssertEqual(pasteboard.string(forType: .string), "sentinel-clip")
+
+        view.selectAll(nil)
+        XCTAssertEqual(pasteboard.string(forType: .string), "sentinel-clip")
+
+        let cmdC = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [.command],
+            timestamp: 0, windowNumber: 0, context: nil,
+            characters: "c", charactersIgnoringModifiers: "c", isARepeat: false, keyCode: 8
+        ))
+        view.keyDown(with: cmdC)
+        XCTAssertEqual(pasteboard.string(forType: .string), "hello terminal world")
+    }
+
+    @MainActor
+    func testRightClickPasteDisabledAndShiftRightClickOpenContextMenu() throws {
+        let settings = AppSettings.shared
+        let oldRightClick = settings.isRightClickPasteEnabled
+        defer { settings.isRightClickPasteEnabled = oldRightClick }
+
+        let pasteboard = NSPasteboard.general
+        let savedItems = (pasteboard.pasteboardItems ?? []).map { original in
+            let copy = NSPasteboardItem()
+            for type in original.types {
+                if let data = original.data(forType: type) { copy.setData(data, forType: type) }
+            }
+            return copy
+        }
+        defer {
+            pasteboard.clearContents()
+            pasteboard.writeObjects(savedItems)
+        }
+        pasteboard.clearContents()
+        pasteboard.setString("should-not-paste", forType: .string)
+
+        let view = NativeTerminalView(frame: NSRect(x: 0, y: 0, width: 300, height: 200), textContainer: nil)
+        let window = NSWindow(contentRect: view.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = view
+        var sent: [Data] = []
+        view.onInput = { sent.append($0) }
+
+        // 1. Shift+Right-Click with rightClickPaste enabled routes to context menu, never pastes
+        settings.isRightClickPasteEnabled = true
+        let shiftRightDown = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .rightMouseDown, location: NSPoint(x: 50, y: 50), modifierFlags: [.shift],
+            timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1
+        ))
+        XCTAssertTrue(view.shouldOpenContextMenuOnRightClick(with: shiftRightDown))
+        let menu = view.menu(for: shiftRightDown)
+        XCTAssertNotNil(menu)
+        XCTAssertTrue(sent.isEmpty)
+
+        // 2. Plain Right-Click with isRightClickPasteEnabled = false routes to context menu, never pastes
+        let plainRightDown = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .rightMouseDown, location: NSPoint(x: 50, y: 50), modifierFlags: [],
+            timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 2, clickCount: 1, pressure: 1
+        ))
+        XCTAssertFalse(view.shouldOpenContextMenuOnRightClick(with: plainRightDown))
+        settings.isRightClickPasteEnabled = false
+        XCTAssertTrue(view.shouldOpenContextMenuOnRightClick(with: plainRightDown))
+        XCTAssertNotNil(view.menu(for: plainRightDown))
+        XCTAssertTrue(sent.isEmpty)
+
+        // 3. Plain Right-Click with isRightClickPasteEnabled = true pastes directly
+        settings.isRightClickPasteEnabled = true
+        view.rightMouseDown(with: plainRightDown)
+        XCTAssertEqual(sent, [Data("should-not-paste".utf8)])
+    }
+
+    @MainActor
+    func testBracketedPasteStripsEmbeddedEndMarkerAndNormalizesMultiLine() throws {
+        let pasteboard = NSPasteboard.general
+        let savedItems = (pasteboard.pasteboardItems ?? []).map { original in
+            let copy = NSPasteboardItem()
+            for type in original.types {
+                if let data = original.data(forType: type) { copy.setData(data, forType: type) }
+            }
+            return copy
+        }
+        defer {
+            pasteboard.clearContents()
+            pasteboard.writeObjects(savedItems)
+        }
+        pasteboard.clearContents()
+        pasteboard.setString("echo safe\r\n\u{1B}[201~rm -rf /\u{1B}[200~\n", forType: .string)
+
+        let buffer = TerminalRingBuffer()
+        buffer.appendStream("\u{1B}[?2004h")
+        let view = NativeTerminalView()
+        view.ringBuffer = buffer
+        var sent: [Data] = []
+        view.onInput = { sent.append($0) }
+
+        XCTAssertTrue(view.pasteFromClipboard())
+        let payload = try XCTUnwrap(sent.first).withUnsafeBytes { String(decoding: $0, as: UTF8.self) }
+        XCTAssertEqual(payload, "\u{1B}[200~echo safe\rrm -rf /\r\u{1B}[201~")
+    }
+
+    @MainActor
+    func testCommandShortcutsDoNotHijackCommandOptionAndFindNavigationWorks() throws {
+        let buffer = TerminalRingBuffer(maxLines: 100)
+        buffer.appendStream("alpha\r\nbeta\r\nalpha two\r\n")
+        let scrollView = NativeTerminalScrollView(frame: NSRect(x: 0, y: 0, width: 640, height: 320))
+        let view = scrollView.terminalView
+        view.ringBuffer = buffer
+        view.refresh()
+
+        // Cmd+Opt+K must NOT wipe the terminal
+        let cmdOptK = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [.command, .option],
+            timestamp: 0, windowNumber: 0, context: nil,
+            characters: "k", charactersIgnoringModifiers: "k", isARepeat: false, keyCode: 40
+        ))
+        view.keyDown(with: cmdOptK)
+        XCTAssertEqual(buffer.committedLineCount, 3)
+
+        // Cmd+Opt+F must NOT open Find bar
+        let cmdOptF = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [.command, .option],
+            timestamp: 0, windowNumber: 0, context: nil,
+            characters: "f", charactersIgnoringModifiers: "f", isARepeat: false, keyCode: 3
+        ))
+        view.keyDown(with: cmdOptF)
+        XCTAssertTrue(scrollView.searchBarOverlay.isHidden)
+
+        // Cmd+F opens Find bar, Cmd+G / Cmd+Shift+G cycles matches
+        let cmdF = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [.command],
+            timestamp: 0, windowNumber: 0, context: nil,
+            characters: "f", charactersIgnoringModifiers: "f", isARepeat: false, keyCode: 3
+        ))
+        view.keyDown(with: cmdF)
+        XCTAssertFalse(scrollView.searchBarOverlay.isHidden)
+
+        XCTAssertEqual(view.performFind(query: "alpha"), 2)
+        XCTAssertEqual(view.currentMatchIndex, 0)
+
+        let cmdG = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [.command],
+            timestamp: 0, windowNumber: 0, context: nil,
+            characters: "g", charactersIgnoringModifiers: "g", isARepeat: false, keyCode: 5
+        ))
+        view.keyDown(with: cmdG)
+        XCTAssertEqual(view.currentMatchIndex, 1)
+
+        let cmdShiftG = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [.command, .shift],
+            timestamp: 0, windowNumber: 0, context: nil,
+            characters: "G", charactersIgnoringModifiers: "g", isARepeat: false, keyCode: 5
+        ))
+        view.keyDown(with: cmdShiftG)
+        XCTAssertEqual(view.currentMatchIndex, 0)
+
+        // Cmd+K clears screen and emits Ctrl+L
+        var sent: [Data] = []
+        view.onInput = { sent.append($0) }
+        let cmdK = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [.command],
+            timestamp: 0, windowNumber: 0, context: nil,
+            characters: "k", charactersIgnoringModifiers: "k", isARepeat: false, keyCode: 40
+        ))
+        view.keyDown(with: cmdK)
+        XCTAssertEqual(buffer.committedLineCount, 0)
+        XCTAssertEqual(view.textStorage?.string, "")
+        XCTAssertEqual(sent, [Data([0x0C])])
+        scrollView.tearDown()
+    }
+
+    @MainActor
+    func testNormalModeRewindAndRecommitWithinSameRefreshWindowUpdatesRenderedLines() {
+        let buffer = TerminalRingBuffer(maxLines: 100)
+        buffer.setDimensions(columns: 80, rows: 10)
+        let view = NativeTerminalView()
+        view.ringBuffer = buffer
+
+        buffer.appendStream("A\r\nB\r\nC\r\n")
+        view.refresh()
+        XCTAssertEqual(view.textStorage?.string, "A\nB\nC\n")
+
+        // Rewind 2 lines and commit 2 replacement lines in a single packet (net committed delta == 0!)
+        buffer.appendStream("\u{1B}[2A\u{1B}[0JX\r\nY\r\n")
+        view.refresh()
+        XCTAssertEqual(view.textStorage?.string, "A\nX\nY\n")
+
+        // Rewind 2 lines and commit 1 replacement line (net delta == -1)
+        buffer.appendStream("\u{1B}[2A\u{1B}[0JZ\r\n")
+        view.refresh()
+        XCTAssertEqual(view.textStorage?.string, "A\nZ\n")
     }
 }

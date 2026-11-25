@@ -158,4 +158,18 @@ final class ShellIntegrationTests: XCTestCase {
         XCTAssertTrue(ring.shellIntegration.allRecords().isEmpty)
         XCTAssertTrue(ring.shellIntegration.allPromptLines().isEmpty)
     }
+
+    /// TC-SHELL-09: OSC 133;C arriving after newline (preexec) captures first output line, and CSI 2J/3J resets tracker
+    func testOSC133PreexecAfterNewlineAndCSI2JReset() {
+        let ring = TerminalRingBuffer(maxLines: 100)
+        // Prompt + command + newline BEFORE 133;C (zsh/bash preexec pattern)
+        ring.appendStream("\u{1B}]133;A\u{07}$ \u{1B}]133;B\u{07}uname -a\r\n\u{1B}]133;C\u{07}Linux node1\r\n6.8.0\r\n\u{1B}]133;D;0\u{07}")
+        XCTAssertEqual(ring.extractLastOSC133CommandOutput(), "Linux node1\n6.8.0")
+
+        // CSI 2J / 3J resets _totalCommittedCount to 0 and must reset shellIntegration to prevent stale indices
+        ring.appendStream("\u{1B}[H\u{1B}[2J\u{1B}[3J")
+        XCTAssertEqual(ring.committedLineCount, 0)
+        XCTAssertTrue(ring.shellIntegration.allPromptLines().isEmpty)
+        XCTAssertTrue(ring.shellIntegration.allRecords().isEmpty)
+    }
 }

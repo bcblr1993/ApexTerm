@@ -449,7 +449,7 @@ public final class NativeTerminalScrollView: NSScrollView {
     
     override public func layout() {
         super.layout()
-        let barW: CGFloat = 300
+        let barW = min(300, max(160, bounds.width - 22))
         let barH: CGFloat = 32
         let x = max(8, bounds.width - barW - 14)
         let y = max(8, bounds.height - barH - 8)
@@ -1577,7 +1577,7 @@ public final class NativeTerminalView: NSTextView {
         let charIndex = layoutManager.characterIndexForGlyph(at: glyphIndex)
         guard charIndex < storage.length else { return nil }
         
-        let lineRect = layoutManager.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil)
+        let lineRect = layoutManager.lineFragmentUsedRect(forGlyphAt: glyphIndex, effectiveRange: nil)
         guard lineRect.insetBy(dx: -4, dy: -4).contains(containerPoint) else { return nil }
         
         let text = storage.string as NSString
@@ -1770,13 +1770,17 @@ public final class NativeTerminalView: NSTextView {
         super.scrollWheel(with: event)
     }
     
+    func shouldOpenContextMenuOnRightClick(with event: NSEvent) -> Bool {
+        event.modifierFlags.contains(.shift) || !AppSettings.shared.isRightClickPasteEnabled
+    }
+
     override public func rightMouseDown(with event: NSEvent) {
         self.window?.makeFirstResponder(self)
         onFocus?()
         if sendMouseReport(event, button: 2) { return }
         
         // If Shift is pressed or right-click paste is disabled in settings, allow standard context menu popup
-        if event.modifierFlags.contains(.shift) || !AppSettings.shared.isRightClickPasteEnabled {
+        if shouldOpenContextMenuOnRightClick(with: event) {
             super.rightMouseDown(with: event)
             return
         }
@@ -1820,13 +1824,16 @@ public final class NativeTerminalView: NSTextView {
     }
 
     override public func keyDown(with event: NSEvent) {
-        lastPromptNavigationLine = nil
+        let shortcutModifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
+        let isPromptNavShortcut = (shortcutModifiers == [.command]) && (event.keyCode == 126 || event.keyCode == 125)
+        if !isPromptNavShortcut {
+            lastPromptNavigationLine = nil
+        }
         if ringBuffer?.isInAlternateScreen != true {
             self.isPinnedToBottom = true
         }
         
         // Preserve the system full-screen shortcut while terminal input has focus.
-        let shortcutModifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
         if shortcutModifiers == [.command, .control],
            event.charactersIgnoringModifiers?.lowercased() == "f" {
             window?.toggleFullScreen(nil)
@@ -1835,7 +1842,7 @@ public final class NativeTerminalView: NSTextView {
 
         // 0. Handle Cmd shortcuts: Cmd+K (Clear), Cmd+F (Find), Cmd+G (Next Match), Cmd+Shift+G (Prev Match)
         if event.modifierFlags.contains(.command) {
-            if shortcutModifiers == [.command], ringBuffer?.isInAlternateScreen != true {
+            if isPromptNavShortcut, ringBuffer?.isInAlternateScreen != true {
                 if event.keyCode == 126 {
                     _ = jumpToPreviousPrompt()
                     return
@@ -1872,15 +1879,15 @@ public final class NativeTerminalView: NSTextView {
                     _ = pasteFromClipboard()
                     return
                 }
-                if !event.modifierFlags.contains(.shift) && chars == "k" {
+                if shortcutModifiers == [.command] && chars == "k" {
                     clearScreen()
                     return
-                } else if !event.modifierFlags.contains(.shift) && chars == "f" {
+                } else if shortcutModifiers == [.command] && chars == "f" {
                     (self.enclosingScrollView as? NativeTerminalScrollView)?.showFindBar()
                     return
-                } else if chars == "g" {
+                } else if chars == "g" && (shortcutModifiers == [.command] || shortcutModifiers == [.command, .shift]) {
                     let sv = self.enclosingScrollView as? NativeTerminalScrollView
-                    if event.modifierFlags.contains(.shift) {
+                    if shortcutModifiers.contains(.shift) {
                         _ = findPrevious()
                     } else {
                         _ = findNext()
@@ -1894,17 +1901,24 @@ public final class NativeTerminalView: NSTextView {
             return
         }
         
-        // 1. Handle Ctrl key combinations: Ctrl+C, Ctrl+D, Ctrl+Z, Ctrl+L, etc. (HIGHEST PRIORITY)
+        // 1. Handle Ctrl key combinations: Ctrl+C, Ctrl+D, Ctrl+Z, Ctrl+L, Ctrl+[, Ctrl+], etc. (HIGHEST PRIORITY)
         if event.modifierFlags.contains(.control),
            let chars = event.charactersIgnoringModifiers,
            let firstChar = chars.unicodeScalars.first {
             let val = firstChar.value
+            let ctrlByte: UInt8?
             if val >= 65 && val <= 90 { // A-Z
-                let ctrlByte = UInt8(val - 64)
-                onInput?(Data([ctrlByte]))
-                return
+                ctrlByte = UInt8(val - 64)
             } else if val >= 97 && val <= 122 { // a-z
-                let ctrlByte = UInt8(val - 96)
+                ctrlByte = UInt8(val - 96)
+            } else if val == 0x20 || val == 0x40 { // Ctrl+Space or Ctrl+@
+                ctrlByte = 0x00
+            } else if val >= 0x5B && val <= 0x5F { // [, \, ], ^, _
+                ctrlByte = UInt8(val - 64)
+            } else {
+                ctrlByte = nil
+            }
+            if let ctrlByte {
                 onInput?(Data([ctrlByte]))
                 return
             }
@@ -2022,7 +2036,10 @@ public final class NativeTerminalView: NSTextView {
         let normalized = text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
         let toSend: String
         if ringBuffer?.isBracketedPasteEnabled == true {
-            let pasteContent = normalized.replacingOccurrences(of: "\n", with: "\r")
+            let pasteContent = normalized
+                .replacingOccurrences(of: "\n", with: "\r")
+                .replacingOccurrences(of: "\u{1B}[201~", with: "")
+                .replacingOccurrences(of: "\u{1B}[200~", with: "")
             toSend = "\u{1B}[200~" + pasteContent + "\u{1B}[201~"
         } else {
             toSend = normalized.replacingOccurrences(of: "\n", with: "\r")
@@ -2158,6 +2175,7 @@ public final class NativeTerminalView: NSTextView {
         self.renderedActiveLine = ""
         self.activeLineStartLocation = 0
         self.lastCommittedIndex = 0
+        self.lastPromptNavigationLine = nil
         self.needsDisplay = true
         self.scrollToBottom()
         onInput?(Data([0x0C])) // Send Ctrl+L (FF) to remote shell to redraw prompt at top
@@ -2547,9 +2565,11 @@ public final class NativeTerminalView: NSTextView {
             renderedScreenLines = nil
             let currentTotal = buffer.totalCommittedCount
             let bufferCleared = buffer.consumeClearFlag()
-            let rewoundLines = (!bufferCleared && currentTotal < lastCommittedIndex) ? Int(lastCommittedIndex - currentTotal) : 0
+            let rewindWatermark = buffer.consumeRewindCommittedIndex()
+            let rewindTarget = min(currentTotal, rewindWatermark ?? currentTotal)
+            let rewoundLines = (!bufferCleared && rewindTarget < lastCommittedIndex) ? Int(lastCommittedIndex - rewindTarget) : 0
             let canIncrementalRewind = rewoundLines > 0 && rewoundLines <= (renderedCommittedLineLengths.count - renderedLineHead)
-            let isCleared = bufferCleared || (currentTotal < lastCommittedIndex && !canIncrementalRewind)
+            let isCleared = bufferCleared || (rewindTarget < lastCommittedIndex && !canIncrementalRewind)
             let active = buffer.currentActiveLine
             if !isCleared, !canIncrementalRewind, currentTotal == lastCommittedIndex, active == renderedActiveLine {
                 // Cursor/control-only packets do not invalidate the entire scrollback layout.
@@ -2588,7 +2608,7 @@ public final class NativeTerminalView: NSTextView {
                     let deleteCount = min(poppedUTF16, storage.length)
                     storage.deleteCharacters(in: NSRange(location: storage.length - deleteCount, length: deleteCount))
                 }
-                lastCommittedIndex = currentTotal
+                lastCommittedIndex = rewindTarget
                 activeLineStartLocation = storage.length
             }
 

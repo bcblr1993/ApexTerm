@@ -217,11 +217,12 @@ public final class ShellIntegrationTracker: @unchecked Sendable {
                 }
             }
 
+            let outputStart = (currentLineIndex > cLine) ? currentLineIndex : currentLineIndex + 1
             activeRecord = CommandExecutionRecord(
                 commandText: extractedCommand,
                 promptStartLine: pLine,
                 commandStartLine: cLine,
-                outputStartLine: currentLineIndex + 1,
+                outputStartLine: outputStart,
                 outputEndLine: nil,
                 startedAt: timestamp,
                 finishedAt: nil,

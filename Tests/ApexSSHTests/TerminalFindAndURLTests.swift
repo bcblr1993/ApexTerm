@@ -221,4 +221,67 @@ final class TerminalFindAndURLTests: XCTestCase {
         XCTAssertEqual(snapshot.topProcesses[1].user, "www-data")
         XCTAssertEqual(snapshot.topProcesses[1].command, "nginx: worker process")
     }
+
+    @MainActor
+    func testURLAtPointIgnoresTrailingBlankWhitespaceAndHandlesCJKPrefix() throws {
+        let view = NativeTerminalView()
+        view.frame = NSRect(x: 0, y: 0, width: 800, height: 200)
+        view.textContainer?.containerSize = NSSize(width: 800, height: 200)
+        let line = "中文提示 https://example.com/path"
+        view.textStorage?.setAttributedString(view.formatANSI(line))
+        let layout = try XCTUnwrap(view.layoutManager)
+        let container = try XCTUnwrap(view.textContainer)
+        layout.ensureLayout(for: container)
+
+        // Point directly over "https://example.com/path"
+        let urlRange = (line as NSString).range(of: "https://example.com/path")
+        let glyph = layout.glyphIndexForCharacter(at: urlRange.location + 2)
+        let charRect = layout.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: container)
+        let hitPoint = NSPoint(x: view.textContainerOrigin.x + charRect.midX, y: view.textContainerOrigin.y + charRect.midY)
+        XCTAssertEqual(view.urlAtPoint(hitPoint)?.absoluteString, "https://example.com/path")
+
+        // Point far to the right in empty whitespace on the same line must NOT match the URL
+        let emptyRightPoint = NSPoint(x: 700, y: view.textContainerOrigin.y + charRect.midY)
+        XCTAssertNil(view.urlAtPoint(emptyRightPoint))
+    }
+
+    @MainActor
+    func testNarrowScrollViewKeepsFindBarWithinBoundsAndCmdArrowPreservesPromptNavigation() throws {
+        let scroll = NativeTerminalScrollView(frame: NSRect(x: 0, y: 0, width: 220, height: 200))
+        scroll.layoutSubtreeIfNeeded()
+        XCTAssertLessThanOrEqual(scroll.searchBarOverlay.frame.maxX, scroll.bounds.width)
+        XCTAssertGreaterThanOrEqual(scroll.searchBarOverlay.frame.minX, 0)
+
+        let buffer = TerminalRingBuffer(maxLines: 200)
+        let view = scroll.terminalView
+        view.ringBuffer = buffer
+        buffer.appendStream("\u{1B}]133;A\u{07}$ cmd1\r\n")
+        for i in 1...10 { buffer.appendStream("line-\(i)\r\n") }
+        buffer.appendStream("\u{1B}]133;A\u{07}$ cmd2\r\n")
+        for i in 1...10 { buffer.appendStream("line2-\(i)\r\n") }
+        buffer.appendStream("\u{1B}]133;A\u{07}$ ")
+        view.refresh()
+
+        let prompts = buffer.shellIntegration.allPromptLines()
+        XCTAssertEqual(prompts.count, 3)
+
+        let cmdUp = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [.command],
+            timestamp: 0, windowNumber: 0, context: nil,
+            characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: 126
+        ))
+        view.keyDown(with: cmdUp)
+        XCTAssertEqual(view.currentTopVisibleLineIndex(), prompts[1])
+        view.keyDown(with: cmdUp)
+        XCTAssertEqual(view.currentTopVisibleLineIndex(), prompts[0])
+
+        let cmdDown = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [.command],
+            timestamp: 0, windowNumber: 0, context: nil,
+            characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: 125
+        ))
+        view.keyDown(with: cmdDown)
+        XCTAssertEqual(view.currentTopVisibleLineIndex(), prompts[1])
+        scroll.tearDown()
+    }
 }

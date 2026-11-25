@@ -330,4 +330,51 @@ final class TerminalControlAndSignalsTests: XCTestCase {
         XCTAssertEqual(lines.count, 1)
         XCTAssertEqual(lines.first, "你好，世界！🚀 Swift 6")
     }
+
+    @MainActor
+    func testControlPunctuationAndIMEConfirmVsEscape() throws {
+        let view = NativeTerminalView()
+        let buffer = TerminalRingBuffer()
+        view.ringBuffer = buffer
+        var sent: [Data] = []
+        view.onInput = { sent.append($0) }
+
+        let ctrlPunctCases: [(String, UInt16, UInt8)] = [
+            (" ", 49, 0x00),
+            ("[", 33, 0x1B),
+            ("\\", 42, 0x1C),
+            ("]", 30, 0x1D),
+            ("^", 22, 0x1E),
+            ("_", 27, 0x1F)
+        ]
+        for (char, code, expected) in ctrlPunctCases {
+            sent.removeAll()
+            let ev = try XCTUnwrap(NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: [.control],
+                timestamp: 0, windowNumber: 0, context: nil,
+                characters: char, charactersIgnoringModifiers: char, isARepeat: false, keyCode: code
+            ))
+            view.keyDown(with: ev)
+            XCTAssertEqual(sent, [Data([expected])], "Ctrl+\(char)")
+        }
+
+        // ESC while composing in normal mode cancels composition WITHOUT sending ESC to PTY
+        sent.removeAll()
+        view.setMarkedText("ni", selectedRange: NSRange(location: 2, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+        let escEvent = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [],
+            timestamp: 0, windowNumber: 0, context: nil,
+            characters: "\u{1B}", charactersIgnoringModifiers: "\u{1B}", isARepeat: false, keyCode: 53
+        ))
+        view.keyDown(with: escEvent)
+        XCTAssertFalse(view.hasMarkedText())
+        XCTAssertTrue(sent.isEmpty)
+
+        // ESC while composing in alternate screen (Vim) discards marked text AND sends ESC
+        buffer.appendStream("\u{1B}[?1049h")
+        view.setMarkedText("ni", selectedRange: NSRange(location: 2, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+        view.keyDown(with: escEvent)
+        XCTAssertFalse(view.hasMarkedText())
+        XCTAssertEqual(sent, [Data([0x1B])])
+    }
 }

@@ -31,11 +31,19 @@ public final class KeywordHighlighter: @unchecked Sendable {
         }
     }
     
+    /// Whether at least one enabled trigger pattern is compiled and ready to match.
+    public var hasActiveTriggers: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return !compiledRegexes.isEmpty
+    }
+
     /// Finds all trigger matches in the given string
     public func findMatches(in text: String) -> [HighlightMatch] {
         lock.lock()
         defer { lock.unlock() }
-        
+        guard !compiledRegexes.isEmpty else { return [] }
+
         var matches: [HighlightMatch] = []
         let nsString = text as NSString
         let fullRange = NSRange(location: 0, length: nsString.length)

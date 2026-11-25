@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import CoreText
 
 /// Represents a selectable terminal font option with metadata
 public struct TerminalFontOption: Identifiable, Hashable, Sendable {
@@ -89,9 +90,21 @@ public final class TerminalFontManager {
             return cached
         }
 
-        let fontManager = NSFontManager.shared
-        let availableFamilies = fontManager.availableFontFamilies
+        let availableFamilies = (CTFontManagerCopyAvailableFontFamilyNames() as? [String]) ?? []
         let availableFamilySet = Set(availableFamilies)
+
+        var fixedPitchFamilies = Set<String>()
+        let traitsDict: [CFString: Any] = [kCTFontSymbolicTrait: CTFontSymbolicTraits.traitMonoSpace.rawValue]
+        let attrs: [CFString: Any] = [kCTFontTraitsAttribute: traitsDict]
+        let descriptor = CTFontDescriptorCreateWithAttributes(attrs as CFDictionary)
+        let mandatoryKeys: Set<CFString> = [kCTFontTraitsAttribute]
+        if let matched = CTFontDescriptorCreateMatchingFontDescriptors(descriptor, mandatoryKeys as CFSet) as? [CTFontDescriptor] {
+            for item in matched {
+                if let family = CTFontDescriptorCopyAttribute(item, kCTFontFamilyNameAttribute) as? String {
+                    fixedPitchFamilies.insert(family)
+                }
+            }
+        }
 
         var result: [TerminalFontOption] = []
         var seenFamilies = Set<String>()
@@ -115,15 +128,9 @@ public final class TerminalFontManager {
         // 3. Other detected monospace fonts on the system (pre-filtered by candidate keywords
         //    to avoid loading heavy CJK/Emoji/decorative font tables on the UI thread)
         for family in availableFamilies {
-            if !seenFamilies.contains(family) && Self.isLikelyMonospaceFamily(family) {
-                if let members = fontManager.availableMembers(ofFontFamily: family),
-                   let firstMember = members.first,
-                   let postScriptName = firstMember.first as? String {
-                    if let font = NSFont(name: postScriptName, size: 12), font.isFixedPitch {
-                        seenFamilies.insert(family)
-                        result.append(TerminalFontOption(familyName: family))
-                    }
-                }
+            if !seenFamilies.contains(family) && Self.isLikelyMonospaceFamily(family) && fixedPitchFamilies.contains(family) {
+                seenFamilies.insert(family)
+                result.append(TerminalFontOption(familyName: family))
             }
         }
 

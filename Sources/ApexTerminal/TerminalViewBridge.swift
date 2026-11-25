@@ -2319,7 +2319,8 @@ public final class NativeTerminalView: NSTextView {
     
     public func formatANSI(_ text: String) -> NSAttributedString {
         let spans = parser.parseANSI(text)
-        let attrString = NSMutableAttributedString()
+        if spans.isEmpty { return NSAttributedString() }
+        var combined: NSMutableAttributedString? = nil
         
         // NSTextView.font can become a fallback font after Chinese/emoji output.
         // All terminal cells must retain the configured monospaced grid.
@@ -2394,13 +2395,25 @@ public final class NativeTerminalView: NSTextView {
                     offset += length
                 }
             }
-            attrString.append(run)
+            if spans.count == 1 {
+                combined = run
+            } else {
+                let target = combined ?? {
+                    let buffer = NSMutableAttributedString()
+                    combined = buffer
+                    return buffer
+                }()
+                target.append(run)
+            }
         }
-        for match in keywordHighlighter.findMatches(in: attrString.string) {
-            guard let color = NSColor(hex: match.colorHex) else { continue }
-            attrString.addAttribute(.foregroundColor, value: color, range: match.range)
-            // Keep explicit trigger colors when the theme recolors ANSI runs.
-            attrString.addAttribute(NSAttributedString.Key("ApexThemeColor"), value: -2, range: match.range)
+        let attrString = combined ?? NSMutableAttributedString()
+        if keywordHighlighter.hasActiveTriggers {
+            for match in keywordHighlighter.findMatches(in: attrString.string) {
+                guard let color = NSColor(hex: match.colorHex) else { continue }
+                attrString.addAttribute(.foregroundColor, value: color, range: match.range)
+                // Keep explicit trigger colors when the theme recolors ANSI runs.
+                attrString.addAttribute(NSAttributedString.Key("ApexThemeColor"), value: -2, range: match.range)
+            }
         }
         return attrString
     }
@@ -2456,158 +2469,167 @@ public final class NativeTerminalView: NSTextView {
 
     /// Incremental refresh: updates active line in-place and appends newly committed lines
     public func refresh() {
-        guard let buffer = ringBuffer else { return }
-        handleBellIfNeeded()
+        autoreleasepool {
+            guard let buffer = ringBuffer else { return }
+            handleBellIfNeeded()
 
-        if buffer.isSynchronizedOutputActive {
-            if syncWatchdogTask == nil {
-                syncWatchdogTask = Task { @MainActor [weak self] in
-                    try? await Task.sleep(for: .milliseconds(125))
-                    guard !Task.isCancelled, let self else { return }
-                    self.syncWatchdogTask = nil
-                    self.scheduleRefresh()
+            if buffer.isSynchronizedOutputActive {
+                if syncWatchdogTask == nil {
+                    syncWatchdogTask = Task { @MainActor [weak self] in
+                        try? await Task.sleep(for: .milliseconds(125))
+                        guard !Task.isCancelled, let self else { return }
+                        self.syncWatchdogTask = nil
+                        self.scheduleRefresh()
+                    }
                 }
+                return
             }
-            return
-        }
-        syncWatchdogTask?.cancel()
-        syncWatchdogTask = nil
+            syncWatchdogTask?.cancel()
+            syncWatchdogTask = nil
 
-        if let screenLines = buffer.screenLines {
-            let lineHeight = layoutManager?.defaultLineHeight(for: cachedBaseFont) ?? 16
-            let paragraph = NSMutableParagraphStyle()
-            paragraph.minimumLineHeight = lineHeight
-            paragraph.maximumLineHeight = lineHeight
-            let reusableRows = renderedScreenRows?.count == screenLines.count
-                && renderedScreenLines?.count == screenLines.count
-            let rows = screenLines.enumerated().map { index, line -> NSAttributedString in
-                if reusableRows, renderedScreenLines?[index] == line,
-                   let previous = renderedScreenRows?[index] {
-                    return previous
+            if let screenLines = buffer.screenLines {
+                let lineHeight = layoutManager?.defaultLineHeight(for: cachedBaseFont) ?? 16
+                let paragraph = NSMutableParagraphStyle()
+                paragraph.minimumLineHeight = lineHeight
+                paragraph.maximumLineHeight = lineHeight
+                let reusableRows = renderedScreenRows?.count == screenLines.count
+                    && renderedScreenLines?.count == screenLines.count
+                let rows = screenLines.enumerated().map { index, line -> NSAttributedString in
+                    if reusableRows, renderedScreenLines?[index] == line,
+                       let previous = renderedScreenRows?[index] {
+                        return previous
+                    }
+                    let row = NSMutableAttributedString(attributedString: formatANSI(line))
+                    if index < screenLines.count - 1 { row.append(formatANSI("\n")) }
+                    row.addAttribute(.paragraphStyle, value: paragraph, range: NSRange(location: 0, length: row.length))
+                    return row
                 }
-                let row = NSMutableAttributedString(attributedString: formatANSI(line))
-                if index < screenLines.count - 1 { row.append(formatANSI("\n")) }
-                row.addAttribute(.paragraphStyle, value: paragraph, range: NSRange(location: 0, length: row.length))
-                return row
+                if let storage = textStorage {
+                    storage.beginEditing()
+                    if let previous = renderedScreenRows, previous.count == rows.count,
+                       previous.reduce(0, { $0 + $1.length }) == storage.length {
+                        var offset = storage.length
+                        for index in rows.indices.reversed() {
+                            offset -= previous[index].length
+                            if !previous[index].isEqual(to: rows[index]) {
+                                storage.replaceCharacters(in: NSRange(location: offset, length: previous[index].length), with: rows[index])
+                            }
+                        }
+                    } else {
+                        let rendered = NSMutableAttributedString()
+                        for row in rows { rendered.append(row) }
+                        storage.setAttributedString(rendered)
+                    }
+                    storage.endEditing()
+                    renderedScreenRows = rows
+                    renderedScreenLines = screenLines
+                }
+                activeLineStartLocation = self.textStorage?.length ?? 0
+                lastCommittedIndex = buffer.totalCommittedCount
+                isPinnedToBottom = false
+                self.frame.origin = .zero
+                if let clipView = self.enclosingScrollView?.contentView {
+                    if clipView.bounds.origin != .zero {
+                        clipView.bounds.origin = .zero
+                        clipView.scroll(to: .zero)
+                        self.enclosingScrollView?.reflectScrolledClipView(clipView)
+                    }
+                }
+                self.needsDisplay = true
+                resetCursorBlink()
+                return
             }
-            if let storage = textStorage {
-                storage.beginEditing()
-                if let previous = renderedScreenRows, previous.count == rows.count,
-                   previous.reduce(0, { $0 + $1.length }) == storage.length {
-                    var offset = storage.length
-                    for index in rows.indices.reversed() {
-                        offset -= previous[index].length
-                        if !previous[index].isEqual(to: rows[index]) {
-                            storage.replaceCharacters(in: NSRange(location: offset, length: previous[index].length), with: rows[index])
+
+            renderedScreenRows = nil
+            renderedScreenLines = nil
+            let currentTotal = buffer.totalCommittedCount
+            let isCleared = buffer.consumeClearFlag() || (currentTotal < lastCommittedIndex)
+            let active = buffer.currentActiveLine
+            if !isCleared, currentTotal == lastCommittedIndex, active == renderedActiveLine {
+                // Cursor/control-only packets do not invalidate the entire scrollback layout.
+                self.needsDisplay = true
+                self.resetCursorBlink()
+                return
+            }
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            // Active-line replacement, appended history and eviction form one edit.
+            // Avoid repeated TextKit layout and document resizing for each packet.
+            textStorage?.beginEditing()
+
+            // 1. Buffer cleared or initial render
+            if isCleared {
+                lastCommittedIndex = 0
+                self.textStorage?.setAttributedString(NSAttributedString())
+                activeLineStartLocation = 0
+            }
+
+            // 2. Remove previously drawn active line (if any)
+            if let storage = self.textStorage, storage.length > activeLineStartLocation {
+                let activeRange = NSRange(location: activeLineStartLocation, length: storage.length - activeLineStartLocation)
+                storage.deleteCharacters(in: activeRange)
+            }
+
+            // 3. Append newly committed lines using tailLines
+            let hasNewCommittedLines = (currentTotal > lastCommittedIndex)
+            if hasNewCommittedLines {
+                let delta = Int(currentTotal - lastCommittedIndex)
+                lastCommittedIndex = currentTotal
+                if delta > 0 {
+                    let countToFetch = min(delta, buffer.maxLines)
+                    let newLines = buffer.tailLines(count: countToFetch)
+                    if !newLines.isEmpty {
+                        let joined = newLines.joined(separator: "\n") + "\n"
+                        let attr = formatANSI(joined)
+                        self.textStorage?.append(attr)
+                        var lineUTF16Len = 0
+                        for codeUnit in attr.string.utf16 {
+                            lineUTF16Len += 1
+                            if codeUnit == 0x0A {
+                                renderedCommittedLineLengths.append(lineUTF16Len)
+                                lineUTF16Len = 0
+                            }
                         }
                     }
-                } else {
-                    let rendered = NSMutableAttributedString()
-                    for row in rows { rendered.append(row) }
-                    storage.setAttributedString(rendered)
                 }
-                storage.endEditing()
-                renderedScreenRows = rows
-                renderedScreenLines = screenLines
-            }
-            activeLineStartLocation = self.textStorage?.length ?? 0
-            lastCommittedIndex = buffer.totalCommittedCount
-            isPinnedToBottom = false
-            self.frame.origin = .zero
-            if let clipView = self.enclosingScrollView?.contentView {
-                if clipView.bounds.origin != .zero {
-                    clipView.bounds.origin = .zero
-                    clipView.scroll(to: .zero)
-                    self.enclosingScrollView?.reflectScrolledClipView(clipView)
+
+                // Evict complete rendered lines along with the buffer and keep UTF-16 boundaries intact.
+                if let storage = textStorage {
+                    let lineLimit = buffer.maxLines
+                    let characterLimit = storage.length > 2_500_000 ? 1_500_000 : Int.max
+                    var removedCharacters = 0
+                    while renderedLineHead < renderedCommittedLineLengths.count &&
+                          (renderedCommittedLineLengths.count - renderedLineHead > lineLimit || storage.length - removedCharacters > characterLimit) {
+                        removedCharacters += renderedCommittedLineLengths[renderedLineHead]
+                        renderedLineHead += 1
+                    }
+                    if removedCharacters > 0 {
+                        storage.deleteCharacters(in: NSRange(location: 0, length: min(removedCharacters, storage.length)))
+                    }
+                    if renderedLineHead > 4096 && renderedLineHead * 2 > renderedCommittedLineLengths.count {
+                        renderedCommittedLineLengths.removeFirst(renderedLineHead)
+                        renderedLineHead = 0
+                    }
                 }
-            }
-            self.needsDisplay = true
-            resetCursorBlink()
-            return
-        }
-        
-        renderedScreenRows = nil
-        renderedScreenLines = nil
-        let currentTotal = buffer.totalCommittedCount
-        let isCleared = buffer.consumeClearFlag() || (currentTotal < lastCommittedIndex)
-        let active = buffer.currentActiveLine
-        if !isCleared, currentTotal == lastCommittedIndex, active == renderedActiveLine {
-            // Cursor/control-only packets do not invalidate the entire scrollback layout.
-            self.needsDisplay = true
-            self.resetCursorBlink()
-            return
-        }
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        // Active-line replacement, appended history and eviction form one edit.
-        // Avoid repeated TextKit layout and document resizing for each packet.
-        textStorage?.beginEditing()
-        
-        // 1. Buffer cleared or initial render
-        if isCleared {
-            lastCommittedIndex = 0
-            self.textStorage?.setAttributedString(NSAttributedString())
-            activeLineStartLocation = 0
-        }
-        
-        // 2. Remove previously drawn active line (if any)
-        if let storage = self.textStorage, storage.length > activeLineStartLocation {
-            let activeRange = NSRange(location: activeLineStartLocation, length: storage.length - activeLineStartLocation)
-            storage.deleteCharacters(in: activeRange)
-        }
-        
-        // 3. Append newly committed lines using tailLines
-        let hasNewCommittedLines = (currentTotal > lastCommittedIndex)
-        if hasNewCommittedLines {
-            let delta = Int(currentTotal - lastCommittedIndex)
-            lastCommittedIndex = currentTotal
-            if delta > 0 {
-                let countToFetch = min(delta, buffer.maxLines)
-                let newLines = buffer.tailLines(count: countToFetch)
-                if !newLines.isEmpty {
-                    let joined = newLines.joined(separator: "\n") + "\n"
-                    let attr = formatANSI(joined)
-                    self.textStorage?.append(attr)
-                    renderedCommittedLineLengths.append(contentsOf: attr.string.components(separatedBy: "\n").dropLast().map { $0.utf16.count + 1 })
-                }
+                activeLineStartLocation = self.textStorage?.length ?? 0
             }
 
-            // Evict complete rendered lines along with the buffer and keep UTF-16 boundaries intact.
-            if let storage = textStorage {
-                let lineLimit = buffer.maxLines
-                let characterLimit = storage.length > 2_500_000 ? 1_500_000 : Int.max
-                var removedCharacters = 0
-                while renderedLineHead < renderedCommittedLineLengths.count &&
-                      (renderedCommittedLineLengths.count - renderedLineHead > lineLimit || storage.length - removedCharacters > characterLimit) {
-                    removedCharacters += renderedCommittedLineLengths[renderedLineHead]
-                    renderedLineHead += 1
-                }
-                if removedCharacters > 0 {
-                    storage.deleteCharacters(in: NSRange(location: 0, length: min(removedCharacters, storage.length)))
-                }
-                if renderedLineHead > 4096 && renderedLineHead * 2 > renderedCommittedLineLengths.count {
-                    renderedCommittedLineLengths.removeFirst(renderedLineHead)
-                    renderedLineHead = 0
-                }
+            // 4. Render current active line at the bottom
+            if !active.isEmpty {
+                let attr = formatANSI(active)
+                self.textStorage?.append(attr)
             }
-            activeLineStartLocation = self.textStorage?.length ?? 0
+
+            renderedActiveLine = active
+            textStorage?.endEditing()
+            CATransaction.commit()
+
+            if self.isPinnedToBottom && (hasNewCommittedLines || isCleared || !self.isScrolledToBottom()) {
+                // NSTextView may not have resized its document frame for the appended lines yet.
+                self.scrollToBottom(forceLayout: true)
+            }
+            self.resetCursorBlink()
         }
-        
-        // 4. Render current active line at the bottom
-        if !active.isEmpty {
-            let attr = formatANSI(active)
-            self.textStorage?.append(attr)
-        }
-        
-        renderedActiveLine = active
-        textStorage?.endEditing()
-        CATransaction.commit()
-        
-        if self.isPinnedToBottom && (hasNewCommittedLines || isCleared || !self.isScrolledToBottom()) {
-            // NSTextView may not have resized its document frame for the appended lines yet.
-            self.scrollToBottom(forceLayout: true)
-        }
-        self.resetCursorBlink()
     }
 }
 

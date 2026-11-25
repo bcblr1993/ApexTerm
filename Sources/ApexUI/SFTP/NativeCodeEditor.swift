@@ -20,6 +20,23 @@ struct NativeCodeEditor: NSViewRepresentable {
         let gutter: NSColor
         let gutterText: NSColor
         let selection: NSColor
+        let gutterBorder: NSColor?
+
+        init(
+            background: NSColor,
+            text: NSColor,
+            gutter: NSColor,
+            gutterText: NSColor,
+            selection: NSColor,
+            gutterBorder: NSColor? = nil
+        ) {
+            self.background = background
+            self.text = text
+            self.gutter = gutter
+            self.gutterText = gutterText
+            self.selection = selection
+            self.gutterBorder = gutterBorder
+        }
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -94,15 +111,28 @@ struct NativeCodeEditor: NSViewRepresentable {
             textReplaced = true
         }
         editor.isEditable = !isReloading
-        editor.backgroundColor = palette?.background ?? .textBackgroundColor
+        let background = palette?.background ?? .textBackgroundColor
+        editor.backgroundColor = background
         editor.textColor = palette?.text ?? .textColor
         editor.insertionPointColor = palette?.text ?? .textColor
-        editor.selectedTextAttributes = [.backgroundColor: palette?.selection ?? .selectedTextBackgroundColor]
+        let selectionColor: NSColor
+        if let palette {
+            selectionColor = Self.colorsVisuallyMatch(palette.selection, background)
+                ? NSColor.controlAccentColor.withAlphaComponent(0.28)
+                : palette.selection
+        } else {
+            selectionColor = .selectedTextBackgroundColor
+        }
+        editor.selectedTextAttributes = [.backgroundColor: selectionColor]
         scroll.backgroundColor = editor.backgroundColor
+        let gutterFill = palette?.gutter ?? .controlBackgroundColor
+        let gutterLabel = palette?.gutterText ?? .secondaryLabelColor
+        let gutterSeparator = palette?.gutterBorder ?? (palette?.gutterText.withAlphaComponent(0.22) ?? .separatorColor)
         if let ruler = context.coordinator.ruler,
-           ruler.fillColor != palette?.gutter ?? .controlBackgroundColor || ruler.labelColor != palette?.gutterText ?? .secondaryLabelColor {
-            ruler.fillColor = palette?.gutter ?? .controlBackgroundColor
-            ruler.labelColor = palette?.gutterText ?? .secondaryLabelColor
+           ruler.fillColor != gutterFill || ruler.labelColor != gutterLabel || ruler.separatorColor != gutterSeparator {
+            ruler.fillColor = gutterFill
+            ruler.labelColor = gutterLabel
+            ruler.separatorColor = gutterSeparator
             ruler.needsDisplay = true
         }
         let paletteKey = "\(highlightPalette?.surface ?? "sys")_\(isDarkTheme)"
@@ -122,6 +152,17 @@ struct NativeCodeEditor: NSViewRepresentable {
             action.tag = (showsFindBar ? NSTextFinder.Action.showFindInterface : .hideFindInterface).rawValue
             editor.performTextFinderAction(action)
         }
+    }
+
+    private static func colorsVisuallyMatch(_ lhs: NSColor, _ rhs: NSColor) -> Bool {
+        guard let a = lhs.usingColorSpace(.sRGB),
+              let b = rhs.usingColorSpace(.sRGB) else {
+            return lhs == rhs
+        }
+        return abs(a.redComponent - b.redComponent) < 0.01 &&
+               abs(a.greenComponent - b.greenComponent) < 0.01 &&
+               abs(a.blueComponent - b.blueComponent) < 0.01 &&
+               abs(a.alphaComponent - b.alphaComponent) < 0.01
     }
 
     private static func scrollEditor(_ editor: NSTextView, toLine targetLine: Int) {
@@ -200,6 +241,7 @@ final class CodeLineRuler: NSRulerView {
     private var lineStarts: [Int] = [0]
     var fillColor: NSColor = .controlBackgroundColor
     var labelColor: NSColor = .secondaryLabelColor
+    var separatorColor: NSColor = .separatorColor
 
     init(editor: NSTextView) {
         self.editor = editor
@@ -229,6 +271,13 @@ final class CodeLineRuler: NSRulerView {
         ))).addClip()
         fillColor.setFill()
         bounds.fill()
+        separatorColor.setStroke()
+        let borderPath = NSBezierPath()
+        borderPath.lineWidth = 1.0
+        let separatorX = bounds.maxX - 0.5
+        borderPath.move(to: NSPoint(x: separatorX, y: bounds.minY))
+        borderPath.line(to: NSPoint(x: separatorX, y: bounds.maxY))
+        borderPath.stroke()
         let visible = editor.visibleRect.offsetBy(dx: -editor.textContainerOrigin.x, dy: -editor.textContainerOrigin.y)
         let glyphs = layout.glyphRange(forBoundingRect: visible, in: container)
         let characters = layout.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)

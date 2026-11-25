@@ -72,7 +72,7 @@ public struct TransferProgressSummary: Equatable, Sendable {
         } else if primary.status == .queued {
             percentText = "等待中"
         } else if primary.transferredBytes > 0 {
-            percentText = formatByteCount(primary.transferredBytes)
+            percentText = "传输中"
         } else {
             percentText = "准备中…"
         }
@@ -153,6 +153,7 @@ public struct TransferInlineProgressBar: View {
     @ObservedObject private var themeSettings = AppSettings.shared
     @ObservedObject private var manager: TransferManager
     @Binding var isDrawerExpanded: Bool
+    @State private var barWidth: CGFloat = 640
 
     public init(isDrawerExpanded: Binding<Bool>, manager: TransferManager = .shared) {
         self._isDrawerExpanded = isDrawerExpanded
@@ -167,17 +168,23 @@ public struct TransferInlineProgressBar: View {
             let directionTint = summary.primaryTask.direction == .upload ? ApexStyle.accent : ApexStyle.success
             let directionIcon = summary.primaryTask.direction == .upload ? "arrow.up.circle.fill" : "arrow.down.circle.fill"
             let detailParts = [summary.bytesText, summary.speedText].filter { !$0.isEmpty }.joined(separator: " · ")
+            let showDetails = barWidth >= 480
+            let showTrack = barWidth >= 280
+            let isUltraCompact = barWidth < 330
+            let mainLabel = summary.otherActiveCount > 0
+                ? "展开传输任务列表，正在传输 \(summary.primaryTask.fileName) 等 \(summary.activeCount) 个任务，\(summary.percentText)"
+                : "展开传输任务列表，\(summary.primaryTask.fileName)，\(summary.percentText)"
 
             VStack(spacing: 0) {
                 Divider()
 
-                HStack(spacing: 8) {
+                HStack(spacing: isUltraCompact ? 6 : 8) {
                     Button {
                         withAnimation(ApexStyle.springSnappy) {
                             isDrawerExpanded = true
                         }
                     } label: {
-                        HStack(spacing: 8) {
+                        HStack(spacing: isUltraCompact ? 6 : 8) {
                             Image(systemName: directionIcon)
                                 .font(.system(size: 13))
                                 .foregroundColor(directionTint)
@@ -188,6 +195,7 @@ public struct TransferInlineProgressBar: View {
                                 .foregroundColor(ApexStyle.primary)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
+                                .layoutPriority(1)
 
                             if summary.otherActiveCount > 0 {
                                 Text("+\(summary.otherActiveCount) 项")
@@ -200,23 +208,29 @@ public struct TransferInlineProgressBar: View {
                                     .fixedSize(horizontal: true, vertical: false)
                             }
 
-                            Spacer(minLength: 8)
+                            Spacer(minLength: isUltraCompact ? 4 : 8)
 
-                            ApexTransferProgressTrack(
-                                fraction: summary.progressFraction,
-                                tint: directionTint,
-                                height: 6
-                            )
-                            .frame(minWidth: 72, idealWidth: 112, maxWidth: 128)
+                            if showTrack {
+                                ApexTransferProgressTrack(
+                                    fraction: summary.progressFraction,
+                                    tint: directionTint,
+                                    height: 6
+                                )
+                                .frame(
+                                    minWidth: showDetails ? 72 : 44,
+                                    idealWidth: showDetails ? 112 : 76,
+                                    maxWidth: showDetails ? 128 : 96
+                                )
+                            }
 
                             Text(summary.percentText)
                                 .font(.system(size: 11, weight: .semibold, design: .monospaced))
                                 .monospacedDigit()
                                 .foregroundColor(directionTint)
-                                .frame(minWidth: 36, alignment: .trailing)
+                                .frame(minWidth: isUltraCompact ? 28 : 36, alignment: .trailing)
                                 .fixedSize(horizontal: true, vertical: false)
 
-                            if !detailParts.isEmpty {
+                            if showDetails, !detailParts.isEmpty {
                                 Text(detailParts)
                                     .font(.system(size: 10.5, design: .monospaced))
                                     .monospacedDigit()
@@ -228,6 +242,7 @@ public struct TransferInlineProgressBar: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel(mainLabel)
                     .help("点击展开传输任务列表")
 
                     Divider().frame(height: 14)
@@ -253,10 +268,12 @@ public struct TransferInlineProgressBar: View {
                             }
                         }
                     }
+                    .fixedSize()
                 }
                 .padding(.horizontal, ApexStyle.s4)
                 .frame(height: 34)
                 .background(ApexStyle.subtleSurface)
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { barWidth = $0 }
             }
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("transfer.inlineProgressBar")
@@ -279,6 +296,7 @@ public struct TransferDrawer: View {
     @ObservedObject private var manager: TransferManager
     @Binding var isExpanded: Bool
     @State private var filter: TransferFilter
+    @State private var drawerWidth: CGFloat = 600
     private let showsCollapsedPill: Bool
 
     public init(
@@ -331,53 +349,37 @@ public struct TransferDrawer: View {
 
     public var body: some View {
         if isExpanded {
+            let isCompactHeader = drawerWidth < 460
+            let isUltraCompactHeader = drawerWidth < 340
+            let stacksHeader = drawerWidth < 280
+            let hasTerminalTasks = manager.tasks.contains(where: { $0.status.isTerminal })
+
             VStack(spacing: 0) {
                 // Pinned Header (identical height and alignment across all filters)
-                HStack(spacing: 8) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "arrow.up.arrow.down.circle.fill")
-                            .foregroundColor(ApexStyle.accent)
-                            .font(.system(size: 14))
-                        Text("传输任务 (\(manager.tasks.count))")
-                            .font(.system(size: 13, weight: .semibold))
-                            .fixedSize(horizontal: true, vertical: false)
-                    }
-
-                    Spacer(minLength: 8)
-
-                    Picker("", selection: $filter) {
-                        ForEach(TransferFilter.allCases) { f in
-                            Text("\(f.rawValue) (\(count(for: f)))").tag(f)
+                Group {
+                    if stacksHeader {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(spacing: 6) {
+                                drawerTitleView(compact: true)
+                                Spacer(minLength: 4)
+                                drawerClearButton(iconOnly: true, visible: hasTerminalTasks)
+                                drawerCloseButton
+                            }
+                            drawerFilterPicker(compactLabels: true)
+                                .frame(maxWidth: .infinity, alignment: .leading)
                         }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.segmented)
-                    .controlSize(.small)
-                    .frame(minWidth: 180, idealWidth: 220, maxWidth: 232)
-                    .accessibilityIdentifier("transfer.filterPicker")
-
-                    if manager.tasks.contains(where: { $0.status.isTerminal }) {
-                        ApexActionButton(
-                            "清空记录",
-                            icon: "trash",
-                            tint: ApexStyle.secondary,
-                            size: .small
-                        ) {
-                            manager.clearCompleted()
+                        .padding(.vertical, 8)
+                    } else {
+                        HStack(spacing: isCompactHeader ? 6 : 8) {
+                            drawerTitleView(compact: isUltraCompactHeader)
+                            Spacer(minLength: isCompactHeader ? 4 : 8)
+                            drawerFilterPicker(compactLabels: isCompactHeader)
+                            drawerClearButton(iconOnly: isCompactHeader, visible: hasTerminalTasks)
+                            drawerCloseButton
                         }
+                        .frame(height: 40)
                     }
-
-                    ApexIconButton(
-                        icon: "xmark",
-                        label: "收起传输任务",
-                        size: 22,
-                        iconSize: 10
-                    ) {
-                        withAnimation(.spring(duration: 0.25)) { isExpanded = false }
-                    }
-                    .accessibilityIdentifier("transfer.closeButton")
                 }
-                .frame(height: 40)
                 .padding(.horizontal, ApexStyle.s4)
                 .background(ApexStyle.surface)
 
@@ -423,6 +425,7 @@ public struct TransferDrawer: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .background(ApexStyle.surface)
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { drawerWidth = $0 }
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("transfer.drawer")
         } else if showsCollapsedPill && (manager.activeCount > 0 || !manager.tasks.isEmpty) {
@@ -440,6 +443,8 @@ public struct TransferDrawer: View {
 
                         Text(manager.activeCount > 0 ? "传输中 (\(manager.activeCount))" : "传输记录 (\(manager.tasks.count))")
                             .font(.system(size: 11, weight: .medium))
+                            .monospacedDigit()
+                            .lineLimit(1)
                     }
 
                     if manager.activeCount > 0 {
@@ -447,6 +452,8 @@ public struct TransferDrawer: View {
                             .foregroundColor(ApexStyle.secondary)
                         Text(manager.formattedTotalSpeed)
                             .font(.system(size: 11, design: .monospaced))
+                            .monospacedDigit()
+                            .lineLimit(1)
                             .foregroundColor(ApexStyle.accent)
                     }
 
@@ -464,6 +471,73 @@ public struct TransferDrawer: View {
             .padding(.bottom, 8)
             .frame(maxWidth: .infinity, alignment: .trailing)
         }
+    }
+
+    private func drawerTitleView(compact: Bool) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "arrow.up.arrow.down.circle.fill")
+                .foregroundColor(ApexStyle.accent)
+                .font(.system(size: 14))
+            Text(compact ? "传输 (\(manager.tasks.count))" : "传输任务 (\(manager.tasks.count))")
+                .font(.system(size: 13, weight: .semibold))
+                .monospacedDigit()
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+        }
+    }
+
+    private func drawerFilterPicker(compactLabels: Bool) -> some View {
+        Picker("", selection: $filter) {
+            ForEach(TransferFilter.allCases) { f in
+                Text(compactLabels ? f.rawValue : "\(f.rawValue) (\(count(for: f)))")
+                    .monospacedDigit()
+                    .tag(f)
+            }
+        }
+        .labelsHidden()
+        .pickerStyle(.segmented)
+        .controlSize(.small)
+        .fixedSize(horizontal: true, vertical: false)
+        .accessibilityIdentifier("transfer.filterPicker")
+    }
+
+    @ViewBuilder
+    private func drawerClearButton(iconOnly: Bool, visible: Bool) -> some View {
+        if visible {
+            if iconOnly {
+                ApexIconButton(
+                    icon: "trash",
+                    label: "清空记录",
+                    size: 22,
+                    iconSize: 10
+                ) {
+                    manager.clearCompleted()
+                }
+                .accessibilityLabel("清空记录")
+            } else {
+                ApexActionButton(
+                    "清空记录",
+                    icon: "trash",
+                    tint: ApexStyle.secondary,
+                    size: .small
+                ) {
+                    manager.clearCompleted()
+                }
+                .accessibilityLabel("清空记录")
+            }
+        }
+    }
+
+    private var drawerCloseButton: some View {
+        ApexIconButton(
+            icon: "xmark",
+            label: "收起传输任务",
+            size: 22,
+            iconSize: 10
+        ) {
+            withAnimation(.spring(duration: 0.25)) { isExpanded = false }
+        }
+        .accessibilityIdentifier("transfer.closeButton")
     }
 }
 
@@ -484,6 +558,8 @@ private struct TransferTaskRow: View {
                 // Direction tag
                 Text(task.direction == .upload ? "上传" : "下载")
                     .font(.system(size: 9, weight: .bold))
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
                     .padding(.horizontal, 5)
                     .padding(.vertical, 2)
                     .background(task.direction == .upload ? ApexStyle.accent.opacity(0.18) : ApexStyle.success.opacity(0.18))
@@ -498,6 +574,7 @@ private struct TransferTaskRow: View {
                     Text(task.fileName)
                         .font(.system(size: 12, weight: .medium, design: .monospaced))
                         .lineLimit(1)
+                        .truncationMode(.middle)
 
                     // Path detail
                     Text(pathDescription)
@@ -510,22 +587,34 @@ private struct TransferTaskRow: View {
                         Text(statusLabel)
                             .font(.system(size: 10, weight: .medium))
                             .foregroundColor(statusColor)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .help(statusLabel)
 
                         if task.status == .transferring {
                             Text("·")
                                 .foregroundColor(ApexStyle.secondary)
                             Text(task.formattedSpeed)
                                 .font(.system(size: 10, design: .monospaced))
+                                .monospacedDigit()
+                                .lineLimit(1)
+                                .fixedSize(horizontal: true, vertical: false)
                                 .foregroundColor(ApexStyle.accent)
                             Text("·")
                                 .foregroundColor(ApexStyle.secondary)
                             if task.totalBytes > 0 {
                                 Text("\(formattedBytes(task.transferredBytes)) / \(formattedBytes(task.totalBytes))")
                                     .font(.system(size: 10, design: .monospaced))
+                                    .monospacedDigit()
+                                    .lineLimit(1)
+                                    .fixedSize(horizontal: true, vertical: false)
                                     .foregroundColor(ApexStyle.secondary)
                             } else {
                                 Text(formattedBytes(task.transferredBytes))
                                     .font(.system(size: 10, design: .monospaced))
+                                    .monospacedDigit()
+                                    .lineLimit(1)
+                                    .fixedSize(horizontal: true, vertical: false)
                                     .foregroundColor(ApexStyle.secondary)
                             }
                         } else {
@@ -535,6 +624,9 @@ private struct TransferTaskRow: View {
                                     .foregroundColor(ApexStyle.secondary)
                                 Text(formattedBytes(displayBytes))
                                     .font(.system(size: 10, design: .monospaced))
+                                    .monospacedDigit()
+                                    .lineLimit(1)
+                                    .fixedSize(horizontal: true, vertical: false)
                                     .foregroundColor(ApexStyle.secondary)
                             }
                             if let date = task.completedAt ?? task.startedAt as Date? {
@@ -542,13 +634,16 @@ private struct TransferTaskRow: View {
                                     .foregroundColor(ApexStyle.secondary)
                                 Text(Self.timeFormatter.string(from: date))
                                     .font(.system(size: 10))
+                                    .monospacedDigit()
+                                    .lineLimit(1)
+                                    .fixedSize(horizontal: true, vertical: false)
                                     .foregroundColor(ApexStyle.secondary)
                             }
                         }
                     }
                 }
 
-                Spacer()
+                Spacer(minLength: 4)
 
                 if task.status == .transferring || task.status == .queued {
                     if task.totalBytes > 0 {
@@ -557,16 +652,20 @@ private struct TransferTaskRow: View {
                             .monospacedDigit()
                             .foregroundColor(ApexStyle.accent)
                             .frame(minWidth: 36, alignment: .trailing)
+                            .fixedSize(horizontal: true, vertical: false)
                     } else if task.transferredBytes > 0 {
                         Text(formattedBytes(task.transferredBytes))
                             .font(.system(size: 11, weight: .semibold, design: .monospaced))
                             .monospacedDigit()
                             .foregroundColor(ApexStyle.accent)
                             .frame(minWidth: 36, alignment: .trailing)
+                            .fixedSize(horizontal: true, vertical: false)
                     } else {
-                        Text(task.status == .queued ? "等待中" : "准备中...")
+                        Text(task.status == .queued ? "等待中" : "准备中…")
                             .font(.system(size: 10, design: .monospaced))
                             .foregroundColor(ApexStyle.secondary)
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
                     }
 
                     ApexIconButton(
@@ -595,16 +694,46 @@ private struct TransferTaskRow: View {
                         Image(systemName: "checkmark.circle.fill")
                             .font(.system(size: 13))
                             .foregroundColor(ApexStyle.success)
+                            .help("传输完成")
+                            .accessibilityLabel("传输完成")
+
+                        ApexIconButton(
+                            icon: "xmark",
+                            label: "移除已完成记录 \(task.fileName)",
+                            size: 20,
+                            iconSize: 9
+                        ) {
+                            onCancel()
+                        }
                     }
                 } else if case .failed = task.status {
                     HStack(spacing: 6) {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .font(.system(size: 13))
                             .foregroundColor(ApexStyle.error)
+                            .help(statusLabel)
+                            .accessibilityLabel(statusLabel)
 
                         ApexIconButton(
                             icon: "xmark",
                             label: "移除失败记录 \(task.fileName)",
+                            size: 20,
+                            iconSize: 9
+                        ) {
+                            onCancel()
+                        }
+                    }
+                } else if task.status == .cancelled {
+                    HStack(spacing: 6) {
+                        Image(systemName: "minus.circle")
+                            .font(.system(size: 13))
+                            .foregroundColor(ApexStyle.secondary)
+                            .help("已取消")
+                            .accessibilityLabel("已取消")
+
+                        ApexIconButton(
+                            icon: "xmark",
+                            label: "移除已取消记录 \(task.fileName)",
                             size: 20,
                             iconSize: 9
                         ) {
@@ -623,7 +752,14 @@ private struct TransferTaskRow: View {
             }
         }
         .padding(8)
-        .background(ApexStyle.subtleSurface.opacity(0.5))
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(ApexStyle.primary.opacity(0.035))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(ApexStyle.border.opacity(0.45), lineWidth: 0.75)
+        )
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 

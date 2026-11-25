@@ -11,6 +11,7 @@ public struct QuickEditorView: View {
     public let onSave: (String) async throws -> Void
     public let onReload: () async throws -> String
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var colorScheme
     
     @State private var isSaving = false
     @State private var isReloading = false
@@ -46,12 +47,19 @@ public struct QuickEditorView: View {
     /// The editing area follows the active theme like the header and footer around it.
     private var editorPalette: NativeCodeEditor.EditorPalette? {
         guard !themeSettings.followsSystemAppearance else { return nil }
+        let selectionColor: NSColor
+        if themeSettings.themePreset == .solarized || ApexStyle.selection == ApexStyle.surface {
+            selectionColor = NSColor(ApexStyle.accent.opacity(0.24))
+        } else {
+            selectionColor = NSColor(ApexStyle.selection)
+        }
         return NativeCodeEditor.EditorPalette(
             background: NSColor(ApexStyle.surface),
             text: NSColor(ApexStyle.primary),
             gutter: NSColor(ApexStyle.subtleSurface),
             gutterText: NSColor(ApexStyle.secondary),
-            selection: NSColor(ApexStyle.selection)
+            selection: selectionColor,
+            gutterBorder: NSColor(ApexStyle.border.opacity(0.75))
         )
     }
 
@@ -69,6 +77,9 @@ public struct QuickEditorView: View {
                     HStack(spacing: 8) {
                         Text(item.name)
                             .font(.system(size: 15, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(ApexStyle.primary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
                         
                         if hasUnsavedChanges {
                             Circle()
@@ -76,6 +87,7 @@ public struct QuickEditorView: View {
                                 .frame(width: 7, height: 7)
                                 .shadow(color: ApexStyle.warning.opacity(0.6), radius: 2)
                                 .help("包含未保存更改 (按 ⌘S 保存)")
+                                .accessibilityLabel("有未保存的更改")
                         }
                     }
                     
@@ -83,6 +95,7 @@ public struct QuickEditorView: View {
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundColor(ApexStyle.secondary)
                         .lineLimit(1)
+                        .truncationMode(.middle)
                 }
                 
                 Spacer()
@@ -91,13 +104,19 @@ public struct QuickEditorView: View {
                 HStack(spacing: 6) {
                     Text(fileTypeTag(for: item.name))
                         .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(ApexStyle.accent)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
                         .background(ApexStyle.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 4))
                     
                     Text("\(lineCount) 行 · \(ByteCountFormatter.string(fromByteCount: Int64(contentByteCount), countStyle: .file))")
                         .font(.system(size: 11, design: .monospaced))
+                        .monospacedDigit()
                         .foregroundColor(ApexStyle.secondary)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                 }
                 
                 Divider().frame(height: 18)
@@ -143,15 +162,14 @@ public struct QuickEditorView: View {
                 .keyboardShortcut(.cancelAction)
                 .disabled(isSaving || isReloading)
             }
-            .padding(.horizontal, 16)
+            .padding(.horizontal, ApexStyle.s4)
             .padding(.vertical, 10)
             .background(ApexStyle.surface)
             
             Divider()
             
             let detectedLanguage = SyntaxLanguage.detect(filename: item.name)
-            let isSystemDark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            let effectiveDark = themeSettings.followsSystemAppearance ? isSystemDark : themeSettings.themePreset.isDark
+            let effectiveDark = themeSettings.followsSystemAppearance ? (colorScheme == .dark) : themeSettings.themePreset.isDark
             let effectiveHighlightPalette = themeSettings.followsSystemAppearance ? nil : themeSettings.themePreset.palette
 
             NativeCodeEditor(
@@ -179,6 +197,8 @@ public struct QuickEditorView: View {
                     Text("UTF-8 · 远程文件")
                         .font(.caption.monospaced())
                         .foregroundColor(ApexStyle.secondary)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                 }
                 
                 if let notice = saveNotice {
@@ -187,12 +207,26 @@ public struct QuickEditorView: View {
                             .font(.system(size: 11))
                         Text(notice)
                             .font(.system(size: 11, design: .monospaced))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        ApexIconButton(
+                            icon: "xmark",
+                            label: "关闭提示",
+                            size: 18,
+                            iconSize: 8.5,
+                            tint: saveNoticeIsError ? ApexStyle.error : ApexStyle.success
+                        ) {
+                            withAnimation(ApexStyle.hoverTransition) {
+                                saveNotice = nil
+                            }
+                        }
                     }
                     .foregroundColor(saveNoticeIsError ? ApexStyle.error : ApexStyle.success)
+                    .help(notice)
                     .transition(.opacity)
                 }
                 
-                Spacer()
+                Spacer(minLength: 8)
                 
                 ApexActionButton(
                     "关闭",
@@ -200,6 +234,7 @@ public struct QuickEditorView: View {
                     size: .small,
                     action: requestClose
                 )
+                .fixedSize(horizontal: true, vertical: false)
                 .keyboardShortcut("w", modifiers: .command)
                 .disabled(isSaving || isReloading)
                 
@@ -212,10 +247,11 @@ public struct QuickEditorView: View {
                     isLoading: isSaving,
                     action: saveChanges
                 )
+                .fixedSize(horizontal: true, vertical: false)
                 .keyboardShortcut("s", modifiers: .command)
                 .disabled(isSaving || isReloading)
             }
-            .padding(.horizontal, 14)
+            .padding(.horizontal, ApexStyle.s4)
             .padding(.vertical, 8)
             .background(ApexStyle.surface)
         }

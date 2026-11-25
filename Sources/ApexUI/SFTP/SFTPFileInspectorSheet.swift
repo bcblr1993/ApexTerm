@@ -35,6 +35,7 @@ public struct SFTPFileInspectorSheet: View {
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundColor(ApexStyle.primary)
                         .lineLimit(1)
+                        .truncationMode(.middle)
                     Text(item.path)
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundColor(ApexStyle.secondary)
@@ -87,8 +88,10 @@ public struct SFTPFileInspectorSheet: View {
                                     Text(algo.rawValue).tag(algo)
                                 }
                             }
+                            .labelsHidden()
+                            .controlSize(.small)
                             .pickerStyle(.segmented)
-                            .frame(width: 180)
+                            .fixedSize(horizontal: true, vertical: false)
                             .onChange(of: algorithm) { _, _ in
                                 computeChecksum()
                             }
@@ -153,6 +156,8 @@ public struct SFTPFileInspectorSheet: View {
                 }
             }
             .formStyle(.grouped)
+            .scrollContentBackground(.hidden)
+            .background(ApexStyle.surface)
 
             Divider()
 
@@ -161,6 +166,7 @@ public struct SFTPFileInspectorSheet: View {
                     Text(feedback)
                         .font(.caption)
                         .foregroundColor(ApexStyle.accent)
+                        .lineLimit(1)
                 }
                 Spacer()
                 ApexActionButton("完成", icon: "checkmark", tint: ApexStyle.accent, size: .regular, isProminent: true) {
@@ -172,7 +178,7 @@ public struct SFTPFileInspectorSheet: View {
             .padding(.vertical, 10)
             .background(ApexStyle.surface)
         }
-        .frame(width: 520, height: item.isDirectory ? 320 : 480)
+        .frame(minWidth: 500, idealWidth: 540, minHeight: item.isDirectory ? 320 : 520, idealHeight: item.isDirectory ? 340 : 540)
         .onAppear {
             if !item.isDirectory {
                 computeChecksum()
@@ -189,6 +195,8 @@ public struct SFTPFileInspectorSheet: View {
         HStack {
             Text(label)
                 .foregroundColor(ApexStyle.secondary)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
             Spacer()
             Text(value)
                 .font(.system(size: 12, design: .monospaced))

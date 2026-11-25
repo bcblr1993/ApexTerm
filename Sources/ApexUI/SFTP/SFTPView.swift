@@ -98,6 +98,14 @@ public struct SFTPView: View {
         case descending
     }
 
+    public enum SFTPNoticeKind: Sendable, Equatable {
+        case success
+        case info
+        case warning
+        case error
+        case cancelled
+    }
+
     @State private var items: [SFTPItem] = []
     @State private var isLoading = false
     @State private var selectedPaths: Set<String> = []
@@ -115,6 +123,8 @@ public struct SFTPView: View {
     @State private var editorContent = ""
     @State private var isDropTargeted = false
     @State private var transferNotice: String?
+    @State private var transferNoticeKind: SFTPNoticeKind = .info
+    @State private var transferNoticeIsTransferOutcome = false
     @State private var creationFailureDetails: String?
     @State private var creationFailureNotice: String?
     @State private var isShowingCreationFailure = false
@@ -156,6 +166,7 @@ public struct SFTPView: View {
     @State private var remoteSearchHits: [SFTPSearchHit] = []
     @State private var isSearchingRemote = false
     @State private var remoteSearchError: String? = nil
+    @State private var remoteSearchDidReturnEmpty = false
     @State private var remoteSearchTask: Task<Void, Never>? = nil
     @FocusState private var isRemoteSearchFocused: Bool
     @State private var editorInitialLine: Int? = nil
@@ -211,7 +222,7 @@ public struct SFTPView: View {
                 .textFieldStyle(.plain)
                 .font(.system(size: 12, design: .monospaced))
                 .padding(.horizontal, 8)
-                .frame(minWidth: 120, maxWidth: .infinity, minHeight: 24, maxHeight: 24, alignment: .leading)
+                .frame(minWidth: 80, maxWidth: .infinity, minHeight: 24, maxHeight: 24, alignment: .leading)
                 .background(
                     RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
                         .fill(ApexStyle.subtleSurface)
@@ -274,7 +285,7 @@ public struct SFTPView: View {
                     label: "常用目录预设与书签快速跳转",
                     size: 24,
                     iconSize: 11,
-                    tint: bookmarkManager.isBookmarked(path: currentPath) ? .yellow : nil
+                    tint: bookmarkManager.isBookmarked(path: currentPath) ? ApexStyle.warning : nil
                 )
             }
             .menuStyle(.button)
@@ -426,7 +437,14 @@ public struct SFTPView: View {
                 : AnyLayout(HStackLayout(spacing: 8))
             layout {
                 pathControls
-                fileActions(compact: toolbarWidth < 880)
+                if toolbarWidth > 0 && toolbarWidth < 320 {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        fileActions(compact: true)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    fileActions(compact: toolbarWidth < 880)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, ApexStyle.s4)
@@ -437,6 +455,7 @@ public struct SFTPView: View {
                 Group {
                     Button("") { showHiddenFiles.toggle() }
                         .keyboardShortcut(".", modifiers: [.command, .shift])
+                        .accessibilityHidden(true)
                     Button("") {
                         isRemoteSearchVisible.toggle()
                         if isRemoteSearchVisible {
@@ -444,21 +463,37 @@ public struct SFTPView: View {
                         }
                     }
                     .keyboardShortcut("f", modifiers: [.command, .shift])
+                    .accessibilityHidden(true)
                 }
                 .frame(width: 0, height: 0)
                 .opacity(0)
+                .accessibilityHidden(true)
             }
 
             Divider()
 
             if let notice = transferNotice {
-                let isFailure = notice.contains("失败")
-                let isCancelled = notice.contains("取消")
-                let isInProgress = notice.hasPrefix("正在")
-                let noticeTint: Color = isFailure ? ApexStyle.error : (isCancelled ? ApexStyle.secondary : (isInProgress ? ApexStyle.accent : ApexStyle.success))
-                let noticeIcon: String = isFailure ? "exclamationmark.triangle.fill" : (isCancelled ? "minus.circle.fill" : (isInProgress ? "arrow.triangle.2.circlepath" : "checkmark.circle.fill"))
+                let isFailure = transferNoticeKind == .error
+                let noticeTint: Color = {
+                    switch transferNoticeKind {
+                    case .success: return ApexStyle.success
+                    case .info: return ApexStyle.accent
+                    case .warning: return ApexStyle.warning
+                    case .error: return ApexStyle.error
+                    case .cancelled: return ApexStyle.secondary
+                    }
+                }()
+                let noticeIcon: String = {
+                    switch transferNoticeKind {
+                    case .success: return "checkmark.circle.fill"
+                    case .info: return "arrow.triangle.2.circlepath"
+                    case .warning: return "exclamationmark.circle.fill"
+                    case .error: return "exclamationmark.triangle.fill"
+                    case .cancelled: return "minus.circle.fill"
+                    }
+                }()
                 let isCreationFailure = (creationFailureNotice == notice && creationFailureDetails != nil)
-                let isTransferOutcome = !isCreationFailure && (notice.contains("上传") || notice.contains("下载") || notice.contains("拖拽") || notice.contains("传输"))
+                let isTransferOutcome = !isCreationFailure && transferNoticeIsTransferOutcome
 
                 HStack(spacing: 8) {
                     Image(systemName: noticeIcon)
@@ -471,6 +506,7 @@ public struct SFTPView: View {
                         .foregroundStyle(isFailure ? ApexStyle.error : ApexStyle.primary)
                         .lineLimit(1)
                         .truncationMode(.middle)
+                        .help(notice)
 
                     Spacer(minLength: 8)
 
@@ -481,6 +517,7 @@ public struct SFTPView: View {
                         .buttonStyle(.plain)
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(ApexStyle.error)
+                        .fixedSize(horizontal: true, vertical: false)
                         .help("点击查看创建失败原因与完整远端错误")
                     } else if isTransferOutcome {
                         Button("查看传输记录") {
@@ -491,6 +528,7 @@ public struct SFTPView: View {
                         .buttonStyle(.plain)
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(ApexStyle.accent)
+                        .fixedSize(horizontal: true, vertical: false)
                         .help("点击打开传输任务记录抽屉")
                     }
 
@@ -500,10 +538,7 @@ public struct SFTPView: View {
                         size: 20,
                         iconSize: 9.5
                     ) {
-                        if creationFailureNotice == notice {
-                            creationFailureNotice = nil
-                        }
-                        transferNotice = nil
+                        clearNotice()
                     }
                 }
                 .padding(.horizontal, ApexStyle.s4)
@@ -521,51 +556,62 @@ public struct SFTPView: View {
 
             // Search filter bar
             if isFilterVisible || !searchFilter.isEmpty {
-            HStack {
-                TextField(L10n.filterFiles, text: $searchFilter)
-                    .focused($isFilterFocused)
-                    .onExitCommand {
-                        // Restore table focus after SwiftUI removes the search field.
-                        isFilterFocused = false
-                        isFilterVisible = false
-                        searchFilter = ""
-                        Task { @MainActor in
-                            await Task.yield()
-                            guard let window = windowReference.window else { return }
-                            @MainActor func fileTable(in view: NSView) -> NSTableView? {
-                                if let table = view as? NSTableView, table.tableColumns.count == 4 { return table }
-                                for child in view.subviews {
-                                    if let table = fileTable(in: child) { return table }
-                                }
-                                return nil
+                HStack(spacing: 8) {
+                    HStack(spacing: 4) {
+                        TextField(L10n.filterFiles, text: $searchFilter)
+                            .focused($isFilterFocused)
+                            .onExitCommand {
+                                dismissFilterBar()
                             }
-                            if let content = window.contentView, let table = fileTable(in: content) {
-                                window.makeFirstResponder(table)
+                            .task {
+                                await Task.yield()
+                                if isFilterVisible { isFilterFocused = true }
+                            }
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 12))
+                            .frame(maxWidth: .infinity)
+
+                        if !searchFilter.isEmpty {
+                            ApexIconButton(
+                                icon: "xmark.circle.fill",
+                                label: "清除文件筛选",
+                                size: 18,
+                                iconSize: 11
+                            ) {
+                                searchFilter = ""
+                                isFilterFocused = true
                             }
                         }
                     }
-                    .task {
-                        await Task.yield()
-                        if isFilterVisible { isFilterFocused = true }
+                    .padding(.horizontal, 8)
+                    .frame(minWidth: 80, maxWidth: .infinity, minHeight: 24, maxHeight: 24, alignment: .leading)
+                    .background(
+                        RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
+                            .fill(ApexStyle.subtleSurface)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
+                            .stroke(isFilterFocused ? ApexStyle.accent.opacity(0.85) : ApexStyle.border.opacity(0.65), lineWidth: isFilterFocused ? 1.25 : 0.75)
+                    )
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        isFilterFocused = true
                     }
-                    .textFieldStyle(.roundedBorder)
-                if !searchFilter.isEmpty {
+
                     ApexIconButton(
-                        icon: "xmark.circle.fill",
-                        label: "清除文件筛选",
-                        size: 20,
-                        iconSize: 11
+                        icon: "xmark",
+                        label: "关闭文件筛选",
+                        size: 24,
+                        iconSize: 10
                     ) {
-                        searchFilter = ""
+                        dismissFilterBar()
                     }
                 }
-            }
-            .padding(.horizontal, ApexStyle.s4)
-            .padding(.vertical, 4)
-            .background(ApexStyle.subtleSurface)
+                .padding(.horizontal, ApexStyle.s4)
+                .padding(.vertical, 6)
+                .background(ApexStyle.subtleSurface)
 
-            Divider()
-
+                Divider()
             }
 
             if isRemoteSearchVisible {
@@ -680,16 +726,16 @@ public struct SFTPView: View {
                                     .truncationMode(.middle)
                             }.help(item.path)
                         }
-                        .width(min: 160, ideal: 280)
+                        .width(min: 120, ideal: 280)
                         TableColumn("权限") { item in
                             Text(item.permissionString).font(.caption.monospaced())
-                        }.width(min: 75, ideal: 90, max: 120)
+                        }.width(min: 65, ideal: 90, max: 120)
                         TableColumn("大小", value: \.size) { item in
                             Text(item.formattedSize).font(.caption.monospacedDigit())
-                        }.width(min: 65, ideal: 85, max: 120)
+                        }.width(min: 55, ideal: 85, max: 120)
                         TableColumn("修改时间", value: \.modificationDate) { item in
                             Text(formatDate(item.modificationDate)).font(.caption.monospacedDigit())
-                        }.width(min: 125, ideal: 145, max: 180)
+                        }.width(min: 110, ideal: 145, max: 180)
                     } rows: {
                         ForEach(filteredItems) { item in
                             if item.name == ".." {
@@ -847,6 +893,8 @@ public struct SFTPView: View {
                 remoteSearchTask = nil
                 isSearchingRemote = false
                 remoteSearchHits = []
+                remoteSearchError = nil
+                remoteSearchDidReturnEmpty = false
                 isLoading = false
                 items = []
                 displayItems = []
@@ -891,6 +939,7 @@ public struct SFTPView: View {
                     try await reloadFileContentAsync(item)
                 }
             )
+            .apexTheme()
         }
         .alert(archiveFormat.menuTitle, isPresented: $isShowingArchiveAlert) {
             TextField("归档文件名", text: $archiveOutputName)
@@ -1214,18 +1263,65 @@ public struct SFTPView: View {
         return try FileAccessStore.shared.acquire(destination)
     }
 
+    private func dismissFilterBar() {
+        isFilterFocused = false
+        isFilterVisible = false
+        searchFilter = ""
+        Task { @MainActor in
+            await Task.yield()
+            guard let window = windowReference.window else { return }
+            @MainActor func fileTable(in view: NSView) -> NSTableView? {
+                if let table = view as? NSTableView, table.tableColumns.count == 4 { return table }
+                for child in view.subviews {
+                    if let table = fileTable(in: child) { return table }
+                }
+                return nil
+            }
+            if let content = window.contentView, let table = fileTable(in: content) {
+                window.makeFirstResponder(table)
+            }
+        }
+    }
+
+    private func clearNotice() {
+        transferNotice = nil
+        transferNoticeKind = .info
+        transferNoticeIsTransferOutcome = false
+        creationFailureNotice = nil
+    }
+
+    private func setNotice(
+        _ message: String,
+        kind: SFTPNoticeKind,
+        isTransferOutcome: Bool = false,
+        autoDismissAfter seconds: TimeInterval? = nil
+    ) {
+        if creationFailureNotice != message {
+            creationFailureNotice = nil
+        }
+        transferNotice = message
+        transferNoticeKind = kind
+        transferNoticeIsTransferOutcome = isTransferOutcome
+        if let seconds {
+            DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
+                if self.transferNotice == message {
+                    self.clearNotice()
+                }
+            }
+        }
+    }
+
     private func downloadBatchAction(_ targetItems: [SFTPItem]) {
         guard let s = session, Self.shouldLoadDirectory(for: connectionState), !targetItems.isEmpty else { return }
         let access: FileAccessLease
         do { access = try downloadDirectoryAccess() }
         catch is CancellationError { return }
         catch {
-            transferNotice = "无法访问下载目录：\(error.localizedDescription)"
+            setNotice("无法访问下载目录：\(error.localizedDescription)", kind: .error)
             return
         }
         let downloads = access.url
-        transferNotice = nil
-        creationFailureNotice = nil
+        clearNotice()
         let tracker = SFTPBatchTracker(total: targetItems.count)
         tracker.addCompletionHandler {
             access.close()
@@ -1248,24 +1344,35 @@ public struct SFTPView: View {
                         if snapshot.isDone {
                             if snapshot.failed > 0 {
                                 let cancelSuffix = snapshot.cancelled > 0 ? "，取消 \(snapshot.cancelled)" : ""
-                                self.transferNotice = "批量下载部分失败（成功 \(snapshot.succeeded)，失败 \(snapshot.failed)\(cancelSuffix)）"
+                                self.setNotice(
+                                    "批量下载部分失败（成功 \(snapshot.succeeded)，失败 \(snapshot.failed)\(cancelSuffix)）",
+                                    kind: .error,
+                                    isTransferOutcome: true
+                                )
                             } else if snapshot.cancelled > 0 {
-                                self.transferNotice = snapshot.succeeded > 0
-                                    ? "批量下载已取消部分项目（成功 \(snapshot.succeeded)，取消 \(snapshot.cancelled)）"
-                                    : "已取消下载: \(item.name)"
+                                self.setNotice(
+                                    snapshot.succeeded > 0
+                                        ? "批量下载已取消部分项目（成功 \(snapshot.succeeded)，取消 \(snapshot.cancelled)）"
+                                        : "已取消下载: \(item.name)",
+                                    kind: snapshot.succeeded > 0 ? .warning : .cancelled,
+                                    isTransferOutcome: true
+                                )
                             } else {
-                                let doneNotice = "批量下载完成 (\(tracker.total) 个文件)"
-                                self.transferNotice = doneNotice
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-                                    if self.transferNotice == doneNotice {
-                                        self.transferNotice = nil
-                                    }
-                                }
+                                self.setNotice(
+                                    "批量下载完成 (\(tracker.total) 个文件)",
+                                    kind: .success,
+                                    isTransferOutcome: true,
+                                    autoDismissAfter: 3.0
+                                )
                             }
                         } else if case .failure(let error) = result {
-                            self.transferNotice = error is CancellationError
-                                ? "已取消下载: \(item.name)"
-                                : "下载失败: \(error.localizedDescription)"
+                            self.setNotice(
+                                error is CancellationError
+                                    ? "已取消下载: \(item.name)"
+                                    : "下载失败: \(error.localizedDescription)",
+                                kind: error is CancellationError ? .cancelled : .error,
+                                isTransferOutcome: true
+                            )
                         }
                     }
                 }
@@ -1296,9 +1403,9 @@ public struct SFTPView: View {
             }
             await MainActor.run {
                 if failed.isEmpty {
-                    self.transferNotice = "已成功删除 \(safeItems.count) 个项目"
+                    self.setNotice("已成功删除 \(safeItems.count) 个项目", kind: .success, autoDismissAfter: 3.0)
                 } else {
-                    self.transferNotice = "部分项目删除失败 (\(failed.joined(separator: ", ")))"
+                    self.setNotice("部分项目删除失败 (\(failed.joined(separator: ", ")))", kind: .error)
                 }
                 self.loadDirectory(path: self.currentPath)
             }
@@ -1319,17 +1426,12 @@ public struct SFTPView: View {
                     try await s.removeFile(remotePath: item.path)
                 }
                 await MainActor.run {
-                    self.transferNotice = "已删除: \(item.name)"
+                    self.setNotice("已删除: \(item.name)", kind: .success, autoDismissAfter: 3.0)
                     self.loadDirectory(path: self.currentPath)
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-                        if self.transferNotice?.hasPrefix("已删除") == true {
-                            self.transferNotice = nil
-                        }
-                    }
                 }
             } catch {
                 await MainActor.run {
-                    self.transferNotice = "删除失败: \(error.localizedDescription)"
+                    self.setNotice("删除失败: \(error.localizedDescription)", kind: .error)
                     self.loadDirectory(path: self.currentPath)
                 }
             }
@@ -1349,7 +1451,7 @@ public struct SFTPView: View {
         let notice = "\(operation)失败：\(reason)"
         creationFailureNotice = notice
         creationFailureDetails = "\(reason)\n\n目标：\(target)\n\n远端错误：\(remoteError)"
-        transferNotice = notice
+        setNotice(notice, kind: .error)
     }
 
     private func performCreateFolder(name: String) {
@@ -1360,13 +1462,8 @@ public struct SFTPView: View {
             do {
                 try await s.createDirectory(remotePath: target)
                 await MainActor.run {
-                    self.transferNotice = "已新建文件夹: \(trimmed)"
+                    self.setNotice("已新建文件夹: \(trimmed)", kind: .success, autoDismissAfter: 3.0)
                     self.loadDirectory(path: self.currentPath)
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-                        if self.transferNotice?.hasPrefix("已新建") == true {
-                            self.transferNotice = nil
-                        }
-                    }
                 }
             } catch {
                 await MainActor.run {
@@ -1384,13 +1481,8 @@ public struct SFTPView: View {
             do {
                 try await s.createFile(remotePath: target)
                 await MainActor.run {
-                    self.transferNotice = "已新建文件: \(trimmed)"
+                    self.setNotice("已新建文件: \(trimmed)", kind: .success, autoDismissAfter: 3.0)
                     self.loadDirectory(path: self.currentPath)
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-                        if self.transferNotice?.hasPrefix("已新建") == true {
-                            self.transferNotice = nil
-                        }
-                    }
                 }
             } catch {
                 await MainActor.run {
@@ -1409,17 +1501,12 @@ public struct SFTPView: View {
             do {
                 try await s.rename(oldPath: item.path, newPath: target)
                 await MainActor.run {
-                    self.transferNotice = "已重命名为: \(trimmed)"
+                    self.setNotice("已重命名为: \(trimmed)", kind: .success, autoDismissAfter: 3.0)
                     self.loadDirectory(path: self.currentPath)
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-                        if self.transferNotice?.hasPrefix("已重命名") == true {
-                            self.transferNotice = nil
-                        }
-                    }
                 }
             } catch {
                 await MainActor.run {
-                    self.transferNotice = "重命名失败: \(error.localizedDescription)"
+                    self.setNotice("重命名失败: \(error.localizedDescription)", kind: .error)
                 }
             }
         }
@@ -1432,17 +1519,12 @@ public struct SFTPView: View {
             do {
                 try await s.changePermissions(remotePath: targetPath, permissions: trimmed)
                 await MainActor.run {
-                    self.transferNotice = "已修改权限为: \(trimmed)"
+                    self.setNotice("已修改权限为: \(trimmed)", kind: .success, autoDismissAfter: 3.0)
                     self.loadDirectory(path: self.currentPath)
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-                        if self.transferNotice?.hasPrefix("已修改") == true {
-                            self.transferNotice = nil
-                        }
-                    }
                 }
             } catch {
                 await MainActor.run {
-                    self.transferNotice = "修改权限失败: \(error.localizedDescription)"
+                    self.setNotice("修改权限失败: \(error.localizedDescription)", kind: .error)
                 }
             }
         }
@@ -1458,12 +1540,12 @@ public struct SFTPView: View {
             do {
                 _ = try await s.executeCommand(cmd)
                 await MainActor.run {
-                    self.transferNotice = "已创建符号链接: \(trimmed)"
+                    self.setNotice("已创建符号链接: \(trimmed)", kind: .success, autoDismissAfter: 3.0)
                     self.loadDirectory(path: self.currentPath)
                 }
             } catch {
                 await MainActor.run {
-                    self.transferNotice = "创建符号链接失败: \(error.localizedDescription)"
+                    self.setNotice("创建符号链接失败: \(error.localizedDescription)", kind: .error)
                 }
             }
         }
@@ -1488,12 +1570,12 @@ public struct SFTPView: View {
             do {
                 _ = try await s.executeCommand(cmd)
                 await MainActor.run {
-                    self.transferNotice = "已创建副本: \(dupName)"
+                    self.setNotice("已创建副本: \(dupName)", kind: .success, autoDismissAfter: 3.0)
                     self.loadDirectory(path: self.currentPath)
                 }
             } catch {
                 await MainActor.run {
-                    self.transferNotice = "创建副本失败: \(error.localizedDescription)"
+                    self.setNotice("创建副本失败: \(error.localizedDescription)", kind: .error)
                 }
             }
         }
@@ -1573,7 +1655,7 @@ public struct SFTPView: View {
     private func openEditor(_ item: SFTPItem, lineNumber: Int? = nil) {
         guard !isOpeningEditor else { return }
         guard item.size <= 1_000_000 else {
-            transferNotice = "文件超过 1 MB，请先下载后编辑"
+            setNotice("文件超过 1 MB，请先下载后编辑", kind: .warning)
             return
         }
         guard let session, Self.shouldLoadDirectory(for: connectionState) else { return }
@@ -1592,7 +1674,7 @@ public struct SFTPView: View {
                 editorContent = text
                 editingFile = item
             } catch {
-                transferNotice = "读取失败：\(error.localizedDescription)"
+                setNotice("读取失败：\(error.localizedDescription)", kind: .error)
             }
             isOpeningEditor = false
         }
@@ -1600,49 +1682,117 @@ public struct SFTPView: View {
 
     // MARK: - Remote Search & Archive Operations (v1.24.0)
 
-    private var remoteSearchBar: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Picker("搜索模式", selection: $remoteSearchMode) {
-                    ForEach(SFTPSearchMode.allCases) { mode in
-                        Text(mode.rawValue).tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 150)
-
-                TextField(
-                    remoteSearchMode == .filename ? "在 \(currentPath) 搜索文件名 (find)..." : "在 \(currentPath) 搜索文件内容 (grep -F)...",
-                    text: $remoteSearchQuery
-                )
-                .textFieldStyle(.roundedBorder)
-                .font(.system(size: 12, design: .monospaced))
-                .focused($isRemoteSearchFocused)
-                .onSubmit {
-                    performRemoteSearch()
-                }
-                .onExitCommand {
-                    closeRemoteSearch()
-                }
-
-                if isSearchingRemote {
-                    ProgressView()
-                        .controlSize(.small)
-                        .scaleEffect(0.7)
-                    ApexActionButton("取消", tint: ApexStyle.secondary, size: .small) {
+    @ViewBuilder
+    private func remoteSearchActionControls(compact: Bool) -> some View {
+        HStack(spacing: 6) {
+            if isSearchingRemote {
+                ProgressView()
+                    .controlSize(.mini)
+                    .scaleEffect(0.75)
+                    .frame(width: 16, height: 16)
+                if compact {
+                    ApexIconButton(icon: "stop.circle", label: "取消搜索", size: 24, iconSize: 11) {
                         remoteSearchTask?.cancel()
                         remoteSearchTask = nil
                         isSearchingRemote = false
                     }
                 } else {
-                    ApexActionButton("搜索", icon: "magnifyingglass", tint: ApexStyle.accent, size: .small) {
-                        performRemoteSearch()
+                    ApexActionButton("取消", tint: ApexStyle.secondary, size: .small) {
+                        remoteSearchTask?.cancel()
+                        remoteSearchTask = nil
+                        isSearchingRemote = false
                     }
-                    .disabled(remoteSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || connectionState != .connected)
+                }
+            } else if compact {
+                ApexIconButton(icon: "magnifyingglass", label: "搜索", size: 24, iconSize: 11, tint: ApexStyle.accent) {
+                    performRemoteSearch()
+                }
+                .disabled(remoteSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || connectionState != .connected)
+            } else {
+                ApexActionButton("搜索", icon: "magnifyingglass", tint: ApexStyle.accent, size: .small) {
+                    performRemoteSearch()
+                }
+                .disabled(remoteSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || connectionState != .connected)
+            }
+
+            ApexIconButton(icon: "xmark", label: "关闭远端搜索", size: 24, iconSize: 10) {
+                closeRemoteSearch()
+            }
+        }
+        .fixedSize()
+    }
+
+    private var remoteSearchBar: some View {
+        let isNarrow = toolbarWidth > 0 && toolbarWidth < 460
+        let isUltraNarrow = toolbarWidth > 0 && toolbarWidth < 270
+        let searchLayout = isNarrow
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 6))
+            : AnyLayout(HStackLayout(spacing: 8))
+
+        return VStack(spacing: 0) {
+            searchLayout {
+                HStack(spacing: 6) {
+                    Picker("搜索模式", selection: $remoteSearchMode) {
+                        ForEach(SFTPSearchMode.allCases) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
+                    }
+                    .labelsHidden()
+                    .controlSize(.small)
+                    .pickerStyle(.segmented)
+                    .fixedSize(horizontal: true, vertical: false)
+
+                    if isNarrow {
+                        Spacer(minLength: 4)
+                        remoteSearchActionControls(compact: isUltraNarrow)
+                    }
                 }
 
-                ApexIconButton(icon: "xmark", label: "关闭远端搜索", size: 22, iconSize: 10) {
-                    closeRemoteSearch()
+                HStack(spacing: 4) {
+                    TextField(
+                        remoteSearchMode == .filename ? "在 \(currentPath) 搜索文件名 (find)..." : "在 \(currentPath) 搜索文件内容 (grep -F)...",
+                        text: $remoteSearchQuery
+                    )
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12, design: .monospaced))
+                    .focused($isRemoteSearchFocused)
+                    .frame(maxWidth: .infinity)
+                    .onSubmit {
+                        performRemoteSearch()
+                    }
+                    .onExitCommand {
+                        closeRemoteSearch()
+                    }
+
+                    if !remoteSearchQuery.isEmpty {
+                        ApexIconButton(
+                            icon: "xmark.circle.fill",
+                            label: "清除远端搜索内容",
+                            size: 18,
+                            iconSize: 11
+                        ) {
+                            remoteSearchQuery = ""
+                            isRemoteSearchFocused = true
+                        }
+                    }
+                }
+                .padding(.horizontal, 8)
+                .frame(minWidth: 80, maxWidth: .infinity, minHeight: 24, maxHeight: 24, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
+                        .fill(ApexStyle.subtleSurface)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
+                        .stroke(isRemoteSearchFocused ? ApexStyle.accent.opacity(0.85) : ApexStyle.border.opacity(0.65), lineWidth: isRemoteSearchFocused ? 1.25 : 0.75)
+                )
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    isRemoteSearchFocused = true
+                }
+
+                if !isNarrow {
+                    remoteSearchActionControls(compact: false)
                 }
             }
             .padding(.horizontal, ApexStyle.s4)
@@ -1650,11 +1800,35 @@ public struct SFTPView: View {
             .background(ApexStyle.subtleSurface)
 
             if let err = remoteSearchError {
-                HStack {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(ApexStyle.error)
                     Text(err)
                         .font(.caption)
-                        .foregroundColor(ApexStyle.error)
-                    Spacer()
+                        .foregroundStyle(ApexStyle.error)
+                        .lineLimit(2)
+                    Spacer(minLength: 8)
+                    ApexIconButton(icon: "xmark", label: "关闭错误提示", size: 18, iconSize: 8.5, tint: ApexStyle.error) {
+                        remoteSearchError = nil
+                    }
+                }
+                .padding(.horizontal, ApexStyle.s4)
+                .padding(.bottom, 6)
+                .background(ApexStyle.subtleSurface)
+            } else if remoteSearchDidReturnEmpty {
+                HStack(spacing: 6) {
+                    Image(systemName: "info.circle")
+                        .font(.system(size: 11))
+                        .foregroundStyle(ApexStyle.secondary)
+                    Text("未找到匹配结果（深度上限 5 层，最多 200 条）")
+                        .font(.caption)
+                        .foregroundStyle(ApexStyle.secondary)
+                        .lineLimit(2)
+                    Spacer(minLength: 8)
+                    ApexIconButton(icon: "xmark", label: "关闭空结果提示", size: 18, iconSize: 8.5) {
+                        remoteSearchDidReturnEmpty = false
+                    }
                 }
                 .padding(.horizontal, ApexStyle.s4)
                 .padding(.bottom, 6)
@@ -1663,7 +1837,10 @@ public struct SFTPView: View {
                 Divider()
                 ScrollView {
                     LazyVStack(spacing: 0) {
-                        ForEach(remoteSearchHits) { hit in
+                        ForEach(Array(remoteSearchHits.enumerated()), id: \.element.id) { index, hit in
+                            if index > 0 {
+                                Divider()
+                            }
                             Button {
                                 handleRemoteSearchHitClick(hit)
                             } label: {
@@ -1679,7 +1856,10 @@ public struct SFTPView: View {
                                     if let line = hit.lineNumber {
                                         Text(":\(line)")
                                             .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+                                            .monospacedDigit()
                                             .foregroundColor(ApexStyle.accent)
+                                            .lineLimit(1)
+                                            .fixedSize(horizontal: true, vertical: false)
                                             .padding(.horizontal, 5)
                                             .padding(.vertical, 1)
                                             .background(ApexStyle.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 3))
@@ -1698,7 +1878,6 @@ public struct SFTPView: View {
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
-                            Divider()
                         }
                     }
                 }
@@ -1713,6 +1892,8 @@ public struct SFTPView: View {
         remoteSearchTask?.cancel()
         remoteSearchTask = nil
         isSearchingRemote = false
+        remoteSearchError = nil
+        remoteSearchDidReturnEmpty = false
         isRemoteSearchFocused = false
         isRemoteSearchVisible = false
     }
@@ -1728,6 +1909,7 @@ public struct SFTPView: View {
         remoteSearchTask?.cancel()
         isSearchingRemote = true
         remoteSearchError = nil
+        remoteSearchDidReturnEmpty = false
         let mode = remoteSearchMode
         remoteSearchTask = Task {
             do {
@@ -1737,9 +1919,7 @@ public struct SFTPView: View {
                 await MainActor.run {
                     self.remoteSearchHits = hits
                     self.isSearchingRemote = false
-                    if hits.isEmpty {
-                        self.remoteSearchError = "未找到匹配结果（深度上限 5 层，最多 200 条）"
-                    }
+                    self.remoteSearchDidReturnEmpty = hits.isEmpty
                 }
             } catch {
                 guard !Task.isCancelled else { return }
@@ -1774,24 +1954,24 @@ public struct SFTPView: View {
             format: format,
             archiveName: archiveName
         ) else {
-            transferNotice = "归档名称或选中项无效"
+            setNotice("归档名称或选中项无效", kind: .warning)
             return
         }
-        transferNotice = "正在压缩 \(archiveName)..."
+        setNotice("正在压缩 \(archiveName)...", kind: .info)
         Task {
             do {
                 let output = try await s.executeCommand(cmd).trimmingCharacters(in: .whitespacesAndNewlines)
                 await MainActor.run {
                     if output.localizedCaseInsensitiveContains("not found") || output.localizedCaseInsensitiveContains("error") {
-                        self.transferNotice = "压缩失败: \(output)"
+                        self.setNotice("压缩失败: \(output)", kind: .error)
                     } else {
-                        self.transferNotice = "已压缩生成 \(archiveName)"
+                        self.setNotice("已压缩生成 \(archiveName)", kind: .success, autoDismissAfter: 3.0)
                         self.loadDirectory(path: self.currentPath)
                     }
                 }
             } catch {
                 await MainActor.run {
-                    self.transferNotice = "压缩失败: \(error.localizedDescription)"
+                    self.setNotice("压缩失败: \(error.localizedDescription)", kind: .error)
                 }
             }
         }
@@ -1800,24 +1980,24 @@ public struct SFTPView: View {
     private func performExtract(_ item: SFTPItem) {
         guard let s = session, Self.shouldLoadDirectory(for: connectionState) else { return }
         guard let cmd = SFTPRemoteOperations.extractCommand(archivePath: item.path, targetDirectory: currentPath) else {
-            transferNotice = "不支持该压缩包格式"
+            setNotice("不支持该压缩包格式", kind: .warning)
             return
         }
-        transferNotice = "正在解压 \(item.name)..."
+        setNotice("正在解压 \(item.name)...", kind: .info)
         Task {
             do {
                 let output = try await s.executeCommand(cmd).trimmingCharacters(in: .whitespacesAndNewlines)
                 await MainActor.run {
                     if output.localizedCaseInsensitiveContains("not found") || output.localizedCaseInsensitiveContains("cannot open") {
-                        self.transferNotice = "解压失败: \(output)"
+                        self.setNotice("解压失败: \(output)", kind: .error)
                     } else {
-                        self.transferNotice = "已解压 \(item.name) 至当前目录"
+                        self.setNotice("已解压 \(item.name) 至当前目录", kind: .success, autoDismissAfter: 3.0)
                         self.loadDirectory(path: self.currentPath)
                     }
                 }
             } catch {
                 await MainActor.run {
-                    self.transferNotice = "解压失败: \(error.localizedDescription)"
+                    self.setNotice("解压失败: \(error.localizedDescription)", kind: .error)
                 }
             }
         }
@@ -1850,23 +2030,18 @@ public struct SFTPView: View {
         DispatchQueue.main.async {
             switch result {
             case .success:
-                self.transferNotice = "上传成功: \(fileName)"
+                self.setNotice("上传成功: \(fileName)", kind: .success, isTransferOutcome: true, autoDismissAfter: 3.0)
                 self.loadDirectory(path: self.currentPath)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-                    if self.transferNotice?.hasPrefix("上传成功") == true {
-                        self.transferNotice = nil
-                    }
-                }
             case .failure(let error):
                 if error is CancellationError {
-                    self.transferNotice = "已取消上传: \(fileName)"
+                    self.setNotice("已取消上传: \(fileName)", kind: .cancelled, isTransferOutcome: true)
                     return
                 }
                 let desc = error.localizedDescription
                 if desc.localizedCaseInsensitiveContains("Permission denied") || desc.contains("dest open") {
-                    self.transferNotice = "上传失败：权限不足 (Permission denied)，当前目录无写入权限"
+                    self.setNotice("上传失败：权限不足 (Permission denied)，当前目录无写入权限", kind: .error, isTransferOutcome: true)
                 } else {
-                    self.transferNotice = "上传失败: \(desc)"
+                    self.setNotice("上传失败: \(desc)", kind: .error, isTransferOutcome: true)
                 }
             }
         }
@@ -1932,8 +2107,7 @@ public struct SFTPView: View {
                 
                 guard !filesToUpload.isEmpty else { return }
 
-                transferNotice = nil
-                creationFailureNotice = nil
+                clearNotice()
                 
                 let tracker = SFTPBatchTracker(total: filesToUpload.count)
                 let retainedAccesses = accesses
@@ -1960,36 +2134,40 @@ public struct SFTPView: View {
                                 if snapshot.failed > 0 {
                                     let cancelSuffix = snapshot.cancelled > 0 ? "，取消 \(snapshot.cancelled)" : ""
                                     if tracker.total == 1, case .failure(let error) = result {
-                                        self.transferNotice = "上传失败: \(error.localizedDescription)"
+                                        self.setNotice("上传失败: \(error.localizedDescription)", kind: .error, isTransferOutcome: true)
                                     } else {
-                                        self.transferNotice = "批量上传部分失败（成功 \(snapshot.succeeded)，失败 \(snapshot.failed)\(cancelSuffix)）"
+                                        self.setNotice("批量上传部分失败（成功 \(snapshot.succeeded)，失败 \(snapshot.failed)\(cancelSuffix)）", kind: .error, isTransferOutcome: true)
                                     }
                                 } else if snapshot.cancelled > 0 {
-                                    self.transferNotice = snapshot.succeeded > 0
-                                        ? "批量上传已取消部分项目（成功 \(snapshot.succeeded)，取消 \(snapshot.cancelled)）"
-                                        : "已取消上传: \(localURL.lastPathComponent)"
+                                    self.setNotice(
+                                        snapshot.succeeded > 0
+                                            ? "批量上传已取消部分项目（成功 \(snapshot.succeeded)，取消 \(snapshot.cancelled)）"
+                                            : "已取消上传: \(localURL.lastPathComponent)",
+                                        kind: snapshot.succeeded > 0 ? .warning : .cancelled,
+                                        isTransferOutcome: true
+                                    )
                                 } else {
-                                    self.transferNotice = tracker.total == 1
-                                        ? "上传成功: \(localURL.lastPathComponent)"
-                                        : "批量上传完成 (\(tracker.total) 个文件)"
-                                    DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-                                        if self.transferNotice?.hasPrefix("上传成功") == true || self.transferNotice?.hasPrefix("批量上传完成") == true {
-                                            self.transferNotice = nil
-                                        }
-                                    }
+                                    self.setNotice(
+                                        tracker.total == 1
+                                            ? "上传成功: \(localURL.lastPathComponent)"
+                                            : "批量上传完成 (\(tracker.total) 个文件)",
+                                        kind: .success,
+                                        isTransferOutcome: true,
+                                        autoDismissAfter: 3.0
+                                    )
                                 }
                             } else if case .failure(let error) = result {
                                 if error is CancellationError {
-                                    self.transferNotice = "已取消上传: \(localURL.lastPathComponent)"
+                                    self.setNotice("已取消上传: \(localURL.lastPathComponent)", kind: .cancelled, isTransferOutcome: true)
                                 } else {
-                                    self.transferNotice = "上传失败: \(error.localizedDescription)"
+                                    self.setNotice("上传失败: \(error.localizedDescription)", kind: .error, isTransferOutcome: true)
                                 }
                             }
                         }
                     })
                 }
             } catch {
-                transferNotice = "上传失败：\(error.localizedDescription)"
+                setNotice("上传失败：\(error.localizedDescription)", kind: .error, isTransferOutcome: true)
             }
         }
     }
@@ -2001,12 +2179,11 @@ public struct SFTPView: View {
         do { access = try downloadDestinationAccess(item) }
         catch is CancellationError { return }
         catch {
-            transferNotice = "无法访问保存位置：\(error.localizedDescription)"
+            setNotice("无法访问保存位置：\(error.localizedDescription)", kind: .error)
             return
         }
         let localURL = access.url
-        self.transferNotice = nil
-        self.creationFailureNotice = nil
+        clearNotice()
         TransferManager.shared.enqueueDownload(
             session: s,
             remotePath: item.path,
@@ -2018,15 +2195,13 @@ public struct SFTPView: View {
                 Task { @MainActor in
                     switch result {
                     case .success:
-                        let doneNotice = "下载完成: \(item.name)"
-                        self.transferNotice = doneNotice
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-                            if self.transferNotice == doneNotice {
-                                self.transferNotice = nil
-                            }
-                        }
+                        self.setNotice("下载完成: \(item.name)", kind: .success, isTransferOutcome: true, autoDismissAfter: 3.0)
                     case .failure(let error):
-                        self.transferNotice = error is CancellationError ? "已取消下载: \(item.name)" : "下载失败: \(error.localizedDescription)"
+                        self.setNotice(
+                            error is CancellationError ? "已取消下载: \(item.name)" : "下载失败: \(error.localizedDescription)",
+                            kind: error is CancellationError ? .cancelled : .error,
+                            isTransferOutcome: true
+                        )
                     }
                 }
             }
@@ -2082,17 +2257,17 @@ public struct SFTPView: View {
 
     private func applyDragExportNotice(_ notice: String) {
         if Self.shouldSuppressInlineNotice(notice) {
-            transferNotice = nil
-            creationFailureNotice = nil
+            clearNotice()
             return
         }
-        transferNotice = notice
         if notice.hasPrefix("拖拽导出完成:") {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-                if self.transferNotice == notice {
-                    self.transferNotice = nil
-                }
-            }
+            setNotice(notice, kind: .success, isTransferOutcome: true, autoDismissAfter: 3.0)
+        } else if notice.hasPrefix("拖拽下载已取消:") {
+            setNotice(notice, kind: .cancelled, isTransferOutcome: true)
+        } else if notice.hasPrefix("拖拽下载失败:") {
+            setNotice(notice, kind: .error, isTransferOutcome: true)
+        } else {
+            setNotice(notice, kind: .info, isTransferOutcome: true)
         }
     }
 
@@ -2118,15 +2293,35 @@ public struct SFTPView: View {
         }
     }
 
+    private var activeThemePalette: ThemePalette {
+        if themeSettings.followsSystemAppearance {
+            let isDark: Bool
+            if let scheme = ApexStyle.systemColorScheme {
+                isDark = (scheme == .dark)
+            } else {
+                isDark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            }
+            return (isDark ? TerminalThemePreset.modern : .nativeLight).palette
+        }
+        return themeSettings.themePreset.palette
+    }
+
+    private func calibratedThemeColor(ansiIndex: Int, fallback: Color) -> Color {
+        let palette = activeThemePalette
+        let index = max(0, min(palette.ansi.count - 1, ansiIndex))
+        let hex = ThemePalette.readable(palette.ansi[index], on: [palette.surface, palette.selection])
+        return Color(hex: hex) ?? fallback
+    }
+
     private func fileColor(for item: SFTPItem) -> Color {
         if item.isDirectory { return ApexStyle.accent }
-        if item.isSymlink { return .cyan }
+        if item.isSymlink { return calibratedThemeColor(ansiIndex: 6, fallback: ApexStyle.accent) }
         let ext = (item.name as NSString).pathExtension.lowercased()
         switch ext {
-        case "sh": return ApexStyle.success
-        case "log": return .yellow
-        case "tar", "gz", "zip": return ApexStyle.warning
-        case "conf", "yaml", "json": return .purple
+        case "sh", "bash", "zsh": return ApexStyle.success
+        case "log": return ApexStyle.warning
+        case "tar", "gz", "zip", "bz2": return ApexStyle.warning
+        case "conf", "yaml", "yml", "json", "toml", "ini": return calibratedThemeColor(ansiIndex: 5, fallback: ApexStyle.accent)
         default: return ApexStyle.secondary
         }
     }

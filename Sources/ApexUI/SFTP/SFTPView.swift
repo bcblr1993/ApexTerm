@@ -184,7 +184,7 @@ public struct SFTPView: View {
     }
 
     private var pathControls: some View {
-        HStack(spacing: 8) {
+        HStack(alignment: .center, spacing: 6) {
             // Folder icon & Path breadcrumbs
             ApexIconButton(
                 icon: "folder.fill",
@@ -198,19 +198,32 @@ public struct SFTPView: View {
             .keyboardShortcut("l", modifiers: .command)
 
             TextField(L10n.remotePath, text: $pathInput)
-            .onSubmit {
-                let target = pathInput.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !target.isEmpty else { pathInput = currentPath; return }
-                pathInput = target
-                if target != currentPath { currentPath = target }
-                isPathFocused = false
-            }
-            .focused($isPathFocused)
-            .onExitCommand { pathInput = currentPath; isPathFocused = false }
-            .autocorrectionDisabled()
-            .textFieldStyle(.roundedBorder)
-            .font(.system(size: 12, design: .monospaced))
-            .frame(minWidth: 120)
+                .onSubmit {
+                    let target = pathInput.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !target.isEmpty else { pathInput = currentPath; return }
+                    pathInput = target
+                    if target != currentPath { currentPath = target }
+                    isPathFocused = false
+                }
+                .focused($isPathFocused)
+                .onExitCommand { pathInput = currentPath; isPathFocused = false }
+                .autocorrectionDisabled()
+                .textFieldStyle(.plain)
+                .font(.system(size: 12, design: .monospaced))
+                .padding(.horizontal, 8)
+                .frame(minWidth: 120, maxWidth: .infinity, minHeight: 24, maxHeight: 24, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
+                        .fill(ApexStyle.subtleSurface)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
+                        .stroke(isPathFocused ? ApexStyle.accent.opacity(0.85) : ApexStyle.border.opacity(0.65), lineWidth: isPathFocused ? 1.25 : 0.75)
+                )
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    isPathFocused = true
+                }
 
             // SFTP Quick Bookmarks & Directory Presets Menu
             Menu {
@@ -264,8 +277,11 @@ public struct SFTPView: View {
                     tint: bookmarkManager.isBookmarked(path: currentPath) ? .yellow : nil
                 )
             }
-            .menuStyle(.borderlessButton)
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
             .fixedSize()
+            .accessibilityLabel("常用目录预设与书签快速跳转")
 
             ApexIconButton(
                 icon: "doc.on.doc",
@@ -281,19 +297,22 @@ public struct SFTPView: View {
     }
 
     private func fileActions(compact: Bool) -> some View {
-        HStack(spacing: compact ? 6 : 10) {
-            Toggle(isOn: $isLinkageEnabled) {
-                Label(isLinkageEnabled ? L10n.linkageOn : L10n.linkageOff,
-                      systemImage: isLinkageEnabled ? "link" : "link.slash")
+        HStack(alignment: .center, spacing: compact ? 4 : 6) {
+            SFTPToolbarChip(
+                title: isLinkageEnabled ? L10n.linkageOn : L10n.linkageOff,
+                compact: compact,
+                isHighlighted: isLinkageEnabled
+            ) {
+                isLinkageEnabled.toggle()
+            } icon: {
+                Image(systemName: isLinkageEnabled ? "link" : "link.slash")
+                    .font(.system(size: 11, weight: .medium))
             }
-            .toggleStyle(.button)
-            .controlSize(.small)
-            .labelStyle(SFTPToolbarLabelStyle(compact: compact))
             .accessibilityLabel(isLinkageEnabled ? L10n.linkageOn : L10n.linkageOff)
+            .accessibilityAddTraits(isLinkageEnabled ? .isSelected : [])
             .help(isLinkageEnabled ? L10n.linkageHelpOn : L10n.linkageHelpOff)
 
-
-            Divider().frame(height: 16)
+            Divider().frame(height: 14)
 
             // Actions
             ApexIconButton(
@@ -307,8 +326,8 @@ public struct SFTPView: View {
 
             if isLoading {
                 ProgressView()
-                    .controlSize(.small)
-                    .scaleEffect(0.7)
+                    .controlSize(.mini)
+                    .scaleEffect(0.75)
                     .frame(width: 24, height: 24)
             } else {
                 ApexIconButton(
@@ -321,14 +340,18 @@ public struct SFTPView: View {
                 }
             }
 
-            Button(action: {
+            Divider().frame(height: 14)
+
+            SFTPToolbarChip(
+                title: L10n.uploadFile,
+                compact: compact,
+                isHighlighted: false
+            ) {
                 uploadAction()
-            }) {
-                Label(L10n.uploadFile, systemImage: "arrow.up.doc")
+            } icon: {
+                Image(systemName: "arrow.up.doc")
+                    .font(.system(size: 11, weight: .medium))
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .labelStyle(SFTPToolbarLabelStyle(compact: compact))
             .accessibilityLabel(L10n.uploadFile)
             .help(L10n.uploadFile)
             .disabled(connectionState != .connected)
@@ -353,17 +376,23 @@ public struct SFTPView: View {
                     iconSize: 11
                 )
             }
-            .menuStyle(.borderlessButton)
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
             .fixedSize()
             .accessibilityLabel("新建文件、文件夹及隐藏文件")
             .accessibilityIdentifier("ellipsis")
 
-            Toggle(isOn: $isFilterVisible) {
-                Label("筛选文件", systemImage: "line.3.horizontal.decrease")
+            ApexIconButton(
+                icon: "line.3.horizontal.decrease",
+                label: "筛选当前文件夹",
+                size: 24,
+                iconSize: 11,
+                isSelected: isFilterVisible
+            ) {
+                isFilterVisible.toggle()
             }
-            .toggleStyle(.button)
-            .labelStyle(.iconOnly)
-            .help("筛选当前文件夹")
+            .accessibilityLabel("筛选文件")
 
             ApexIconButton(
                 icon: "doc.text.magnifyingglass",
@@ -379,6 +408,8 @@ public struct SFTPView: View {
             }
             .help("在远端目录按文件名或内容搜索 (⌘⇧F)")
             .disabled(connectionState != .connected)
+
+            Divider().frame(height: 14)
 
             // Transfer records drawer toggle button
             TransferToolbarButton(isExpanded: transferDrawerExpandedBinding, compact: compact)
@@ -420,57 +451,73 @@ public struct SFTPView: View {
 
             Divider()
 
-            HStack {
-                if let notice = transferNotice {
-                    Button(action: {
-                        if creationFailureNotice == notice, creationFailureDetails != nil {
+            if let notice = transferNotice {
+                let isFailure = notice.contains("失败")
+                let isCancelled = notice.contains("取消")
+                let isInProgress = notice.hasPrefix("正在")
+                let noticeTint: Color = isFailure ? ApexStyle.error : (isCancelled ? ApexStyle.secondary : (isInProgress ? ApexStyle.accent : ApexStyle.success))
+                let noticeIcon: String = isFailure ? "exclamationmark.triangle.fill" : (isCancelled ? "minus.circle.fill" : (isInProgress ? "arrow.triangle.2.circlepath" : "checkmark.circle.fill"))
+                let isCreationFailure = (creationFailureNotice == notice && creationFailureDetails != nil)
+                let isTransferOutcome = !isCreationFailure && (notice.contains("上传") || notice.contains("下载") || notice.contains("拖拽") || notice.contains("传输"))
+
+                HStack(spacing: 8) {
+                    Image(systemName: noticeIcon)
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(noticeTint)
+                        .frame(width: 14, alignment: .center)
+
+                    Text(notice)
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(isFailure ? ApexStyle.error : ApexStyle.primary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+
+                    Spacer(minLength: 8)
+
+                    if isCreationFailure {
+                        Button("查看详情") {
                             isShowingCreationFailure = true
-                        } else {
-                            withAnimation(.spring(duration: 0.25)) {
+                        }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(ApexStyle.error)
+                        .help("点击查看创建失败原因与完整远端错误")
+                    } else if isTransferOutcome {
+                        Button("查看传输记录") {
+                            withAnimation(ApexStyle.springSnappy) {
                                 transferDrawerExpandedBinding.wrappedValue = true
                             }
                         }
-                    }) {
-                        HStack(spacing: 5) {
-                            Image(systemName: notice.contains("失败") ? "exclamationmark.triangle.fill" : (notice.contains("正在") ? "arrow.up.circle" : "checkmark.circle.fill"))
-                                .foregroundColor(notice.contains("失败") ? ApexStyle.error : (notice.contains("正在") ? ApexStyle.accent : ApexStyle.success))
-                                .font(.system(size: 11))
-                            Text(notice)
-                                .font(.system(size: 11, weight: .medium))
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                                .foregroundColor(notice.contains("失败") ? ApexStyle.error : (notice.contains("正在") ? ApexStyle.accent : ApexStyle.success))
-
-                            Image(systemName: "chevron.right")
-                                .font(.system(size: 9))
-                                .foregroundColor(ApexStyle.secondary)
-
-                        }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(
-                            notice.contains("失败") ? ApexStyle.error.opacity(0.12) : (notice.contains("正在") ? ApexStyle.accent.opacity(0.12) : ApexStyle.success.opacity(0.12)),
-                            in: RoundedRectangle(cornerRadius: 6)
-                        )
+                        .buttonStyle(.plain)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(ApexStyle.accent)
+                        .help("点击打开传输任务记录抽屉")
                     }
-                    .buttonStyle(.plain)
-                    .help(creationFailureNotice == notice ? "点击查看创建失败原因与完整远端错误" : "点击打开传输任务记录抽屉")
-                    .transition(.opacity)
-                    if notice.contains("失败") {
-                        ApexIconButton(
-                            icon: "xmark.circle",
-                            label: "关闭传输提示",
-                            size: 18,
-                            iconSize: 10
-                        ) {
-                            transferNotice = nil
+
+                    ApexIconButton(
+                        icon: "xmark",
+                        label: "关闭提示",
+                        size: 20,
+                        iconSize: 9.5
+                    ) {
+                        if creationFailureNotice == notice {
+                            creationFailureNotice = nil
                         }
+                        transferNotice = nil
                     }
                 }
+                .padding(.horizontal, ApexStyle.s4)
+                .frame(height: 30)
+                .background {
+                    ZStack {
+                        ApexStyle.subtleSurface
+                        noticeTint.opacity(0.08)
+                    }
+                }
+                .transition(.opacity)
 
-                Spacer(minLength: 0)
+                Divider()
             }
-            .padding(.horizontal, ApexStyle.s4)
 
             // Search filter bar
             if isFilterVisible || !searchFilter.isEmpty {
@@ -623,9 +670,14 @@ public struct SFTPView: View {
                 } else {
                     Table(of: SFTPItem.self, selection: $selectedPaths, sortOrder: $tableSortOrder) {
                         TableColumn("名称", value: \.name) { item in
-                            HStack {
-                                Image(systemName: fileIcon(for: item)).foregroundStyle(selectedPaths.contains(item.path) ? Color.primary : fileColor(for: item))
-                                Text(item.name).lineLimit(1)
+                            HStack(spacing: 6) {
+                                Image(systemName: fileIcon(for: item))
+                                    .font(.system(size: 12))
+                                    .frame(width: 16, alignment: .center)
+                                    .foregroundStyle(selectedPaths.contains(item.path) ? Color.primary : fileColor(for: item))
+                                Text(item.name)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
                             }.help(item.path)
                         }
                         .width(min: 160, ideal: 280)
@@ -658,7 +710,7 @@ public struct SFTPView: View {
                                 requestBatchUpload(urls, targetDirectory: currentPath)
                             },
                             onStatusChange: { notice in
-                                self.transferNotice = notice
+                                self.applyDragExportNotice(notice)
                             }
                         )
                         .frame(width: 0, height: 0)
@@ -1172,7 +1224,8 @@ public struct SFTPView: View {
             return
         }
         let downloads = access.url
-        transferNotice = "正在下载 \(targetItems.count) 个项目…"
+        transferNotice = nil
+        creationFailureNotice = nil
         let tracker = SFTPBatchTracker(total: targetItems.count)
         tracker.addCompletionHandler {
             access.close()
@@ -1201,17 +1254,18 @@ public struct SFTPView: View {
                                     ? "批量下载已取消部分项目（成功 \(snapshot.succeeded)，取消 \(snapshot.cancelled)）"
                                     : "已取消下载: \(item.name)"
                             } else {
-                                self.transferNotice = "批量下载完成 (\(tracker.total) 个文件)"
+                                let doneNotice = "批量下载完成 (\(tracker.total) 个文件)"
+                                self.transferNotice = doneNotice
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                                    if self.transferNotice == doneNotice {
+                                        self.transferNotice = nil
+                                    }
+                                }
                             }
-                        } else {
-                            switch result {
-                            case .success:
-                                self.transferNotice = "下载完成: \(item.name)"
-                            case .failure(let error):
-                                self.transferNotice = error is CancellationError
-                                    ? "已取消下载: \(item.name)"
-                                    : "下载失败: \(error.localizedDescription)"
-                            }
+                        } else if case .failure(let error) = result {
+                            self.transferNotice = error is CancellationError
+                                ? "已取消下载: \(item.name)"
+                                : "下载失败: \(error.localizedDescription)"
                         }
                     }
                 }
@@ -1877,10 +1931,9 @@ public struct SFTPView: View {
                 }
                 
                 guard !filesToUpload.isEmpty else { return }
-                
-                transferNotice = filesToUpload.count == 1
-                    ? "正在上传 \(filesToUpload[0].lastPathComponent)…"
-                    : "正在批量上传 \(filesToUpload.count) 个文件…"
+
+                transferNotice = nil
+                creationFailureNotice = nil
                 
                 let tracker = SFTPBatchTracker(total: filesToUpload.count)
                 let retainedAccesses = accesses
@@ -1952,23 +2005,26 @@ public struct SFTPView: View {
             return
         }
         let localURL = access.url
-        self.transferNotice = "正在下载: \(item.name)..."
+        self.transferNotice = nil
+        self.creationFailureNotice = nil
         TransferManager.shared.enqueueDownload(
             session: s,
             remotePath: item.path,
             localURL: localURL,
             totalBytes: Int64(item.size),
-            onCompleted: {
-                Task { @MainActor in
-                    self.transferNotice = "下载完成: \(item.name)"
-                }
-            },
+            onCompleted: nil,
             onResult: { result in
                 access.close()
                 Task { @MainActor in
                     switch result {
                     case .success:
-                        self.transferNotice = "下载完成: \(item.name)"
+                        let doneNotice = "下载完成: \(item.name)"
+                        self.transferNotice = doneNotice
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                            if self.transferNotice == doneNotice {
+                                self.transferNotice = nil
+                            }
+                        }
                     case .failure(let error):
                         self.transferNotice = error is CancellationError ? "已取消下载: \(item.name)" : "下载失败: \(error.localizedDescription)"
                     }
@@ -2017,10 +2073,33 @@ public struct SFTPView: View {
         }
     }
 
+    /// Returns true for active transfer progress notices already surfaced by TransferInlineProgressBar / TransferDrawer.
+    public static func shouldSuppressInlineNotice(_ notice: String) -> Bool {
+        notice.hasPrefix("正在上传") ||
+        notice.hasPrefix("正在批量上传") ||
+        notice.hasPrefix("正在下载")
+    }
+
+    private func applyDragExportNotice(_ notice: String) {
+        if Self.shouldSuppressInlineNotice(notice) {
+            transferNotice = nil
+            creationFailureNotice = nil
+            return
+        }
+        transferNotice = notice
+        if notice.hasPrefix("拖拽导出完成:") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                if self.transferNotice == notice {
+                    self.transferNotice = nil
+                }
+            }
+        }
+    }
+
     /// Handle dragging a remote file item to download to Finder / Desktop / Any local directory
     private func handleDragDownload(for item: SFTPItem) -> NSItemProvider {
         SFTPDragExportHelper.makeItemProvider(for: item, session: session) { [self] notice in
-            self.transferNotice = notice
+            self.applyDragExportNotice(notice)
         }
     }
 
@@ -2709,14 +2788,70 @@ private actor SFTPExportDownload {
     }
 }
 
-// MARK: - Isolated Transfer Toolbar Button
-private struct SFTPToolbarLabelStyle: LabelStyle {
+// MARK: - Unified 24pt Toolbar Chip & Transfer Trigger
+private struct SFTPToolbarChip<Icon: View>: View {
+    let title: String?
     let compact: Bool
+    let isHighlighted: Bool
+    let action: () -> Void
+    @ViewBuilder let icon: () -> Icon
 
-    func makeBody(configuration: Configuration) -> some View {
-        HStack(spacing: 4) {
-            configuration.icon
-            if !compact { configuration.title }
+    @Environment(\.isEnabled) private var isEnabled
+    @State private var isHovered = false
+
+    init(
+        title: String?,
+        compact: Bool = false,
+        isHighlighted: Bool = false,
+        action: @escaping () -> Void,
+        @ViewBuilder icon: @escaping () -> Icon
+    ) {
+        self.title = title
+        self.compact = compact
+        self.isHighlighted = isHighlighted
+        self.action = action
+        self.icon = icon
+    }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                icon()
+                if !compact, let title {
+                    Text(title)
+                        .font(.system(size: 11, weight: isHighlighted ? .semibold : .medium))
+                        .monospacedDigit()
+                        .lineLimit(1)
+                }
+            }
+            .foregroundStyle(isHighlighted ? ApexStyle.accent : ApexStyle.primary)
+            .padding(.horizontal, compact ? 6 : 8)
+            .frame(height: 24)
+            .background(
+                RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
+                    .fill(
+                        isHighlighted
+                            ? ApexStyle.accent.opacity(isHovered && isEnabled ? 0.20 : 0.14)
+                            : (isHovered && isEnabled ? ApexStyle.primary.opacity(0.06) : ApexStyle.subtleSurface)
+                    )
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
+                    .stroke(
+                        isHighlighted
+                            ? ApexStyle.accent.opacity(isHovered && isEnabled ? 0.55 : 0.40)
+                            : ApexStyle.border.opacity(isHovered && isEnabled ? 0.95 : 0.70),
+                        lineWidth: 0.75
+                    )
+            )
+            .contentShape(RoundedRectangle(cornerRadius: ApexStyle.controlRadius))
+            .opacity(isEnabled ? 1.0 : 0.45)
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            withAnimation(ApexStyle.hoverTransition) {
+                isHovered = hovering
+            }
         }
     }
 }
@@ -2734,26 +2869,20 @@ struct TransferToolbarButton: View {
 
     var body: some View {
         let isHighlighted = isExpanded || transferManager.activeCount > 0
-        Button(action: {
+        SFTPToolbarChip(
+            title: title,
+            compact: compact,
+            isHighlighted: isHighlighted
+        ) {
             withAnimation(ApexStyle.springSnappy) {
                 isExpanded.toggle()
             }
-        }) {
-            HStack(spacing: 4) {
-                TransferActivitySymbol(isActive: transferManager.activeCount > 0,
-                                       inactiveSystemName: "arrow.up.arrow.down.circle")
-                    .foregroundColor(isHighlighted ? ApexStyle.accent : ApexStyle.primary)
-                
-                if !compact {
-                    Text(title)
-                        .foregroundColor(isHighlighted ? ApexStyle.accent : ApexStyle.primary)
-                        .font(.system(size: 11, weight: isHighlighted ? .semibold : .regular))
-                }
-            }
+        } icon: {
+            TransferActivitySymbol(
+                isActive: transferManager.activeCount > 0,
+                inactiveSystemName: "arrow.up.arrow.down.circle"
+            )
         }
-        .buttonStyle(.bordered)
-        .tint(isExpanded ? ApexStyle.accent : nil)
-        .controlSize(.small)
         .accessibilityLabel(title)
         .accessibilityAddTraits(isExpanded ? .isSelected : [])
         .help(isExpanded ? "收起传输记录面板" : "展开传输记录面板")

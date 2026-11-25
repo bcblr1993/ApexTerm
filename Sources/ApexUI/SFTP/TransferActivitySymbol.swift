@@ -11,10 +11,13 @@ struct TransferActivitySymbol: View {
         if isActive && !reduceMotion {
             ProgressView()
                 .controlSize(.mini)
-                .frame(width: 14, height: 14)
+                .scaleEffect(0.75)
+                .frame(width: 12, height: 12)
                 .tint(ApexStyle.accent)
         } else {
             Image(systemName: isActive ? "arrow.triangle.2.circlepath" : inactiveSystemName)
+                .font(.system(size: 11, weight: .medium))
+                .frame(width: 12, height: 12)
         }
     }
 }

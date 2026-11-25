@@ -318,4 +318,148 @@ final class TransferPanelUXTests: XCTestCase {
         workspaceHost.layoutSubtreeIfNeeded()
         XCTAssertGreaterThan(workspaceHost.subviews.count, 0, "WorkspaceView with updated transfer UI must render cleanly")
     }
+
+    // MARK: - 7. SFTP Notice Suppression, Toolbar Menu/Filter Guards & Multi-Width Render
+
+    func testShouldSuppressInlineNoticeForActiveTransfers() {
+        XCTAssertTrue(SFTPView.shouldSuppressInlineNotice("正在上传 jdk17.tar…"))
+        XCTAssertTrue(SFTPView.shouldSuppressInlineNotice("正在批量上传 2 个文件…"))
+        XCTAssertTrue(SFTPView.shouldSuppressInlineNotice("正在下载: jdk17.tar..."))
+        XCTAssertTrue(SFTPView.shouldSuppressInlineNotice("正在下载 3 个项目…"))
+        XCTAssertTrue(SFTPView.shouldSuppressInlineNotice("正在下载并导出: jdk17.tar..."))
+
+        XCTAssertFalse(SFTPView.shouldSuppressInlineNotice("上传失败: permission denied"))
+        XCTAssertFalse(SFTPView.shouldSuppressInlineNotice("上传成功: jdk17.tar"))
+        XCTAssertFalse(SFTPView.shouldSuppressInlineNotice("正在压缩 archive.tar.gz..."))
+        XCTAssertFalse(SFTPView.shouldSuppressInlineNotice("正在解压 archive.tar.gz..."))
+        XCTAssertFalse(SFTPView.shouldSuppressInlineNotice("已新建文件夹: logs"))
+    }
+
+    func testSFTPToolbarAndStatusBarDeduplicationGuards() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+
+        let sftpSource = try String(
+            contentsOf: root.appendingPathComponent("Sources/ApexUI/SFTP/SFTPView.swift"),
+            encoding: .utf8
+        )
+        let workspaceSource = try String(
+            contentsOf: root.appendingPathComponent("Sources/ApexUI/Workspace/WorkspaceView.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertFalse(sftpSource.contains("正在批量上传 \\("),
+                       "SFTPView must not display a duplicate batch upload notice banner while TransferInlineProgressBar is active")
+        XCTAssertFalse(sftpSource.contains("self.transferNotice = \"正在下载"),
+                       "SFTPView must not display a duplicate download progress notice banner")
+        XCTAssertFalse(sftpSource.contains("transferNotice = \"正在下载"),
+                       "SFTPView must not display a duplicate batch download progress notice banner")
+        XCTAssertFalse(sftpSource.contains("Toggle(isOn: $isFilterVisible)"),
+                       "SFTPView filter button must use unified 24pt ApexIconButton instead of oversized Toggle button")
+
+        let hiddenIndicatorCount = sftpSource.components(separatedBy: ".menuIndicator(.hidden)").count - 1
+        XCTAssertGreaterThanOrEqual(hiddenIndicatorCount, 2,
+                                    "Both bookmark and ellipsis Menus in SFTPView must hide system disclosure indicators")
+
+        let statusBarRange = try XCTUnwrap(workspaceSource.range(of: "private struct WorkspaceBottomStatusBar: View"))
+        let statusBarRest = workspaceSource[statusBarRange.upperBound...]
+        let statusBarBody = statusBarRest.range(of: "\nprivate struct ").map { statusBarRest[..<$0.lowerBound] } ?? statusBarRest
+        XCTAssertTrue(statusBarBody.contains("if showsDirectoryControls {\n                StatusBarTransferIndicator("),
+                      "WorkspaceBottomStatusBar must only show StatusBarTransferIndicator when SFTP panel is hidden")
+        XCTAssertFalse(statusBarBody.contains("Rectangle()\n                .frame(height: 0.75)"),
+                       "WorkspaceBottomStatusBar must not draw a duplicate top border below WorkspaceView's Divider")
+    }
+
+    func testSFTPViewMultiWidthLayoutWithActiveUpload() async throws {
+        final class ListingMockSession: SSHSessionProtocol, @unchecked Sendable {
+            let session: Session
+            var connectionState: SSHConnectionState = .connected
+            private let uploadEntered = OSAllocatedUnfairLock(initialState: false)
+            var onUploadEntered: (@Sendable () -> Void)?
+
+            init(session: Session) {
+                self.session = session
+            }
+
+            func connect() async throws {}
+            func disconnect() async {}
+            func sendInput(_ data: Data) async throws {}
+            func resizeTerminal(columns: Int, rows: Int) async throws {}
+            func listDirectory(path: String) async throws -> [SFTPItem] {
+                [
+                    SFTPItem(name: "logs", path: "\(path)/logs", isDirectory: true, size: 4096, permissions: 0o755, modificationDate: Date()),
+                    SFTPItem(name: "check_main_thread.py", path: "\(path)/check_main_thread.py", isDirectory: false, size: 323, permissions: 0o644, modificationDate: Date()),
+                    SFTPItem(name: "config-mate.tar", path: "\(path)/config-mate.tar", isDirectory: false, size: 330_196_582, permissions: 0o644, modificationDate: Date()),
+                    SFTPItem(name: "db_2026-11-19.bak", path: "\(path)/db_2026-11-19.bak", isDirectory: false, size: 17_244_291_072, permissions: 0o644, modificationDate: Date())
+                ]
+            }
+            func downloadFile(remotePath: String, localURL: URL, progress: @Sendable @escaping (Double) -> Void) async throws {}
+            func uploadFile(localURL: URL, remotePath: String, progress: @Sendable @escaping (Double) -> Void) async throws {
+                progress(0.33)
+                let shouldSignal = uploadEntered.withLock { entered -> Bool in
+                    guard !entered else { return false }
+                    entered = true
+                    return true
+                }
+                if shouldSignal {
+                    onUploadEntered?()
+                }
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 50_000_000)
+                }
+            }
+            func setOutputHandler(_ handler: @Sendable @escaping (Data) -> Void) {}
+            func setMetricsHandler(_ handler: @Sendable @escaping (ServerMetricsSnapshot) -> Void) {}
+            func setDirectoryChangeHandler(_ handler: @Sendable @escaping (String) -> Void) {}
+        }
+
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SFTPViewMultiWidthTests_\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let srcFile = tempDir.appendingPathComponent("iotedge-logs-wuyuan-a.tar.gz")
+        try Data(repeating: 0x42, count: 8192).write(to: srcFile)
+
+        let session = Session(name: "Prod", host: "10.8.8.71", username: "root")
+        let mock = ListingMockSession(session: session)
+        let started = expectation(description: "Upload active")
+        mock.onUploadEntered = {
+            Task { @MainActor in started.fulfill() }
+        }
+
+        defer {
+            TransferManager.shared.cancelAllTasks()
+            TransferManager.shared.clearCompleted()
+        }
+        TransferManager.shared.enqueueUpload(session: mock, localURL: srcFile, remotePath: "/root/\(srcFile.lastPathComponent)")
+        await fulfillment(of: [started], timeout: 3.0)
+
+        for width in [600.0, 800.0, 1100.0] {
+            let view = SFTPView(
+                currentPath: .constant("/root"),
+                isLinkageEnabled: .constant(true),
+                session: mock,
+                connectionState: .connected
+            )
+            let host = NSHostingView(rootView: view.apexTheme())
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: width, height: 320),
+                styleMask: [.titled, .closable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            window.contentView = host
+            window.makeKeyAndOrderFront(nil)
+            host.frame = NSRect(x: 0, y: 0, width: width, height: 320)
+            host.layoutSubtreeIfNeeded()
+            try await Task.sleep(nanoseconds: 100_000_000)
+            host.layoutSubtreeIfNeeded()
+
+            XCTAssertGreaterThan(host.subviews.count, 0, "SFTPView must lay out cleanly at width \(width)")
+            window.orderOut(nil)
+        }
+    }
 }

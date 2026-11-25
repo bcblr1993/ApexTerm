@@ -403,7 +403,7 @@ public struct ApexMenuTrigger: View {
             
             Image(systemName: icon)
                 .font(.system(size: iconSize, weight: .medium))
-                .foregroundColor(tint ?? (isHovered ? ApexStyle.primary : ApexStyle.secondary))
+                .foregroundStyle(tint ?? (isHovered ? ApexStyle.primary : ApexStyle.secondary))
         }
         .frame(width: size, height: size)
         .scaleEffect(isHovered ? 1.04 : 1.0)

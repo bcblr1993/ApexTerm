@@ -168,89 +168,95 @@ public struct TransferInlineProgressBar: View {
             let directionIcon = summary.primaryTask.direction == .upload ? "arrow.up.circle.fill" : "arrow.down.circle.fill"
             let detailParts = [summary.bytesText, summary.speedText].filter { !$0.isEmpty }.joined(separator: " · ")
 
-            HStack(spacing: 8) {
-                Button {
-                    withAnimation(ApexStyle.springSnappy) {
-                        isDrawerExpanded = true
-                    }
-                } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: directionIcon)
-                            .font(.system(size: 13))
-                            .foregroundColor(directionTint)
+            VStack(spacing: 0) {
+                Divider()
 
-                        Text(summary.primaryTask.fileName)
-                            .font(.system(size: 11.5, weight: .medium, design: .monospaced))
-                            .foregroundColor(ApexStyle.primary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-
-                        if summary.otherActiveCount > 0 {
-                            Text("+\(summary.otherActiveCount) 项")
-                                .font(.system(size: 10, weight: .semibold))
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 1.5)
-                                .background(ApexStyle.accent.opacity(0.14), in: Capsule())
-                                .foregroundColor(ApexStyle.accent)
-                                .fixedSize(horizontal: true, vertical: false)
+                HStack(spacing: 8) {
+                    Button {
+                        withAnimation(ApexStyle.springSnappy) {
+                            isDrawerExpanded = true
                         }
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: directionIcon)
+                                .font(.system(size: 13))
+                                .foregroundColor(directionTint)
+                                .frame(width: 16, alignment: .center)
 
-                        Spacer(minLength: 4)
-
-                        ApexTransferProgressTrack(
-                            fraction: summary.progressFraction,
-                            tint: directionTint,
-                            height: 6
-                        )
-                        .frame(minWidth: 72, idealWidth: 120, maxWidth: 160)
-
-                        Text(summary.percentText)
-                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                            .monospacedDigit()
-                            .foregroundColor(directionTint)
-                            .fixedSize(horizontal: true, vertical: false)
-
-                        if !detailParts.isEmpty {
-                            Text(detailParts)
-                                .font(.system(size: 10.5, design: .monospaced))
-                                .monospacedDigit()
-                                .foregroundColor(ApexStyle.secondary)
+                            Text(summary.primaryTask.fileName)
+                                .font(.system(size: 11.5, weight: .medium, design: .monospaced))
+                                .foregroundColor(ApexStyle.primary)
                                 .lineLimit(1)
+                                .truncationMode(.middle)
+
+                            if summary.otherActiveCount > 0 {
+                                Text("+\(summary.otherActiveCount) 项")
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .monospacedDigit()
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 1.5)
+                                    .background(ApexStyle.accent.opacity(0.14), in: Capsule())
+                                    .foregroundColor(ApexStyle.accent)
+                                    .fixedSize(horizontal: true, vertical: false)
+                            }
+
+                            Spacer(minLength: 8)
+
+                            ApexTransferProgressTrack(
+                                fraction: summary.progressFraction,
+                                tint: directionTint,
+                                height: 6
+                            )
+                            .frame(minWidth: 72, idealWidth: 112, maxWidth: 128)
+
+                            Text(summary.percentText)
+                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                .monospacedDigit()
+                                .foregroundColor(directionTint)
+                                .frame(minWidth: 36, alignment: .trailing)
                                 .fixedSize(horizontal: true, vertical: false)
+
+                            if !detailParts.isEmpty {
+                                Text(detailParts)
+                                    .font(.system(size: 10.5, design: .monospaced))
+                                    .monospacedDigit()
+                                    .foregroundColor(ApexStyle.secondary)
+                                    .lineLimit(1)
+                                    .fixedSize(horizontal: true, vertical: false)
+                            }
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("点击展开传输任务列表")
+
+                    Divider().frame(height: 14)
+
+                    HStack(spacing: 4) {
+                        ApexIconButton(
+                            icon: "xmark",
+                            label: "取消传输 \(summary.primaryTask.fileName)",
+                            size: 22,
+                            iconSize: 9.5
+                        ) {
+                            manager.cancelTask(id: summary.primaryTask.id)
+                        }
+
+                        ApexIconButton(
+                            icon: "chevron.up",
+                            label: "展开传输任务列表",
+                            size: 22,
+                            iconSize: 9.5
+                        ) {
+                            withAnimation(ApexStyle.springSnappy) {
+                                isDrawerExpanded = true
+                            }
                         }
                     }
-                    .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
-                .help("点击展开传输任务列表")
-
-                ApexIconButton(
-                    icon: "xmark",
-                    label: "取消传输 \(summary.primaryTask.fileName)",
-                    size: 20,
-                    iconSize: 9
-                ) {
-                    manager.cancelTask(id: summary.primaryTask.id)
-                }
-
-                ApexIconButton(
-                    icon: "chevron.up",
-                    label: "展开传输任务列表",
-                    size: 20,
-                    iconSize: 9
-                ) {
-                    withAnimation(ApexStyle.springSnappy) {
-                        isDrawerExpanded = true
-                    }
-                }
-            }
-            .padding(.horizontal, ApexStyle.s4)
-            .frame(height: 36)
-            .background(ApexStyle.subtleSurface.opacity(0.85))
-            .overlay(alignment: .top) {
-                Rectangle()
-                    .frame(height: 0.75)
-                    .foregroundColor(ApexStyle.border.opacity(0.6))
+                .padding(.horizontal, ApexStyle.s4)
+                .frame(height: 34)
+                .background(ApexStyle.subtleSurface)
             }
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("transfer.inlineProgressBar")
@@ -548,11 +554,15 @@ private struct TransferTaskRow: View {
                     if task.totalBytes > 0 {
                         Text(task.formattedProgress)
                             .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            .monospacedDigit()
                             .foregroundColor(ApexStyle.accent)
+                            .frame(minWidth: 36, alignment: .trailing)
                     } else if task.transferredBytes > 0 {
                         Text(formattedBytes(task.transferredBytes))
                             .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            .monospacedDigit()
                             .foregroundColor(ApexStyle.accent)
+                            .frame(minWidth: 36, alignment: .trailing)
                     } else {
                         Text(task.status == .queued ? "等待中" : "准备中...")
                             .font(.system(size: 10, design: .monospaced))
@@ -607,7 +617,7 @@ private struct TransferTaskRow: View {
             if task.status == .transferring || task.status == .queued {
                 ApexTransferProgressTrack(
                     fraction: task.totalBytes > 0 ? task.progress : nil,
-                    tint: ApexStyle.accent,
+                    tint: task.direction == .upload ? ApexStyle.accent : ApexStyle.success,
                     height: 5
                 )
             }

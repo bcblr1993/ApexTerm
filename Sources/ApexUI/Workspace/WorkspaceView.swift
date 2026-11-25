@@ -2398,10 +2398,12 @@ private struct WorkspaceBottomStatusBar: View {
                 .help(tab.isDirectoryLinkageEnabled ? L10n.linkageHelpOn : L10n.linkageHelpOff)
             }
 
-            StatusBarTransferIndicator(
-                presentation: transferPresentation,
-                showsInlineProgress: showsDirectoryControls
-            )
+            if showsDirectoryControls {
+                StatusBarTransferIndicator(
+                    presentation: transferPresentation,
+                    showsInlineProgress: true
+                )
+            }
             
             Spacer()
             
@@ -2428,12 +2430,6 @@ private struct WorkspaceBottomStatusBar: View {
         .padding(.vertical, 8)
         .frame(minHeight: 32)
         .background(ApexStyle.surface)
-        .overlay(
-            Rectangle()
-                .frame(height: 0.75)
-                .foregroundColor(ApexStyle.border.opacity(0.6)),
-            alignment: .top
-        )
     }
 }
 

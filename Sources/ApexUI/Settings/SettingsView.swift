@@ -65,6 +65,7 @@ public struct SettingsView: View {
 private struct GeneralSettingsTab: View {
     @ObservedObject var settings: AppSettings
     @ObservedObject private var updateManager = UpdateManager.shared
+    @State private var isShowingResetConfirm = false
     
     var body: some View {
         Form {
@@ -78,6 +79,7 @@ private struct GeneralSettingsTab: View {
                 HStack {
                     Text("当前版本: v\(updateManager.currentVersion) (Build \(updateManager.currentBuild))")
                         .font(.caption)
+                        .monospacedDigit()
                         .foregroundColor(ApexStyle.secondary)
                     
                     Spacer()
@@ -120,11 +122,19 @@ private struct GeneralSettingsTab: View {
                     tint: ApexStyle.error,
                     size: .small
                 ) {
-                    settings.resetToDefaults()
+                    isShowingResetConfirm = true
                 }
             }
         }
         .formStyle(.grouped)
+        .alert("恢复默认设置", isPresented: $isShowingResetConfirm) {
+            Button("取消", role: .cancel) {}
+            Button("恢复默认", role: .destructive) {
+                settings.resetToDefaults()
+            }
+        } message: {
+            Text("确定要将字体、主题、操作习惯和 SFTP 偏好恢复为初始默认值吗？已保存的 SSH 会话与密钥不受影响。")
+        }
     }
 }
 
@@ -153,7 +163,7 @@ private struct AppearanceSettingsTab: View {
                                     .font(.system(size: 9, weight: .bold))
                                     .padding(.horizontal, 4)
                                     .padding(.vertical, 1)
-                                    .background(Color.accentColor.opacity(0.15))
+                                    .background(ApexStyle.accent.opacity(0.15))
                                     .cornerRadius(3)
                             }
                         }
@@ -185,10 +195,12 @@ private struct AppearanceSettingsTab: View {
             }
             
             Section {
-                Toggle("窗口外观跟随系统", isOn: $settings.followsSystemAppearance)
-                Text("跟随系统时，窗口使用系统明暗外观；终端保留所选配色。")
-                    .font(.caption)
-                    .foregroundStyle(ApexStyle.secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Toggle("窗口外观跟随系统", isOn: $settings.followsSystemAppearance)
+                    Text("跟随系统时，窗口使用系统明暗外观；终端保留所选配色。")
+                        .font(.caption)
+                        .foregroundStyle(ApexStyle.secondary)
+                }
                 Picker("全局主题", selection: $settings.themePreset) {
                     ForEach(TerminalThemePreset.selectablePresets + (TerminalThemePreset.selectablePresets.contains(settings.themePreset) ? [] : [settings.themePreset])) { preset in
                         HStack {
@@ -207,7 +219,7 @@ private struct AppearanceSettingsTab: View {
                         .font(.caption2)
                         .foregroundColor(ApexStyle.secondary)
                     
-                    HStack(spacing: 4) {
+                    HStack(alignment: settings.cursorShape == .underline ? .bottom : .center, spacing: 4) {
                         Text("user@aetherterm:~$")
                             .foregroundColor(Color(hex: settings.themePreset.foregroundColorHex) ?? .white)
                         Text("uname -a")
@@ -458,12 +470,17 @@ private struct BackupSettingsTab: View {
                         if let date = syncManager.lastSyncDate {
                             Text("上次同步: \(formattedDate(date))")
                                 .font(.system(size: 10.5, design: .monospaced))
+                                .monospacedDigit()
                                 .foregroundColor(ApexStyle.secondary)
                         }
                     }
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
                     .background(ApexStyle.subtleSurface, in: RoundedRectangle(cornerRadius: 6))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(ApexStyle.border.opacity(0.5), lineWidth: 1)
+                    )
                     
                     Picker("冲突解决策略", selection: $syncManager.conflictStrategy) {
                         ForEach(iCloudConflictStrategy.allCases, id: \.self) { strat in
@@ -522,41 +539,45 @@ private struct BackupSettingsTab: View {
                         .font(.caption)
                         .foregroundColor(ApexStyle.secondary)
                     
-                    HStack(spacing: 10) {
-                        ApexActionButton(
-                            "导出零凭据分享包 (.aetherpack)",
-                            icon: "shippingbox.and.arrow.backward",
-                            tint: ApexStyle.accent,
-                            size: .small
-                        ) {
-                            exportSharePack()
+                    Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 8) {
+                        GridRow {
+                            ApexActionButton(
+                                "导出零凭据分享包 (.aetherpack)",
+                                icon: "shippingbox.and.arrow.backward",
+                                tint: ApexStyle.accent,
+                                size: .small
+                            ) {
+                                exportSharePack()
+                            }
+
+                            ApexActionButton(
+                                "导出 OpenSSH Config",
+                                icon: "doc.text",
+                                tint: ApexStyle.secondary,
+                                size: .small
+                            ) {
+                                exportOpenSSHConfig()
+                            }
                         }
 
-                        ApexActionButton(
-                            L10n.exportButton,
-                            icon: "square.and.arrow.up",
-                            tint: ApexStyle.secondary,
-                            size: .small
-                        ) {
-                            exportSessions()
-                        }
-                        
-                        ApexActionButton(
-                            L10n.importButton,
-                            icon: "square.and.arrow.down",
-                            tint: ApexStyle.secondary,
-                            size: .small
-                        ) {
-                            importSessions()
-                        }
-
-                        ApexActionButton(
-                            "导出 OpenSSH Config",
-                            icon: "doc.text",
-                            tint: ApexStyle.secondary,
-                            size: .small
-                        ) {
-                            exportOpenSSHConfig()
+                        GridRow {
+                            ApexActionButton(
+                                L10n.exportButton,
+                                icon: "square.and.arrow.up",
+                                tint: ApexStyle.secondary,
+                                size: .small
+                            ) {
+                                exportSessions()
+                            }
+                            
+                            ApexActionButton(
+                                L10n.importButton,
+                                icon: "square.and.arrow.down",
+                                tint: ApexStyle.secondary,
+                                size: .small
+                            ) {
+                                importSessions()
+                            }
                         }
                     }
                     .padding(.top, 4)
@@ -567,14 +588,16 @@ private struct BackupSettingsTab: View {
             }
         }
         .formStyle(.grouped)
-        .alert(alertMessage ?? "", isPresented: $isShowingAlert) {
+        .alert("同步状态", isPresented: $isShowingAlert) {
             Button("好的", role: .cancel) {}
+        } message: {
+            Text(alertMessage ?? "")
         }
     }
     
     private var statusIndicatorColor: Color {
         switch syncManager.syncStatus {
-        case .idle: return .gray.opacity(0.7)
+        case .idle: return ApexStyle.secondary.opacity(0.7)
         case .syncing: return ApexStyle.warning
         case .success: return ApexStyle.success
         case .unavailable: return ApexStyle.secondary

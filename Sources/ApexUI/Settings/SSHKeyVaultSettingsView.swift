@@ -39,7 +39,7 @@ public struct SSHKeyVaultSettingsView: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             // Header
-            HStack {
+            HStack(spacing: ApexStyle.s3) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(selectedSubTab == .keyVault ? "SSH 密钥保险库 (Key Vault)" : "已知主机指纹 (known_hosts)")
                         .font(.system(size: 15, weight: .bold))
@@ -49,32 +49,33 @@ public struct SSHKeyVaultSettingsView: View {
                         .foregroundColor(ApexStyle.secondary)
                 }
                 
-                Spacer()
+                Spacer(minLength: ApexStyle.s2)
                 
                 Picker("", selection: $selectedSubTab) {
-                    Text("SSH 密钥 (\(vaultManager.keys.count))").tag(SecuritySubTab.keyVault)
-                    Text("主机指纹 (\(knownHostsManager.entries.count))").tag(SecuritySubTab.knownHosts)
+                    Text("SSH 密钥 (\(vaultManager.keys.count))")
+                        .monospacedDigit()
+                        .tag(SecuritySubTab.keyVault)
+                    Text("主机指纹 (\(knownHostsManager.entries.count))")
+                        .monospacedDigit()
+                        .tag(SecuritySubTab.knownHosts)
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 .fixedSize()
                 
-                if selectedSubTab == .keyVault {
-                    Button(action: {
-                        importName = ""
-                        importPrivateKey = ""
-                        importPublicKey = ""
-                        importPassphrase = ""
-                        importError = nil
-                        showingImportSheet = true
-                    }) {
-                        Label("导入密钥", systemImage: "plus")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
+                // Reserve trailing slot width so switching to known_hosts does not shift the segmented Picker.
+                ApexActionButton("导入密钥", icon: "plus", tint: ApexStyle.accent, size: .small, isProminent: true) {
+                    importName = ""
+                    importPrivateKey = ""
+                    importPublicKey = ""
+                    importPassphrase = ""
+                    importError = nil
+                    showingImportSheet = true
                 }
+                .opacity(selectedSubTab == .keyVault ? 1 : 0)
+                .allowsHitTesting(selectedSubTab == .keyVault)
+                .accessibilityHidden(selectedSubTab != .keyVault)
             }
-            .padding(.horizontal, 4)
             
             Divider()
             
@@ -113,9 +114,11 @@ public struct SSHKeyVaultSettingsView: View {
         .padding(ApexStyle.s4)
         .sheet(isPresented: $showingImportSheet) {
             importKeySheet
+                .apexTheme()
         }
         .sheet(isPresented: $showingDeploySheet) {
             deployKeySheet
+                .apexTheme()
         }
         .alert("确认删除密钥", isPresented: $showingDeleteAlert, presenting: keyToDelete) { key in
             Button("删除", role: .destructive) {
@@ -142,11 +145,14 @@ public struct SSHKeyVaultSettingsView: View {
                     Text(key.name)
                         .font(.system(size: 12.5, weight: .semibold))
                         .foregroundColor(ApexStyle.primary)
+                        .lineLimit(1)
                     
                     // Algorithm badge
                     Text(key.algorithm.rawValue)
                         .font(.system(size: 9.5, weight: .bold, design: .monospaced))
                         .foregroundColor(key.algorithm == .ed25519 ? ApexStyle.success : ApexStyle.secondary)
+                        .lineLimit(1)
+                        .fixedSize()
                         .padding(.horizontal, 5)
                         .padding(.vertical, 1)
                         .background((key.algorithm == .ed25519 ? ApexStyle.success : ApexStyle.secondary).opacity(0.12), in: RoundedRectangle(cornerRadius: 3))
@@ -156,6 +162,7 @@ public struct SSHKeyVaultSettingsView: View {
                             .font(.system(size: 10))
                             .foregroundColor(ApexStyle.accent)
                             .help("带口令保护 (Passphrase-Protected)")
+                            .accessibilityLabel("带口令保护")
                     }
                 }
                 
@@ -226,56 +233,68 @@ public struct SSHKeyVaultSettingsView: View {
                 .font(.system(size: 15, weight: .bold))
                 .foregroundColor(ApexStyle.primary)
             
-            Form {
-                TextField("密钥名称 (如 Production Bastion)", text: $importName)
-                
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("私钥内容 (PEM 格式)")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(ApexStyle.secondary)
-                    TextEditor(text: $importPrivateKey)
-                        .font(.system(size: 10, design: .monospaced))
-                        .frame(height: 90)
-                        .border(ApexStyle.border, width: 1)
+            ScrollView {
+                Form {
+                    TextField("密钥名称 (如 Production Bastion)", text: $importName)
+                    
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("私钥内容 (PEM 格式)")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(ApexStyle.secondary)
+                        TextEditor(text: $importPrivateKey)
+                            .font(.system(size: 10, design: .monospaced))
+                            .scrollContentBackground(.hidden)
+                            .padding(4)
+                            .frame(height: 96)
+                            .background(ApexStyle.subtleSurface, in: RoundedRectangle(cornerRadius: ApexStyle.controlRadius))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
+                                    .stroke(ApexStyle.border, lineWidth: 1)
+                            )
+                    }
+                    
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("公钥内容 (OpenSSH 格式，如 ssh-ed25519 AAAAC3...)")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(ApexStyle.secondary)
+                        TextField("公钥内容", text: $importPublicKey)
+                            .font(.system(size: 10, design: .monospaced))
+                    }
+                    
+                    SecureField("密钥口令 Passphrase (可选)", text: $importPassphrase)
                 }
-                
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("公钥内容 (OpenSSH 格式，如 ssh-ed25519 AAAAC3...)")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(ApexStyle.secondary)
-                    TextField("公钥内容", text: $importPublicKey)
-                        .font(.system(size: 10, design: .monospaced))
-                }
-                
-                SecureField("密钥口令 Passphrase (可选)", text: $importPassphrase)
+                .padding(.vertical, 2)
             }
+            .frame(minHeight: 230, idealHeight: 265, maxHeight: 380)
             
             if let err = importError {
                 Text(err)
                     .font(.system(size: 11))
                     .foregroundColor(ApexStyle.error)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             
-            HStack {
+            HStack(spacing: ApexStyle.s2) {
                 Spacer()
-                Button("取消") {
+                ApexActionButton("取消", tint: ApexStyle.secondary, size: .regular) {
                     showingImportSheet = false
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.regular)
                 .keyboardShortcut(.cancelAction)
                 
-                Button("导入并安全保存") {
+                ApexActionButton("导入并安全保存", tint: ApexStyle.accent, size: .regular, isProminent: true) {
                     doImportKey()
                 }
-                .apexProminentButton()
-                .controlSize(.regular)
                 .disabled(importPrivateKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
                           importPublicKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .keyboardShortcut(.defaultAction)
             }
         }
-        .padding(20)
-        .frame(width: 520, height: 380)
+        .padding(ApexStyle.s5)
+        .frame(width: 520)
+        .frame(minHeight: 360, maxHeight: 540)
+        .onExitCommand {
+            showingImportSheet = false
+        }
     }
     
     // MARK: - Deploy Sheet
@@ -295,35 +314,45 @@ public struct SSHKeyVaultSettingsView: View {
                         .font(.system(size: 11, weight: .medium))
                         .foregroundColor(ApexStyle.primary)
                     
-                    Text(generatedDeployCommand)
-                        .font(.system(size: 10.5, design: .monospaced))
-                        .padding(8)
-                        .background(ApexStyle.subtleSurface, in: RoundedRectangle(cornerRadius: 6))
-                        .textSelection(.enabled)
+                    ScrollView {
+                        Text(generatedDeployCommand)
+                            .font(.system(size: 10.5, design: .monospaced))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(10)
+                            .textSelection(.enabled)
+                    }
+                    .frame(minHeight: 80, maxHeight: 160)
+                    .background(ApexStyle.subtleSurface, in: RoundedRectangle(cornerRadius: ApexStyle.controlRadius))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
+                            .stroke(ApexStyle.border, lineWidth: 1)
+                    )
                 }
             }
             
-            HStack {
-                Button("复制部署命令") {
+            HStack(spacing: ApexStyle.s2) {
+                Spacer()
+                
+                ApexActionButton("完成", tint: ApexStyle.secondary, size: .regular) {
+                    showingDeploySheet = false
+                }
+                .keyboardShortcut(.cancelAction)
+                
+                ApexActionButton("复制部署命令", icon: "doc.on.doc", tint: ApexStyle.accent, size: .regular, isProminent: true) {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(generatedDeployCommand, forType: .string)
                     showingDeploySheet = false
                     showToast("已复制免密部署指令到剪贴板")
                 }
-                .apexProminentButton()
-                .controlSize(.regular)
-                
-                Spacer()
-                
-                Button("完成") {
-                    showingDeploySheet = false
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.regular)
+                .keyboardShortcut(.defaultAction)
             }
         }
-        .padding(20)
-        .frame(width: 520, height: 260)
+        .padding(ApexStyle.s5)
+        .frame(width: 520)
+        .frame(minHeight: 240, maxHeight: 380)
+        .onExitCommand {
+            showingDeploySheet = false
+        }
     }
     
     // MARK: - Operations

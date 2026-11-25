@@ -7,6 +7,7 @@ public struct AboutView: View {
     @ObservedObject private var themeSettings = AppSettings.shared
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var updateManager = UpdateManager.shared
+    @State private var dismissedErrorText: String?
     
     public init() {}
     
@@ -24,7 +25,7 @@ public struct AboutView: View {
                     } else {
                         ZStack {
                             Circle()
-                                .fill(LinearGradient(colors: [.blue, .purple], startPoint: .topLeading, endPoint: .bottomTrailing))
+                                .fill(LinearGradient(colors: [ApexStyle.accent, ApexStyle.buttonAccent], startPoint: .topLeading, endPoint: .bottomTrailing))
                                 .frame(width: 80, height: 80)
                             Image(systemName: "terminal.fill")
                                 .font(.system(size: 38))
@@ -62,7 +63,7 @@ public struct AboutView: View {
                 // Tech badges
                 HStack(spacing: 10) {
                     techBadge(icon: "bolt.fill", title: "Apple Silicon", color: ApexStyle.warning)
-                    techBadge(icon: "display", title: "Metal 120Hz", color: .blue)
+                    techBadge(icon: "display", title: "Metal 120Hz", color: ApexStyle.accent)
                     techBadge(icon: "lock.shield.fill", title: "Native SSH / SFTP", color: ApexStyle.success)
                     techBadge(icon: "swift", title: "Swift 6 Native", color: ApexStyle.error)
                 }
@@ -73,8 +74,13 @@ public struct AboutView: View {
                 // Action links
                 HStack(spacing: 12) {
                     Button {
-                        Task {
-                            await updateManager.checkForUpdates(manual: false, promptSheet: false)
+                        dismissedErrorText = nil
+                        if updateManager.distributionChannel == .appStore {
+                            NSWorkspace.shared.open(DistributionChannel.appStoreURL)
+                        } else {
+                            Task {
+                                await updateManager.checkForUpdates(manual: false, promptSheet: false)
+                            }
                         }
                     } label: {
                         HStack(spacing: 6) {
@@ -131,7 +137,7 @@ public struct AboutView: View {
                     case .updateAvailable(let rel):
                         HStack(spacing: 8) {
                             Image(systemName: "arrow.down.circle.fill")
-                                .foregroundColor(.accentColor)
+                                .foregroundColor(ApexStyle.accent)
                             Text("发现新版本 v\(rel.version)")
                                 .font(.caption.bold())
                             Button(L10n.updateNow) {
@@ -161,6 +167,7 @@ public struct AboutView: View {
                                 .controlSize(.small)
                             Text("\(L10n.downloadingUpdate) \(Int(progress * 100))%")
                                 .font(.caption)
+                                .monospacedDigit()
                                 .foregroundColor(ApexStyle.secondary)
                             Button("查看") {
                                 dismiss()
@@ -168,6 +175,7 @@ public struct AboutView: View {
                                     updateManager.isUpdateSheetPresented = true
                                 }
                             }
+                            .buttonStyle(.bordered)
                             .controlSize(.small)
                         }
                     case .preparing(let msg):
@@ -191,13 +199,24 @@ public struct AboutView: View {
                             .controlSize(.small)
                         }
                     case .failed(let err):
-                        HStack(spacing: 6) {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .foregroundColor(ApexStyle.warning)
-                            Text("检查更新失败: \(err)")
-                                .font(.caption)
-                                .foregroundColor(ApexStyle.secondary)
-                                .lineLimit(1)
+                        if dismissedErrorText != err {
+                            HStack(spacing: 6) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundColor(ApexStyle.warning)
+                                Text("检查更新失败: \(err)")
+                                    .font(.caption)
+                                    .foregroundColor(ApexStyle.secondary)
+                                    .lineLimit(1)
+                                    .help(err)
+                                ApexIconButton(
+                                    icon: "xmark",
+                                    label: "关闭提示",
+                                    size: 18,
+                                    iconSize: 9
+                                ) {
+                                    dismissedErrorText = err
+                                }
+                            }
                         }
                     case .idle:
                         EmptyView()
@@ -240,6 +259,9 @@ public struct AboutView: View {
         .onExitCommand {
             dismiss()
         }
+        .onChange(of: updateManager.status) { _, _ in
+            dismissedErrorText = nil
+        }
         .background(
             // Hidden button for Command+W shortcut
             Button("") {
@@ -247,6 +269,7 @@ public struct AboutView: View {
             }
             .keyboardShortcut("w", modifiers: .command)
             .opacity(0)
+            .accessibilityHidden(true)
         )
     }
     

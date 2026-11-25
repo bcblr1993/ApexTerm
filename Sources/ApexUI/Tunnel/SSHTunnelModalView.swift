@@ -38,13 +38,10 @@ public struct SSHTunnelModalView: View {
                 Spacer(minLength: ApexStyle.s4)
                 
                 HStack(spacing: ApexStyle.s2) {
-                    Button {
+                    ApexActionButton("新建隧道", icon: "plus", tint: ApexStyle.accent, size: .small, isProminent: true) {
                         editingTunnel = nil
                         isAddSheetPresented = true
-                    } label: {
-                        Label("新建隧道", systemImage: "plus")
                     }
-                    .apexProminentButton()
                     
                     ApexIconButton(
                         icon: "xmark",
@@ -59,7 +56,7 @@ public struct SSHTunnelModalView: View {
             }
             // Same horizontal inset as the footer so both rows share left/right edges.
             .padding(.horizontal, ApexStyle.s4)
-            .padding(.vertical, ApexStyle.s5)
+            .padding(.vertical, ApexStyle.s4)
             .background(ApexStyle.surface)
             
             Divider()
@@ -103,11 +100,10 @@ public struct SSHTunnelModalView: View {
                         .multilineTextAlignment(.center)
                         .frame(maxWidth: 400)
                     
-                    Button("添加第一个隧道") {
+                    ApexActionButton("添加第一个隧道", icon: "plus", tint: ApexStyle.accent, size: .regular, isProminent: true) {
                         editingTunnel = nil
                         isAddSheetPresented = true
                     }
-                    .apexProminentButton()
                     .padding(.top, 4)
                     
                     Spacer()
@@ -142,11 +138,12 @@ public struct SSHTunnelModalView: View {
             HStack {
                 Text("运行中：\(tunnelManager.tunnels.filter { tunnelManager.state(for: $0.id).isRunning }.count) / \(tunnelManager.tunnels.count)")
                     .font(.caption.monospaced())
+                    .monospacedDigit()
                     .foregroundColor(ApexStyle.secondary)
                 
                 Spacer()
                 
-                Button("完成") {
+                ApexActionButton("完成", tint: ApexStyle.accent, size: .regular, isProminent: true) {
                     dismiss()
                 }
                 .keyboardShortcut(.defaultAction)
@@ -160,17 +157,13 @@ public struct SSHTunnelModalView: View {
                 existingTunnel: editingTunnel,
                 sessions: store.sessions.filter { !$0.isLocal },
                 onSave: { newOrUpdated in
-                    do {
-                        if editingTunnel != nil {
-                            try tunnelManager.updateTunnel(newOrUpdated)
-                        } else {
-                            try tunnelManager.addTunnel(newOrUpdated)
-                        }
-                        isAddSheetPresented = false
-                        errorMessage = nil
-                    } catch {
-                        errorMessage = error.localizedDescription
+                    if editingTunnel != nil {
+                        try tunnelManager.updateTunnel(newOrUpdated)
+                    } else {
+                        try tunnelManager.addTunnel(newOrUpdated)
                     }
+                    isAddSheetPresented = false
+                    errorMessage = nil
                 },
                 onCancel: {
                     isAddSheetPresented = false
@@ -227,14 +220,18 @@ private struct TunnelRowView: View {
                 .frame(width: 8, height: 8)
                 .shadow(color: statusColor.opacity(state.isRunning ? 0.7 : 0.2), radius: state.isRunning ? 3 : 1)
                 .help(statusText)
+                .accessibilityLabel(statusText)
             
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     Text(tunnel.name)
                         .font(.system(size: 13, weight: .semibold))
+                        .lineLimit(1)
                     
                     Text(typeBadgeText)
                         .font(.system(size: 9, weight: .medium))
+                        .lineLimit(1)
+                        .fixedSize()
                         .padding(.horizontal, 5)
                         .padding(.vertical, 1)
                         .background(typeBadgeColor.opacity(0.15), in: RoundedRectangle(cornerRadius: 3))
@@ -243,9 +240,11 @@ private struct TunnelRowView: View {
                     if tunnel.autoStart {
                         Text("自启")
                             .font(.system(size: 9, weight: .medium))
+                            .lineLimit(1)
+                            .fixedSize()
                             .padding(.horizontal, 4)
                             .padding(.vertical, 1)
-                            .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 3))
+                            .background(ApexStyle.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 3))
                             .foregroundColor(ApexStyle.secondary)
                     }
                 }
@@ -254,11 +253,15 @@ private struct TunnelRowView: View {
                     Text(forwardingSummary)
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundColor(ApexStyle.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                     
                     if let s = session {
                         Text("• 通过 \(s.name) (\(s.host))")
                             .font(.system(size: 11))
                             .foregroundColor(ApexStyle.secondary.opacity(0.8))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
                     }
                 }
                 
@@ -313,9 +316,9 @@ private struct TunnelRowView: View {
     
     private var typeBadgeColor: Color {
         switch tunnel.type {
-        case .local: return .blue
-        case .remote: return .purple
-        case .dynamic: return .teal
+        case .local: return ApexStyle.accent
+        case .remote: return ApexStyle.warning
+        case .dynamic: return ApexStyle.success
         }
     }
     
@@ -332,10 +335,10 @@ private struct TunnelRowView: View {
     
     private var statusColor: Color {
         switch state {
-        case .stopped: return .gray.opacity(0.6)
-        case .starting: return .orange
-        case .active: return .green
-        case .failed: return .red
+        case .stopped: return ApexStyle.secondary.opacity(0.6)
+        case .starting: return ApexStyle.warning
+        case .active: return ApexStyle.success
+        case .failed: return ApexStyle.error
         }
     }
     
@@ -353,7 +356,7 @@ private struct TunnelRowView: View {
 struct AddOrEditTunnelSheet: View {
     let existingTunnel: SSHTunnel?
     let sessions: [Session]
-    let onSave: (SSHTunnel) -> Void
+    let onSave: (SSHTunnel) throws -> Void
     let onCancel: () -> Void
     
     @State private var name: String = ""
@@ -364,7 +367,12 @@ struct AddOrEditTunnelSheet: View {
     @State private var targetHost: String = "localhost"
     @State private var targetPortString: String = "3306"
     @State private var autoStart: Bool = false
+    @State private var saveErrorMessage: String? = nil
     
+    private var hasValidSession: Bool {
+        sessions.contains(where: { $0.id == selectedSessionId })
+    }
+
     private var draft: SSHTunnel {
         Self.makeDraft(id: existingTunnel?.id ?? UUID(), name: name, type: type, sessionId: selectedSessionId,
                        bindHost: bindHost, bindPort: bindPortString, targetHost: targetHost,
@@ -373,6 +381,22 @@ struct AddOrEditTunnelSheet: View {
 
     private var validationMessage: String? {
         Self.validationMessage(for: draft, bindPort: bindPortString, targetPort: targetPortString)
+    }
+
+    private var footerError: (message: String, isWarning: Bool)? {
+        if sessions.isEmpty {
+            return ("暂无可用的远程 SSH 会话", true)
+        }
+        if !hasValidSession {
+            return ("原关联会话已删除，请重新选择关联会话", true)
+        }
+        if let validationMessage {
+            return (validationMessage, true)
+        }
+        if let saveErrorMessage {
+            return (saveErrorMessage, false)
+        }
+        return nil
     }
 
     /// Trims every field so pasted values such as " 3306" or "db " still save correctly.
@@ -430,6 +454,9 @@ struct AddOrEditTunnelSheet: View {
                         .foregroundColor(ApexStyle.error)
                 } else {
                     Picker("会话", selection: $selectedSessionId) {
+                        if !hasValidSession {
+                            Text("原关联会话已失效（请重新选择）").tag(selectedSessionId)
+                        }
                         ForEach(sessions) { s in
                             Text("\(s.name) (\(s.username)@\(s.host))").tag(s.id)
                         }
@@ -464,14 +491,15 @@ struct AddOrEditTunnelSheet: View {
                     Text(type == .remote ? "远程绑定地址与端口" : "本地监听地址与端口")
                         .font(.caption.weight(.semibold))
                         .foregroundColor(ApexStyle.secondary)
-                    HStack {
+                    HStack(spacing: 6) {
                         TextField("地址", text: $bindHost)
                             .textFieldStyle(.roundedBorder)
-                            .frame(width: 120)
+                            .frame(minWidth: 140, maxWidth: .infinity)
                         Text(":")
                         TextField("端口", text: $bindPortString)
                             .textFieldStyle(.roundedBorder)
-                            .frame(width: 80)
+                            .monospacedDigit()
+                            .frame(width: 68)
                     }
                 }
                 
@@ -480,14 +508,15 @@ struct AddOrEditTunnelSheet: View {
                         Text(type == .remote ? "本地目标地址与端口" : "远程目标地址与端口")
                             .font(.caption.weight(.semibold))
                             .foregroundColor(ApexStyle.secondary)
-                        HStack {
+                        HStack(spacing: 6) {
                             TextField("目标地址", text: $targetHost)
                                 .textFieldStyle(.roundedBorder)
-                                .frame(width: 120)
+                                .frame(minWidth: 140, maxWidth: .infinity)
                             Text(":")
                             TextField("端口", text: $targetPortString)
                                 .textFieldStyle(.roundedBorder)
-                                .frame(width: 80)
+                                .monospacedDigit()
+                                .frame(width: 68)
                         }
                     }
                 }
@@ -498,29 +527,44 @@ struct AddOrEditTunnelSheet: View {
             
             Divider()
             
-            HStack {
-                if let validationMessage {
-                    Text(validationMessage)
+            HStack(spacing: ApexStyle.s2) {
+                if let footerError {
+                    Text(footerError.message)
                         .font(.caption)
-                        .foregroundStyle(ApexStyle.warning)
+                        .foregroundStyle(footerError.isWarning ? ApexStyle.warning : ApexStyle.error)
+                        .lineLimit(2)
+                        .help(footerError.message)
                         .accessibilityIdentifier("tunnel.validationMessage")
                 }
-                Spacer()
-                Button("取消") { onCancel() }
-                    .buttonStyle(.bordered)
-                    .controlSize(.regular)
-                    .keyboardShortcut(.cancelAction)
-                Button("保存") {
-                    onSave(draft)
+                Spacer(minLength: ApexStyle.s2)
+                ApexActionButton("取消", tint: ApexStyle.secondary, size: .regular) {
+                    onCancel()
                 }
-                .apexProminentButton()
-                .controlSize(.regular)
-                .disabled(sessions.isEmpty || validationMessage != nil)
+                .keyboardShortcut(.cancelAction)
+
+                ApexActionButton("保存", tint: ApexStyle.accent, size: .regular, isProminent: true) {
+                    do {
+                        saveErrorMessage = nil
+                        try onSave(draft)
+                    } catch {
+                        saveErrorMessage = error.localizedDescription
+                    }
+                }
+                .disabled(!hasValidSession || validationMessage != nil)
                 .keyboardShortcut(.defaultAction)
             }
         }
-        .padding(ApexStyle.s5)
+        .padding(ApexStyle.s4)
         .frame(width: 520)
+        .onChange(of: bindHost) { _, _ in saveErrorMessage = nil }
+        .onChange(of: bindPortString) { _, _ in saveErrorMessage = nil }
+        .onChange(of: targetHost) { _, _ in saveErrorMessage = nil }
+        .onChange(of: targetPortString) { _, _ in saveErrorMessage = nil }
+        .onChange(of: type) { _, _ in saveErrorMessage = nil }
+        .onChange(of: selectedSessionId) { _, _ in saveErrorMessage = nil }
+        .onExitCommand {
+            onCancel()
+        }
         .onAppear {
             if let t = existingTunnel {
                 name = t.name

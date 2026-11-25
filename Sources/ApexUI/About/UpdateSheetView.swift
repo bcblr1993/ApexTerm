@@ -15,6 +15,17 @@ public struct UpdateSheetView: View {
             contentView
         }
         .background(ApexStyle.surface)
+        .onExitCommand {
+            dismiss()
+        }
+        .background(
+            Button("") {
+                dismiss()
+            }
+            .keyboardShortcut("w", modifiers: .command)
+            .opacity(0)
+            .accessibilityHidden(true)
+        )
     }
     
     @ViewBuilder
@@ -42,8 +53,58 @@ public struct UpdateSheetView: View {
             failedView(message: message)
             
         case .idle:
-            EmptyView()
+            idleView
         }
+    }
+
+    // MARK: - Idle View
+    private var idleView: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "arrow.triangle.2.circlepath.circle.fill")
+                .font(.system(size: 40))
+                .foregroundColor(ApexStyle.accent)
+
+            Text("软件更新")
+                .font(.headline)
+
+            Text("当前版本: v\(updateManager.currentVersion) (Build \(updateManager.currentBuild))")
+                .font(.subheadline)
+                .monospacedDigit()
+                .foregroundColor(ApexStyle.secondary)
+
+            HStack(spacing: ApexStyle.s2) {
+                Spacer()
+
+                ApexActionButton(
+                    L10n.closeWindow,
+                    tint: ApexStyle.secondary,
+                    size: .regular
+                ) {
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+
+                ApexActionButton(
+                    L10n.checkUpdatesNow,
+                    icon: "arrow.triangle.2.circlepath",
+                    tint: ApexStyle.accent,
+                    size: .regular,
+                    isProminent: true
+                ) {
+                    if updateManager.distributionChannel == .appStore {
+                        NSWorkspace.shared.open(DistributionChannel.appStoreURL)
+                    } else {
+                        Task {
+                            await updateManager.checkForUpdates(manual: true)
+                        }
+                    }
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+            .padding(.top, 8)
+        }
+        .padding(24)
+        .frame(width: 420)
     }
     
     // MARK: - Checking View
@@ -54,9 +115,23 @@ public struct UpdateSheetView: View {
             Text(L10n.checkingForUpdates)
                 .font(.system(size: 14, weight: .medium))
                 .foregroundColor(ApexStyle.secondary)
+
+            HStack(spacing: ApexStyle.s2) {
+                Spacer()
+                ApexActionButton(
+                    L10n.closeWindow,
+                    tint: ApexStyle.secondary,
+                    size: .regular
+                ) {
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+            }
+            .padding(.top, 8)
         }
-        .frame(width: 400, height: 180)
         .padding(24)
+        .frame(width: 420)
+        .frame(minHeight: 180)
     }
     
     // MARK: - Update Available View
@@ -103,7 +178,9 @@ public struct UpdateSheetView: View {
                 .apexGlassCard(cornerRadius: 8, material: .ultraThinMaterial, borderColor: ApexStyle.border.opacity(0.75), shadowRadius: 3)
             }
             
-            HStack {
+            HStack(spacing: ApexStyle.s2) {
+                Spacer()
+
                 ApexActionButton(
                     L10n.remindLater,
                     tint: ApexStyle.secondary,
@@ -112,8 +189,6 @@ public struct UpdateSheetView: View {
                     dismiss()
                 }
                 .keyboardShortcut(.cancelAction)
-                
-                Spacer()
                 
                 ApexActionButton(
                     L10n.updateNow,
@@ -129,8 +204,8 @@ public struct UpdateSheetView: View {
                 .keyboardShortcut(.defaultAction)
             }
         }
-        .padding(22)
-        .frame(width: 460)
+        .padding(24)
+        .frame(width: 420)
     }
     
     // MARK: - Downloading View
@@ -170,6 +245,7 @@ public struct UpdateSheetView: View {
                     let totalStr = totalBytes > 0 ? formatBytes(totalBytes) : "--"
                     Text("\(receivedStr) / \(totalStr)")
                         .font(.caption)
+                        .monospacedDigit()
                         .foregroundColor(ApexStyle.secondary)
                     
                     Spacer()
@@ -177,13 +253,14 @@ public struct UpdateSheetView: View {
                     if totalBytes > 0 {
                         Text("\(Int(progress * 100))%")
                             .font(.caption.bold())
+                            .monospacedDigit()
                             .foregroundColor(ApexStyle.primary)
                     }
                 }
             }
             .padding(.vertical, 4)
             
-            HStack {
+            HStack(spacing: ApexStyle.s2) {
                 Spacer()
                 ApexActionButton(
                     L10n.cancelDownload,
@@ -192,10 +269,11 @@ public struct UpdateSheetView: View {
                 ) {
                     updateManager.cancelUpdate()
                 }
+                .keyboardShortcut(.cancelAction)
             }
         }
         .padding(24)
-        .frame(width: 440)
+        .frame(width: 420)
     }
     
     // MARK: - Preparing View
@@ -209,8 +287,9 @@ public struct UpdateSheetView: View {
                 .font(.caption)
                 .foregroundColor(ApexStyle.secondary)
         }
-        .frame(width: 400, height: 160)
         .padding(24)
+        .frame(width: 420)
+        .frame(minHeight: 160)
     }
     
     // MARK: - Ready To Restart View
@@ -232,7 +311,9 @@ public struct UpdateSheetView: View {
                 Spacer()
             }
             
-            HStack {
+            HStack(spacing: ApexStyle.s2) {
+                Spacer()
+
                 ApexActionButton(
                     L10n.restartLater,
                     tint: ApexStyle.secondary,
@@ -241,8 +322,6 @@ public struct UpdateSheetView: View {
                     dismiss()
                 }
                 .keyboardShortcut(.cancelAction)
-                
-                Spacer()
                 
                 ApexActionButton(
                     L10n.restartAndInstall,
@@ -258,7 +337,7 @@ public struct UpdateSheetView: View {
             .padding(.top, 8)
         }
         .padding(24)
-        .frame(width: 450)
+        .frame(width: 420)
     }
     
     // MARK: - Up-to-Date View
@@ -278,19 +357,22 @@ public struct UpdateSheetView: View {
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 10)
             
-            ApexActionButton(
-                "完成",
-                tint: ApexStyle.accent,
-                size: .regular,
-                isProminent: true
-            ) {
-                dismiss()
+            HStack(spacing: ApexStyle.s2) {
+                Spacer()
+                ApexActionButton(
+                    "完成",
+                    tint: ApexStyle.accent,
+                    size: .regular,
+                    isProminent: true
+                ) {
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
             }
-            .keyboardShortcut(.defaultAction)
             .padding(.top, 6)
         }
         .padding(24)
-        .frame(width: 380)
+        .frame(width: 420)
     }
     
     // MARK: - Failed View
@@ -303,13 +385,32 @@ public struct UpdateSheetView: View {
             Text(L10n.updateFailedTitle)
                 .font(.headline)
             
-            Text(message)
-                .font(.caption)
-                .foregroundColor(ApexStyle.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 10)
+            ViewThatFits(in: .vertical) {
+                Text(message)
+                    .font(.caption)
+                    .foregroundColor(ApexStyle.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 10)
+                    .textSelection(.enabled)
+
+                ScrollView {
+                    Text(message)
+                        .font(.caption)
+                        .foregroundColor(ApexStyle.secondary)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: .infinity)
+                        .padding(.horizontal, 10)
+                        .textSelection(.enabled)
+                }
+                .frame(height: 160)
+            }
+            .frame(maxHeight: 160)
             
-            HStack(spacing: 10) {
+            HStack(spacing: ApexStyle.s2) {
+                Spacer()
+
                 ApexActionButton(
                     L10n.closeWindow,
                     tint: ApexStyle.secondary,
@@ -318,8 +419,6 @@ public struct UpdateSheetView: View {
                     dismiss()
                 }
                 .keyboardShortcut(.cancelAction)
-                
-                Spacer()
                 
                 if let release = updateManager.latestRelease, let url = URL(string: release.downloadUrl) {
                     ApexActionButton(
@@ -349,7 +448,7 @@ public struct UpdateSheetView: View {
             .padding(.top, 8)
         }
         .padding(24)
-        .frame(width: 440)
+        .frame(width: 420)
     }
     
     private func formatBytes(_ bytes: Int64) -> String {

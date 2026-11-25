@@ -9,6 +9,7 @@ public struct KnownHostsSettingsView: View {
     @State private var entryToDelete: KnownHostEntry?
     @State private var showingDeleteAlert: Bool = false
     @State private var toastMessage: String?
+    @State private var errorMessage: String?
 
     public init() {}
 
@@ -35,6 +36,7 @@ public struct KnownHostsSettingsView: View {
                                 .foregroundColor(ApexStyle.secondary)
                         }
                         .buttonStyle(.plain)
+                        .help("清除搜索")
                         .accessibilityLabel("清除搜索")
                     }
                 }
@@ -48,6 +50,7 @@ public struct KnownHostsSettingsView: View {
 
                 Text("共 \(filteredEntries.count) 条指纹")
                     .font(.system(size: 11, design: .monospaced))
+                    .monospacedDigit()
                     .foregroundColor(ApexStyle.secondary)
 
                 ApexIconButton(
@@ -57,8 +60,38 @@ public struct KnownHostsSettingsView: View {
                     iconSize: 11
                 ) {
                     manager.reload()
+                    errorMessage = nil
                     showToast("已重新加载 ~/.ssh/known_hosts")
                 }
+            }
+
+            if let err = errorMessage {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 13))
+                        .foregroundColor(ApexStyle.error)
+                    Text(err)
+                        .font(.system(size: 11.5))
+                        .foregroundColor(ApexStyle.error)
+                        .lineLimit(2)
+                        .help(err)
+                    Spacer()
+                    ApexIconButton(
+                        icon: "xmark",
+                        label: "关闭提示",
+                        size: 20,
+                        iconSize: 9
+                    ) {
+                        errorMessage = nil
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(ApexStyle.error.opacity(0.1), in: RoundedRectangle(cornerRadius: ApexStyle.cardRadius))
+                .overlay(
+                    RoundedRectangle(cornerRadius: ApexStyle.cardRadius)
+                        .stroke(ApexStyle.error.opacity(0.4), lineWidth: 1)
+                )
             }
 
             if !manager.conflicts.isEmpty {
@@ -106,8 +139,15 @@ public struct KnownHostsSettingsView: View {
         }
         .alert("移除已知主机指纹", isPresented: $showingDeleteAlert, presenting: entryToDelete) { entry in
             Button("移除并备份", role: .destructive) {
-                if (try? manager.removeEntry(id: entry.id)) == true {
-                    showToast("已移除主机指纹并自动备份 known_hosts.bak")
+                do {
+                    if try manager.removeEntry(id: entry.id) {
+                        errorMessage = nil
+                        showToast("已移除主机指纹并自动备份 known_hosts.bak")
+                    } else {
+                        errorMessage = "未找到「\(entry.displayHostTitle)」的主机指纹条目，可能已被移除"
+                    }
+                } catch {
+                    errorMessage = "移除主机指纹失败: \(error.localizedDescription)"
                 }
             }
             Button("取消", role: .cancel) {}
@@ -117,7 +157,8 @@ public struct KnownHostsSettingsView: View {
     }
 
     private var conflictBanner: some View {
-        HStack(spacing: 10) {
+        let conflictEndpoints = manager.conflicts.map(\.endpoint).joined(separator: ", ")
+        return HStack(spacing: 10) {
             Image(systemName: "exclamationmark.shield.fill")
                 .font(.system(size: 15))
                 .foregroundColor(ApexStyle.warning)
@@ -125,20 +166,39 @@ public struct KnownHostsSettingsView: View {
                 Text("检测到 \(manager.conflicts.count) 处主机指纹冲突 (REMOTE HOST IDENTIFICATION HAS CHANGED)")
                     .font(.system(size: 11.5, weight: .semibold))
                     .foregroundColor(ApexStyle.primary)
-                Text(manager.conflicts.map(\.endpoint).joined(separator: ", "))
+                Text(conflictEndpoints)
                     .font(.system(size: 10.5, design: .monospaced))
                     .foregroundColor(ApexStyle.secondary)
                     .lineLimit(1)
+                    .help(conflictEndpoints)
             }
             Spacer()
             if let firstConflict = manager.conflicts.first {
                 ApexActionButton("一键清理冲突项", icon: "wand.and.stars", tint: ApexStyle.warning, size: .small) {
-                    for conflict in manager.conflicts {
+                    var removedCount = 0
+                    var failureMessages: [String] = []
+                    let conflictsSnapshot = manager.conflicts
+                    for conflict in conflictsSnapshot {
                         for item in conflict.conflictingEntries {
-                            _ = try? manager.removeEntry(id: item.id)
+                            do {
+                                if try manager.removeEntry(id: item.id) {
+                                    removedCount += 1
+                                }
+                            } catch {
+                                failureMessages.append(error.localizedDescription)
+                            }
                         }
                     }
-                    showToast("已清理冲突主机指纹（比如重装系统后的旧公钥），请重新连接确认新指纹")
+                    if let firstError = failureMessages.first {
+                        errorMessage = "部分或全部冲突指纹清理失败: \(firstError)"
+                    } else {
+                        errorMessage = nil
+                    }
+                    if removedCount > 0 {
+                        showToast("已清理 \(removedCount) 条冲突主机指纹（并已备份 known_hosts.bak），请重新连接确认新指纹")
+                    } else if failureMessages.isEmpty {
+                        errorMessage = "未检测到可移除的冲突指纹条目"
+                    }
                 }
                 .help("清理 \(firstConflict.endpoint) 等冲突条目并自动生成 known_hosts.bak 备份")
             }
@@ -170,6 +230,8 @@ public struct KnownHostsSettingsView: View {
                     Text(entry.algorithmBadge)
                         .font(.system(size: 9.5, weight: .bold, design: .monospaced))
                         .foregroundColor(entry.algorithmBadge == "ED25519" ? ApexStyle.success : ApexStyle.secondary)
+                        .lineLimit(1)
+                        .fixedSize()
                         .padding(.horizontal, 5)
                         .padding(.vertical, 1)
                         .background((entry.algorithmBadge == "ED25519" ? ApexStyle.success : ApexStyle.secondary).opacity(0.12), in: RoundedRectangle(cornerRadius: 3))
@@ -178,6 +240,8 @@ public struct KnownHostsSettingsView: View {
                         Text(entry.marker.rawValue)
                             .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
                             .foregroundColor(entry.marker == .revoked ? ApexStyle.error : ApexStyle.accent)
+                            .lineLimit(1)
+                            .fixedSize()
                             .padding(.horizontal, 5)
                             .padding(.vertical, 1)
                             .background((entry.marker == .revoked ? ApexStyle.error : ApexStyle.accent).opacity(0.12), in: RoundedRectangle(cornerRadius: 3))
@@ -186,6 +250,8 @@ public struct KnownHostsSettingsView: View {
                     Text("#\(entry.lineNumber)")
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundColor(ApexStyle.secondary.opacity(0.75))
+                        .lineLimit(1)
+                        .fixedSize()
                 }
 
                 Text(entry.fingerprintSHA256)

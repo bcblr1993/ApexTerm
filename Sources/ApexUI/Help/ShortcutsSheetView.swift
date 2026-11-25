@@ -110,7 +110,7 @@ public struct ShortcutsSheetView: View {
             HStack {
                 Image(systemName: "command")
                     .font(.system(size: 20, weight: .bold))
-                    .foregroundColor(.accentColor)
+                    .foregroundColor(ApexStyle.accent)
                 
                 Text(L10n.menuShortcuts)
                     .font(.title2.bold())
@@ -128,7 +128,7 @@ public struct ShortcutsSheetView: View {
                 }
                 .accessibilityIdentifier("shortcuts.close.header")
             }
-            .padding()
+            .padding(ApexStyle.s4)
             .background(ApexStyle.subtleSurface)
             
             Divider()
@@ -139,7 +139,7 @@ public struct ShortcutsSheetView: View {
                         VStack(alignment: .leading, spacing: 10) {
                             HStack(spacing: 6) {
                                 Image(systemName: group.icon)
-                                    .foregroundColor(.accentColor)
+                                    .foregroundColor(ApexStyle.accent)
                                 Text(group.title)
                                     .font(.headline)
                             }
@@ -159,9 +159,11 @@ public struct ShortcutsSheetView: View {
                                                     .apexKeycap()
                                             }
                                         }
+                                        .fixedSize()
+                                        .layoutPriority(1)
                                     }
                                     .padding(.vertical, 4)
-                                    .padding(.horizontal, 8)
+                                    .padding(.horizontal, ApexStyle.s2)
                                     .background(ApexStyle.primary.opacity(0.02))
                                     .cornerRadius(6)
                                 }
@@ -169,7 +171,7 @@ public struct ShortcutsSheetView: View {
                         }
                     }
                 }
-                .padding(20)
+                .padding(ApexStyle.s4)
             }
             .frame(width: 580, height: 480)
             
@@ -185,10 +187,9 @@ public struct ShortcutsSheetView: View {
                     dismiss()
                 }
                 .keyboardShortcut(.cancelAction)
-                .keyboardShortcut(.defaultAction)
                 .accessibilityIdentifier("shortcuts.close.footer")
             }
-            .padding()
+            .padding(ApexStyle.s4)
             .background(ApexStyle.subtleSurface)
         }
         .onExitCommand {
@@ -200,6 +201,7 @@ public struct ShortcutsSheetView: View {
             }
             .keyboardShortcut("w", modifiers: .command)
             .opacity(0)
+            .accessibilityHidden(true)
         )
     }
 }

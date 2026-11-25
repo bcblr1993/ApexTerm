@@ -75,6 +75,7 @@ public final class TerminalRingBuffer: @unchecked Sendable {
     private var activeLine: String = ""
     private var isEditingActiveLine: Bool = false
     private var activeCells: [TerminalCell] = []
+    private var belowActiveRows: [[TerminalCell]] = []
     private var cursorCol: Int = 0
     private var currentStyle = SGRStyle(foreground: nil, index: nil, bold: false)
     private var currentFgHex: String? { get { currentStyle.foreground } set { currentStyle.foreground = newValue } }
@@ -118,7 +119,7 @@ public final class TerminalRingBuffer: @unchecked Sendable {
 
     public var screenLines: [String]? {
         lock.lock(); defer { lock.unlock() }
-        return screen?.map(renderCellsToString)
+        return screen?.map { renderCellsToString($0) }
     }
 
     /// Whether terminal is currently in alternate screen buffer mode (e.g. Vim, less, htop)
@@ -306,11 +307,7 @@ public final class TerminalRingBuffer: @unchecked Sendable {
     public var currentActiveLine: String {
         lock.lock()
         defer { lock.unlock() }
-        if isEditingActiveLine {
-            return renderCellsToString(activeCells)
-        } else {
-            return activeLine
-        }
+        return activeRenderedLines().joined(separator: "\n")
     }
     
     /// Return committed lines from start index to count
@@ -561,6 +558,9 @@ public final class TerminalRingBuffer: @unchecked Sendable {
                         case "E": screenColumn = 0; screenNewline()
                         default: break
                         }
+                    } else if nextChar == "M" && count > 0 {
+                        ensureEditingMode()
+                        moveNormalCursorUp(1)
                     }
                     i = fullText.index(after: next)
                     continue
@@ -585,32 +585,74 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         }
     }
     
+    private func parseLineToCells(_ line: String) -> [TerminalCell] {
+        guard !line.isEmpty else { return [] }
+        var cells: [TerminalCell] = []
+        let spans = vtParser.parseANSI(line)
+        for span in spans {
+            for c in span.text {
+                var cell = TerminalCell(char: c, fgHex: span.foregroundColorHex, isBold: span.isBold, ansiColorIndex: span.ansiColorIndex)
+                cell.extraStyle.background = span.backgroundColorHex
+                cell.extraStyle.backgroundIndex = span.backgroundANSIColorIndex
+                cell.extraStyle.italic = span.isItalic
+                cell.extraStyle.underline = span.isUnderlined
+                cell.extraStyle.strikethrough = span.isStrikethrough
+                cell.extraStyle.inverse = span.isInverse
+                cells.append(cell)
+                if TerminalCharacterWidth.columns(c) == 2 {
+                    var continuation = TerminalCell(char: " ")
+                    continuation.isContinuation = true
+                    cells.append(continuation)
+                }
+            }
+        }
+        return cells
+    }
+
     private func ensureEditingMode() {
         guard !isEditingActiveLine else { return }
         isEditingActiveLine = true
-        activeCells.removeAll(keepingCapacity: true)
-        if !activeLine.isEmpty {
-            let spans = vtParser.parseANSI(activeLine)
-            for span in spans {
-                for c in span.text {
-                    var cell = TerminalCell(char: c, fgHex: span.foregroundColorHex, isBold: span.isBold, ansiColorIndex: span.ansiColorIndex)
-                    cell.extraStyle.background = span.backgroundColorHex
-                    cell.extraStyle.backgroundIndex = span.backgroundANSIColorIndex
-                    cell.extraStyle.italic = span.isItalic
-                    cell.extraStyle.underline = span.isUnderlined
-                    cell.extraStyle.strikethrough = span.isStrikethrough
-                    cell.extraStyle.inverse = span.isInverse
-                    activeCells.append(cell)
-                    if TerminalCharacterWidth.columns(c) == 2 {
-                        var continuation = TerminalCell(char: " ")
-                        continuation.isContinuation = true
-                        activeCells.append(continuation)
-                    }
-                }
-            }
-            activeLine = ""
-        }
+        activeCells = parseLineToCells(activeLine)
+        activeLine = ""
         cursorCol = activeCells.count
+    }
+
+    private func moveNormalCursorUp(_ lines: Int) {
+        let steps = min(max(1, lines), count, max(1, screenRows - 1))
+        guard steps > 0 else { return }
+        for _ in 0..<steps {
+            belowActiveRows.insert(activeCells, at: 0)
+            let lastIndex = (head + count - 1) % historyLimit
+            let popped = buffer[lastIndex]
+            buffer[lastIndex] = ""
+            count -= 1
+            _totalCommittedCount -= 1
+            activeCells = parseLineToCells(popped)
+        }
+    }
+
+    private func moveNormalCursorDown(_ lines: Int) {
+        let steps = min(max(1, lines), belowActiveRows.count)
+        guard steps > 0 else { return }
+        for _ in 0..<steps {
+            commitFastLine(renderCellsToString(activeCells, trimAfterColumn: 0))
+            activeCells = belowActiveRows.removeFirst()
+        }
+    }
+
+    private func activeRenderedLines() -> [String] {
+        guard isEditingActiveLine else {
+            return activeLine.isEmpty ? [] : [activeLine]
+        }
+        let first = renderCellsToString(activeCells, trimAfterColumn: cursorCol)
+        var below = belowActiveRows.map { renderCellsToString($0, trimAfterColumn: 0) }
+        while let last = below.last, last.isEmpty {
+            below.removeLast()
+        }
+        if !below.isEmpty {
+            return [first] + below
+        }
+        return first.isEmpty ? [] : [first]
     }
     
     /// Clear a whole wide glyph if either of its cells is overwritten.
@@ -948,12 +990,14 @@ public final class TerminalRingBuffer: @unchecked Sendable {
                 if cursorCol < activeCells.count {
                     activeCells.removeSubrange(cursorCol..<activeCells.count)
                 }
+                belowActiveRows.removeAll(keepingCapacity: true)
             } else if mode == 2 || mode == 3 {
                 head = 0
                 count = 0
                 _totalCommittedCount = 0
                 activeLine = ""
                 activeCells.removeAll(keepingCapacity: true)
+                belowActiveRows.removeAll(keepingCapacity: true)
                 isEditingActiveLine = false
                 cursorCol = 0
                 _isClearPending = true
@@ -981,9 +1025,15 @@ public final class TerminalRingBuffer: @unchecked Sendable {
             let n = max(1, Int(param) ?? 1)
             cursorCol = max(0, cursorCol - n)
         case "A": // Cursor Up
-            break
+            moveNormalCursorUp(max(1, Int(param) ?? 1))
         case "B": // Cursor Down
-            break
+            moveNormalCursorDown(max(1, Int(param) ?? 1))
+        case "E": // Cursor Next Line
+            moveNormalCursorDown(max(1, Int(param) ?? 1))
+            cursorCol = 0
+        case "F": // Cursor Previous Line
+            moveNormalCursorUp(max(1, Int(param) ?? 1))
+            cursorCol = 0
         case "G": // Cursor Horizontal Absolute
             let col = max(1, Int(param) ?? 1)
             cursorCol = max(0, col - 1)
@@ -1025,11 +1075,16 @@ public final class TerminalRingBuffer: @unchecked Sendable {
     
     private func commitActiveLine() {
         if isEditingActiveLine {
-            let line = renderCellsToString(activeCells)
+            let line = renderCellsToString(activeCells, trimAfterColumn: cursorCol)
             commitFastLine(line)
-            activeCells.removeAll(keepingCapacity: true)
-            isEditingActiveLine = false
-            cursorCol = 0
+            if !belowActiveRows.isEmpty {
+                activeCells = belowActiveRows.removeFirst()
+                cursorCol = 0
+            } else {
+                activeCells.removeAll(keepingCapacity: true)
+                isEditingActiveLine = false
+                cursorCol = 0
+            }
         } else {
             commitFastLine(activeLine)
             activeLine = ""
@@ -1048,10 +1103,10 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         _totalCommittedCount += 1
     }
     
-    private func renderCellsToString(_ cells: [TerminalCell]) -> String {
+    private func renderCellsToString(_ cells: [TerminalCell], trimAfterColumn: Int = 0) -> String {
         // Trim trailing erasure spaces at or past cursorCol (e.g. from \b \b or erase operations)
         var effectiveCount = cells.count
-        while effectiveCount > cursorCol && cells[effectiveCount - 1].char == " " && !cells[effectiveCount - 1].isContinuation && cells[effectiveCount - 1].style.background == nil && cells[effectiveCount - 1].style.backgroundIndex == nil && !cells[effectiveCount - 1].style.inverse {
+        while effectiveCount > trimAfterColumn && cells[effectiveCount - 1].char == " " && !cells[effectiveCount - 1].isContinuation && cells[effectiveCount - 1].style.background == nil && cells[effectiveCount - 1].style.backgroundIndex == nil && !cells[effectiveCount - 1].style.inverse {
             effectiveCount -= 1
         }
         guard effectiveCount > 0 else { return "" }
@@ -1106,16 +1161,14 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         
-        let active = isEditingActiveLine ? renderCellsToString(activeCells) : activeLine
+        let trailing = activeRenderedLines()
         var result = [String]()
-        result.reserveCapacity(count + (active.isEmpty ? 0 : 1))
+        result.reserveCapacity(count + trailing.count)
         for i in 0..<count {
             let index = (head + i) % historyLimit
             result.append(buffer[index])
         }
-        if !active.isEmpty {
-            result.append(active)
-        }
+        result.append(contentsOf: trailing)
         return result
     }
     
@@ -1140,8 +1193,7 @@ public final class TerminalRingBuffer: @unchecked Sendable {
     public var lineCount: Int {
         lock.lock()
         defer { lock.unlock() }
-        let hasActive = isEditingActiveLine ? !activeCells.isEmpty : !activeLine.isEmpty
-        return count + (hasActive ? 1 : 0)
+        return count + activeRenderedLines().count
     }
     
     /// Returns the number of backing array slots currently holding non-empty strings (for memory reclamation verification).
@@ -1155,6 +1207,7 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         head = 0; count = 0; _totalCommittedCount = 0
         buffer = [String](repeating: "", count: historyLimit)
         activeLine = ""; activeCells.removeAll(keepingCapacity: false)
+        belowActiveRows.removeAll(keepingCapacity: false)
         isEditingActiveLine = false; cursorCol = 0
         currentStyle = SGRStyle(foreground: nil, index: nil, bold: false)
         pendingSequence = ""; screen = nil
@@ -1179,6 +1232,7 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         buffer = [String](repeating: "", count: historyLimit)
         activeLine = ""
         activeCells.removeAll(keepingCapacity: false)
+        belowActiveRows.removeAll(keepingCapacity: false)
         isEditingActiveLine = false
         cursorCol = 0
         pendingSequence = ""

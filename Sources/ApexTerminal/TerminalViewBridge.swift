@@ -2153,6 +2153,9 @@ public final class NativeTerminalView: NSTextView {
     public func clearScreen() {
         ringBuffer?.clear()
         self.textStorage?.setAttributedString(NSAttributedString())
+        self.renderedCommittedLineLengths.removeAll(keepingCapacity: true)
+        self.renderedLineHead = 0
+        self.renderedActiveLine = ""
         self.activeLineStartLocation = 0
         self.lastCommittedIndex = 0
         self.needsDisplay = true
@@ -2543,9 +2546,12 @@ public final class NativeTerminalView: NSTextView {
             renderedScreenRows = nil
             renderedScreenLines = nil
             let currentTotal = buffer.totalCommittedCount
-            let isCleared = buffer.consumeClearFlag() || (currentTotal < lastCommittedIndex)
+            let bufferCleared = buffer.consumeClearFlag()
+            let rewoundLines = (!bufferCleared && currentTotal < lastCommittedIndex) ? Int(lastCommittedIndex - currentTotal) : 0
+            let canIncrementalRewind = rewoundLines > 0 && rewoundLines <= (renderedCommittedLineLengths.count - renderedLineHead)
+            let isCleared = bufferCleared || (currentTotal < lastCommittedIndex && !canIncrementalRewind)
             let active = buffer.currentActiveLine
-            if !isCleared, currentTotal == lastCommittedIndex, active == renderedActiveLine {
+            if !isCleared, !canIncrementalRewind, currentTotal == lastCommittedIndex, active == renderedActiveLine {
                 // Cursor/control-only packets do not invalidate the entire scrollback layout.
                 self.needsDisplay = true
                 self.resetCursorBlink()
@@ -2561,6 +2567,8 @@ public final class NativeTerminalView: NSTextView {
             if isCleared {
                 lastCommittedIndex = 0
                 self.textStorage?.setAttributedString(NSAttributedString())
+                renderedCommittedLineLengths.removeAll(keepingCapacity: true)
+                renderedLineHead = 0
                 activeLineStartLocation = 0
             }
 
@@ -2568,6 +2576,20 @@ public final class NativeTerminalView: NSTextView {
             if let storage = self.textStorage, storage.length > activeLineStartLocation {
                 let activeRange = NSRange(location: activeLineStartLocation, length: storage.length - activeLineStartLocation)
                 storage.deleteCharacters(in: activeRange)
+            }
+
+            // 2.5 Rewind committed lines incrementally when normal-mode CSI A/F/ESC M moves cursor up into scrollback
+            if canIncrementalRewind, let storage = self.textStorage {
+                var poppedUTF16 = 0
+                for _ in 0..<rewoundLines {
+                    poppedUTF16 += renderedCommittedLineLengths.removeLast()
+                }
+                if poppedUTF16 > 0 {
+                    let deleteCount = min(poppedUTF16, storage.length)
+                    storage.deleteCharacters(in: NSRange(location: storage.length - deleteCount, length: deleteCount))
+                }
+                lastCommittedIndex = currentTotal
+                activeLineStartLocation = storage.length
             }
 
             // 3. Append newly committed lines using tailLines

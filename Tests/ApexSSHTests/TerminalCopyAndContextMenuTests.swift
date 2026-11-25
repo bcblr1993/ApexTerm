@@ -185,47 +185,47 @@ final class TerminalCopyAndContextMenuTests: XCTestCase {
         view.ringBuffer = buffer
 
         // 1. Prompt with bracketed paste enabled (?2004h) + bracketed paste echo with trailing CR (\e[7m...\e[27m\r\n\r)
-        let prompt = "\u{1B}[?2004hubuntu@VM-0-17-ubuntu:~$ "
-        let afterPaste = "\u{1B}[7m2026 from 43.155.167.224\u{1B}[27m\r\n\r"
+        let prompt = "\u{1B}[?2004hqa@test-host:~$ "
+        let afterPaste = "\u{1B}[7m2026 from 198.51.100.42\u{1B}[27m\r\n\r"
         buffer.appendStream(prompt + afterPaste)
         view.refresh()
-        XCTAssertEqual(view.textStorage?.string, "ubuntu@VM-0-17-ubuntu:~$ 2026 from 43.155.167.224\n")
+        XCTAssertEqual(view.textStorage?.string, "qa@test-host:~$ 2026 from 198.51.100.42\n")
 
-        // 2. Backspace #1 in GNU Readline 8.2: CUU (\e[A), 25x CUF, clear inverse redraw, CR+LF, EL, CUU, 49x CUF
-        let cuf25 = String(repeating: "\u{1B}[C", count: 25)
-        let cuf49 = String(repeating: "\u{1B}[C", count: 49)
-        let key1Response = "\u{1B}[A" + cuf25 + "2026 from 43.155.167.224\r\n\r\u{1B}[K\u{1B}[A" + cuf49
+        // 2. Backspace #1 in GNU Readline 8.2: CUU (\e[A), 16x CUF, clear inverse redraw, CR+LF, EL, CUU, 39x CUF
+        let cuf16 = String(repeating: "\u{1B}[C", count: 16)
+        let cuf39 = String(repeating: "\u{1B}[C", count: 39)
+        let key1Response = "\u{1B}[A" + cuf16 + "2026 from 198.51.100.42\r\n\r\u{1B}[K\u{1B}[A" + cuf39
         buffer.appendStream(key1Response)
         view.refresh()
 
         XCTAssertEqual(
             view.textStorage?.string,
-            "ubuntu@VM-0-17-ubuntu:~$ 2026 from 43.155.167.224",
+            "qa@test-host:~$ 2026 from 198.51.100.42",
             "First backspace redraw after bracketed paste must edit the prompt line in place without duplicating it"
         )
         XCTAssertEqual(buffer.committedLineCount, 0)
-        XCTAssertEqual(buffer.activeCursorUTF16Offset, 49)
-        if let storage = view.textStorage, storage.length > 26 {
-            let attrs = storage.attributes(at: 26, effectiveRange: nil)
+        XCTAssertEqual(buffer.activeCursorUTF16Offset, 39)
+        if let storage = view.textStorage, storage.length > 17 {
+            let attrs = storage.attributes(at: 17, effectiveRange: nil)
             XCTAssertNil(attrs[.backgroundColor], "Rewritten pasted text must clear inverse background attribute")
         }
 
-        // 3. Backspace #2 deletes the trailing digit "4" cleanly in place
+        // 3. Backspace #2 deletes the trailing digit "2" cleanly in place
         buffer.appendStream("\u{08}\u{1B}[K")
         view.refresh()
-        XCTAssertEqual(view.textStorage?.string, "ubuntu@VM-0-17-ubuntu:~$ 2026 from 43.155.167.22")
-        XCTAssertEqual(buffer.activeCursorUTF16Offset, 48)
+        XCTAssertEqual(view.textStorage?.string, "qa@test-host:~$ 2026 from 198.51.100.4")
+        XCTAssertEqual(buffer.activeCursorUTF16Offset, 38)
 
-        // 4. Deleting the remaining 23 characters leaves only the clean shell prompt
-        buffer.appendStream(String(repeating: "\u{08}\u{1B}[K", count: 23))
+        // 4. Deleting the remaining 22 characters leaves only the clean shell prompt
+        buffer.appendStream(String(repeating: "\u{08}\u{1B}[K", count: 22))
         view.refresh()
-        XCTAssertEqual(view.textStorage?.string, "ubuntu@VM-0-17-ubuntu:~$ ")
-        XCTAssertEqual(buffer.activeCursorUTF16Offset, 25)
+        XCTAssertEqual(view.textStorage?.string, "qa@test-host:~$ ")
+        XCTAssertEqual(buffer.activeCursorUTF16Offset, 16)
 
         // 5. Normal typing & Enter after full delete still commits cleanly
-        buffer.appendStream("pwd\r\n/home/ubuntu\r\n")
+        buffer.appendStream("pwd\r\n/home/qa\r\n")
         view.refresh()
-        XCTAssertEqual(view.textStorage?.string, "ubuntu@VM-0-17-ubuntu:~$ pwd\n/home/ubuntu\n")
+        XCTAssertEqual(view.textStorage?.string, "qa@test-host:~$ pwd\n/home/qa\n")
     }
 
     @MainActor

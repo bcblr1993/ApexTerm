@@ -112,7 +112,7 @@ final class SplitPaneIntegrationTests: XCTestCase {
         let tab = TerminalTabItem(session: session, sshClient: client)
         
         let primaryPane = tab.panes[0]
-        primaryPane.ringBuffer.appendStream("Welcome to Ubuntu 24.04 LTS\nubuntu@VM-0-17:~$ ")
+        primaryPane.ringBuffer.appendStream("Welcome to Ubuntu 24.04 LTS\nqa@test-host:~$ ")
         
         // Split vertically
         tab.split(mode: .vertical)
@@ -126,7 +126,7 @@ final class SplitPaneIntegrationTests: XCTestCase {
         
         let text = scrollView.terminalView.textStorage?.string ?? ""
         XCTAssertTrue(text.contains("Welcome to Ubuntu 24.04 LTS"), "Buffer history must be rendered immediately")
-        XCTAssertTrue(text.contains("ubuntu@VM-0-17:~$"), "Active prompt must be rendered immediately")
+        XCTAssertTrue(text.contains("qa@test-host:~$"), "Active prompt must be rendered immediately")
         
         // Verify onFocus callback updates tab.activePaneId
         var focusTriggered = false

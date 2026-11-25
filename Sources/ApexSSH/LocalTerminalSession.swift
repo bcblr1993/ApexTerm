@@ -344,15 +344,14 @@ public final class LocalTerminalSession: SSHSessionProtocol, @unchecked Sendable
     
     public func sendInputSync(_ data: Data) {
         guard !data.isEmpty else { return }
+        let descriptor = stateLock.withLock { () -> Int32 in
+            ptyMasterFd >= 0 ? dup(ptyMasterFd) : -1
+        }
+        guard descriptor >= 0 else { return }
         if data.count <= 512 {
-            let fd = stateLock.withLock { self.ptyMasterFd }
-            guard fd != -1 else { return }
-            NativeSSHSession.writePTYInput(data, to: fd)
+            defer { close(descriptor) }
+            NativeSSHSession.writePTYInput(data, to: descriptor)
         } else {
-            let descriptor = stateLock.withLock { () -> Int32 in
-                ptyMasterFd >= 0 ? dup(ptyMasterFd) : -1
-            }
-            guard descriptor >= 0 else { return }
             inputQueue.async {
                 defer { close(descriptor) }
                 NativeSSHSession.writePTYInput(data, to: descriptor)

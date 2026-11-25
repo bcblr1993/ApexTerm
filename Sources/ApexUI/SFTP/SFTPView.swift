@@ -120,7 +120,11 @@ public struct SFTPView: View {
     @State private var isShowingCreationFailure = false
     @State private var loadError: String?
     @State private var isOpeningEditor = false
-    @State private var isTransferDrawerExpanded = false
+    @State private var localTransferDrawerExpanded = false
+    private let externalTransferDrawerExpanded: Binding<Bool>?
+    private var transferDrawerExpandedBinding: Binding<Bool> {
+        externalTransferDrawerExpanded ?? $localTransferDrawerExpanded
+    }
     @State private var loadTask: Task<Void, Never>?
     @State private var loadGeneration: Int = 0
     
@@ -168,13 +172,15 @@ public struct SFTPView: View {
         isLinkageEnabled: Binding<Bool> = .constant(true),
         session: SSHSessionProtocol?,
         connectionState: SSHConnectionState = .connected,
-        tabID: UUID? = nil
+        tabID: UUID? = nil,
+        isTransferDrawerExpanded: Binding<Bool>? = nil
     ) {
         self._currentPath = currentPath
         self._isLinkageEnabled = isLinkageEnabled
         self.session = session
         self.connectionState = connectionState
         self.tabID = tabID
+        self.externalTransferDrawerExpanded = isTransferDrawerExpanded
     }
 
     private var pathControls: some View {
@@ -375,7 +381,7 @@ public struct SFTPView: View {
             .disabled(connectionState != .connected)
 
             // Transfer records drawer toggle button
-            TransferToolbarButton(isExpanded: $isTransferDrawerExpanded, compact: compact)
+            TransferToolbarButton(isExpanded: transferDrawerExpandedBinding, compact: compact)
         }
         .fixedSize(horizontal: true, vertical: false)
     }
@@ -421,7 +427,7 @@ public struct SFTPView: View {
                             isShowingCreationFailure = true
                         } else {
                             withAnimation(.spring(duration: 0.25)) {
-                                isTransferDrawerExpanded = true
+                                transferDrawerExpandedBinding.wrappedValue = true
                             }
                         }
                     }) {
@@ -518,8 +524,44 @@ public struct SFTPView: View {
             if isRemoteSearchVisible {
                 remoteSearchBar
             }
-            // Files table with Drag & Drop upload & download
-            ZStack {
+            // Files table with Drag & Drop upload & download + non-blocking embedded transfer drawer
+            GeometryReader { contentGeo in
+                let drawerMode = SFTPTransferDrawerLayout.resolve(
+                    isExpanded: transferDrawerExpandedBinding.wrappedValue,
+                    availableHeight: contentGeo.size.height
+                )
+                ZStack(alignment: .bottom) {
+                    VStack(spacing: 0) {
+                        fileTableContainer
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                        if case .dockedSplit(let drawerHeight) = drawerMode {
+                            Divider()
+                            TransferDrawer(isExpanded: transferDrawerExpandedBinding)
+                                .frame(maxWidth: .infinity)
+                                .frame(height: drawerHeight)
+                                .transition(.move(edge: .bottom).combined(with: .opacity))
+                        }
+                    }
+
+                    if case .fillSFTPArea = drawerMode {
+                        TransferDrawer(isExpanded: transferDrawerExpandedBinding)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(ApexStyle.surface)
+
+            if !transferDrawerExpandedBinding.wrappedValue {
+                TransferInlineProgressBar(isDrawerExpanded: transferDrawerExpandedBinding)
+            }
+        }
+    }
+
+    private var fileTableContainer: some View {
+        ZStack {
                 if connectionState != .connected {
                     Group {
                         if case .connecting = connectionState {
@@ -690,7 +732,6 @@ public struct SFTPView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(ApexStyle.surface)
-        }
     }
 
     private var observedFileBrowser: some View {
@@ -700,11 +741,6 @@ public struct SFTPView: View {
             Button("好", role: .cancel) {}
         } message: {
             Text(creationFailureDetails ?? "")
-        }
-        .sheet(isPresented: $isTransferDrawerExpanded) {
-            TransferDrawer(isExpanded: $isTransferDrawerExpanded)
-                .frame(width: 700, height: 360)
-                .apexTheme()
         }
         .onChange(of: isFilterVisible) { _, visible in
             if !visible { isFilterFocused = false; searchFilter = "" }
@@ -1137,9 +1173,6 @@ public struct SFTPView: View {
         }
         let downloads = access.url
         transferNotice = "正在下载 \(targetItems.count) 个项目…"
-        withAnimation(.spring(duration: 0.25)) {
-            isTransferDrawerExpanded = true
-        }
         let tracker = SFTPBatchTracker(total: targetItems.count)
         tracker.addCompletionHandler {
             access.close()
@@ -1163,7 +1196,6 @@ public struct SFTPView: View {
                             if snapshot.failed > 0 {
                                 let cancelSuffix = snapshot.cancelled > 0 ? "，取消 \(snapshot.cancelled)" : ""
                                 self.transferNotice = "批量下载部分失败（成功 \(snapshot.succeeded)，失败 \(snapshot.failed)\(cancelSuffix)）"
-                                self.isTransferDrawerExpanded = true
                             } else if snapshot.cancelled > 0 {
                                 self.transferNotice = snapshot.succeeded > 0
                                     ? "批量下载已取消部分项目（成功 \(snapshot.succeeded)，取消 \(snapshot.cancelled)）"
@@ -1179,7 +1211,6 @@ public struct SFTPView: View {
                                 self.transferNotice = error is CancellationError
                                     ? "已取消下载: \(item.name)"
                                     : "下载失败: \(error.localizedDescription)"
-                                self.isTransferDrawerExpanded = true
                             }
                         }
                     }
@@ -1783,7 +1814,6 @@ public struct SFTPView: View {
                 } else {
                     self.transferNotice = "上传失败: \(desc)"
                 }
-                self.isTransferDrawerExpanded = true
             }
         }
     }
@@ -1851,9 +1881,6 @@ public struct SFTPView: View {
                 transferNotice = filesToUpload.count == 1
                     ? "正在上传 \(filesToUpload[0].lastPathComponent)…"
                     : "正在批量上传 \(filesToUpload.count) 个文件…"
-                withAnimation(.spring(duration: 0.25)) {
-                    isTransferDrawerExpanded = true
-                }
                 
                 let tracker = SFTPBatchTracker(total: filesToUpload.count)
                 let retainedAccesses = accesses
@@ -1884,7 +1911,6 @@ public struct SFTPView: View {
                                     } else {
                                         self.transferNotice = "批量上传部分失败（成功 \(snapshot.succeeded)，失败 \(snapshot.failed)\(cancelSuffix)）"
                                     }
-                                    self.isTransferDrawerExpanded = true
                                 } else if snapshot.cancelled > 0 {
                                     self.transferNotice = snapshot.succeeded > 0
                                         ? "批量上传已取消部分项目（成功 \(snapshot.succeeded)，取消 \(snapshot.cancelled)）"
@@ -1905,7 +1931,6 @@ public struct SFTPView: View {
                                 } else {
                                     self.transferNotice = "上传失败: \(error.localizedDescription)"
                                 }
-                                self.isTransferDrawerExpanded = true
                             }
                         }
                     })
@@ -1928,9 +1953,6 @@ public struct SFTPView: View {
         }
         let localURL = access.url
         self.transferNotice = "正在下载: \(item.name)..."
-        withAnimation(.spring(duration: 0.25)) {
-            self.isTransferDrawerExpanded = true
-        }
         TransferManager.shared.enqueueDownload(
             session: s,
             remotePath: item.path,
@@ -1949,7 +1971,6 @@ public struct SFTPView: View {
                         self.transferNotice = "下载完成: \(item.name)"
                     case .failure(let error):
                         self.transferNotice = error is CancellationError ? "已取消下载: \(item.name)" : "下载失败: \(error.localizedDescription)"
-                        self.isTransferDrawerExpanded = true
                     }
                 }
             }
@@ -2712,26 +2733,29 @@ struct TransferToolbarButton: View {
     }
 
     var body: some View {
+        let isHighlighted = isExpanded || transferManager.activeCount > 0
         Button(action: {
-            withAnimation(.spring(duration: 0.25)) {
+            withAnimation(ApexStyle.springSnappy) {
                 isExpanded.toggle()
             }
         }) {
             HStack(spacing: 4) {
                 TransferActivitySymbol(isActive: transferManager.activeCount > 0,
                                        inactiveSystemName: "arrow.up.arrow.down.circle")
-                    .foregroundColor(transferManager.activeCount > 0 ? ApexStyle.accent : ApexStyle.primary)
+                    .foregroundColor(isHighlighted ? ApexStyle.accent : ApexStyle.primary)
                 
                 if !compact {
                     Text(title)
-                        .foregroundColor(transferManager.activeCount > 0 ? ApexStyle.accent : ApexStyle.primary)
-                        .font(.system(size: 11, weight: transferManager.activeCount > 0 ? .semibold : .regular))
+                        .foregroundColor(isHighlighted ? ApexStyle.accent : ApexStyle.primary)
+                        .font(.system(size: 11, weight: isHighlighted ? .semibold : .regular))
                 }
             }
         }
         .buttonStyle(.bordered)
+        .tint(isExpanded ? ApexStyle.accent : nil)
         .controlSize(.small)
         .accessibilityLabel(title)
-        .help("查看上传与下载记录 (快捷切换)")
+        .accessibilityAddTraits(isExpanded ? .isSelected : [])
+        .help(isExpanded ? "收起传输记录面板" : "展开传输记录面板")
     }
 }

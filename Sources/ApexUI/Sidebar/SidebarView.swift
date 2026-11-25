@@ -14,6 +14,7 @@ public struct SidebarView: View {
     @State private var showingAddSheet = false
     @State private var showingImportSheet = false
     @State private var editingSession: Session?
+    @State private var cloningSession: Session?
     @State private var sessionToDelete: Session?
     @State private var collapsedFolders: Set<String> = []
     @State private var toastMessage: String?
@@ -164,22 +165,13 @@ public struct SidebarView: View {
                                                 editingSession = session
                                             }
                                             Divider()
-                                            Button(L10n.copyUsernameAction) {
-                                                copyUsername(session)
-                                            }
-                                            Button(L10n.copyPasswordAction) {
-                                                copyPassword(session)
-                                            }
-                                            Button(L10n.copyUsernameAndPasswordAction) {
-                                                copyUsernameAndPassword(session)
-                                            }
                                             Button(L10n.copySessionInfoAction) {
                                                 copySessionInfo(session)
                                             }
-                                            Divider()
-                                            Button(L10n.duplicateSessionAction) {
-                                                store.duplicateSession(session, nameSuffix: " \(L10n.copyTag)")
+                                            Button(L10n.cloneSessionAction) {
+                                                cloningSession = session
                                             }
+                                            Divider()
                                             Button(L10n.deleteSessionAction, role: .destructive) {
                                                 sessionToDelete = session
                                             }
@@ -226,6 +218,14 @@ public struct SidebarView: View {
                 store.updateSession(updated)
             }
         }
+        .sheet(item: $cloningSession) { sourceSession in
+            SessionEditModal(session: sourceSession, isCloning: true) { clonedSession in
+                store.addSession(clonedSession)
+                selectedSession = clonedSession
+                showToast("已克隆会话：\(clonedSession.name)", isSuccess: true)
+            }
+            .apexTheme()
+        }
         .confirmationDialog("删除会话？", isPresented: Binding(
             get: { sessionToDelete != nil },
             set: { if !$0 { sessionToDelete = nil } }
@@ -262,48 +262,6 @@ public struct SidebarView: View {
     }
 
     // MARK: - Credential & Info Copy Actions
-
-    private func copyUsername(_ session: Session) {
-        let username = session.username.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !username.isEmpty else {
-            showToast(L10n.emptyUsernameToast, isSuccess: false)
-            return
-        }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(username, forType: .string)
-        showToast(L10n.copiedUsernameToast, isSuccess: true)
-    }
-
-    private func copyPassword(_ session: Session) {
-        Task {
-            let secret = await SessionCopyHelper.resolveSecret(for: session)
-            await MainActor.run {
-                if let secret, !secret.isEmpty {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(secret, forType: .string)
-                    showToast(L10n.copiedPasswordToast, isSuccess: true)
-                } else {
-                    showToast(L10n.noPasswordConfiguredToast, isSuccess: false)
-                }
-            }
-        }
-    }
-
-    private func copyUsernameAndPassword(_ session: Session) {
-        Task {
-            let secret = await SessionCopyHelper.resolveSecret(for: session)
-            let formatted = SessionCopyHelper.formatUserAndPassword(username: session.username, password: secret)
-            await MainActor.run {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(formatted, forType: .string)
-                if secret?.isEmpty == false {
-                    showToast(L10n.copiedUsernameAndPasswordToast, isSuccess: true)
-                } else {
-                    showToast("\(L10n.copiedUsernameAndPasswordToast) (\(L10n.noPasswordConfiguredToast))", isSuccess: false)
-                }
-            }
-        }
-    }
 
     private func copySessionInfo(_ session: Session) {
         Task {

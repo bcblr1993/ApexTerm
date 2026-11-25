@@ -13,17 +13,30 @@ public struct MetricCapsuleView: View {
     private let monitoringEnabled: Bool
     private let connectionActive: Bool
     private let connectionConnecting: Bool
+    private let isPinned: Bool
+    private let onToggleDetail: (() -> Void)?
 
     /// Pass `isDetailPresented` when the capsule lives in a toolbar: the host then presents the
     /// detail itself. SwiftUI rebuilds toolbar item hosts on unrelated state changes, which
     /// tears down a popover anchored there (it closes or re-presents as a non-key window).
-    public init(historyStore: ObservableMetricsHistory, compact: Bool = false, monitoringEnabled: Bool = true, connectionActive: Bool = true, connectionConnecting: Bool = false, isDetailPresented: Binding<Bool>? = nil) {
+    public init(
+        historyStore: ObservableMetricsHistory,
+        compact: Bool = false,
+        monitoringEnabled: Bool = true,
+        connectionActive: Bool = true,
+        connectionConnecting: Bool = false,
+        isDetailPresented: Binding<Bool>? = nil,
+        isPinned: Bool = false,
+        onToggleDetail: (() -> Void)? = nil
+    ) {
         self.historyStore = historyStore
         self.compact = compact
         self.monitoringEnabled = monitoringEnabled
         self.connectionActive = connectionActive
         self.connectionConnecting = connectionConnecting
         self.externalShowingDetail = isDetailPresented
+        self.isPinned = isPinned
+        self.onToggleDetail = onToggleDetail
     }
 
     private var showingDetail: Binding<Bool> {
@@ -40,7 +53,11 @@ public struct MetricCapsuleView: View {
         let isStale = latest.map { date.timeIntervalSince($0.timestamp) > 30 } ?? false
         return Button(action: {
             withAnimation(ApexStyle.springSnappy) {
-                showingDetail.wrappedValue.toggle()
+                if let onToggleDetail {
+                    onToggleDetail()
+                } else {
+                    showingDetail.wrappedValue.toggle()
+                }
             }
         }) {
             HStack(spacing: 12) {
@@ -124,19 +141,28 @@ public struct MetricCapsuleView: View {
                     }
                 }
 
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundColor(ApexStyle.secondary)
+                Image(systemName: isPinned ? "pin.fill" : "chevron.down")
+                    .font(.system(size: isPinned ? 10 : 9, weight: .semibold))
+                    .foregroundColor(isPinned ? ApexStyle.accent : ApexStyle.secondary)
             }
             .padding(.horizontal, compact ? 8 : 10)
             .padding(.vertical, compact ? 3 : 4)
             .background(
                 Capsule()
-                    .fill(isCapsuleHovered ? ApexStyle.subtleSurface : ApexStyle.subtleSurface.opacity(0.75))
+                    .fill(
+                        isPinned
+                            ? ApexStyle.accent.opacity(isCapsuleHovered ? 0.18 : 0.12)
+                            : (isCapsuleHovered ? ApexStyle.subtleSurface : ApexStyle.subtleSurface.opacity(0.75))
+                    )
             )
             .overlay(
                 Capsule()
-                    .stroke(isCapsuleHovered ? ApexStyle.accent.opacity(0.5) : ApexStyle.border.opacity(0.6), lineWidth: 0.75)
+                    .stroke(
+                        isPinned
+                            ? ApexStyle.accent.opacity(0.55)
+                            : (isCapsuleHovered ? ApexStyle.accent.opacity(0.5) : ApexStyle.border.opacity(0.6)),
+                        lineWidth: 0.75
+                    )
             )
             .scaleEffect(isCapsuleHovered ? 1.02 : 1.0)
             .animation(ApexStyle.springSnappy, value: isCapsuleHovered)
@@ -144,8 +170,9 @@ public struct MetricCapsuleView: View {
         .buttonStyle(.plain)
         .onHover { isCapsuleHovered = $0 }
         .accessibilityIdentifier("metrics.summary")
+        .accessibilityAddTraits(isPinned ? .isSelected : [])
         .controlSize(compact ? .regular : .small)
-        .help(isStale ? "超过 30 秒未收到新指标，详情为最后一次采样" : "查看服务器性能")
+        .help(isPinned ? "已钉住性能监控面板，点击收起" : (isStale ? "超过 30 秒未收到新指标，详情为最后一次采样" : "查看服务器性能"))
         .modifier(InlineDetailPopover(isEnabled: externalShowingDetail == nil, isPresented: $localShowingDetail) {
             MetricDetailView(historyStore: historyStore, monitoringEnabled: monitoringEnabled, connectionActive: connectionActive, connectionConnecting: connectionConnecting)
         })
@@ -275,13 +302,53 @@ public struct MetricDetailView: View {
     let monitoringEnabled: Bool
     let connectionActive: Bool
     let connectionConnecting: Bool
+    let isPinned: Bool
+    let sessionLabel: String?
+    var onTogglePin: (() -> Void)?
     /// Hosts that present the detail outside a popover supply their own close action.
-    var onDismiss: (() -> Void)? = nil
+    var onDismiss: (() -> Void)?
+
+    public init(
+        historyStore: ObservableMetricsHistory,
+        monitoringEnabled: Bool,
+        connectionActive: Bool,
+        connectionConnecting: Bool,
+        isPinned: Bool = false,
+        sessionLabel: String? = nil,
+        onTogglePin: (() -> Void)? = nil,
+        onDismiss: (() -> Void)? = nil
+    ) {
+        self.historyStore = historyStore
+        self.monitoringEnabled = monitoringEnabled
+        self.connectionActive = connectionActive
+        self.connectionConnecting = connectionConnecting
+        self.isPinned = isPinned
+        self.sessionLabel = sessionLabel
+        self.onTogglePin = onTogglePin
+        self.onDismiss = onDismiss
+    }
 
     public var body: some View {
         TimelineView(.periodic(from: .now, by: 2)) { context in
             details(at: context.date)
         }
+    }
+
+    @ViewBuilder
+    private func cpuModelBadge(_ cpuModel: String) -> some View {
+        Text(cpuModel)
+            .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1.5)
+            .background(ApexStyle.primary.opacity(0.06))
+            .overlay(
+                RoundedRectangle(cornerRadius: 4)
+                    .stroke(ApexStyle.border.opacity(0.45), lineWidth: 0.5)
+            )
+            .foregroundColor(ApexStyle.secondary)
+            .cornerRadius(4)
+            .lineLimit(1)
+            .truncationMode(.middle)
     }
 
     private func details(at date: Date) -> some View {
@@ -294,31 +361,79 @@ public struct MetricDetailView: View {
                 Text(L10n.serverPerformance)
                     .accessibilityIdentifier("metrics.detail.title")
                     .font(.system(size: 12, weight: .bold))
+                    .fixedSize(horizontal: true, vertical: false)
 
-                if let cpuModel = latest?.cpuModel, !cpuModel.isEmpty {
-                    Text(cpuModel)
-                        .font(.system(size: 10.5, weight: .medium, design: .monospaced))
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1.5)
-                        .background(ApexStyle.primary.opacity(0.06))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 4)
-                                .stroke(ApexStyle.border.opacity(0.45), lineWidth: 0.5)
-                        )
-                        .foregroundColor(ApexStyle.secondary)
-                        .cornerRadius(4)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                if !isPinned, let cpuModel = latest?.cpuModel, !cpuModel.isEmpty {
+                    cpuModelBadge(cpuModel)
                 }
 
                 Spacer(minLength: 4)
 
-                if let uptime = latest?.uptimeSeconds {
+                if !isPinned, let uptime = latest?.uptimeSeconds {
                     Text(formatUptime(uptime))
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundColor(ApexStyle.secondary)
                         .lineLimit(1)
                         .fixedSize(horizontal: true, vertical: false)
+                }
+
+                if let onTogglePin {
+                    ApexIconButton(
+                        icon: isPinned ? "pin.fill" : "pin",
+                        label: isPinned ? L10n.unpinMonitorPanel : L10n.pinMonitorPanel,
+                        size: 22,
+                        iconSize: 10.5,
+                        isSelected: isPinned,
+                        tint: isPinned ? ApexStyle.accent : nil
+                    ) {
+                        onTogglePin()
+                    }
+                    .accessibilityIdentifier("metrics.detail.pinButton")
+                }
+
+                if isPinned, let onDismiss {
+                    ApexIconButton(
+                        icon: "xmark",
+                        label: L10n.closeMonitorPanel,
+                        size: 22,
+                        iconSize: 9.5
+                    ) {
+                        onDismiss()
+                    }
+                    .accessibilityIdentifier("metrics.detail.closeButton")
+                }
+            }
+
+            if isPinned, (sessionLabel?.isEmpty == false) || (latest?.cpuModel.isEmpty == false) || latest?.uptimeSeconds != nil {
+                HStack(alignment: .center, spacing: 6) {
+                    if let sessionLabel, !sessionLabel.isEmpty {
+                        HStack(spacing: 4) {
+                            Image(systemName: "server.rack")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundColor(ApexStyle.accent)
+                            Text(sessionLabel)
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(ApexStyle.primary)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                        }
+                        .accessibilityIdentifier("metrics.detail.sessionLabel")
+                    }
+
+                    if let cpuModel = latest?.cpuModel, !cpuModel.isEmpty {
+                        cpuModelBadge(cpuModel)
+                            .layoutPriority(-1)
+                    }
+
+                    Spacer(minLength: 4)
+
+                    if let uptime = latest?.uptimeSeconds {
+                        Text(formatUptime(uptime))
+                            .font(.system(size: 10.5, design: .monospaced))
+                            .foregroundColor(ApexStyle.secondary)
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
+                    }
                 }
             }
 
@@ -716,7 +831,9 @@ public struct MetricDetailView: View {
                                     iconSize: 10
                                 ) {
                                     // Close the popover first so the inspector sheet is not stacked under it.
-                                    if let onDismiss { onDismiss() } else { dismiss() }
+                                    if !isPinned {
+                                        if let onDismiss { onDismiss() } else { dismiss() }
+                                    }
                                     NotificationCenter.default.post(name: NSNotification.Name("TriggerProcessInspector"), object: nil)
                                 }
                             }
@@ -726,13 +843,13 @@ public struct MetricDetailView: View {
                                     .frame(width: 58, alignment: .leading)
                                 Spacer()
                                 Text("CPU")
-                                    .frame(width: 46, alignment: .trailing)
+                                    .frame(width: 56, alignment: .trailing)
                                 Text("内存")
                                     .frame(width: 42, alignment: .trailing)
                             }
                             .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
                             .foregroundColor(ApexStyle.secondary.opacity(0.75))
-                            .frame(width: 170)
+                            .frame(width: 180)
                         }
 
                         VStack(spacing: 3) {
@@ -755,7 +872,7 @@ public struct MetricDetailView: View {
                                         .contentTransition(.numericText())
                                         .foregroundColor(p.cpuPercent > 50 ? ApexStyle.error : (p.cpuPercent > 20 ? ApexStyle.warning : ApexStyle.primary))
                                         .lineLimit(1)
-                                        .frame(width: 46, alignment: .trailing)
+                                        .frame(width: 56, alignment: .trailing)
                                     Text(String(format: "%.1f%%", p.memPercent))
                                         .font(.system(size: 11, design: .monospaced))
                                         .monospacedDigit()

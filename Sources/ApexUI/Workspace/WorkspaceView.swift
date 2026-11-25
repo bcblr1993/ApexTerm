@@ -609,6 +609,17 @@ public struct WorkspaceView: View {
     /// Held without observation: toggling it must not re-evaluate the toolbar, which would tear
     /// down the popover's anchor and re-present it as a non-key window that ignores Escape.
     @State private var metricsDetail = MetricsDetailPresentation()
+    @AppStorage("workspace.metricsDockWidth") private var storedMetricsDockWidth: Double = Double(WorkspaceMainAreaWithMetricsDock.defaultDockedMetricsWidth)
+    private var metricsDockWidthBinding: Binding<CGFloat> {
+        Binding(
+            get: { CGFloat(storedMetricsDockWidth) },
+            set: { storedMetricsDockWidth = Double($0) }
+        )
+    }
+    @State private var metricsDockDragStartWidth: CGFloat?
+    /// Owned here without observation so toggling the transfer drawer never triggers toolbar rebuilds.
+    @State private var transferDrawer = TransferDrawerPresentation()
+    @State private var workspaceContentSize: CGSize = .zero
     @State private var hudToastMessage: String?
     @State private var pendingSnippetForVariables: Snippet? = nil
     @State private var pendingSnippetVariables: [String: String] = [:]
@@ -769,16 +780,20 @@ public struct WorkspaceView: View {
             .frame(width: 0, height: 0)
             .opacity(0)
             
-            // Workspace Split: Terminal on Top, SFTP on Bottom (electerm layout)
+            // Workspace Split: Terminal on Top, SFTP on Bottom (electerm layout), optional right-docked Metrics panel
             if let tab = currentTab {
-                WorkspaceActiveTabSplitView(
+                WorkspaceMainAreaWithMetricsDock(
                     store: store,
                     tab: tab,
                     activeTabs: activeTabs,
                     isBroadcastActive: isBroadcastActive,
                     isSFTPVisible: $isSFTPVisible,
                     splitRatio: splitRatioBinding,
-                    splitDragStartRatio: $splitDragStartRatio
+                    splitDragStartRatio: $splitDragStartRatio,
+                    metricsPresentation: metricsDetail,
+                    metricsDockWidth: metricsDockWidthBinding,
+                    metricsDockDragStartWidth: $metricsDockDragStartWidth,
+                    transferPresentation: transferDrawer
                 )
                 
                 if isQuickCommandBarVisible {
@@ -853,7 +868,11 @@ public struct WorkspaceView: View {
             
             // Bottom Status Bar
             if let tab = currentTab {
-                WorkspaceBottomStatusBar(tab: tab, showsDirectoryControls: !isSFTPVisible)
+                WorkspaceBottomStatusBar(
+                    tab: tab,
+                    showsDirectoryControls: !isSFTPVisible,
+                    transferPresentation: transferDrawer
+                )
             } else {
                 HStack {
                     Text(L10n.readyStatus)
@@ -867,6 +886,7 @@ public struct WorkspaceView: View {
                 .background(ApexStyle.surface)
             }
         }
+        .onGeometryChange(for: CGSize.self) { $0.size } action: { workspaceContentSize = $0 }
         .navigationTitle(currentTab?.displayTitle ?? L10n.appName)
         .navigationSubtitle(currentTab.map { $0.session.isLocal ? "本机 Shell (\($0.session.username))" : "\($0.session.username)@\($0.session.host)" } ?? "SSH 与文件工作台")
         .toolbar { workspaceToolbar }
@@ -875,7 +895,15 @@ public struct WorkspaceView: View {
                 WorkspaceMetricsDetailHost(presentation: metricsDetail, tab: tab)
             }
         }
-        .onChange(of: selectedTabId) { _, _ in metricsDetail.isPresented = false }
+        .overlay(alignment: .bottomTrailing) {
+            if currentTab != nil && !isSFTPVisible {
+                WorkspaceTransferOverlayHost(
+                    presentation: transferDrawer,
+                    containerSize: workspaceContentSize
+                )
+            }
+        }
+        .onChange(of: selectedTabId) { _, _ in metricsDetail.handleTabChanged() }
         .onChange(of: activeTabs.count) { _, count in
             if count < 2 { isBroadcastActive = false }
         }
@@ -1263,6 +1291,7 @@ private struct WorkspaceMetricsDetailHost: View {
         if let primaryPane = tab.panes.first {
             MetricsDetailOverlay(
                 presentation: presentation,
+                tab: tab,
                 pane: primaryPane,
                 historyStore: tab.metricsHistory,
                 monitoringEnabled: tab.session.agentlessMonitorEnabled
@@ -1278,11 +1307,18 @@ private struct WorkspaceMetricsView: View {
     @ObservedObject var presentation: MetricsDetailPresentation
 
     var body: some View {
-        MetricCapsuleView(historyStore: historyStore, compact: true,
-                          monitoringEnabled: monitoringEnabled,
-                          connectionActive: pane.connectionState == .connected,
-                          connectionConnecting: isConnecting,
-                          isDetailPresented: $presentation.isPresented)
+        MetricCapsuleView(
+            historyStore: historyStore,
+            compact: true,
+            monitoringEnabled: monitoringEnabled,
+            connectionActive: pane.connectionState == .connected,
+            connectionConnecting: isConnecting,
+            isDetailPresented: $presentation.isPresented,
+            isPinned: presentation.isPinned,
+            onToggleDetail: {
+                presentation.toggleFromToolbar()
+            }
+        )
     }
 
     private var isConnecting: Bool {
@@ -1292,31 +1328,102 @@ private struct WorkspaceMetricsView: View {
 }
 
 @MainActor
-final class MetricsDetailPresentation: ObservableObject {
-    @Published var isPresented = false
+public final class MetricsDetailPresentation: ObservableObject {
+    private let defaults: UserDefaults
+    private let storageKey: String
+
+    @Published public var isPresented: Bool = false
+    @Published public var isPinned: Bool {
+        didSet {
+            defaults.set(isPinned, forKey: storageKey)
+        }
+    }
+
+    public init(defaults: UserDefaults = .standard, storageKey: String = "workspace.metricsPanelPinned") {
+        self.defaults = defaults
+        self.storageKey = storageKey
+        self.isPinned = defaults.bool(forKey: storageKey)
+    }
+
+    public var showsFloatingOverlay: Bool {
+        isPresented && !isPinned
+    }
+
+    public var showsDockedPanel: Bool {
+        isPinned
+    }
+
+    public func toggleFromToolbar() {
+        if isPinned {
+            isPinned = false
+            isPresented = false
+        } else {
+            isPresented.toggle()
+        }
+    }
+
+    public func togglePin() {
+        if isPinned {
+            isPinned = false
+            isPresented = true
+        } else {
+            isPinned = true
+            isPresented = false
+        }
+    }
+
+    public func dismissFloating() {
+        isPresented = false
+    }
+
+    public func closeDocked() {
+        isPinned = false
+        isPresented = false
+    }
+
+    public func handleTabChanged() {
+        if !isPinned {
+            isPresented = false
+        }
+    }
 }
 
 /// The metrics detail card, presented from the window content instead of a toolbar-anchored
 /// popover so its lifetime never depends on the toolbar item host. Clicking outside the card or
-/// pressing Escape closes it; the Escape interceptor exists only while the card is open so
+/// pressing Escape closes it; the Escape interceptor exists only while the floating card is open so
 /// terminal programs such as vim keep receiving Escape otherwise.
 private struct MetricsDetailOverlay: View {
     @ObservedObject var presentation: MetricsDetailPresentation
+    @ObservedObject var tab: TerminalTabItem
     @ObservedObject var pane: TerminalPaneItem
     let historyStore: ObservableMetricsHistory
     let monitoringEnabled: Bool
 
     var body: some View {
-        if presentation.isPresented {
+        if presentation.showsFloatingOverlay {
             ZStack(alignment: .topTrailing) {
                 Color.clear
                     .contentShape(Rectangle())
-                    .onTapGesture { presentation.isPresented = false }
+                    .onTapGesture { presentation.dismissFloating() }
                     .accessibilityHidden(true)
-                MetricDetailView(historyStore: historyStore, monitoringEnabled: monitoringEnabled,
-                                 connectionActive: pane.connectionState == .connected,
-                                 connectionConnecting: isConnecting,
-                                 onDismiss: { withAnimation(ApexStyle.springSnappy) { presentation.isPresented = false } })
+                MetricDetailView(
+                    historyStore: historyStore,
+                    monitoringEnabled: monitoringEnabled,
+                    connectionActive: pane.connectionState == .connected,
+                    connectionConnecting: isConnecting,
+                    isPinned: false,
+                    sessionLabel: tab.displayTitle,
+                    onTogglePin: {
+                        withAnimation(ApexStyle.springSnappy) {
+                            presentation.togglePin()
+                        }
+                    },
+                    onDismiss: {
+                        withAnimation(ApexStyle.springSnappy) {
+                            presentation.dismissFloating()
+                        }
+                    }
+                )
                     .frame(width: 416)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
@@ -1329,12 +1436,170 @@ private struct MetricsDetailOverlay: View {
                 // The terminal is usually first responder and consumes Escape in keyDown (it
                 // forwards ESC to the PTY), so a SwiftUI cancel shortcut never fires. Intercept
                 // Escape for this window only while the card is visible.
-                EscapeKeyInterceptor { presentation.isPresented = false }
+                EscapeKeyInterceptor { presentation.dismissFloating() }
                     .frame(width: 0, height: 0)
                     .accessibilityHidden(true)
             }
             .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .topTrailing)))
         }
+    }
+
+    private var isConnecting: Bool {
+        if case .connecting = pane.connectionState { return true }
+        return false
+    }
+}
+
+public struct WorkspaceMainAreaWithMetricsDock: View {
+    nonisolated public static let minDockedMetricsWidth: CGFloat = 310
+    nonisolated public static let defaultDockedMetricsWidth: CGFloat = 372
+    nonisolated public static let maxDockedMetricsWidth: CGFloat = 480
+    nonisolated public static let minTerminalWidthAlongsideDockedMetrics: CGFloat = 240
+
+    @ObservedObject var store: SessionStore
+    @ObservedObject var tab: TerminalTabItem
+    let activeTabs: [TerminalTabItem]
+    let isBroadcastActive: Bool
+    @Binding var isSFTPVisible: Bool
+    @Binding var splitRatio: CGFloat
+    @Binding var splitDragStartRatio: CGFloat?
+    @ObservedObject var metricsPresentation: MetricsDetailPresentation
+    @Binding var metricsDockWidth: CGFloat
+    @Binding var metricsDockDragStartWidth: CGFloat?
+    let transferPresentation: TransferDrawerPresentation
+
+    nonisolated public static func clampedDockedWidth(preferred: CGFloat, availableTotalWidth: CGFloat) -> CGFloat {
+        let dividerWidth: CGFloat = 8
+        let maxAllowed = max(0, availableTotalWidth - minTerminalWidthAlongsideDockedMetrics - dividerWidth)
+        if maxAllowed < 240 {
+            return max(0, min(preferred, floor((availableTotalWidth - dividerWidth) * 0.48)))
+        }
+        let upper = min(maxDockedMetricsWidth, maxAllowed)
+        let lower = min(minDockedMetricsWidth, upper)
+        return min(max(preferred, lower), upper)
+    }
+
+    public var body: some View {
+        GeometryReader { geo in
+            let effectiveDockedWidth = metricsPresentation.showsDockedPanel
+                ? Self.clampedDockedWidth(preferred: metricsDockWidth, availableTotalWidth: geo.size.width)
+                : 0
+            HStack(spacing: 0) {
+                WorkspaceActiveTabSplitView(
+                    store: store,
+                    tab: tab,
+                    activeTabs: activeTabs,
+                    isBroadcastActive: isBroadcastActive,
+                    isSFTPVisible: $isSFTPVisible,
+                    splitRatio: $splitRatio,
+                    splitDragStartRatio: $splitDragStartRatio,
+                    transferPresentation: transferPresentation
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                if metricsPresentation.showsDockedPanel && effectiveDockedWidth > 0 {
+                    ApexSplitDividerHandle(isVertical: true)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("右侧监控面板宽度")
+                        .accessibilityValue("\(Int(effectiveDockedWidth))pt")
+                        .accessibilityAdjustableAction { direction in
+                            switch direction {
+                            case .increment:
+                                metricsDockWidth = Self.clampedDockedWidth(
+                                    preferred: effectiveDockedWidth + 20,
+                                    availableTotalWidth: geo.size.width
+                                )
+                            case .decrement:
+                                metricsDockWidth = Self.clampedDockedWidth(
+                                    preferred: effectiveDockedWidth - 20,
+                                    availableTotalWidth: geo.size.width
+                                )
+                            @unknown default:
+                                break
+                            }
+                        }
+                        .gesture(
+                            DragGesture()
+                                .onChanged { value in
+                                    let start = metricsDockDragStartWidth ?? effectiveDockedWidth
+                                    if metricsDockDragStartWidth == nil {
+                                        metricsDockDragStartWidth = start
+                                    }
+                                    let proposed = start - value.translation.width
+                                    metricsDockWidth = Self.clampedDockedWidth(
+                                        preferred: proposed,
+                                        availableTotalWidth: geo.size.width
+                                    )
+                                }
+                                .onEnded { _ in
+                                    metricsDockDragStartWidth = nil
+                                }
+                        )
+
+                    WorkspaceDockedMetricsPanel(
+                        presentation: metricsPresentation,
+                        tab: tab
+                    )
+                    .frame(width: effectiveDockedWidth)
+                    .frame(maxHeight: .infinity)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+                }
+            }
+        }
+    }
+}
+
+private struct WorkspaceDockedMetricsPanel: View {
+    @ObservedObject var presentation: MetricsDetailPresentation
+    @ObservedObject var tab: TerminalTabItem
+
+    var body: some View {
+        if let primaryPane = tab.panes.first {
+            DockedMetricsPanelContent(
+                presentation: presentation,
+                tab: tab,
+                pane: primaryPane
+            )
+        }
+    }
+}
+
+private struct DockedMetricsPanelContent: View {
+    @ObservedObject var presentation: MetricsDetailPresentation
+    @ObservedObject var tab: TerminalTabItem
+    @ObservedObject var pane: TerminalPaneItem
+
+    var body: some View {
+        ScrollView(.vertical, showsIndicators: true) {
+            MetricDetailView(
+                historyStore: tab.metricsHistory,
+                monitoringEnabled: tab.session.agentlessMonitorEnabled,
+                connectionActive: pane.connectionState == .connected,
+                connectionConnecting: isConnecting,
+                isPinned: true,
+                sessionLabel: tab.displayTitle,
+                onTogglePin: {
+                    withAnimation(ApexStyle.springSnappy) {
+                        presentation.togglePin()
+                    }
+                },
+                onDismiss: {
+                    withAnimation(ApexStyle.springSnappy) {
+                        presentation.closeDocked()
+                    }
+                }
+            )
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(ApexStyle.surface)
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .frame(width: 0.75)
+                .foregroundColor(ApexStyle.border.opacity(0.6))
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("metrics.dockedPanel")
     }
 
     private var isConnecting: Bool {
@@ -1396,6 +1661,7 @@ private struct WorkspaceActiveTabSplitView: View {
     @Binding var isSFTPVisible: Bool
     @Binding var splitRatio: CGFloat
     @Binding var splitDragStartRatio: CGFloat?
+    let transferPresentation: TransferDrawerPresentation
     @State private var paneDragStartRatio: CGFloat?
     
     var body: some View {
@@ -1555,7 +1821,8 @@ private struct WorkspaceActiveTabSplitView: View {
                     
                     // Integrated SFTP Panel with live observed bindings
                     let activeTargetPane = tab.activePane ?? tab.panes.first
-                    SFTPView(
+                    SFTPTransferBoundView(
+                        presentation: transferPresentation,
                         currentPath: $tab.currentRemotePath,
                         isLinkageEnabled: $tab.isDirectoryLinkageEnabled,
                         session: activeTargetPane?.sshClient ?? tab.sshClient,
@@ -1879,12 +2146,171 @@ private struct PaneContainerView: View {
     }
 }
 
+private struct SFTPTransferBoundView: View {
+    @ObservedObject var presentation: TransferDrawerPresentation
+    @Binding var currentPath: String
+    @Binding var isLinkageEnabled: Bool
+    let session: SSHSessionProtocol?
+    let connectionState: SSHConnectionState
+    let tabID: UUID?
+
+    var body: some View {
+        SFTPView(
+            currentPath: $currentPath,
+            isLinkageEnabled: $isLinkageEnabled,
+            session: session,
+            connectionState: connectionState,
+            tabID: tabID,
+            isTransferDrawerExpanded: $presentation.isPresented
+        )
+    }
+}
+
+private struct WorkspaceTransferOverlayHost: View {
+    @ObservedObject var presentation: TransferDrawerPresentation
+    let containerSize: CGSize
+
+    var body: some View {
+        if presentation.isPresented {
+            let cardWidth = containerSize.width > 0
+                ? min(560, max(320, containerSize.width - 24))
+                : 540
+            let cardHeight = containerSize.height > 0
+                ? min(268, max(180, containerSize.height - 84))
+                : 260
+            TransferDrawer(isExpanded: $presentation.isPresented)
+                .frame(width: cardWidth, height: cardHeight)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(ApexStyle.border.opacity(0.6), lineWidth: 0.75)
+                )
+                .shadow(color: .black.opacity(0.18), radius: 14, y: 6)
+                .padding(.trailing, 12)
+                .padding(.bottom, 40)
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("transfer.floatingCard")
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+        }
+    }
+}
+
+private struct StatusBarTransferIndicator: View {
+    @ObservedObject private var transferManager = TransferManager.shared
+    @ObservedObject var presentation: TransferDrawerPresentation
+    let showsInlineProgress: Bool
+
+    var body: some View {
+        if !transferManager.tasks.isEmpty {
+            Divider().frame(height: 12)
+
+            if showsInlineProgress,
+               let summary = TransferProgressSummary.make(
+                   from: transferManager.tasks,
+                   formattedTotalSpeed: transferManager.formattedTotalSpeed
+               ) {
+                let directionTint = summary.primaryTask.direction == .upload ? ApexStyle.accent : ApexStyle.success
+                let directionIcon = summary.primaryTask.direction == .upload ? "arrow.up.circle.fill" : "arrow.down.circle.fill"
+
+                HStack(spacing: 6) {
+                    Button {
+                        withAnimation(ApexStyle.springSnappy) {
+                            presentation.toggle()
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: directionIcon)
+                                .font(.system(size: 10.5))
+                                .foregroundColor(directionTint)
+
+                            Text(summary.primaryTask.fileName)
+                                .font(.caption.monospaced())
+                                .foregroundColor(ApexStyle.primary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .frame(maxWidth: 120, alignment: .leading)
+
+                            if summary.otherActiveCount > 0 {
+                                Text("+\(summary.otherActiveCount)")
+                                    .font(.system(size: 9.5, weight: .semibold))
+                                    .padding(.horizontal, 4)
+                                    .padding(.vertical, 1)
+                                    .background(ApexStyle.accent.opacity(0.14), in: Capsule())
+                                    .foregroundColor(ApexStyle.accent)
+                            }
+
+                            ApexTransferProgressTrack(
+                                fraction: summary.progressFraction,
+                                tint: directionTint,
+                                height: 5
+                            )
+                            .frame(width: 60)
+
+                            Text(summary.percentText)
+                                .font(.caption.monospaced())
+                                .monospacedDigit()
+                                .foregroundColor(directionTint)
+
+                            if !summary.speedText.isEmpty {
+                                Text(summary.speedText)
+                                    .font(.caption.monospaced())
+                                    .monospacedDigit()
+                                    .foregroundColor(ApexStyle.secondary)
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .help(presentation.isPresented ? "收起传输任务面板" : "点击展开传输任务面板")
+                    .accessibilityIdentifier("statusBar.transferInlineProgress")
+
+                    ApexIconButton(
+                        icon: "xmark",
+                        label: "取消传输 \(summary.primaryTask.fileName)",
+                        size: 16,
+                        iconSize: 8
+                    ) {
+                        transferManager.cancelTask(id: summary.primaryTask.id)
+                    }
+                }
+            } else {
+                Button {
+                    withAnimation(ApexStyle.springSnappy) {
+                        presentation.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: transferManager.activeCount > 0 ? "arrow.triangle.2.circlepath" : "arrow.up.arrow.down")
+                            .font(.system(size: 10))
+                            .foregroundColor((transferManager.activeCount > 0 || presentation.isPresented) ? ApexStyle.accent : ApexStyle.secondary)
+                        if let summary = TransferProgressSummary.make(
+                            from: transferManager.tasks,
+                            formattedTotalSpeed: transferManager.formattedTotalSpeed
+                        ) {
+                            let speedSuffix = summary.speedText.isEmpty ? "" : " · \(summary.speedText)"
+                            Text("传输中 \(summary.activeCount) 项 · \(summary.percentText)\(speedSuffix)")
+                                .font(.caption.monospaced())
+                                .foregroundColor(ApexStyle.accent)
+                        } else {
+                            Text("传输记录 \(transferManager.tasks.count) 项")
+                                .font(.caption.monospaced())
+                                .foregroundColor(presentation.isPresented ? ApexStyle.accent : ApexStyle.secondary)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+                .help(presentation.isPresented ? "收起传输任务面板" : "点击查看文件传输记录")
+                .accessibilityIdentifier("statusBar.transferButton")
+            }
+        }
+    }
+}
+
 private struct WorkspaceBottomStatusBar: View {
     @ObservedObject private var themeSettings = AppSettings.shared
     @ObservedObject var tab: TerminalTabItem
     let showsDirectoryControls: Bool
-    @ObservedObject var transferManager = TransferManager.shared
-    @State private var isTransferDrawerPresented = false
+    let transferPresentation: TransferDrawerPresentation
     
     var body: some View {
         HStack(spacing: 14) {
@@ -1972,34 +2398,10 @@ private struct WorkspaceBottomStatusBar: View {
                 .help(tab.isDirectoryLinkageEnabled ? L10n.linkageHelpOn : L10n.linkageHelpOff)
             }
 
-            if !transferManager.tasks.isEmpty {
-                Divider().frame(height: 12)
-                Button {
-                    isTransferDrawerPresented = true
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: transferManager.activeCount > 0 ? "arrow.triangle.2.circlepath" : "arrow.up.arrow.down")
-                            .font(.system(size: 10))
-                            .foregroundColor(transferManager.activeCount > 0 ? ApexStyle.accent : ApexStyle.secondary)
-                        if transferManager.activeCount > 0 {
-                            Text("传输中 \(transferManager.activeCount) 项 · \(transferManager.formattedTotalSpeed)")
-                                .font(.caption.monospaced())
-                                .foregroundColor(ApexStyle.accent)
-                        } else {
-                            Text("传输记录 \(transferManager.tasks.count) 项")
-                                .font(.caption.monospaced())
-                                .foregroundColor(ApexStyle.secondary)
-                        }
-                    }
-                }
-                .buttonStyle(.plain)
-                .help("点击查看文件传输记录")
-                .sheet(isPresented: $isTransferDrawerPresented) {
-                    TransferDrawer(isExpanded: $isTransferDrawerPresented)
-                        .frame(width: 700, height: 360)
-                        .apexTheme()
-                }
-            }
+            StatusBarTransferIndicator(
+                presentation: transferPresentation,
+                showsInlineProgress: showsDirectoryControls
+            )
             
             Spacer()
             

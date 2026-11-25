@@ -6,6 +6,7 @@ import ApexSSH
 public struct SessionEditModal: View {
     @ObservedObject private var themeSettings = AppSettings.shared
     public let initialSession: Session?
+    public let isCloning: Bool
     public let onSave: (Session) -> Void
     
     @Environment(\.dismiss) private var dismiss
@@ -20,6 +21,8 @@ public struct SessionEditModal: View {
     @State private var privateKeyPath: String = ""
     @State private var certificatePath: String = ""
     @State private var passphrase: String = ""
+    @State private var didFinishLoadingInitialSecret: Bool = false
+    @State private var didFinishLoadingInitialPassphrase: Bool = false
     @State private var selectedVaultKeyId: UUID? = nil
     @State private var jumpServerChain: [UUID] = []
     @State private var forwardAgent: Bool = false
@@ -41,7 +44,7 @@ public struct SessionEditModal: View {
     @State private var testResult: SSHTestConnectionResult?
     @State private var cachedCertificateInfo = SSHCertificateInfo(isValid: false, keyType: nil, comment: nil)
     
-    public enum AuthType: String, CaseIterable, Identifiable {
+    public enum AuthType: String, CaseIterable, Identifiable, Sendable {
         case password = "密码认证"
         case agent = "SSH 密钥 / Agent"
         case privateKey = "指定私钥"
@@ -117,24 +120,122 @@ public struct SessionEditModal: View {
     public static func jumpHostCandidates(from sessions: [Session], excluding id: UUID?) -> [Session] {
         sessions.filter { !$0.isLocal && $0.id != id }
     }
+
+    /// Computes the initial session name shown in the modal for create, edit, or clone mode.
+    nonisolated public static func initialDisplayName(for session: Session?, isCloning: Bool) -> String {
+        guard let session else { return "" }
+        guard isCloning else { return session.name }
+        let trimmedName = session.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedName.isEmpty {
+            return "\(trimmedName) \(L10n.copyTag)"
+        }
+        let trimmedHost = session.host.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedHost.isEmpty {
+            return "\(trimmedHost) \(L10n.copyTag)"
+        }
+        return ""
+    }
+
+    /// Builds an isolated `SSHAuthMethod` when saving a cloned session, preserving existing secrets
+    /// even if saved before async Keychain loading finishes while respecting intentional clearing after load.
+    nonisolated public static func cloneAuthMethodForSave(
+        authType: AuthType,
+        sessionId: UUID,
+        typedPassword: String,
+        typedPassphrase: String,
+        privateKeyPath: String,
+        certificatePath: String,
+        sourceAuthMethod: SSHAuthMethod?,
+        didFinishLoadingSecret: Bool,
+        didFinishLoadingPassphrase: Bool,
+        secretReader: (String) -> String?,
+        secretWriter: (String, String) throws -> String
+    ) throws -> SSHAuthMethod {
+        switch authType {
+        case .agent:
+            return .agent
+
+        case .password:
+            if !typedPassword.isEmpty {
+                let savedKey = try secretWriter("ssh_\(sessionId.uuidString)", typedPassword)
+                return .password(keychainRef: savedKey)
+            }
+            if !didFinishLoadingSecret, case .password(let oldRef) = sourceAuthMethod, !oldRef.isEmpty {
+                let fallbackSecret = secretReader(oldRef) ?? (!KeychainStore.isManagedReference(oldRef) ? oldRef : nil)
+                if let fallbackSecret, !fallbackSecret.isEmpty {
+                    let savedKey = try secretWriter("ssh_\(sessionId.uuidString)", fallbackSecret)
+                    return .password(keychainRef: savedKey)
+                }
+            }
+            return .password(keychainRef: "")
+
+        case .privateKey:
+            let keyPath = privateKeyPath.trimmingCharacters(in: .whitespacesAndNewlines)
+            let sourcePassRef: String? = if case .privateKey(_, let oldPassRef) = sourceAuthMethod { oldPassRef } else { nil }
+            let resolvedPassRef = try resolveClonedPassphraseRef(
+                sessionId: sessionId,
+                typedPassphrase: typedPassphrase,
+                sourcePassRef: sourcePassRef,
+                didFinishLoadingPassphrase: didFinishLoadingPassphrase,
+                secretReader: secretReader,
+                secretWriter: secretWriter
+            )
+            return .privateKey(keychainRef: keyPath, passphraseRef: resolvedPassRef)
+
+        case .certificate:
+            let keyPath = privateKeyPath.trimmingCharacters(in: .whitespacesAndNewlines)
+            let certPath = certificatePath.trimmingCharacters(in: .whitespacesAndNewlines)
+            let sourcePassRef: String? = if case .certificate(_, _, let oldPassRef) = sourceAuthMethod { oldPassRef } else { nil }
+            let resolvedPassRef = try resolveClonedPassphraseRef(
+                sessionId: sessionId,
+                typedPassphrase: typedPassphrase,
+                sourcePassRef: sourcePassRef,
+                didFinishLoadingPassphrase: didFinishLoadingPassphrase,
+                secretReader: secretReader,
+                secretWriter: secretWriter
+            )
+            return .certificate(keychainRef: keyPath, certificatePath: certPath, passphraseRef: resolvedPassRef)
+        }
+    }
+
+    nonisolated private static func resolveClonedPassphraseRef(
+        sessionId: UUID,
+        typedPassphrase: String,
+        sourcePassRef: String?,
+        didFinishLoadingPassphrase: Bool,
+        secretReader: (String) -> String?,
+        secretWriter: (String, String) throws -> String
+    ) throws -> String? {
+        if !typedPassphrase.isEmpty {
+            return try secretWriter("passphrase_\(sessionId.uuidString)", typedPassphrase)
+        }
+        if !didFinishLoadingPassphrase, let ref = sourcePassRef, !ref.isEmpty {
+            let fallbackSecret = secretReader(ref) ?? (!KeychainStore.isManagedReference(ref) ? ref : nil)
+            if let fallbackSecret, !fallbackSecret.isEmpty {
+                return try secretWriter("passphrase_\(sessionId.uuidString)", fallbackSecret)
+            }
+        }
+        return nil
+    }
     
-    public init(session: Session?, onSave: @escaping (Session) -> Void) {
+    public init(session: Session?, isCloning: Bool = false, onSave: @escaping (Session) -> Void) {
         self.initialSession = session
+        self.isCloning = isCloning
         self.onSave = onSave
     }
     
     public var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
-                Image(systemName: "server.rack")
+                Image(systemName: isCloning ? "doc.on.doc" : "server.rack")
                     .font(.system(size: 19, weight: .semibold))
                     .foregroundStyle(ApexStyle.accent)
                     .frame(width: 42, height: 42)
                     .background(ApexStyle.accent.opacity(0.10), in: RoundedRectangle(cornerRadius: 11))
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(initialSession == nil ? L10n.newSessionTitle : L10n.editSessionTitle)
+                    Text(isCloning ? L10n.cloneSessionTitle : (initialSession == nil ? L10n.newSessionTitle : L10n.editSessionTitle))
                         .font(.system(size: 18, weight: .semibold))
-                    Text("填写连接信息，保存后可从侧栏快速访问")
+                    Text(isCloning ? "已预填原会话的全部连接信息，修改后保存即可创建新会话" : "填写连接信息，保存后可从侧栏快速访问")
                         .font(.caption)
                         .foregroundStyle(ApexStyle.secondary)
                 }
@@ -164,7 +265,7 @@ public struct SessionEditModal: View {
                     TextField(L10n.usernameLabel, text: $username)
                     .accessibilityLabel(L10n.usernameLabel)
 
-                    let otherSessions = Self.jumpHostCandidates(from: SessionStore.shared.sessions, excluding: initialSession?.id)
+                    let otherSessions = Self.jumpHostCandidates(from: SessionStore.shared.sessions, excluding: isCloning ? nil : initialSession?.id)
                     if !otherSessions.isEmpty {
                         VStack(alignment: .leading, spacing: 6) {
                             HStack {
@@ -702,7 +803,7 @@ public struct SessionEditModal: View {
 
     private var jumpCycleMessage: String? {
         guard !jumpServerChain.isEmpty else { return nil }
-        let sessionId = initialSession?.id ?? UUID()
+        let sessionId = isCloning ? UUID() : (initialSession?.id ?? UUID())
         if SSHArgumentBuilder.hasJumpCycle(startingAt: sessionId, jumpChain: jumpServerChain, allSessions: SessionStore.shared.sessions) {
             return "跳板机链存在环形依赖，请移除冲突节点"
         }
@@ -807,7 +908,7 @@ public struct SessionEditModal: View {
 
         let trimmedProxyCmd = proxyCommand.trimmingCharacters(in: .whitespacesAndNewlines)
         let candidateSession = Session(
-            id: initialSession?.id ?? UUID(),
+            id: isCloning ? UUID() : (initialSession?.id ?? UUID()),
             name: name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? trimmedHost : name.trimmingCharacters(in: .whitespacesAndNewlines),
             host: trimmedHost,
             port: portInt,
@@ -838,8 +939,12 @@ public struct SessionEditModal: View {
     }
     
     private func loadInitialSessionData() {
-        guard let s = initialSession else { return }
-        name = s.name
+        guard let s = initialSession else {
+            didFinishLoadingInitialSecret = true
+            didFinishLoadingInitialPassphrase = true
+            return
+        }
+        name = Self.initialDisplayName(for: s, isCloning: isCloning)
         host = s.host
         port = "\(s.port)"
         username = s.username
@@ -863,53 +968,118 @@ public struct SessionEditModal: View {
         switch s.authMethod {
         case .password(let ref):
             authType = .password
+            didFinishLoadingInitialSecret = false
+            didFinishLoadingInitialPassphrase = true
             // If ref is the raw password or keychain key, load it
             Task {
+                let loaded: String?
                 if let saved = try? await KeychainStore.shared.get(key: ref) {
-                    await MainActor.run { self.password = saved }
+                    loaded = saved
                 } else if !KeychainStore.isManagedReference(ref) {
                     // Legacy sessions stored the password inline.
-                    await MainActor.run { self.password = ref }
+                    loaded = ref
+                } else {
+                    loaded = nil
+                }
+                await MainActor.run {
+                    if let loaded, self.password.isEmpty { self.password = loaded }
+                    self.didFinishLoadingInitialSecret = true
                 }
             }
         case .privateKey(let keyPath, let passRef):
             authType = .privateKey
+            didFinishLoadingInitialSecret = true
             privateKeyPath = keyPath
             selectedVaultKeyId = Self.matchedVaultKeyId(forPrivateKeyPath: keyPath, keys: SSHKeyVaultManager.shared.keys)
             if let ref = passRef, !ref.isEmpty {
+                didFinishLoadingInitialPassphrase = false
                 Task {
+                    let loaded: String?
                     if let saved = try? await KeychainStore.shared.get(key: ref) {
-                        await MainActor.run { self.passphrase = saved }
+                        loaded = saved
                     } else if !KeychainStore.isManagedReference(ref) {
-                        await MainActor.run { self.passphrase = ref }
+                        loaded = ref
+                    } else {
+                        loaded = nil
+                    }
+                    await MainActor.run {
+                        if let loaded, self.passphrase.isEmpty { self.passphrase = loaded }
+                        self.didFinishLoadingInitialPassphrase = true
                     }
                 }
+            } else {
+                didFinishLoadingInitialPassphrase = true
             }
         case .certificate(let keyPath, let certPath, let passRef):
             authType = .certificate
+            didFinishLoadingInitialSecret = true
             privateKeyPath = keyPath
             certificatePath = certPath
             cachedCertificateInfo = Self.inspectCertificateFile(atPath: certPath)
             selectedVaultKeyId = Self.matchedVaultKeyId(forPrivateKeyPath: keyPath, keys: SSHKeyVaultManager.shared.keys)
             if let ref = passRef, !ref.isEmpty {
+                didFinishLoadingInitialPassphrase = false
                 Task {
+                    let loaded: String?
                     if let saved = try? await KeychainStore.shared.get(key: ref) {
-                        await MainActor.run { self.passphrase = saved }
+                        loaded = saved
                     } else if !KeychainStore.isManagedReference(ref) {
-                        await MainActor.run { self.passphrase = ref }
+                        loaded = ref
+                    } else {
+                        loaded = nil
+                    }
+                    await MainActor.run {
+                        if let loaded, self.passphrase.isEmpty { self.passphrase = loaded }
+                        self.didFinishLoadingInitialPassphrase = true
                     }
                 }
+            } else {
+                didFinishLoadingInitialPassphrase = true
             }
         case .agent, .none:
             authType = .agent
+            didFinishLoadingInitialSecret = true
+            didFinishLoadingInitialPassphrase = true
         }
     }
     
     private func saveSession() {
-        let sessionId = initialSession?.id ?? UUID()
+        let trimmedInitDir = initialWorkingDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedStartupCmd = startupCommand.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedProxyCmd = proxyCommand.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let jumpCycleMessage {
+            saveError = jumpCycleMessage
+            return
+        }
+        let parsedEnv = SessionStartupHelper.parseEnvLines(environmentVariablesText)
+        if !parsedEnv.invalidKeys.isEmpty {
+            saveError = "环境变量名无效：\(parsedEnv.invalidKeys.joined(separator: ", "))"
+            return
+        }
+
+        let sessionId = isCloning ? UUID() : (initialSession?.id ?? UUID())
         let authMethod: SSHAuthMethod
-        
-        if authType == .certificate {
+
+        if isCloning {
+            do {
+                authMethod = try Self.cloneAuthMethodForSave(
+                    authType: authType,
+                    sessionId: sessionId,
+                    typedPassword: password,
+                    typedPassphrase: passphrase,
+                    privateKeyPath: privateKeyPath,
+                    certificatePath: certificatePath,
+                    sourceAuthMethod: initialSession?.authMethod,
+                    didFinishLoadingSecret: didFinishLoadingInitialSecret,
+                    didFinishLoadingPassphrase: didFinishLoadingInitialPassphrase,
+                    secretReader: { try? KeychainStore.shared.getSync(key: $0) },
+                    secretWriter: { try KeychainStore.shared.save(key: $0, secret: $1) }
+                )
+            } catch {
+                saveError = (authType == .password ? "密码保存失败：" : "口令保存失败：") + error.localizedDescription
+                return
+            }
+        } else if authType == .certificate {
             let keyPath = privateKeyPath.trimmingCharacters(in: .whitespacesAndNewlines)
             let certPath = certificatePath.trimmingCharacters(in: .whitespacesAndNewlines)
             if !passphrase.isEmpty {
@@ -960,19 +1130,6 @@ public struct SessionEditModal: View {
         } else {
             authMethod = .agent
         }
-        
-        let trimmedInitDir = initialWorkingDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedStartupCmd = startupCommand.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedProxyCmd = proxyCommand.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let jumpCycleMessage {
-            saveError = jumpCycleMessage
-            return
-        }
-        let parsedEnv = SessionStartupHelper.parseEnvLines(environmentVariablesText)
-        if !parsedEnv.invalidKeys.isEmpty {
-            saveError = "环境变量名无效：\(parsedEnv.invalidKeys.joined(separator: ", "))"
-            return
-        }
 
         let newSession = Session(
             id: sessionId,
@@ -996,8 +1153,8 @@ public struct SessionEditModal: View {
             initialWorkingDirectory: trimmedInitDir.isEmpty ? nil : trimmedInitDir,
             startupCommand: trimmedStartupCmd.isEmpty ? nil : trimmedStartupCmd,
             environmentVariables: parsedEnv.variables,
-            createdAt: initialSession?.createdAt ?? Date(),
-            lastConnectedAt: initialSession?.lastConnectedAt
+            createdAt: isCloning ? Date() : (initialSession?.createdAt ?? Date()),
+            lastConnectedAt: isCloning ? nil : initialSession?.lastConnectedAt
         )
         onSave(newSession)
         dismiss()

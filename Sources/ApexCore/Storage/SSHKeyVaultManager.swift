@@ -139,7 +139,8 @@ public final class SSHKeyVaultManager: ObservableObject {
         name: String,
         privateKeyPEM: String,
         publicKeyOpenSSH: String,
-        passphrase: String? = nil
+        passphrase: String? = nil,
+        secretSaver: (String, String) throws -> String = { try KeychainStore.shared.save(key: $0, secret: $1) }
     ) throws -> SSHKeyIdentity {
         let cleanPriv = privateKeyPEM.trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanPub = publicKeyOpenSSH.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -152,13 +153,11 @@ public final class SSHKeyVaultManager: ObservableObject {
         }
         
         let id = UUID()
-        let privRef = "vault.priv.\(id.uuidString)"
-        var passRef: String? = nil
+        let savedPrivRef = try secretSaver("vault.priv.\(id.uuidString)", cleanPriv)
+        var savedPassRef: String? = nil
         
-        try KeychainStore.shared.save(key: privRef, secret: cleanPriv)
         if let pass = passphrase, !pass.isEmpty {
-            passRef = "vault.pass.\(id.uuidString)"
-            try KeychainStore.shared.save(key: passRef!, secret: pass)
+            savedPassRef = try secretSaver("vault.pass.\(id.uuidString)", pass)
         }
         
         let algo = SSHKeyIdentity.detectAlgorithm(from: cleanPub)
@@ -169,9 +168,9 @@ public final class SSHKeyVaultManager: ObservableObject {
             algorithm: algo,
             fingerprintSHA256: fp,
             publicKeyOpenSSH: cleanPub,
-            keychainPrivateKeyRef: privRef,
-            hasPassphrase: passRef != nil,
-            keychainPassphraseRef: passRef,
+            keychainPrivateKeyRef: savedPrivRef,
+            hasPassphrase: savedPassRef != nil,
+            keychainPassphraseRef: savedPassRef,
             createdAt: Date()
         )
         

@@ -434,6 +434,8 @@ private struct BackupSettingsTab: View {
     @State private var alertMessage: String?
     @State private var isShowingAlert = false
     @State private var isSyncingAction = false
+    @State private var showingGroupExportSheet = false
+    @State private var showingGroupImportSheet = false
     
     var body: some View {
         Form {
@@ -542,14 +544,25 @@ private struct BackupSettingsTab: View {
                     Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 8) {
                         GridRow {
                             ApexActionButton(
-                                "导出零凭据分享包 (.aetherpack)",
+                                "导出分组分享包 (.aetherpack)",
                                 icon: "shippingbox.and.arrow.backward",
                                 tint: ApexStyle.accent,
                                 size: .small
                             ) {
-                                exportSharePack()
+                                showingGroupExportSheet = true
                             }
 
+                            ApexActionButton(
+                                "导入分组分享包...",
+                                icon: "square.and.arrow.down",
+                                tint: ApexStyle.accent,
+                                size: .small
+                            ) {
+                                showingGroupImportSheet = true
+                            }
+                        }
+
+                        GridRow {
                             ApexActionButton(
                                 "导出 OpenSSH Config",
                                 icon: "doc.text",
@@ -558,9 +571,7 @@ private struct BackupSettingsTab: View {
                             ) {
                                 exportOpenSSHConfig()
                             }
-                        }
 
-                        GridRow {
                             ApexActionButton(
                                 L10n.exportButton,
                                 icon: "square.and.arrow.up",
@@ -568,15 +579,6 @@ private struct BackupSettingsTab: View {
                                 size: .small
                             ) {
                                 exportSessions()
-                            }
-                            
-                            ApexActionButton(
-                                L10n.importButton,
-                                icon: "square.and.arrow.down",
-                                tint: ApexStyle.secondary,
-                                size: .small
-                            ) {
-                                importSessions()
                             }
                         }
                     }
@@ -588,6 +590,20 @@ private struct BackupSettingsTab: View {
             }
         }
         .formStyle(.grouped)
+        .sheet(isPresented: $showingGroupExportSheet) {
+            GroupShareExportSheet(store: SessionStore.shared) { summary in
+                alertMessage = summary
+                isShowingAlert = true
+            }
+            .apexTheme()
+        }
+        .sheet(isPresented: $showingGroupImportSheet) {
+            GroupShareImportSheet(store: SessionStore.shared) { result in
+                alertMessage = result.summaryText
+                isShowingAlert = true
+            }
+            .apexTheme()
+        }
         .alert("同步状态", isPresented: $isShowingAlert) {
             Button("好的", role: .cancel) {}
         } message: {
@@ -705,58 +721,6 @@ private struct BackupSettingsTab: View {
                 isShowingAlert = true
             } catch {
                 alertMessage = "导出失败: \(error.localizedDescription)"
-                isShowingAlert = true
-            }
-        }
-    }
-    
-    private func importSessions() {
-        let openPanel = NSOpenPanel()
-        openPanel.allowedContentTypes = [.json]
-        openPanel.allowsMultipleSelection = false
-        openPanel.prompt = "导入"
-        
-        if openPanel.runModal() == .OK, let url = openPanel.url {
-            do {
-                let data = try Data(contentsOf: url)
-                let report = try SessionBundleExporter.importSharePackData(
-                    data,
-                    into: SessionStore.shared,
-                    bookmarkManager: SFTPBookmarkManager.shared,
-                    tunnelManager: SSHTunnelManager.shared,
-                    overwriteExisting: false
-                )
-                alertMessage = report.summaryText
-                isShowingAlert = true
-            } catch {
-                alertMessage = L10n.importFailure
-                isShowingAlert = true
-            }
-        }
-    }
-
-    private func exportSharePack() {
-        let savePanel = NSSavePanel()
-        savePanel.allowedContentTypes = [.json]
-        savePanel.nameFieldStringValue = "aetherterm-team-bundle.aetherpack.json"
-        savePanel.prompt = "导出分享包"
-
-        if savePanel.runModal() == .OK, let url = savePanel.url {
-            do {
-                let store = SessionStore.shared
-                let data = try SessionBundleExporter.exportSharePackData(
-                    sessions: store.sessions,
-                    snippets: store.snippets,
-                    triggers: store.triggers,
-                    bookmarks: SFTPBookmarkManager.shared.customBookmarks,
-                    tunnels: SSHTunnelManager.shared.tunnels,
-                    appVersion: UpdateManager.shared.currentVersion
-                )
-                try data.write(to: url, options: .atomic)
-                alertMessage = "已成功导出零凭据分享包 (.aetherpack.json)"
-                isShowingAlert = true
-            } catch {
-                alertMessage = "导出分享包失败: \(error.localizedDescription)"
                 isShowingAlert = true
             }
         }

@@ -1,10 +1,23 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 import ApexCore
+
+private struct GroupShareExportRequest: Identifiable {
+    let id = UUID()
+    let folder: String?
+    let sessionIDs: Set<UUID>?
+}
+
+private struct GroupShareImportRequest: Identifiable {
+    let id = UUID()
+    let fileURL: URL?
+}
 
 /// Native macOS Sidebar with session tree, folders, tags, quick snippets, and full Chinese localization
 public struct SidebarView: View {
     @ObservedObject private var themeSettings = AppSettings.shared
+    @ObservedObject private var shareCoordinator = IncomingShareCoordinator.shared
     @ObservedObject var store: SessionStore
     @Binding var selectedSession: Session?
     let onConnect: (Session) -> Void
@@ -13,6 +26,9 @@ public struct SidebarView: View {
     @State private var searchFilter = ""
     @State private var showingAddSheet = false
     @State private var showingImportSheet = false
+    @State private var exportRequest: GroupShareExportRequest?
+    @State private var shareImportRequest: GroupShareImportRequest?
+    @State private var isDropTargeted = false
     @State private var editingSession: Session?
     @State private var cloningSession: Session?
     @State private var sessionToDelete: Session?
@@ -77,14 +93,40 @@ public struct SidebarView: View {
                         .stroke(ApexStyle.border.opacity(0.7), lineWidth: 0.75)
                 )
                 
-                ApexIconButton(
-                    icon: "square.and.arrow.down",
-                    label: "从 ~/.ssh/config 导入主机",
-                    size: 24,
-                    iconSize: 11
-                ) {
-                    showingImportSheet = true
+                Menu {
+                    Button {
+                        shareImportRequest = GroupShareImportRequest(fileURL: nil)
+                    } label: {
+                        Label("导入连接分享包 (.aetherpack / .json)...", systemImage: "shippingbox")
+                    }
+
+                    Button {
+                        showingImportSheet = true
+                    } label: {
+                        Label("从 ~/.ssh/config 导入主机...", systemImage: "doc.text")
+                    }
+
+                    Divider()
+
+                    Button {
+                        exportRequest = GroupShareExportRequest(folder: nil, sessionIDs: nil)
+                    } label: {
+                        Label("导出连接分组 (.aetherpack)...", systemImage: "square.and.arrow.up")
+                    }
+                    .disabled(!store.sessions.contains(where: { !$0.isLocal }))
+                } label: {
+                    ApexMenuTrigger(
+                        icon: "square.and.arrow.down",
+                        label: "导入与导出连接",
+                        size: 24,
+                        iconSize: 11
+                    )
                 }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("导入或导出连接分组")
+                .accessibilityLabel("导入与导出连接")
                 
                 ApexIconButton(
                     icon: "plus",
@@ -187,6 +229,9 @@ public struct SidebarView: View {
                                             Button(L10n.cloneSessionAction) {
                                                 cloningSession = session
                                             }
+                                            Button("导出此会话...") {
+                                                exportRequest = GroupShareExportRequest(folder: Self.normalizedFolder(of: session), sessionIDs: [session.id])
+                                            }
                                             Divider()
                                             Button(L10n.deleteSessionAction, role: .destructive) {
                                                 sessionToDelete = session
@@ -213,6 +258,18 @@ public struct SidebarView: View {
                                             .background(ApexStyle.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: ApexStyle.badgeRadius))
                                             .fixedSize(horizontal: true, vertical: false)
                                     }
+                                    .contentShape(Rectangle())
+                                    .contextMenu {
+                                        Button("导出该分组...") {
+                                            exportRequest = GroupShareExportRequest(folder: folder, sessionIDs: nil)
+                                        }
+                                        .disabled(sessionsInFolder(folder).isEmpty)
+
+                                        Button("导出为 OpenSSH Config...") {
+                                            exportFolderOpenSSHConfig(folder)
+                                        }
+                                        .disabled(sessionsInFolder(folder).isEmpty)
+                                    }
                                 }
                             )
                         }
@@ -237,6 +294,26 @@ public struct SidebarView: View {
         .sheet(isPresented: $showingImportSheet) {
             SSHConfigImportSheet(store: store)
                 .apexTheme()
+        }
+        .sheet(item: $exportRequest) { request in
+            GroupShareExportSheet(
+                store: store,
+                initialFolder: request.folder,
+                initialSessionIDs: request.sessionIDs
+            ) { summary in
+                showToast(summary, isSuccess: true)
+            }
+            .apexTheme()
+        }
+        .sheet(item: $shareImportRequest) { request in
+            GroupShareImportSheet(
+                store: store,
+                initialFileURL: request.fileURL
+            ) { result in
+                collapsedFolders.subtract(result.importedFolderNames)
+                showToast(result.summaryText, isSuccess: true)
+            }
+            .apexTheme()
         }
         .sheet(item: $editingSession) { session in
             SessionEditModal(session: session) { updated in
@@ -285,6 +362,82 @@ public struct SidebarView: View {
             }
         }
         .animation(.spring(response: 0.35, dampingFraction: 0.8), value: toastMessage)
+        .overlay {
+            if isDropTargeted {
+                RoundedRectangle(cornerRadius: ApexStyle.radius)
+                    .strokeBorder(ApexStyle.accent, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
+                    .background(ApexStyle.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: ApexStyle.radius))
+                    .overlay(alignment: .bottom) {
+                        Text("释放以导入 .aetherpack 连接分享包")
+                            .font(.caption.weight(.semibold))
+                            .foregroundColor(ApexStyle.accent)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .apexGlassCard(cornerRadius: 12, material: .regularMaterial, shadowRadius: 4)
+                            .padding(.bottom, 16)
+                    }
+                    .padding(6)
+                    .allowsHitTesting(false)
+            }
+        }
+        .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
+            handleSidebarDrop(providers: providers)
+        }
+        .task {
+            if let pendingURL = shareCoordinator.consumePendingImportURL() {
+                shareImportRequest = GroupShareImportRequest(fileURL: pendingURL)
+            }
+        }
+        .onChange(of: shareCoordinator.openImportTrigger) { _, _ in
+            let url = shareCoordinator.consumePendingImportURL()
+            shareImportRequest = GroupShareImportRequest(fileURL: url)
+        }
+        .onChange(of: shareCoordinator.openExportTrigger) { _, _ in
+            exportRequest = GroupShareExportRequest(folder: nil, sessionIDs: nil)
+        }
+    }
+
+    // MARK: - Group Share Helpers
+
+    private func handleSidebarDrop(providers: [NSItemProvider]) -> Bool {
+        guard let provider = providers.first(where: { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }) else {
+            return false
+        }
+        provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+            let resolvedURL: URL?
+            if let data = item as? Data {
+                resolvedURL = URL(dataRepresentation: data, relativeTo: nil)
+            } else if let url = item as? URL {
+                resolvedURL = url
+            } else {
+                resolvedURL = nil
+            }
+            guard let fileURL = resolvedURL, SessionBundleExporter.isSupportedShareFileURL(fileURL) else {
+                return
+            }
+            Task { @MainActor in
+                shareImportRequest = GroupShareImportRequest(fileURL: fileURL)
+            }
+        }
+        return true
+    }
+
+    private func exportFolderOpenSSHConfig(_ folder: String) {
+        let groupSessions = sessionsInFolder(folder)
+        guard !groupSessions.isEmpty else { return }
+
+        let savePanel = NSSavePanel()
+        savePanel.nameFieldStringValue = "\(folder)-ssh_config"
+        savePanel.prompt = "导出 OpenSSH Config"
+        if savePanel.runModal() == .OK, let url = savePanel.url {
+            do {
+                let text = SessionBundleExporter.generateOpenSSHConfig(from: groupSessions)
+                try text.write(to: url, atomically: true, encoding: .utf8)
+                showToast("已导出分组 [\(folder)] 的 OpenSSH Config", isSuccess: true)
+            } catch {
+                showToast("导出失败：\(error.localizedDescription)", isSuccess: false)
+            }
+        }
     }
 
     // MARK: - Credential & Info Copy Actions

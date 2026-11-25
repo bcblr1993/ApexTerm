@@ -94,14 +94,14 @@ public enum SessionBundleExporter {
         case .password:
             copy.authMethod = .password(keychainRef: "")
         case .privateKey(let keyRef, _):
-            if keyRef.contains("PRIVATE KEY") || keyRef.hasPrefix("vault://") || !keyRef.contains("/") && !keyRef.hasPrefix("~") {
+            if keyRef.contains("PRIVATE KEY") || KeychainStore.isManagedReference(keyRef) || keyRef.hasPrefix("vault://") || (!keyRef.contains("/") && !keyRef.hasPrefix("~")) {
                 copy.authMethod = .privateKey(keychainRef: "", passphraseRef: nil)
             } else {
                 copy.authMethod = .privateKey(keychainRef: portablePath(keyRef), passphraseRef: nil)
             }
         case .certificate(let keyRef, let certPath, _):
             let safeKeyRef: String
-            if keyRef.contains("PRIVATE KEY") || keyRef.hasPrefix("vault://") || (!keyRef.contains("/") && !keyRef.hasPrefix("~")) {
+            if keyRef.contains("PRIVATE KEY") || KeychainStore.isManagedReference(keyRef) || keyRef.hasPrefix("vault://") || (!keyRef.contains("/") && !keyRef.hasPrefix("~")) {
                 safeKeyRef = ""
             } else {
                 safeKeyRef = portablePath(keyRef)
@@ -431,5 +431,872 @@ public enum SessionBundleExporter {
         }
         let cleaned = result.trimmingCharacters(in: CharacterSet(charactersIn: "-_."))
         return cleaned.isEmpty ? "server" : cleaned
+    }
+
+    // MARK: - v2 Encrypted / App-Sealed Group Share Export & Import
+
+    /// Normalizes a session's folder name and returns sorted unique folder names across `sessions`.
+    public static func normalizedGroupNames(for sessions: [Session]) -> [String] {
+        var names = Set<String>()
+        for session in sessions where !session.isLocal {
+            let trimmed = (session.folder ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            names.insert(trimmed.isEmpty ? L10n.generalFolder : trimmed)
+        }
+        return names.sorted()
+    }
+
+    /// Recursively collects remote jump hosts referenced by `selectedSessionIDs` that reside outside `selectedSessionIDs`.
+    public static func crossGroupJumpHosts(for selectedSessionIDs: Set<UUID>, allSessions: [Session]) -> [Session] {
+        let byId = Dictionary(uniqueKeysWithValues: allSessions.filter { !$0.isLocal }.map { ($0.id, $0) })
+        var visited = selectedSessionIDs
+        var queue: [UUID] = selectedSessionIDs.compactMap { byId[$0] }.flatMap(\.effectiveJumpServerChain)
+        var discoveredIDs = Set<UUID>()
+
+        while !queue.isEmpty {
+            let nextId = queue.removeFirst()
+            guard !visited.contains(nextId), let jumpSession = byId[nextId] else { continue }
+            visited.insert(nextId)
+            discoveredIDs.insert(nextId)
+            queue.append(contentsOf: jumpSession.effectiveJumpServerChain)
+        }
+
+        return allSessions.filter { !$0.isLocal && discoveredIDs.contains($0.id) }
+    }
+
+    /// Resolves selected sessions plus optional transitive jump-host dependencies while preserving `allSessions` order.
+    public static func resolveExportSelection(
+        selectedSessionIDs: Set<UUID>,
+        allSessions: [Session],
+        includeCrossGroupJumpHosts: Bool
+    ) -> (sessions: [Session], addedJumpHostIDs: [UUID]) {
+        let extraJumps = includeCrossGroupJumpHosts
+            ? crossGroupJumpHosts(for: selectedSessionIDs, allSessions: allSessions)
+            : []
+        let extraIDs = Set(extraJumps.map(\.id))
+        let combinedIDs = selectedSessionIDs.union(extraIDs)
+
+        var seen = Set<UUID>()
+        var resolved: [Session] = []
+        for session in allSessions where !session.isLocal && combinedIDs.contains(session.id) {
+            if seen.insert(session.id).inserted {
+                resolved.append(session)
+            }
+        }
+        return (resolved, extraJumps.map(\.id))
+    }
+
+    /// Builds a filesystem-safe default filename for `.aetherpack` share bundles.
+    public static func suggestedFilename(forFolder folder: String?, sessionCount: Int) -> String {
+        let trimmed = (folder ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return sessionCount <= 1 ? "aetherterm-session.aetherpack" : "aetherterm-sessions.aetherpack"
+        }
+        let illegalChars = CharacterSet(charactersIn: "/\\:*?\"<>|")
+        let sanitized = trimmed
+            .components(separatedBy: illegalChars)
+            .joined(separator: "-")
+            .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: ".")))
+        let stem = sanitized.isEmpty ? "aetherterm-group" : sanitized
+        return "\(stem).aetherpack"
+    }
+
+    /// Checks whether `url` has an `.aetherpack`, `.aetherpack.json`, or `.json` share extension.
+    public static func isSupportedShareFileURL(_ url: URL) -> Bool {
+        let lowerName = url.lastPathComponent.lowercased()
+        return lowerName.hasSuffix(".aetherpack")
+            || lowerName.hasSuffix(".aetherpack.json")
+            || url.pathExtension.lowercased() == "json"
+    }
+
+    /// Exports an `.aetherpack` v2 envelope with the selected protection mode and optional embedded credentials.
+    public static func exportEnvelopeData(
+        sessions: [Session],
+        snippets: [Snippet] = [],
+        triggers: [Trigger] = [],
+        bookmarks: [SFTPBookmark] = [],
+        tunnels: [SSHTunnel] = [],
+        protectionMode: SharePackProtectionMode = .appSealed,
+        passphrase: String? = nil,
+        appVersion: String = "1.26.0",
+        vaultKeys: [SSHKeyIdentity] = [],
+        secretLookup: @Sendable (String) async -> String? = { try? await KeychainStore.shared.get(key: $0) }
+    ) async throws -> Data {
+        var uniqueSessions: [Session] = []
+        var seenIDs = Set<UUID>()
+        for session in sessions where !session.isLocal {
+            if seenIDs.insert(session.id).inserted {
+                uniqueSessions.append(session)
+            }
+        }
+
+        let allowedSessionIDs = Set(uniqueSessions.map(\.id))
+        let scopedTunnels = tunnels.filter { allowedSessionIDs.contains($0.sessionId) }
+        let header = AetherShareEnvelopeHeader(
+            groupNames: normalizedGroupNames(for: uniqueSessions),
+            sessionCount: uniqueSessions.count,
+            tunnelCount: scopedTunnels.count,
+            includesCredentials: protectionMode != .zeroCredential,
+            exportedByAppVersion: appVersion,
+            exportedAt: Date()
+        )
+
+        var credentials = SharePackCredentialPayload()
+        if protectionMode != .zeroCredential {
+            var embeddedVaultRefs = Set<String>()
+            let vaultByRef = Dictionary(uniqueKeysWithValues: vaultKeys.map { ($0.keychainPrivateKeyRef, $0) })
+
+            for session in uniqueSessions {
+                switch session.authMethod {
+                case .password(let ref):
+                    guard !ref.isEmpty else { break }
+                    let secret: String? = KeychainStore.isManagedReference(ref) ? await secretLookup(ref) : ref
+                    if let secret, !secret.isEmpty {
+                        credentials.sessionPasswords[session.id] = secret
+                    }
+
+                case .privateKey(let keyRef, let passRef), .certificate(let keyRef, _, let passRef):
+                    if KeychainStore.isVaultPrivateKeyReference(keyRef) {
+                        credentials.sessionVaultKeyRefs[session.id] = keyRef
+                        if embeddedVaultRefs.insert(keyRef).inserted,
+                           let privPEM = await secretLookup(keyRef),
+                           !privPEM.isEmpty {
+                            let identity = vaultByRef[keyRef]
+                            let vaultPassRef = identity?.keychainPassphraseRef ?? passRef
+                            var vaultPass: String? = nil
+                            if let vaultPassRef, !vaultPassRef.isEmpty {
+                                vaultPass = KeychainStore.isManagedReference(vaultPassRef)
+                                    ? await secretLookup(vaultPassRef)
+                                    : vaultPassRef
+                            }
+                            credentials.embeddedVaultKeys.append(
+                                SharePackVaultKeyRecord(
+                                    originalPrivateKeyRef: keyRef,
+                                    name: identity?.name ?? session.name,
+                                    publicKeyOpenSSH: identity?.publicKeyOpenSSH ?? "",
+                                    privateKeyPEM: privPEM,
+                                    passphrase: (vaultPass?.isEmpty == false) ? vaultPass : nil
+                                )
+                            )
+                        }
+                    } else if keyRef.contains("PRIVATE KEY") {
+                        credentials.sessionPrivateKeysPEM[session.id] = keyRef
+                    }
+
+                    if let passRef, !passRef.isEmpty {
+                        let resolvedPass: String? = KeychainStore.isManagedReference(passRef)
+                            ? await secretLookup(passRef)
+                            : passRef
+                        if let resolvedPass, !resolvedPass.isEmpty {
+                            credentials.sessionPassphrases[session.id] = resolvedPass
+                        }
+                    }
+
+                case .agent, .none:
+                    break
+                }
+            }
+        }
+
+        let pack = sanitizePack(
+            AetherSharePack(
+                appVersion: appVersion,
+                sessions: uniqueSessions,
+                snippets: snippets,
+                triggers: triggers,
+                bookmarks: bookmarks,
+                tunnels: scopedTunnels
+            )
+        )
+        let bundle = SharePackSecretBundle(pack: pack, credentials: credentials)
+        let envelope = try SharePackCrypto.encryptBundle(
+            bundle,
+            mode: protectionMode,
+            passphrase: passphrase,
+            header: header
+        )
+
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try encoder.encode(envelope)
+    }
+
+    /// Parses a share file to determine its format, unencrypted summary metadata, and (unless passphrase-locked) decrypted bundle.
+    public static func inspectSharePackData(_ data: Data) throws -> SharePackInspection {
+        struct EnvelopeProbe: Decodable {
+            let magic: String?
+        }
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        if let probe = try? decoder.decode(EnvelopeProbe.self, from: data),
+           probe.magic == AetherShareEnvelope.magic {
+            let envelope: AetherShareEnvelope
+            do {
+                envelope = try decoder.decode(AetherShareEnvelope.self, from: data)
+            } catch {
+                throw SharePackCryptoError.invalidEnvelope("分享包格式损坏：\(error.localizedDescription)")
+            }
+
+            guard envelope.envelopeVersion > 0 && envelope.envelopeVersion <= AetherShareEnvelope.currentEnvelopeVersion else {
+                throw SharePackCryptoError.unsupportedFormatVersion(envelope.envelopeVersion)
+            }
+
+            if envelope.protectionMode == .passphrase {
+                return SharePackInspection(
+                    sourceFormat: .envelopeV2(.passphrase),
+                    header: envelope.header,
+                    requiresPassphrase: true,
+                    decryptedBundle: nil
+                )
+            }
+
+            let bundle = try SharePackCrypto.decryptEnvelope(envelope, passphrase: nil)
+            return SharePackInspection(
+                sourceFormat: .envelopeV2(envelope.protectionMode),
+                header: envelope.header,
+                requiresPassphrase: false,
+                decryptedBundle: bundle
+            )
+        }
+
+        if let legacyPack = try? decoder.decode(AetherSharePack.self, from: data) {
+            let sanitized = sanitizePack(legacyPack)
+            let header = AetherShareEnvelopeHeader(
+                groupNames: normalizedGroupNames(for: sanitized.sessions),
+                sessionCount: sanitized.sessions.count,
+                tunnelCount: sanitized.tunnels.count,
+                includesCredentials: false,
+                exportedByAppVersion: sanitized.appVersion,
+                exportedAt: sanitized.exportedAt
+            )
+            return SharePackInspection(
+                sourceFormat: .legacySharePackV1,
+                header: header,
+                requiresPassphrase: false,
+                decryptedBundle: SharePackSecretBundle(pack: sanitized)
+            )
+        }
+
+        if let legacySessions = try? JSONDecoder().decode([Session].self, from: data) {
+            let sanitized = sanitizePack(AetherSharePack(sessions: legacySessions))
+            let header = AetherShareEnvelopeHeader(
+                groupNames: normalizedGroupNames(for: sanitized.sessions),
+                sessionCount: sanitized.sessions.count,
+                tunnelCount: 0,
+                includesCredentials: false,
+                exportedByAppVersion: "legacy",
+                exportedAt: Date()
+            )
+            return SharePackInspection(
+                sourceFormat: .legacySessionArray,
+                header: header,
+                requiresPassphrase: false,
+                decryptedBundle: SharePackSecretBundle(pack: sanitized)
+            )
+        }
+
+        throw SharePackCryptoError.invalidEnvelope("文件不是有效的 AetherTerm 分享包或会话 JSON。")
+    }
+
+    /// Decrypts a passphrase-protected `.aetherpack` v2 envelope using the user-supplied passphrase.
+    public static func decryptSharePackData(_ data: Data, passphrase: String) throws -> SharePackSecretBundle {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let envelope: AetherShareEnvelope
+        do {
+            envelope = try decoder.decode(AetherShareEnvelope.self, from: data)
+        } catch {
+            throw SharePackCryptoError.invalidEnvelope("无法解析加密分享包：\(error.localizedDescription)")
+        }
+        return try SharePackCrypto.decryptEnvelope(envelope, passphrase: passphrase)
+    }
+
+    /// Imports a decrypted (or zero-credential) share bundle into local stores with target-folder mapping,
+    /// duplicate conflict resolution, jump-host chain remapping, and isolated local Keychain storage.
+    @MainActor
+    public static func importDecryptedBundle(
+        _ bundle: SharePackSecretBundle,
+        into store: SessionStore,
+        options: SharePackImportOptions = .init(),
+        bookmarkManager: SFTPBookmarkManager? = nil,
+        tunnelManager: SSHTunnelManager? = nil,
+        vaultManager: SSHKeyVaultManager? = nil,
+        secretSaver: ((String, String) throws -> String)? = nil
+    ) throws -> SharePackImportResult {
+        let saver: (String, String) throws -> String = secretSaver ?? { key, secret in
+            try KeychainStore.shared.save(key: key, secret: secret)
+        }
+
+        let allCandidates = bundle.pack.sessions.filter { !$0.isLocal }
+        let chosenSessions = options.selectedSessionIDs.map { selected in
+            allCandidates.filter { selected.contains($0.id) }
+        } ?? allCandidates
+        let chosenOriginIDs = Set(chosenSessions.map(\.id))
+
+        // 1. Import referenced Key Vault identities (deduplicated by SHA-256 fingerprint)
+        var vaultRefRemap: [String: String] = [:]
+        var vaultPassRefByNewPrivRef: [String: String] = [:]
+        var importedVaultKeys = 0
+
+        if options.importCredentials {
+            let referencedVaultRefs = Set(chosenOriginIDs.compactMap { bundle.credentials.sessionVaultKeyRefs[$0] })
+            for record in bundle.credentials.embeddedVaultKeys where referencedVaultRefs.contains(record.originalPrivateKeyRef) {
+                if let vm = vaultManager, !record.publicKeyOpenSSH.isEmpty {
+                    let fp = SSHKeyIdentity.computeFingerprint(from: record.publicKeyOpenSSH)
+                    if let existingKey = vm.keys.first(where: { $0.fingerprintSHA256 == fp }) {
+                        vaultRefRemap[record.originalPrivateKeyRef] = existingKey.keychainPrivateKeyRef
+                        if let existingPassRef = existingKey.keychainPassphraseRef {
+                            vaultPassRefByNewPrivRef[existingKey.keychainPrivateKeyRef] = existingPassRef
+                        }
+                    } else if !record.privateKeyPEM.isEmpty {
+                        let created = try vm.importKey(
+                            name: record.name,
+                            privateKeyPEM: record.privateKeyPEM,
+                            publicKeyOpenSSH: record.publicKeyOpenSSH,
+                            passphrase: record.passphrase,
+                            secretSaver: saver
+                        )
+                        vaultRefRemap[record.originalPrivateKeyRef] = created.keychainPrivateKeyRef
+                        if let passRef = created.keychainPassphraseRef {
+                            vaultPassRefByNewPrivRef[created.keychainPrivateKeyRef] = passRef
+                        }
+                        importedVaultKeys += 1
+                    }
+                }
+            }
+        }
+
+        // 2. Seed canonical folder pool from current store
+        var folderPool: [String] = [L10n.generalFolder]
+        for existingFolder in store.folders {
+            let trimmed = existingFolder.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty && !folderPool.contains(where: { $0.caseInsensitiveCompare(trimmed) == .orderedSame }) {
+                folderPool.append(trimmed)
+            }
+        }
+        for s in store.sessions where !s.isLocal {
+            let trimmed = (s.folder ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty && !folderPool.contains(where: { $0.caseInsensitiveCompare(trimmed) == .orderedSame }) {
+                folderPool.append(trimmed)
+            }
+        }
+
+        func canonicalFolderName(_ raw: String?) -> String {
+            let trimmed = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let fallback = trimmed.isEmpty ? L10n.generalFolder : trimmed
+            if let existing = folderPool.first(where: { $0.caseInsensitiveCompare(fallback) == .orderedSame }) {
+                return existing
+            }
+            folderPool.append(fallback)
+            return fallback
+        }
+
+        // 3. Pass 1: Insert / Update / Skip sessions and write isolated Keychain credentials
+        var importedSessions = 0
+        var updatedSessions = 0
+        var skippedSessions = 0
+        var importedCredentials = 0
+        var sessionIdRemap: [UUID: UUID] = [:]
+        var rawJumpChainByTargetId: [UUID: [UUID]] = [:]
+        var importedFolderSet = Set<String>()
+
+        for incoming in chosenSessions {
+            let existingMatch = store.sessions.first {
+                $0.id == incoming.id || (
+                    $0.host.caseInsensitiveCompare(incoming.host) == .orderedSame &&
+                    $0.port == incoming.port &&
+                    $0.username.caseInsensitiveCompare(incoming.username) == .orderedSame &&
+                    $0.name.caseInsensitiveCompare(incoming.name) == .orderedSame
+                )
+            }
+
+            let resolvedFolder: String
+            switch options.targetFolderMode {
+            case .preserveOriginal:
+                resolvedFolder = canonicalFolderName(incoming.folder)
+            case .assignToFolder(let explicitFolder):
+                resolvedFolder = canonicalFolderName(explicitFolder)
+            }
+
+            if let existing = existingMatch {
+                switch options.conflictStrategy {
+                case .skipExisting:
+                    sessionIdRemap[incoming.id] = existing.id
+                    skippedSessions += 1
+                    continue
+
+                case .overwriteExisting:
+                    var updated = sanitizeSessionForShare(incoming)
+                    updated.id = existing.id
+                    updated.folder = resolvedFolder
+                    updated.createdAt = existing.createdAt
+                    updated.lastConnectedAt = existing.lastConnectedAt
+
+                    let appliedCred = try applyImportedCredentials(
+                        to: &updated,
+                        sourceSessionID: incoming.id,
+                        existingAuthMethod: existing.authMethod,
+                        bundleCredentials: bundle.credentials,
+                        importCredentials: options.importCredentials,
+                        vaultRefRemap: vaultRefRemap,
+                        vaultPassRefByNewPrivRef: vaultPassRefByNewPrivRef,
+                        secretSaver: saver
+                    )
+                    if appliedCred { importedCredentials += 1 }
+
+                    sessionIdRemap[incoming.id] = existing.id
+                    rawJumpChainByTargetId[existing.id] = incoming.effectiveJumpServerChain
+                    store.updateSession(updated)
+                    updatedSessions += 1
+                    importedFolderSet.insert(resolvedFolder)
+
+                case .keepBoth:
+                    let newId = UUID()
+                    var copy = sanitizeSessionForShare(incoming)
+                    copy.id = newId
+                    copy.name = disambiguatedImportName(baseName: incoming.name, existingSessions: store.sessions)
+                    copy.folder = resolvedFolder
+                    copy.createdAt = Date()
+                    copy.lastConnectedAt = nil
+
+                    let appliedCred = try applyImportedCredentials(
+                        to: &copy,
+                        sourceSessionID: incoming.id,
+                        existingAuthMethod: nil,
+                        bundleCredentials: bundle.credentials,
+                        importCredentials: options.importCredentials,
+                        vaultRefRemap: vaultRefRemap,
+                        vaultPassRefByNewPrivRef: vaultPassRefByNewPrivRef,
+                        secretSaver: saver
+                    )
+                    if appliedCred { importedCredentials += 1 }
+
+                    sessionIdRemap[incoming.id] = newId
+                    rawJumpChainByTargetId[newId] = incoming.effectiveJumpServerChain
+                    store.addSession(copy)
+                    importedSessions += 1
+                    importedFolderSet.insert(resolvedFolder)
+                }
+            } else {
+                let targetId = store.sessions.contains(where: { $0.id == incoming.id }) ? UUID() : incoming.id
+                var copy = sanitizeSessionForShare(incoming)
+                copy.id = targetId
+                copy.folder = resolvedFolder
+
+                let appliedCred = try applyImportedCredentials(
+                    to: &copy,
+                    sourceSessionID: incoming.id,
+                    existingAuthMethod: nil,
+                    bundleCredentials: bundle.credentials,
+                    importCredentials: options.importCredentials,
+                    vaultRefRemap: vaultRefRemap,
+                    vaultPassRefByNewPrivRef: vaultPassRefByNewPrivRef,
+                    secretSaver: saver
+                )
+                if appliedCred { importedCredentials += 1 }
+
+                sessionIdRemap[incoming.id] = targetId
+                rawJumpChainByTargetId[targetId] = incoming.effectiveJumpServerChain
+                store.addSession(copy)
+                importedSessions += 1
+                importedFolderSet.insert(resolvedFolder)
+            }
+        }
+
+        // 4. Pass 2: Remap jumpServerChain / jumpServerId using final session ID mapping
+        if !rawJumpChainByTargetId.isEmpty {
+            var patched = store.sessions
+            var didModifyJumpChain = false
+            for idx in patched.indices {
+                let targetId = patched[idx].id
+                guard let origChain = rawJumpChainByTargetId[targetId], !origChain.isEmpty else { continue }
+                let mappedChain = origChain.map { sessionIdRemap[$0] ?? $0 }
+                if mappedChain != patched[idx].effectiveJumpServerChain {
+                    patched[idx].jumpServerChain = mappedChain
+                    patched[idx].jumpServerId = mappedChain.first
+                    didModifyJumpChain = true
+                }
+            }
+            if didModifyJumpChain {
+                store.replaceAllSessions(patched)
+            }
+        }
+
+        // 5. Merge selected attachments (tunnels scoped to non-skipped sessions, snippets, triggers, bookmarks)
+        var importedTunnels = 0
+        if options.includeTunnels, let tunManager = tunnelManager {
+            let activeTargetIDs = Set(rawJumpChainByTargetId.keys)
+            for var tun in bundle.pack.tunnels {
+                guard chosenOriginIDs.contains(tun.sessionId),
+                      let mappedSessionId = sessionIdRemap[tun.sessionId] else {
+                    continue
+                }
+                if !activeTargetIDs.contains(mappedSessionId) && options.conflictStrategy == .skipExisting {
+                    // For skipped existing sessions, still avoid breaking or duplicating tunnels unless new
+                    if tunManager.tunnels.contains(where: {
+                        $0.sessionId == mappedSessionId &&
+                        $0.type == tun.type &&
+                        $0.bindPort == tun.bindPort &&
+                        $0.targetHost == tun.targetHost &&
+                        $0.targetPort == tun.targetPort
+                    }) {
+                        continue
+                    }
+                }
+                tun.sessionId = mappedSessionId
+                if tunManager.tunnels.contains(where: { $0.id == tun.id }) {
+                    tun.id = UUID()
+                }
+                let exists = tunManager.tunnels.contains {
+                    $0.sessionId == tun.sessionId &&
+                    $0.type == tun.type &&
+                    $0.bindPort == tun.bindPort &&
+                    $0.targetHost == tun.targetHost &&
+                    $0.targetPort == tun.targetPort
+                }
+                if !exists, (try? tunManager.addTunnel(tun)) != nil {
+                    importedTunnels += 1
+                }
+            }
+        }
+
+        var importedSnippets = 0
+        if options.includeSnippets {
+            for snippet in bundle.pack.snippets {
+                let exists = store.snippets.contains {
+                    $0.id == snippet.id || (
+                        $0.title.caseInsensitiveCompare(snippet.title) == .orderedSame &&
+                        $0.command == snippet.command
+                    )
+                }
+                if !exists {
+                    store.addSnippet(snippet)
+                    importedSnippets += 1
+                }
+            }
+        }
+
+        var importedTriggers = 0
+        if options.includeTriggers {
+            var updatedTriggers = store.triggers
+            for trigger in bundle.pack.triggers {
+                let exists = updatedTriggers.contains {
+                    $0.id == trigger.id || (
+                        $0.name.caseInsensitiveCompare(trigger.name) == .orderedSame &&
+                        $0.regexPattern == trigger.regexPattern
+                    )
+                }
+                if !exists {
+                    updatedTriggers.append(trigger)
+                    importedTriggers += 1
+                }
+            }
+            if importedTriggers > 0 {
+                store.replaceAllTriggers(updatedTriggers)
+            }
+        }
+
+        var importedBookmarks = 0
+        if options.includeBookmarks, let bmManager = bookmarkManager {
+            for bm in bundle.pack.bookmarks where !bm.isPreset {
+                if !bmManager.isBookmarked(path: bm.path) {
+                    bmManager.addCustomBookmark(name: bm.name, path: bm.path)
+                    importedBookmarks += 1
+                }
+            }
+        }
+
+        return SharePackImportResult(
+            importedSessions: importedSessions,
+            updatedSessions: updatedSessions,
+            skippedDuplicateSessions: skippedSessions,
+            importedCredentials: importedCredentials,
+            importedVaultKeys: importedVaultKeys,
+            importedTunnels: importedTunnels,
+            importedSnippets: importedSnippets,
+            importedTriggers: importedTriggers,
+            importedBookmarks: importedBookmarks,
+            importedFolderNames: importedFolderSet.sorted()
+        )
+    }
+
+    private static func disambiguatedImportName(baseName: String, existingSessions: [Session]) -> String {
+        let trimmed = baseName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let root = trimmed.isEmpty ? "导入主机" : trimmed
+        let initial = "\(root) (导入)"
+        if !existingSessions.contains(where: { $0.name.caseInsensitiveCompare(initial) == .orderedSame }) {
+            return initial
+        }
+        var suffix = 2
+        while existingSessions.contains(where: { $0.name.caseInsensitiveCompare("\(root) (导入 \(suffix))") == .orderedSame }) {
+            suffix += 1
+        }
+        return "\(root) (导入 \(suffix))"
+    }
+
+    private static func applyImportedCredentials(
+        to session: inout Session,
+        sourceSessionID: UUID,
+        existingAuthMethod: SSHAuthMethod?,
+        bundleCredentials: SharePackCredentialPayload,
+        importCredentials: Bool,
+        vaultRefRemap: [String: String],
+        vaultPassRefByNewPrivRef: [String: String],
+        secretSaver: (String, String) throws -> String
+    ) throws -> Bool {
+        var didImportAny = false
+
+        switch session.authMethod {
+        case .password:
+            if importCredentials,
+               let password = bundleCredentials.sessionPasswords[sourceSessionID],
+               !password.isEmpty {
+                let desiredRef: String
+                if case .password(let existingRef) = existingAuthMethod,
+                   KeychainStore.isSessionSecretReference(existingRef) {
+                    desiredRef = existingRef
+                } else {
+                    desiredRef = "ssh_\(session.id.uuidString)"
+                }
+                let savedRef = try secretSaver(desiredRef, password)
+                session.authMethod = .password(keychainRef: savedRef)
+                didImportAny = true
+            } else if case .password(let existingRef) = existingAuthMethod {
+                session.authMethod = .password(keychainRef: existingRef)
+            } else {
+                session.authMethod = .password(keychainRef: "")
+            }
+
+        case .privateKey(let keyPath, _):
+            var resolvedKeyRef = keyPath
+            var vaultLinkedPassRef: String? = nil
+
+            if importCredentials,
+               let origVaultRef = bundleCredentials.sessionVaultKeyRefs[sourceSessionID],
+               let newVaultRef = vaultRefRemap[origVaultRef] {
+                resolvedKeyRef = newVaultRef
+                vaultLinkedPassRef = vaultPassRefByNewPrivRef[newVaultRef]
+                didImportAny = true
+            } else if resolvedKeyRef.isEmpty,
+                      case .privateKey(let existingKeyRef, _) = existingAuthMethod {
+                resolvedKeyRef = existingKeyRef
+            }
+
+            let savedPassRef: String?
+            if importCredentials,
+               let pass = bundleCredentials.sessionPassphrases[sourceSessionID],
+               !pass.isEmpty {
+                if let vaultPassRef = vaultLinkedPassRef {
+                    savedPassRef = vaultPassRef
+                } else {
+                    let desiredPassRef: String
+                    if case .privateKey(_, let existingPassRef?) = existingAuthMethod,
+                       KeychainStore.isSessionSecretReference(existingPassRef) {
+                        desiredPassRef = existingPassRef
+                    } else {
+                        desiredPassRef = "passphrase_\(session.id.uuidString)"
+                    }
+                    savedPassRef = try secretSaver(desiredPassRef, pass)
+                    didImportAny = true
+                }
+            } else if let vaultPassRef = vaultLinkedPassRef {
+                savedPassRef = vaultPassRef
+            } else if case .privateKey(_, let existingPassRef) = existingAuthMethod {
+                savedPassRef = existingPassRef
+            } else {
+                savedPassRef = nil
+            }
+
+            session.authMethod = .privateKey(keychainRef: resolvedKeyRef, passphraseRef: savedPassRef)
+
+        case .certificate(let keyPath, let certPath, _):
+            var resolvedKeyRef = keyPath
+            var resolvedCertPath = certPath
+            var vaultLinkedPassRef: String? = nil
+
+            if importCredentials,
+               let origVaultRef = bundleCredentials.sessionVaultKeyRefs[sourceSessionID],
+               let newVaultRef = vaultRefRemap[origVaultRef] {
+                resolvedKeyRef = newVaultRef
+                vaultLinkedPassRef = vaultPassRefByNewPrivRef[newVaultRef]
+                didImportAny = true
+            } else if resolvedKeyRef.isEmpty,
+                      case .certificate(let existingKeyRef, let existingCertPath, _) = existingAuthMethod {
+                resolvedKeyRef = existingKeyRef
+                if resolvedCertPath.isEmpty {
+                    resolvedCertPath = existingCertPath
+                }
+            }
+
+            let savedPassRef: String?
+            if importCredentials,
+               let pass = bundleCredentials.sessionPassphrases[sourceSessionID],
+               !pass.isEmpty {
+                if let vaultPassRef = vaultLinkedPassRef {
+                    savedPassRef = vaultPassRef
+                } else {
+                    let desiredPassRef: String
+                    if case .certificate(_, _, let existingPassRef?) = existingAuthMethod,
+                       KeychainStore.isSessionSecretReference(existingPassRef) {
+                        desiredPassRef = existingPassRef
+                    } else {
+                        desiredPassRef = "passphrase_\(session.id.uuidString)"
+                    }
+                    savedPassRef = try secretSaver(desiredPassRef, pass)
+                    didImportAny = true
+                }
+            } else if let vaultPassRef = vaultLinkedPassRef {
+                savedPassRef = vaultPassRef
+            } else if case .certificate(_, _, let existingPassRef) = existingAuthMethod {
+                savedPassRef = existingPassRef
+            } else {
+                savedPassRef = nil
+            }
+
+            session.authMethod = .certificate(
+                keychainRef: resolvedKeyRef,
+                certificatePath: resolvedCertPath,
+                passphraseRef: savedPassRef
+            )
+
+        case .agent, .none:
+            break
+        }
+
+        return didImportAny
+    }
+}
+
+/// Source format detected by `SessionBundleExporter.inspectSharePackData(_:)`.
+public enum SharePackSourceFormat: Sendable, Equatable {
+    case envelopeV2(SharePackProtectionMode)
+    case legacySharePackV1
+    case legacySessionArray
+}
+
+/// Metadata & optional unlocked payload returned after inspecting an `.aetherpack` / `.json` file.
+public struct SharePackInspection: Sendable, Equatable {
+    public let sourceFormat: SharePackSourceFormat
+    public let header: AetherShareEnvelopeHeader
+    public let requiresPassphrase: Bool
+    public let decryptedBundle: SharePackSecretBundle?
+
+    public init(
+        sourceFormat: SharePackSourceFormat,
+        header: AetherShareEnvelopeHeader,
+        requiresPassphrase: Bool,
+        decryptedBundle: SharePackSecretBundle?
+    ) {
+        self.sourceFormat = sourceFormat
+        self.header = header
+        self.requiresPassphrase = requiresPassphrase
+        self.decryptedBundle = decryptedBundle
+    }
+}
+
+/// Duplicate-host handling mode during interactive share import.
+public enum SharePackConflictStrategy: String, CaseIterable, Sendable, Equatable {
+    case skipExisting
+    case overwriteExisting
+    case keepBoth
+
+    public var title: String {
+        switch self {
+        case .skipExisting: return "跳过重复"
+        case .overwriteExisting: return "覆盖更新"
+        case .keepBoth: return "保留两份"
+        }
+    }
+}
+
+/// Destination group strategy when importing shared sessions.
+public enum SharePackTargetFolderMode: Sendable, Equatable {
+    case preserveOriginal
+    case assignToFolder(String)
+}
+
+/// User options passed into `SessionBundleExporter.importDecryptedBundle(...)`.
+public struct SharePackImportOptions: Sendable, Equatable {
+    public var selectedSessionIDs: Set<UUID>?
+    public var includeTunnels: Bool
+    public var includeSnippets: Bool
+    public var includeTriggers: Bool
+    public var includeBookmarks: Bool
+    public var conflictStrategy: SharePackConflictStrategy
+    public var targetFolderMode: SharePackTargetFolderMode
+    public var importCredentials: Bool
+
+    public init(
+        selectedSessionIDs: Set<UUID>? = nil,
+        includeTunnels: Bool = true,
+        includeSnippets: Bool = true,
+        includeTriggers: Bool = true,
+        includeBookmarks: Bool = true,
+        conflictStrategy: SharePackConflictStrategy = .skipExisting,
+        targetFolderMode: SharePackTargetFolderMode = .preserveOriginal,
+        importCredentials: Bool = true
+    ) {
+        self.selectedSessionIDs = selectedSessionIDs
+        self.includeTunnels = includeTunnels
+        self.includeSnippets = includeSnippets
+        self.includeTriggers = includeTriggers
+        self.includeBookmarks = includeBookmarks
+        self.conflictStrategy = conflictStrategy
+        self.targetFolderMode = targetFolderMode
+        self.importCredentials = importCredentials
+    }
+}
+
+/// Detailed summary produced by `SessionBundleExporter.importDecryptedBundle(...)`.
+public struct SharePackImportResult: Sendable, Equatable {
+    public let importedSessions: Int
+    public let updatedSessions: Int
+    public let skippedDuplicateSessions: Int
+    public let importedCredentials: Int
+    public let importedVaultKeys: Int
+    public let importedTunnels: Int
+    public let importedSnippets: Int
+    public let importedTriggers: Int
+    public let importedBookmarks: Int
+    public let importedFolderNames: [String]
+
+    public init(
+        importedSessions: Int,
+        updatedSessions: Int,
+        skippedDuplicateSessions: Int,
+        importedCredentials: Int,
+        importedVaultKeys: Int,
+        importedTunnels: Int,
+        importedSnippets: Int,
+        importedTriggers: Int,
+        importedBookmarks: Int,
+        importedFolderNames: [String]
+    ) {
+        self.importedSessions = importedSessions
+        self.updatedSessions = updatedSessions
+        self.skippedDuplicateSessions = skippedDuplicateSessions
+        self.importedCredentials = importedCredentials
+        self.importedVaultKeys = importedVaultKeys
+        self.importedTunnels = importedTunnels
+        self.importedSnippets = importedSnippets
+        self.importedTriggers = importedTriggers
+        self.importedBookmarks = importedBookmarks
+        self.importedFolderNames = importedFolderNames
+    }
+
+    public var summaryText: String {
+        var parts: [String] = []
+        if importedSessions > 0 { parts.append("新增 \(importedSessions) 台主机") }
+        if updatedSessions > 0 { parts.append("覆盖更新 \(updatedSessions) 台") }
+        if skippedDuplicateSessions > 0 { parts.append("跳过重复 \(skippedDuplicateSessions) 台") }
+        if importedCredentials > 0 { parts.append("写入凭据 \(importedCredentials) 项") }
+        if importedVaultKeys > 0 { parts.append("导入保险库密钥 \(importedVaultKeys) 把") }
+        if importedTunnels > 0 { parts.append("隧道 \(importedTunnels) 条") }
+        if importedSnippets > 0 { parts.append("快捷命令 \(importedSnippets) 条") }
+        if importedTriggers > 0 { parts.append("触发器 \(importedTriggers) 条") }
+        if importedBookmarks > 0 { parts.append("书签 \(importedBookmarks) 个") }
+        return parts.isEmpty ? "未导入任何新项目" : parts.joined(separator: " · ")
     }
 }

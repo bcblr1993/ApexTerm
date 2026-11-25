@@ -91,6 +91,25 @@ def main():
         'NSHumanReadableCopyright': '2026 YanNan Chen',
         'NSLocalNetworkUsageDescription': '连接你选择的局域网 SSH 服务器，并进行 SFTP 文件传输和系统监控。',
         'ApexDistributionChannel': 'appStore',
+        'CFBundleDocumentTypes': [
+            {
+                'CFBundleTypeName': 'AetherTerm Connection Pack',
+                'CFBundleTypeRole': 'Editor',
+                'LSHandlerRank': 'Owner',
+                'LSItemContentTypes': ['com.apexterm.aetherpack'],
+            }
+        ],
+        'UTExportedTypeDeclarations': [
+            {
+                'UTTypeConformsTo': ['public.json', 'public.data'],
+                'UTTypeDescription': 'AetherTerm Connection Share Pack',
+                'UTTypeIdentifier': 'com.apexterm.aetherpack',
+                'UTTypeTagSpecification': {
+                    'public.filename-extension': ['aetherpack'],
+                    'public.mime-type': ['application/vnd.aetherterm.pack+json'],
+                },
+            }
+        ],
     }
     (app / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
     shutil.copyfile(args.profile, app / 'Contents/embedded.provisionprofile')

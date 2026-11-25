@@ -96,6 +96,15 @@ private final class ApexTermAppDelegate: NSObject, NSApplicationDelegate {
         }
         return true
     }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        guard let targetURL = urls.first(where: { SessionBundleExporter.isSupportedShareFileURL($0) }) else {
+            return
+        }
+        IncomingShareCoordinator.shared.requestImport(url: targetURL)
+        reopenMainWindow?()
+        NSApp.activate(ignoringOtherApps: true)
+    }
 }
 
 @main
@@ -182,6 +191,13 @@ struct ApexTermApp: App {
             .onChange(of: updateManager.isUpdateSheetPresented) { _, isPresented in
                 if isPresented && isAboutPresented {
                     isAboutPresented = false
+                }
+            }
+            .onChange(of: sessionStore.sessions) { _, updatedSessions in
+                WorkspaceView.syncActiveTabs(activeTabs, with: updatedSessions)
+                if let selected = selectedSidebarSession,
+                   let refreshed = updatedSessions.first(where: { $0.id == selected.id }) {
+                    selectedSidebarSession = refreshed
                 }
             }
             .task {
@@ -415,27 +431,13 @@ struct ApexTermApp: App {
     }
     
     private func exportSessions() {
-        let savePanel = NSSavePanel()
-        savePanel.allowedContentTypes = [.json]
-        savePanel.nameFieldStringValue = "aetherterm-sessions-backup.json"
-        savePanel.prompt = "导出"
-        if savePanel.runModal() == .OK, let url = savePanel.url {
-            if let data = try? sessionStore.exportSessionsJSON() {
-                try? data.write(to: url)
-            }
-        }
+        showMainWindow()
+        IncomingShareCoordinator.shared.requestExport()
     }
     
     private func importSessions() {
-        let openPanel = NSOpenPanel()
-        openPanel.allowedContentTypes = [.json]
-        openPanel.allowsMultipleSelection = false
-        openPanel.prompt = "导入"
-        if openPanel.runModal() == .OK, let url = openPanel.url {
-            if let data = try? Data(contentsOf: url) {
-                _ = try? sessionStore.importSessionsJSON(from: data, overwrite: false)
-            }
-        }
+        showMainWindow()
+        IncomingShareCoordinator.shared.requestImport(url: nil)
     }
     
     private func closeCurrentConnection() {

@@ -108,6 +108,46 @@ cat << EOF > "${CONTENTS_DIR}/Info.plist"
     <true/>
     <key>NSRequiresAquaSystemAppearance</key>
     <false/>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>AetherTerm Connection Pack</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Owner</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>com.apexterm.aetherpack</string>
+            </array>
+        </dict>
+    </array>
+    <key>UTExportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.json</string>
+                <string>public.data</string>
+            </array>
+            <key>UTTypeDescription</key>
+            <string>AetherTerm Connection Share Pack</string>
+            <key>UTTypeIdentifier</key>
+            <string>com.apexterm.aetherpack</string>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>aetherpack</string>
+                </array>
+                <key>public.mime-type</key>
+                <array>
+                    <string>application/vnd.aetherterm.pack+json</string>
+                </array>
+            </dict>
+        </dict>
+    </array>
 </dict>
 </plist>
 EOF

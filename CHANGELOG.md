@@ -2,6 +2,28 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.27.1] - 2026-11-25
+
+### 🐞 问题修复 (Bug Fixes)
+- **修复未钉住模式下浮动性能监控面板布局与图表显示异常 (`WorkspaceView.swift`, `MetricCapsuleView.swift`)**：
+  - **消除浮层上下大面积空白与居中留白**：移除 `MetricsDetailOverlay` 非滚动路径下会强制拉伸高度的 `.frame(maxHeight: maxCardHeight)` 与旧 `contentHeight` 回写循环，仅在窗口高度确实小于内容高度时才启用 `ScrollView`；常规窗口下浮层卡片紧贴 `MetricDetailView` 实际内容高度渲染，无上下多余留白。
+  - **统一并精简面板头部元信息栏**：将原第一行中仅未钉住模式挤压在一起的 CPU 型号标签与运行时间统一迁移至第二行自适应元信息区（`metadataSubheaderSingleLine` / `metadataSubheaderCompact`），显示会话名称、完整 CPU 型号与运行时长，避免 `AMD EP…ocessor` 截断拥挤。
+  - **修复网络实时吞吐面积叠加与峰值溢出**：为下载/上传 `AreaMark` 显式设置 `stacking: .unstacked`，并将曲线插值从 `.catmullRom` 调整为无过冲的 `.monotone`，配合 `.chartPlotStyle { $0.clipped() }` 裁剪绘图区，彻底避免波峰突破上边界侵入速率药丸背景。
+  - **修复历史图表 X 轴边缘时间戳截断与 Swift Charts 锚点警告**：为 `CPU / 内存 / 交换 历史 (%)` 图表补齐显式 `.chartYAxis` 与 `.chartXAxis` 刻度规则，首尾时间标签使用命名 `UnitPoint` 锚点（`.topLeading` / `.top` / `.topTrailing`），Y 轴标签使用 `.leading` 锚点，消除右侧/左侧 `1...` 截断与运行时 `Custom UnitPoint` 警告。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- **全量自动化测试与 Tart VM 真机链路验证 (`./scripts/test_vm_acceptance.sh`)**：
+  - 新增 `SidebarCloneAndPinnedMonitorTests.testUnpinnedMetricsDetailOverlayWrapsContentWithoutDeadSpaceAndRendersChartsCleanly`（8/8 通过）及 `UIQualityOverhaulTests`（7/7 通过），全量执行 **690 项** XCTest（`ApexSSHTests` 587 项、`ApexCoreTests` 103 项；685 通过 / 5 环境条件跳过 / **0 失败**），含 **Tart VM (`macos27`) 真实 SSH/SFTP/监控集成测试 10/10 全部通过**，以及 `RG-08 ~ RG-15` 全线通过；Swift 6 `-warnings-as-errors` 零警告。
+- **8 大 Release 性能基准测试 (`swift test -c release --jobs 2 --filter FullPerformanceBenchmarkTests`, 8/8 通过)**：
+  - `[Benchmark 1]` RingBuffer 写入吞吐：`1,836,820 行/秒`（`185.68 MB/秒`）
+  - `[Benchmark 2]` ANSI / TrueColor 颜色解析：`333,416 spans/秒`（`2.999 μs/span`）
+  - `[Benchmark 3]` 内存水位与驻留集（RSS）：Release 初始 `35.91 MB`、峰值 `98.66 MB`（Debug 初始 `207.55 MB`、峰值 `229.16 MB`，均符合 `≤ 250 MB` 门禁）
+  - `[Benchmark 4]` 16 线程并发写入吞吐：`2,819,138 writes/秒`
+  - `[Benchmark 5]` 64 核 Linux 指标解析：`14,360 次/秒`（`69.64 μs`）
+  - `[Benchmark 6]` OpenSSH 500 主机批量解析：`151,132 hosts/秒`
+  - `[Benchmark 7]` SFTP 100 任务并发调度：`951 tasks/秒`
+  - `[Benchmark 8]` 终端按键直通延迟：`5.97 μs`（`167,482 keys/秒`）
+
 ## [v1.27.0] - 2026-11-25
 
 ### ✨ 新增特性 (Features)

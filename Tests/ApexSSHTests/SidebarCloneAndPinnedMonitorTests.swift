@@ -450,4 +450,185 @@ final class SidebarCloneAndPinnedMonitorTests: XCTestCase {
         dockedHost.layoutSubtreeIfNeeded()
         XCTAssertGreaterThan(dockedHost.subviews.count, 0, "Docked metrics workspace layout must render cleanly")
     }
+
+    // MARK: - 8. Unpinned Floating Overlay Sizing, Charts & Header Regression
+
+    func testUnpinnedMetricsDetailOverlayWrapsContentWithoutDeadSpaceAndRendersChartsCleanly() throws {
+        let baseDate = Date(timeIntervalSince1970: 1_795_606_960)
+        let history = ObservableMetricsHistory()
+        let rxSamples: [Double] = [18_000, 22_000, 25_000, 32_000, 910_000, 258_100]
+        let txSamples: [Double] = [8_000, 12_000, 14_000, 19_000, 860_000, 248_300]
+        let cpuSamples: [Double] = [1.5, 4.2, 6.8, 5.1, 7.4, 3.8]
+        for idx in 0..<6 {
+            history.append(
+                ServerMetricsSnapshot(
+                    timestamp: baseDate.addingTimeInterval(Double(idx * 2)),
+                    cpuUsagePercent: cpuSamples[idx],
+                    cpuCores: 2,
+                    cpuModel: "AMD EPYC 7K62 48-Core Processor",
+                    memoryTotalBytes: 2 * 1024 * 1024 * 1024,
+                    memoryUsedBytes: UInt64(0.9 * 1024 * 1024 * 1024),
+                    swapTotalBytes: UInt64(1.9 * 1024 * 1024 * 1024),
+                    swapUsedBytes: UInt64(0.8 * 1024 * 1024 * 1024),
+                    networkRxBytesPerSec: rxSamples[idx],
+                    networkTxBytesPerSec: txSamples[idx],
+                    diskTotalBytes: 53_000_000_000,
+                    diskUsedBytes: 13_000_000_000,
+                    diskType: "HDD",
+                    isSSD: false,
+                    loadAvg1m: 0.02,
+                    loadAvg5m: 0.07,
+                    loadAvg15m: 0.08,
+                    uptimeSeconds: 83 * 86400 + 4 * 3600,
+                    topProcesses: [
+                        ProcessMetricItem(pid: 3_716_888, user: "root", cpuPercent: 1.0, memPercent: 3.4, command: "YDService"),
+                        ProcessMetricItem(pid: 1_176_924, user: "root", cpuPercent: 1.0, memPercent: 0.8, command: "barad_agent"),
+                        ProcessMetricItem(pid: 2_589_252, user: "root", cpuPercent: 0.6, memPercent: 1.0, command: "xray-real")
+                    ]
+                )
+            )
+        }
+
+        // 1. Measure intrinsic MetricDetailView fitting height at unpinned width 416pt
+        let detail = MetricDetailView(
+            historyStore: history,
+            monitoringEnabled: true,
+            connectionActive: true,
+            connectionConnecting: false,
+            isPinned: false,
+            sessionLabel: "10.8.8.71",
+            onTogglePin: {},
+            onDismiss: {}
+        )
+        let detailMeasureHost = NSHostingView(rootView: detail.fixedSize(horizontal: false, vertical: true).frame(width: 416).apexTheme())
+        detailMeasureHost.frame = NSRect(x: 0, y: 0, width: 416, height: 900)
+        detailMeasureHost.layoutSubtreeIfNeeded()
+        let intrinsicHeight = detailMeasureHost.fittingSize.height
+        XCTAssertGreaterThan(intrinsicHeight, 320)
+        XCTAssertLessThan(intrinsicHeight, 620, "Unpinned MetricDetailView intrinsic height should stay compact instead of stretching")
+
+        // 2. Mount full MetricsDetailOverlay in a 1100x900 container (maxCardHeight = 848pt)
+        let suiteName = "MetricsOverlaySizeTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let presentation = MetricsDetailPresentation(defaults: defaults, storageKey: "workspace.metricsPanelPinned")
+        presentation.toggleFromToolbar()
+        XCTAssertTrue(presentation.showsFloatingOverlay)
+
+        let session = Session(name: "10.8.8.71", host: "10.8.8.71", username: "root")
+        let client = SSHClientFactory.makeClient(for: session)
+        let tab = TerminalTabItem(session: session, sshClient: client)
+        let pane = try XCTUnwrap(tab.panes.first)
+        pane.connectionState = .connected
+
+        let overlay = MetricsDetailOverlay(
+            presentation: presentation,
+            tab: tab,
+            pane: pane,
+            historyStore: history,
+            monitoringEnabled: true,
+            containerSize: CGSize(width: 1100, height: 900)
+        )
+        let overlayHost = NSHostingView(rootView: overlay.frame(width: 1100, height: 900).apexTheme())
+        overlayHost.frame = NSRect(x: 0, y: 0, width: 1100, height: 900)
+        overlayHost.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(overlayHost.subviews.count, 0)
+
+        // Verify the rendered overlay border/background view frame does not stretch to maxCardHeight (848pt)
+        func collectSubframes(in view: NSView) -> [NSRect] {
+            var rects: [NSRect] = []
+            for sub in view.subviews {
+                let converted = view.convert(sub.bounds, from: sub)
+                rects.append(converted)
+                rects.append(contentsOf: collectSubframes(in: sub))
+            }
+            return rects
+        }
+        let wideCardFrames = collectSubframes(in: overlayHost).filter {
+            $0.width >= 400 && $0.width <= 430 && $0.height > 100 && $0.height < 890
+        }
+        if let maxRenderedCardHeight = wideCardFrames.map(\.height).max() {
+            XCTAssertLessThan(
+                maxRenderedCardHeight,
+                640,
+                "Floating card should wrap its intrinsic content height instead of stretching toward maxCardHeight (848pt)"
+            )
+        }
+
+        // 3. Compact window height (1100x340 -> maxCardHeight = 288pt) falls back cleanly to ScrollView
+        let compactOverlay = MetricsDetailOverlay(
+            presentation: presentation,
+            tab: tab,
+            pane: pane,
+            historyStore: history,
+            monitoringEnabled: true,
+            containerSize: CGSize(width: 1100, height: 340)
+        )
+        let compactHost = NSHostingView(rootView: compactOverlay.frame(width: 1100, height: 340).apexTheme())
+        compactHost.frame = NSRect(x: 0, y: 0, width: 1100, height: 340)
+        compactHost.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(compactHost.subviews.count, 0)
+
+        // 4. Verify source invariants so regressions are caught at build/test time
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let workspaceSource = try String(
+            contentsOf: root.appendingPathComponent("Sources/ApexUI/Workspace/WorkspaceView.swift"),
+            encoding: .utf8
+        )
+        let metricSource = try String(
+            contentsOf: root.appendingPathComponent("Sources/ApexUI/Dashboard/MetricCapsuleView.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(workspaceSource.contains("let needsScroll = measuredContentHeight > maxCardHeight"))
+        XCTAssertTrue(metricSource.contains("stacking: .unstacked"))
+        XCTAssertTrue(metricSource.contains(".interpolationMethod(.monotone)"))
+        XCTAssertFalse(metricSource.contains(".interpolationMethod(.catmullRom)"))
+        XCTAssertTrue(metricSource.contains(".chartPlotStyle"))
+        XCTAssertTrue(metricSource.contains("AxisValueLabel(anchor: anchor)"))
+
+        // 5. Optional offscreen PNG dump when APEX_DUMP_METRICS_SNAPSHOT_DIR is set
+        if let dumpDir = ProcessInfo.processInfo.environment["APEX_DUMP_METRICS_SNAPSHOT_DIR"], !dumpDir.isEmpty {
+            let dirURL = URL(fileURLWithPath: dumpDir)
+            try FileManager.default.createDirectory(at: dirURL, withIntermediateDirectories: true)
+
+            let prevPreset = AppSettings.shared.themePreset
+            let prevFollow = AppSettings.shared.followsSystemAppearance
+            defer {
+                AppSettings.shared.themePreset = prevPreset
+                AppSettings.shared.followsSystemAppearance = prevFollow
+            }
+            AppSettings.shared.followsSystemAppearance = false
+
+            for (name, preset) in [("light", TerminalThemePreset.nativeLight), ("modern", TerminalThemePreset.modern)] {
+                AppSettings.shared.themePreset = preset
+                let snapOverlay = MetricsDetailOverlay(
+                    presentation: presentation,
+                    tab: tab,
+                    pane: pane,
+                    historyStore: history,
+                    monitoringEnabled: true,
+                    containerSize: CGSize(width: 460, height: 760)
+                )
+                let snapContainer = snapOverlay
+                    .frame(width: 460, height: 760, alignment: .topTrailing)
+                    .background(preset == .nativeLight ? Color(white: 0.94) : Color(red: 0.11, green: 0.12, blue: 0.15))
+                    .apexTheme()
+                let host = NSHostingView(rootView: snapContainer)
+                host.appearance = NSAppearance(named: preset == .nativeLight ? .aqua : .darkAqua)
+                host.frame = NSRect(x: 0, y: 0, width: 460, height: 760)
+                host.layoutSubtreeIfNeeded()
+                RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+                if let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
+                    host.cacheDisplay(in: host.bounds, to: rep)
+                    if let png = rep.representation(using: .png, properties: [:]) {
+                        try png.write(to: dirURL.appendingPathComponent("metrics_overlay_\(name).png"))
+                    }
+                }
+            }
+        }
+    }
 }

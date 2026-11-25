@@ -382,21 +382,7 @@ public struct MetricDetailView: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
 
-                if !isPinned, let cpuModel = latest?.cpuModel, !cpuModel.isEmpty {
-                    cpuModelBadge(cpuModel)
-                        .layoutPriority(-1)
-                }
-
                 Spacer(minLength: 4)
-
-                if !isPinned, let uptime = latest?.uptimeSeconds {
-                    Text(formatUptime(uptime))
-                        .font(.system(size: 11, design: .monospaced))
-                        .monospacedDigit()
-                        .foregroundColor(ApexStyle.secondary)
-                        .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
-                }
 
                 if let onTogglePin {
                     ApexIconButton(
@@ -425,10 +411,10 @@ public struct MetricDetailView: View {
                 }
             }
 
-            if isPinned, (sessionLabel?.isEmpty == false) || (latest?.cpuModel.isEmpty == false) || latest?.uptimeSeconds != nil {
+            if (sessionLabel?.isEmpty == false) || (latest?.cpuModel.isEmpty == false) || latest?.uptimeSeconds != nil {
                 ViewThatFits(in: .horizontal) {
-                    pinnedSubheaderSingleLine
-                    pinnedSubheaderCompact
+                    metadataSubheaderSingleLine
+                    metadataSubheaderCompact
                 }
             }
 
@@ -491,9 +477,10 @@ public struct MetricDetailView: View {
                                 AreaMark(
                                     x: .value("时间", snapshot.timestamp),
                                     y: .value("速率", snapshot.networkRxBytesPerSec),
-                                    series: .value("方向", "下载")
+                                    series: .value("方向", "下载"),
+                                    stacking: .unstacked
                                 )
-                                .interpolationMethod(.catmullRom)
+                                .interpolationMethod(.monotone)
                                 .foregroundStyle(
                                     LinearGradient(
                                         colors: [ApexStyle.success.opacity(0.24), ApexStyle.success.opacity(0.02)],
@@ -507,16 +494,17 @@ public struct MetricDetailView: View {
                                     y: .value("速率", snapshot.networkRxBytesPerSec),
                                     series: .value("方向", "下载")
                                 )
-                                .interpolationMethod(.catmullRom)
+                                .interpolationMethod(.monotone)
                                 .lineStyle(StrokeStyle(lineWidth: 1.75, lineCap: .round, lineJoin: .round))
                                 .foregroundStyle(ApexStyle.success)
 
                                 AreaMark(
                                     x: .value("时间", snapshot.timestamp),
                                     y: .value("速率", snapshot.networkTxBytesPerSec),
-                                    series: .value("方向", "上传")
+                                    series: .value("方向", "上传"),
+                                    stacking: .unstacked
                                 )
-                                .interpolationMethod(.catmullRom)
+                                .interpolationMethod(.monotone)
                                 .foregroundStyle(
                                     LinearGradient(
                                         colors: [ApexStyle.accent.opacity(0.20), ApexStyle.accent.opacity(0.02)],
@@ -530,7 +518,7 @@ public struct MetricDetailView: View {
                                     y: .value("速率", snapshot.networkTxBytesPerSec),
                                     series: .value("方向", "上传")
                                 )
-                                .interpolationMethod(.catmullRom)
+                                .interpolationMethod(.monotone)
                                 .lineStyle(StrokeStyle(lineWidth: 1.75, lineCap: .round, lineJoin: .round))
                                 .foregroundStyle(ApexStyle.accent)
                             }
@@ -552,11 +540,14 @@ public struct MetricDetailView: View {
                             }
                         }
                         .chartYScale(domain: 0...netPeak)
+                        .chartPlotStyle { plotArea in
+                            plotArea.clipped()
+                        }
                         .chartYAxis {
                             AxisMarks(position: .trailing, values: [0, netPeak * 0.5, netPeak]) { value in
                                 AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [2, 2]))
                                     .foregroundStyle(ApexStyle.border.opacity(0.45))
-                                AxisValueLabel {
+                                AxisValueLabel(anchor: .leading) {
                                     if let v = value.as(Double.self) {
                                         Text(formatCompactAxisRate(v))
                                             .font(.system(size: 9.5, design: .monospaced))
@@ -609,9 +600,10 @@ public struct MetricDetailView: View {
                         Chart(historyStore.snapshots) { snapshot in
                             AreaMark(
                                 x: .value("采样时间", snapshot.timestamp),
-                                y: .value("使用率", snapshot.cpuUsagePercent)
+                                y: .value("使用率", snapshot.cpuUsagePercent),
+                                stacking: .unstacked
                             )
-                            .interpolationMethod(.catmullRom)
+                            .interpolationMethod(.monotone)
                             .foregroundStyle(
                                 LinearGradient(
                                     colors: [ApexStyle.accent.opacity(0.18), ApexStyle.accent.opacity(0.01)],
@@ -624,7 +616,7 @@ public struct MetricDetailView: View {
                                 x: .value("采样时间", snapshot.timestamp),
                                 y: .value("使用率", snapshot.cpuUsagePercent)
                             )
-                            .interpolationMethod(.catmullRom)
+                            .interpolationMethod(.monotone)
                             .foregroundStyle(by: .value("指标", "CPU"))
                             .lineStyle(StrokeStyle(lineWidth: 1.75, lineCap: .round, lineJoin: .round))
 
@@ -632,7 +624,7 @@ public struct MetricDetailView: View {
                                 x: .value("采样时间", snapshot.timestamp),
                                 y: .value("使用率", snapshot.memoryUsagePercent)
                             )
-                            .interpolationMethod(.catmullRom)
+                            .interpolationMethod(.monotone)
                             .foregroundStyle(by: .value("指标", "内存"))
                             .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
 
@@ -641,12 +633,46 @@ public struct MetricDetailView: View {
                                     x: .value("采样时间", snapshot.timestamp),
                                     y: .value("使用率", snapshot.swapUsagePercent)
                                 )
-                                .interpolationMethod(.catmullRom)
+                                .interpolationMethod(.monotone)
                                 .foregroundStyle(by: .value("指标", "交换"))
                                 .lineStyle(StrokeStyle(lineWidth: 1.4, dash: [2, 2]))
                             }
                         }
                         .chartYScale(domain: 0...100)
+                        .chartPlotStyle { plotArea in
+                            plotArea.clipped()
+                        }
+                        .chartYAxis {
+                            AxisMarks(position: .trailing, values: [0, 25, 50, 75, 100]) { value in
+                                AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [2, 2]))
+                                    .foregroundStyle(ApexStyle.border.opacity(0.45))
+                                AxisValueLabel(anchor: .leading) {
+                                    if let v = value.as(Int.self) {
+                                        Text("\(v)")
+                                            .font(.system(size: 9.5, design: .monospaced))
+                                            .foregroundColor(ApexStyle.secondary)
+                                    }
+                                }
+                            }
+                        }
+                        .chartXAxis {
+                            AxisMarks(values: .automatic(desiredCount: 3)) { value in
+                                let anchor: UnitPoint = {
+                                    if value.index == 0 { return .topLeading }
+                                    if value.index == value.count - 1 { return .topTrailing }
+                                    return .top
+                                }()
+                                AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [2, 2]))
+                                    .foregroundStyle(ApexStyle.border.opacity(0.35))
+                                AxisValueLabel(anchor: anchor) {
+                                    if let date = value.as(Date.self) {
+                                        Text(date.formatted(date: .omitted, time: .standard))
+                                            .font(.system(size: 9.5, design: .monospaced))
+                                            .foregroundColor(ApexStyle.secondary)
+                                    }
+                                }
+                            }
+                        }
                         .chartForegroundStyleScale(["CPU": ApexStyle.accent, "内存": ApexStyle.success, "交换": ApexStyle.warning])
                         .chartLegend(.hidden)
                         .frame(height: 82)
@@ -698,7 +724,7 @@ public struct MetricDetailView: View {
     }
 
     @ViewBuilder
-    private var pinnedSubheaderSingleLine: some View {
+    private var metadataSubheaderSingleLine: some View {
         HStack(alignment: .center, spacing: 6) {
             if let sessionLabel, !sessionLabel.isEmpty {
                 sessionLabelPill(sessionLabel)
@@ -706,8 +732,7 @@ public struct MetricDetailView: View {
             }
             if let cpuModel = latest?.cpuModel, !cpuModel.isEmpty {
                 cpuModelBadge(cpuModel)
-                    .frame(minWidth: 64)
-                    .layoutPriority(-1)
+                    .fixedSize(horizontal: true, vertical: false)
             }
             Spacer(minLength: 4)
             if let uptime = latest?.uptimeSeconds {
@@ -722,7 +747,7 @@ public struct MetricDetailView: View {
     }
 
     @ViewBuilder
-    private var pinnedSubheaderCompact: some View {
+    private var metadataSubheaderCompact: some View {
         VStack(alignment: .leading, spacing: 3) {
             if (sessionLabel?.isEmpty == false) || latest?.uptimeSeconds != nil {
                 HStack(alignment: .center, spacing: 6) {

@@ -1467,14 +1467,14 @@ public final class MetricsDetailPresentation: ObservableObject {
 /// popover so its lifetime never depends on the toolbar item host. Clicking outside the card or
 /// pressing Escape closes it; the Escape interceptor exists only while the floating card is open so
 /// terminal programs such as vim keep receiving Escape otherwise.
-private struct MetricsDetailOverlay: View {
+struct MetricsDetailOverlay: View {
     @ObservedObject var presentation: MetricsDetailPresentation
     @ObservedObject var tab: TerminalTabItem
     @ObservedObject var pane: TerminalPaneItem
     let historyStore: ObservableMetricsHistory
     let monitoringEnabled: Bool
     let containerSize: CGSize
-    @State private var contentHeight: CGFloat = 0
+    @State private var measuredContentHeight: CGFloat = 0
 
     var body: some View {
         if presentation.showsFloatingOverlay {
@@ -1484,37 +1484,47 @@ private struct MetricsDetailOverlay: View {
             let maxCardHeight: CGFloat = containerSize.height > 0
                 ? max(180, containerSize.height - 52)
                 : 560
+            let needsScroll = measuredContentHeight > maxCardHeight + 1
+            let detailView = MetricDetailView(
+                historyStore: historyStore,
+                monitoringEnabled: monitoringEnabled,
+                connectionActive: pane.connectionState == .connected,
+                connectionConnecting: isConnecting,
+                isPinned: false,
+                sessionLabel: tab.displayTitle,
+                onTogglePin: {
+                    withAnimation(ApexStyle.springSnappy) {
+                        presentation.togglePin()
+                    }
+                },
+                onDismiss: {
+                    withAnimation(ApexStyle.springSnappy) {
+                        presentation.dismissFloating()
+                    }
+                }
+            )
 
             ZStack(alignment: .topTrailing) {
                 Color.clear
                     .contentShape(Rectangle())
                     .onTapGesture { presentation.dismissFloating() }
                     .accessibilityHidden(true)
-                ScrollView(.vertical, showsIndicators: contentHeight > maxCardHeight) {
-                    MetricDetailView(
-                        historyStore: historyStore,
-                        monitoringEnabled: monitoringEnabled,
-                        connectionActive: pane.connectionState == .connected,
-                        connectionConnecting: isConnecting,
-                        isPinned: false,
-                        sessionLabel: tab.displayTitle,
-                        onTogglePin: {
-                            withAnimation(ApexStyle.springSnappy) {
-                                presentation.togglePin()
-                            }
-                        },
-                        onDismiss: {
-                            withAnimation(ApexStyle.springSnappy) {
-                                presentation.dismissFloating()
-                            }
+                Group {
+                    if needsScroll {
+                        ScrollView(.vertical, showsIndicators: true) {
+                            detailView
+                                .fixedSize(horizontal: false, vertical: true)
+                                .frame(width: cardWidth, alignment: .topLeading)
+                                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { measuredContentHeight = $0 }
                         }
-                    )
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
-                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
+                        .frame(width: cardWidth, height: maxCardHeight, alignment: .top)
+                    } else {
+                        detailView
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(width: cardWidth, alignment: .topLeading)
+                            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { measuredContentHeight = $0 }
+                    }
                 }
-                .frame(width: cardWidth)
-                .frame(height: contentHeight > 0 ? min(contentHeight, maxCardHeight) : nil)
-                .frame(maxHeight: maxCardHeight)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                 .overlay(RoundedRectangle(cornerRadius: 12).stroke(ApexStyle.border.opacity(0.6), lineWidth: 0.75))

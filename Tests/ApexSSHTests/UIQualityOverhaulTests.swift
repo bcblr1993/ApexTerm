@@ -246,4 +246,61 @@ final class UIQualityOverhaulTests: XCTestCase {
             XCTAssertGreaterThan(host.subviews.count, 0)
         }
     }
+
+    // MARK: - 7. Active Tab & Monitor Session Metadata Live Sync
+
+    func testActiveTabAndMonitorSyncWhenSessionEditedInStore() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("ui-tab-sync-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let store = SessionStore(baseDirectory: tempDir)
+        let session = Session(
+            name: "198.51.100.10-1111",
+            host: "198.51.100.10",
+            port: 22,
+            username: "root",
+            authMethod: .agent,
+            colorHex: "#0A84FF"
+        )
+        store.addSession(session)
+
+        let tab = TerminalTabItem(session: session, sshClient: MockSSHSession(session: session))
+        tab.split(mode: .vertical)
+        defer { tab.tearDown() }
+
+        XCTAssertEqual(tab.displayTitle, "198.51.100.10-1111")
+        XCTAssertEqual(tab.panes[0].title, "198.51.100.10-1111")
+        XCTAssertEqual(tab.panes[1].title, "198.51.100.10-1111 (分屏)")
+
+        // External edit in SessionStore (e.g. Sidebar -> Edit Session while connecting/connected)
+        var edited = session
+        edited.name = "核心业务主库"
+        edited.colorHex = "#30D158"
+        store.updateSession(edited)
+
+        WorkspaceView.syncActiveTabs([tab], with: store.sessions)
+        XCTAssertEqual(tab.session.name, "核心业务主库")
+        XCTAssertEqual(tab.session.colorHex, "#30D158")
+        XCTAssertEqual(tab.displayTitle, "核心业务主库")
+        XCTAssertEqual(tab.panes[0].session.name, "核心业务主库")
+        XCTAssertEqual(tab.panes[0].title, "核心业务主库")
+        XCTAssertEqual(tab.panes[1].title, "核心业务主库 (分屏)")
+
+        // Explicit custom per-tab override stays intact across subsequent store edits
+        tab.customTitle = "临时观察窗"
+        var editedAgain = edited
+        editedAgain.name = "核心业务主库-V2"
+        store.updateSession(editedAgain)
+        WorkspaceView.syncActiveTabs([tab], with: store.sessions)
+        XCTAssertEqual(tab.session.name, "核心业务主库-V2")
+        XCTAssertEqual(tab.displayTitle, "临时观察窗")
+
+        // Local tab stays isolated from remote store entries
+        let local = Session.local()
+        let localTab = TerminalTabItem(session: local, sshClient: MockSSHSession(session: local))
+        defer { localTab.tearDown() }
+        WorkspaceView.syncActiveTabs([localTab], with: store.sessions)
+        XCTAssertEqual(localTab.displayTitle, local.name)
+    }
 }

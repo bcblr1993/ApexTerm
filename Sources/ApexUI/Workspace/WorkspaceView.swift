@@ -12,7 +12,7 @@ public enum PaneSplitMode: String, Sendable {
 @MainActor
 public final class TerminalPaneItem: Identifiable, ObservableObject {
     public let id = UUID()
-    public let session: Session
+    @Published public var session: Session
     public let sshClient: SSHSessionProtocol
     public let ringBuffer = TerminalRingBuffer(maxLines: AppSettings.shared.scrollbackMaxLines)
     @Published public var title: String
@@ -251,7 +251,7 @@ public final class TerminalPaneItem: Identifiable, ObservableObject {
 @MainActor
 public final class TerminalTabItem: Identifiable, ObservableObject {
     public let id = UUID()
-    public let session: Session
+    @Published public var session: Session
     public let sshClient: SSHSessionProtocol
     public let metricsHistory = ObservableMetricsHistory()
     @Published public var currentRemotePath: String {
@@ -564,6 +564,25 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
         }
         isPaneMaximized.toggle()
     }
+
+    /// Synchronizes live session metadata (title, badge color, connection display fields) from `SessionStore`
+    /// while preserving any explicit user-chosen per-tab title override.
+    public func applySessionUpdate(_ updated: Session) {
+        guard !updated.isLocal, updated.id == session.id, updated != session else { return }
+        let oldName = session.name
+        session = updated
+        if customTitle == oldName {
+            customTitle = nil
+        }
+        for pane in panes {
+            pane.session = updated
+            if pane.title == oldName {
+                pane.title = updated.name
+            } else if pane.title == "\(oldName) (分屏)" {
+                pane.title = "\(updated.name) (分屏)"
+            }
+        }
+    }
     
     public func focusNextPane() {
         guard panes.count > 1 else { return }
@@ -644,6 +663,21 @@ public struct WorkspaceView: View {
     
     private var currentTab: TerminalTabItem? {
         activeTabs.first(where: { $0.id == selectedTabId }) ?? activeTabs.first
+    }
+
+    private func resolvedSession(for tab: TerminalTabItem) -> Session {
+        guard !tab.session.isLocal else { return tab.session }
+        return store.sessions.first(where: { $0.id == tab.session.id }) ?? tab.session
+    }
+
+    /// Propagates saved `SessionStore` edits into open terminal tabs, split panes, and pinned monitor headers.
+    public static func syncActiveTabs(_ tabs: [TerminalTabItem], with sessions: [Session]) {
+        let sessionsByID = Dictionary(sessions.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
+        for tab in tabs where !tab.session.isLocal {
+            if let updated = sessionsByID[tab.session.id] {
+                tab.applySessionUpdate(updated)
+            }
+        }
     }
     
     public var body: some View {
@@ -898,8 +932,19 @@ public struct WorkspaceView: View {
             }
         }
         .onGeometryChange(for: CGSize.self) { $0.size } action: { workspaceContentSize = $0 }
-        .navigationTitle(currentTab?.displayTitle ?? L10n.appName)
-        .navigationSubtitle(currentTab.map { $0.session.isLocal ? "本机 Shell (\($0.session.username))" : "\($0.session.username)@\($0.session.host)" } ?? "SSH 与文件工作台")
+        .navigationTitle(currentTab.map { tab in
+            tab.customTitle ?? resolvedSession(for: tab).name
+        } ?? L10n.appName)
+        .navigationSubtitle(currentTab.map { tab in
+            let s = resolvedSession(for: tab)
+            return s.isLocal ? "本机 Shell (\(s.username))" : "\(s.username)@\(s.host)"
+        } ?? "SSH 与文件工作台")
+        .onAppear {
+            Self.syncActiveTabs(activeTabs, with: store.sessions)
+        }
+        .onChange(of: store.sessions) { _, updatedSessions in
+            Self.syncActiveTabs(activeTabs, with: updatedSessions)
+        }
         .toolbar { workspaceToolbar }
         .overlay(alignment: .topTrailing) {
             if let tab = currentTab {
@@ -928,7 +973,7 @@ public struct WorkspaceView: View {
             Button("确定") {
                 if let tab = tabToRename {
                     let trimmed = tabRenameText.trimmingCharacters(in: .whitespacesAndNewlines)
-                    tab.customTitle = trimmed.isEmpty ? nil : trimmed
+                    tab.customTitle = (trimmed.isEmpty || trimmed == tab.session.name) ? nil : trimmed
                 }
             }
             Button("恢复默认名称", role: .destructive) {

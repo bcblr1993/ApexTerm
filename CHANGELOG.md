@@ -2,6 +2,44 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.28.0] - 2026-11-25
+
+### ✨ 新增特性 (Features)
+- **普通回滚模式跨行光标回溯编辑 (`TerminalRingBuffer`)**：
+  - 在非备用屏幕模式下支持多行命令行（如换行粘贴后的长命令）跨行光标上/下回溯（`belowActiveRows` 追踪与已提交行重入编辑），保留完整 SGR 样式并精确同步 `consumeRewindCommittedIndex()`，彻底修复长命令粘贴换行后退格重复输出且无法跨行回删的缺陷。
+- **命令行工具与环境变量驱动的 Linux 端到端集成测试体系 (`PublicServerIntegrationTests`)**：
+  - 将公网 Linux 集成测试重构为完全由环境变量（`APEX_TEST_PUBLIC_SERVER_*`）驱动、零硬编码凭据与会话文本的回归矩阵，覆盖真实 Agentless 系统监控、OSC 7 目录联动、SFTP 上传下载与并发队列校验。
+
+### ⚡️ 体验优化 (Improvements)
+- **ApexTerminal 终端输入、查找与着色体验 (`TerminalViewBridge`, `SGRStyle`, `VTParser`, `ShellIntegrationTracker`)**：
+  - 修复带组合键修饰符时误触发终端快捷键（如 `⌘K`/`⌘F`/`⌘G` 与系统全屏）或错误重置提示符导航锚点的问题；收窄窄窗下内置搜索条自适应宽度与可点击链接命中区（`lineFragmentUsedRect`）；支持冒号分隔及缺省参数 SGR 序列解析、跨行 SGR 状态延续以及 `CSI E`/`F` 移动指令。
+- **ApexCore 存储、搜索与分享包加固 (`CommandPaletteItem`, `SSHArgumentBuilder`, `SSHKeyIdentity`, `SSHConfigParser`, `SessionBundleExporter`, `UpdateManager`, `iCloudSyncManager`)**：
+  - 增强命令面板多词模糊分词匹配与确定性排序；完善多跳跳板机传递性环路检测（`containsTransitiveCycle`）与非对称引号 `SSHConfigParser` 指令分词及否定模式过滤；加固 `UpdateManager` 语义化版本预发布解析与暂存目录失败清理、`SessionLogger` 文件名安全清洗/UTF-8 尾字节落盘/锚定提示符边界检测，以及 `SSHKeyIdentity` 多行公钥格式化与类型判定。
+- **ApexUI / ApexTerm 表单、弹窗与备份交互体验 (`SessionEditModal`, `SettingsView`, `GroupShareImportSheet`, `SidebarView`, `SFTPView`, `TransferDrawer`, `WorkspaceView`, `ApexTermApp`)**：
+  - 为设置备份页高危操作（「用本地配置覆盖云端」「用云端配置覆盖本地」）新增显式毁灭性二次确认弹窗与精确提示标题；为 `.aetherpack` 分享包导入弹窗补全 `Esc` 取消、默认回车动作、空主机列表兜底与无已有分组引导；统一无活跃标签页时主菜单终端操作按钮的禁用状态与 `NativeCodeEditor` 主题切换刷新键值。
+
+### 🐞 问题修复 (Bug Fixes)
+- **修复未闭合/超长 OSC 流阻塞解析与光标回溯状态残留 (`TerminalRingBuffer`)**：截断超长未闭合 OSC 序列直至行尾，防止畸形输出滞留或被当作普通文本打印；清屏与重置时同步复位 `_minRewoundCommittedCount` 与 `shellIntegration`。
+- **修复 `ControlMaster` 清理、SFTP 队列并发、OSC 7 路径与本地 PTY 并发写入缺陷 (`NativeSSHSession`, `LocalTerminalSession`, `TransferManager`, `DirectoryChangeStreamParser`, `AgentlessMonitor`)**：
+  - 修复 `ControlMaster` 退出清理与 App Store 桥接模式参数组装，外部凭据助手（`sshpass` / `SSH_ASKPASS`）激活时避免重复回退喂密，并为交互式二次确认补充状态提示；
+  - 为 `LocalTerminalSession` 同步写入补充 `dup(ptyMasterFd)` 文件描述符保护与状态锁，避免与关闭竞态；修复 `TransferManager` 并发槽位调度与终态取消幂等性、支持失败/取消任务重试并自动修剪超限已完成历史；
+  - 兼容未百分号编码空格/中文的 OSC 7 `file://` 目录回调；统一 Linux/macOS `df -kP` POSIX 列输出、`ps` 无 `--sort` 退化环境、Systemd 单元名注入校验、`uptime` 多段解析及 CPU 计数器回退保护。
+- **修复会话编辑密码意外清空、SFTP 书签空格匹配与进程检查器离线误填充 (`SessionEditModal`, `SFTPView`, `ProcessInspectorView`, `MetricCapsuleView`)**：
+  - 修复编辑已有会话时在 Keychain 秘密未加载或读取失败情况下保存导致原密码/口令被覆盖清空的隐患；修复 SFTP 路径前后空白导致书签误判、重复双击 `..` 父目录项及多条提示横幅定时器相互覆盖；修复 `ProcessInspectorView` 仅在无 `sshClient` 的预览模式填充示例进程及 Systemd 日志弹窗切换时序。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- **全量自动化测试与 Tart VM 真机链路验证 (`./scripts/test_vm_acceptance.sh`)**：
+  - 全量执行 **739 项** XCTest（`ApexSSHTests` 629 项、`ApexCoreTests` 110 项；733 通过 / 6 环境条件跳过 / **0 失败**），含 **Tart VM (`macos27`) 真实 SSH/SFTP/监控集成测试 10/10 全部通过**、`UIQualityOverhaulTests`（10/10 通过）以及 `RG-08 ~ RG-15` 全线通过；Swift 6 `-warnings-as-errors` 零警告。
+- **8 大 Release 性能基准测试 (`swift test -c release --jobs 2 --filter FullPerformanceBenchmarkTests`, 8/8 通过)**：
+  - `[Benchmark 1]` RingBuffer 写入吞吐：`1,865,810 行/秒`（`188.61 MB/秒`）
+  - `[Benchmark 2]` ANSI / TrueColor 颜色解析：`351,210 spans/秒`（`2.847 μs/span`）
+  - `[Benchmark 3]` 内存水位与驻留集（RSS）：Release 初始 `36.69 MB`、峰值 `99.69 MB`（符合 `≤ 250 MB` 门禁）
+  - `[Benchmark 4]` 16 线程并发写入吞吐：`2,517,306 writes/秒`
+  - `[Benchmark 5]` 64 核 Linux 指标解析：`15,412 次/秒`（`64.89 μs`）
+  - `[Benchmark 6]` OpenSSH 500 主机批量解析：`156,534 hosts/秒`
+  - `[Benchmark 7]` SFTP 100 任务并发调度：`943 tasks/秒`
+  - `[Benchmark 8]` 终端按键直通延迟：`5.47 μs`（`182,809 keys/秒`）
+
 ## [v1.27.1] - 2026-11-25
 
 ### 🐞 问题修复 (Bug Fixes)

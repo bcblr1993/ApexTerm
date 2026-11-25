@@ -621,6 +621,7 @@ public struct WorkspaceView: View {
     @State private var transferDrawer = TransferDrawerPresentation()
     @State private var workspaceContentSize: CGSize = .zero
     @State private var hudToastMessage: String?
+    @State private var hudToastIsWarning: Bool = false
     @State private var pendingSnippetForVariables: Snippet? = nil
     @State private var pendingSnippetVariables: [String: String] = [:]
     
@@ -772,13 +773,18 @@ public struct WorkspaceView: View {
                     .keyboardShortcut("b", modifiers: [.command, .shift])
                 Button("") { isTunnelModalPresented.toggle() }
                     .keyboardShortcut("t", modifiers: [.command, .option])
-                Button("") { isProcessInspectorPresented.toggle() }
+                Button("") {
+                    guard currentTab != nil else { return }
+                    isProcessInspectorPresented.toggle()
+                }
                     .keyboardShortcut("k", modifiers: [.command, .option])
+                    .disabled(currentTab == nil)
                 Button("") { copyLastCommandOutput() }
                     .keyboardShortcut("c", modifiers: [.command, .option])
             }
             .frame(width: 0, height: 0)
             .opacity(0)
+            .accessibilityHidden(true)
             
             // Workspace Split: Terminal on Top, SFTP on Bottom (electerm layout), optional right-docked Metrics panel
             if let tab = currentTab {
@@ -809,57 +815,62 @@ public struct WorkspaceView: View {
                     )
                 }
             } else {
-                VStack(spacing: 16) {
-                    Spacer()
-                    VStack(spacing: 16) {
-                        Image(systemName: "terminal.fill")
-                            .font(.system(size: 44))
-                            .foregroundColor(ApexStyle.accent)
-                            .frame(width: 84, height: 84)
-                            .background(ApexStyle.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 22))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 22)
-                                    .stroke(ApexStyle.accent.opacity(0.25), lineWidth: 1)
-                            )
-                            .shadow(color: ApexStyle.accent.opacity(0.18), radius: 12, x: 0, y: 4)
-                        
-                        VStack(spacing: 6) {
-                            Text("从会话开始")
-                                .font(.system(size: 18, weight: .semibold))
-                                .foregroundColor(ApexStyle.primary)
-                            Text("在左侧选择主机连接，或者直接新建本地终端")
-                                .font(.system(size: 13))
-                                .foregroundColor(ApexStyle.secondary)
+                GeometryReader { emptyGeo in
+                    ScrollView(.vertical, showsIndicators: false) {
+                        VStack(spacing: 16) {
+                            Spacer(minLength: ApexStyle.s4)
+                            VStack(spacing: 16) {
+                                Image(systemName: "terminal.fill")
+                                    .font(.system(size: 44))
+                                    .foregroundColor(ApexStyle.accent)
+                                    .frame(width: 84, height: 84)
+                                    .background(ApexStyle.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 22))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 22)
+                                            .stroke(ApexStyle.accent.opacity(0.25), lineWidth: 1)
+                                    )
+                                    .shadow(color: ApexStyle.accent.opacity(0.18), radius: 12, x: 0, y: 4)
+                                
+                                VStack(spacing: 6) {
+                                    Text("从会话开始")
+                                        .font(.system(size: 18, weight: .semibold))
+                                        .foregroundColor(ApexStyle.primary)
+                                        .multilineTextAlignment(.center)
+                                    Text("在左侧选择主机连接，或者直接新建本地终端")
+                                        .font(.system(size: 13))
+                                        .foregroundColor(ApexStyle.secondary)
+                                        .multilineTextAlignment(.center)
+                                }
+                                
+                                Button(action: { openLocalTerminal() }) {
+                                    Label(L10n.openLocalTerminal, systemImage: "laptopcomputer")
+                                }
+                                .apexProminentButton()
+                                .controlSize(.regular)
+                                .padding(.top, 4)
+                            }
+                            .padding(.horizontal, emptyGeo.size.width < 380 ? ApexStyle.s4 : 36)
+                            .padding(.vertical, 28)
+                            .apexGlassCard(cornerRadius: 20, material: .ultraThinMaterial, borderColor: ApexStyle.border.opacity(0.7), shadowRadius: 14)
+                            
+                            HStack(spacing: 16) {
+                                HStack(spacing: 5) {
+                                    Text("⌘P").apexKeycap()
+                                    Text("命令面板").font(.system(size: 11)).foregroundColor(ApexStyle.secondary).lineLimit(1)
+                                }
+                                HStack(spacing: 5) {
+                                    Text("⌘⌥T").apexKeycap()
+                                    Text("端口转发").font(.system(size: 11)).foregroundColor(ApexStyle.secondary).lineLimit(1)
+                                }
+                            }
+                            .padding(.top, 6)
+                            
+                            Spacer(minLength: ApexStyle.s4)
                         }
-                        
-                        Button(action: { openLocalTerminal() }) {
-                            Label(L10n.openLocalTerminal, systemImage: "laptopcomputer")
-                        }
-                        .apexProminentButton()
-                        .controlSize(.regular)
-                        .padding(.top, 4)
+                        .padding(.horizontal, ApexStyle.s4)
+                        .frame(maxWidth: .infinity)
+                        .frame(minHeight: emptyGeo.size.height)
                     }
-                    .padding(.horizontal, 36)
-                    .padding(.vertical, 28)
-                    .apexGlassCard(cornerRadius: 20, material: .ultraThinMaterial, borderColor: ApexStyle.border.opacity(0.7), shadowRadius: 14)
-                    
-                    HStack(spacing: 16) {
-                        HStack(spacing: 5) {
-                            Text("⌘P").apexKeycap()
-                            Text("命令面板").font(.system(size: 11)).foregroundColor(ApexStyle.secondary)
-                        }
-                        HStack(spacing: 5) {
-                            Text("⌘⌥K").apexKeycap()
-                            Text("进程监视").font(.system(size: 11)).foregroundColor(ApexStyle.secondary)
-                        }
-                        HStack(spacing: 5) {
-                            Text("⌘⌥T").apexKeycap()
-                            Text("端口转发").font(.system(size: 11)).foregroundColor(ApexStyle.secondary)
-                        }
-                    }
-                    .padding(.top, 6)
-                    
-                    Spacer()
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -878,11 +889,11 @@ public struct WorkspaceView: View {
                     Text(L10n.readyStatus)
                         .font(.system(size: 11))
                         .foregroundColor(ApexStyle.secondary)
+                        .lineLimit(1)
                     Spacer()
                 }
                 .padding(.horizontal, ApexStyle.s4)
-                .padding(.vertical, 8)
-                .frame(minHeight: 32)
+                .frame(height: 34)
                 .background(ApexStyle.surface)
             }
         }
@@ -892,7 +903,11 @@ public struct WorkspaceView: View {
         .toolbar { workspaceToolbar }
         .overlay(alignment: .topTrailing) {
             if let tab = currentTab {
-                WorkspaceMetricsDetailHost(presentation: metricsDetail, tab: tab)
+                WorkspaceMetricsDetailHost(
+                    presentation: metricsDetail,
+                    tab: tab,
+                    containerSize: workspaceContentSize
+                )
             }
         }
         .overlay(alignment: .bottomTrailing) {
@@ -906,6 +921,7 @@ public struct WorkspaceView: View {
         .onChange(of: selectedTabId) { _, _ in metricsDetail.handleTabChanged() }
         .onChange(of: activeTabs.count) { _, count in
             if count < 2 { isBroadcastActive = false }
+            if count == 0 { isProcessInspectorPresented = false }
         }
         .alert("重命名标签页", isPresented: $isShowingTabRenameAlert) {
             TextField("标签页名称", text: $tabRenameText)
@@ -932,6 +948,7 @@ public struct WorkspaceView: View {
             isQuickCommandBarVisible.toggle()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("TriggerProcessInspector"))) { _ in
+            guard currentTab != nil else { return }
             isProcessInspectorPresented = true
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("TriggerCopyLastCommandOutput"))) { _ in
@@ -994,17 +1011,15 @@ public struct WorkspaceView: View {
                             isCommandPalettePresented = false
                         }
                     
-                    VStack {
-                        CommandPaletteModalView(
-                            store: store,
-                            isPresented: $isCommandPalettePresented,
-                            onSelectAction: { action in
-                                handleCommandPaletteAction(action)
-                            }
-                        )
-                        .padding(.top, 40)
-                        Spacer()
-                    }
+                    CommandPaletteModalView(
+                        store: store,
+                        isPresented: $isCommandPalettePresented,
+                        onSelectAction: { action in
+                            handleCommandPaletteAction(action)
+                        }
+                    )
+                    .padding(.top, workspaceContentSize.height > 0 && workspaceContentSize.height < 420 ? 12 : 36)
+                    .padding(.bottom, 12)
                 }
                 .transition(.opacity.combined(with: .scale(scale: 0.98)))
             }
@@ -1013,19 +1028,28 @@ public struct WorkspaceView: View {
                 VStack {
                     Spacer()
                     HStack(spacing: 8) {
-                        Image(systemName: "checkmark.circle.fill")
+                        Image(systemName: hudToastIsWarning ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
                             .font(.system(size: 13, weight: .semibold))
-                            .foregroundColor(ApexStyle.success)
+                            .foregroundColor(hudToastIsWarning ? ApexStyle.warning : ApexStyle.success)
                         Text(toast)
                             .font(.system(size: 12, weight: .medium))
                             .foregroundColor(ApexStyle.primary)
+                            .lineLimit(2)
+                            .multilineTextAlignment(.center)
                     }
-                    .padding(.horizontal, 18)
+                    .padding(.horizontal, ApexStyle.s4)
                     .padding(.vertical, 9)
-                    .apexGlassCard(cornerRadius: 18, material: .regularMaterial, borderColor: Color.primary.opacity(0.12), shadowRadius: 10)
+                    .apexGlassCard(
+                        cornerRadius: 18,
+                        material: .regularMaterial,
+                        borderColor: (hudToastIsWarning ? ApexStyle.warning : ApexStyle.border).opacity(0.6),
+                        shadowRadius: 10
+                    )
+                    .padding(.horizontal, ApexStyle.s4)
                     .padding(.bottom, 36)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
+                .allowsHitTesting(false)
             }
         }
     }
@@ -1063,12 +1087,14 @@ public struct WorkspaceView: View {
                     Label("快捷命令", systemImage: isQuickCommandBarVisible ? "bolt.fill" : "bolt")
                 }
                 .toggleStyle(.button)
+                .controlSize(.small)
                 .help(isQuickCommandBarVisible ? "隐藏底部快捷命令栏 (⌘⇧B)" : "显示底部快捷命令栏 (⌘⇧B)")
 
                 Toggle(isOn: $isSFTPVisible) {
                     Label("文件面板", systemImage: isSFTPVisible ? "folder.fill" : "folder")
                 }
                 .toggleStyle(.button)
+                .controlSize(.small)
                 .help(isSFTPVisible ? "隐藏文件面板" : "显示文件面板")
             }
         }
@@ -1088,11 +1114,12 @@ public struct WorkspaceView: View {
             NSPasteboard.general.setString(output, forType: .string)
             showHUDToast("已复制上一条命令输出 (\(output.count) 字符)")
         } else {
-            showHUDToast("未检测到上一条命令输出")
+            showHUDToast("未检测到上一条命令输出", isWarning: true)
         }
     }
     
-    private func showHUDToast(_ message: String) {
+    private func showHUDToast(_ message: String, isWarning: Bool = false) {
+        hudToastIsWarning = isWarning || message.hasPrefix("未检测到")
         hudToastMessage = message
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
             if self.hudToastMessage == message {
@@ -1262,6 +1289,7 @@ private struct WorkspaceSplitToolbarMenu: View {
         } label: {
             Label("分屏", systemImage: "rectangle.split.2x1")
         }
+        .menuIndicator(.hidden)
         .disabled(tab.panes.count >= 2)
         .help("分屏 (⌘D / ⌘⇧D)")
     }
@@ -1286,6 +1314,7 @@ private struct WorkspaceMetricsToolbarHost: View {
 private struct WorkspaceMetricsDetailHost: View {
     let presentation: MetricsDetailPresentation
     @ObservedObject var tab: TerminalTabItem
+    let containerSize: CGSize
 
     var body: some View {
         if let primaryPane = tab.panes.first {
@@ -1294,7 +1323,8 @@ private struct WorkspaceMetricsDetailHost: View {
                 tab: tab,
                 pane: primaryPane,
                 historyStore: tab.metricsHistory,
-                monitoringEnabled: tab.session.agentlessMonitorEnabled
+                monitoringEnabled: tab.session.agentlessMonitorEnabled,
+                containerSize: containerSize
             )
         }
     }
@@ -1398,41 +1428,56 @@ private struct MetricsDetailOverlay: View {
     @ObservedObject var pane: TerminalPaneItem
     let historyStore: ObservableMetricsHistory
     let monitoringEnabled: Bool
+    let containerSize: CGSize
+    @State private var contentHeight: CGFloat = 0
 
     var body: some View {
         if presentation.showsFloatingOverlay {
+            let cardWidth: CGFloat = containerSize.width > 0
+                ? min(416, max(280, containerSize.width - 24))
+                : 416
+            let maxCardHeight: CGFloat = containerSize.height > 0
+                ? max(180, containerSize.height - 52)
+                : 560
+
             ZStack(alignment: .topTrailing) {
                 Color.clear
                     .contentShape(Rectangle())
                     .onTapGesture { presentation.dismissFloating() }
                     .accessibilityHidden(true)
-                MetricDetailView(
-                    historyStore: historyStore,
-                    monitoringEnabled: monitoringEnabled,
-                    connectionActive: pane.connectionState == .connected,
-                    connectionConnecting: isConnecting,
-                    isPinned: false,
-                    sessionLabel: tab.displayTitle,
-                    onTogglePin: {
-                        withAnimation(ApexStyle.springSnappy) {
-                            presentation.togglePin()
+                ScrollView(.vertical, showsIndicators: contentHeight > maxCardHeight) {
+                    MetricDetailView(
+                        historyStore: historyStore,
+                        monitoringEnabled: monitoringEnabled,
+                        connectionActive: pane.connectionState == .connected,
+                        connectionConnecting: isConnecting,
+                        isPinned: false,
+                        sessionLabel: tab.displayTitle,
+                        onTogglePin: {
+                            withAnimation(ApexStyle.springSnappy) {
+                                presentation.togglePin()
+                            }
+                        },
+                        onDismiss: {
+                            withAnimation(ApexStyle.springSnappy) {
+                                presentation.dismissFloating()
+                            }
                         }
-                    },
-                    onDismiss: {
-                        withAnimation(ApexStyle.springSnappy) {
-                            presentation.dismissFloating()
-                        }
-                    }
-                )
-                    .frame(width: 416)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(ApexStyle.border.opacity(0.6), lineWidth: 0.75))
-                    .shadow(color: .black.opacity(0.18), radius: 14, y: 6)
-                    .padding(.top, 6)
-                    .padding(.trailing, 12)
-                    .accessibilityElement(children: .contain)
-                    .accessibilityIdentifier("metrics.detail")
+                    )
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
+                }
+                .frame(width: cardWidth)
+                .frame(height: contentHeight > 0 ? min(contentHeight, maxCardHeight) : nil)
+                .frame(maxHeight: maxCardHeight)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(ApexStyle.border.opacity(0.6), lineWidth: 0.75))
+                .shadow(color: .black.opacity(0.18), radius: 14, y: 6)
+                .padding(.top, 6)
+                .padding(.trailing, 12)
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("metrics.detail")
                 // The terminal is usually first responder and consumes Escape in keyDown (it
                 // forwards ESC to the PTY), so a SwiftUI cancel shortcut never fires. Intercept
                 // Escape for this window only while the card is visible.
@@ -1663,47 +1708,42 @@ private struct WorkspaceActiveTabSplitView: View {
     @Binding var splitDragStartRatio: CGFloat?
     let transferPresentation: TransferDrawerPresentation
     @State private var paneDragStartRatio: CGFloat?
+
+    private static func clampedSplitRatio(_ preferred: CGFloat, availableHeight: CGFloat) -> CGFloat {
+        guard availableHeight > 8 else { return min(max(preferred, 0.2), 0.85) }
+        let usable = availableHeight - 8
+        let minTerminal = min(120, usable * 0.45)
+        let minSFTP = min(120, usable * 0.45)
+        let minRatio = minTerminal / availableHeight
+        let maxRatio = max(minRatio, (usable - minSFTP) / availableHeight)
+        return min(max(preferred, minRatio), maxRatio)
+    }
     
     var body: some View {
         GeometryReader { geometry in
+            let renderedSplitRatio = isSFTPVisible
+                ? Self.clampedSplitRatio(splitRatio, availableHeight: geometry.size.height)
+                : 1.0
+            let terminalHeight = isSFTPVisible
+                ? floor(geometry.size.height * renderedSplitRatio)
+                : geometry.size.height
+            let sftpHeight = max(0, geometry.size.height - terminalHeight - 8)
+
             VStack(spacing: 0) {
                 // Terminal Area with Split Panes
                 Group {
                     if tab.splitMode == .single || tab.panes.count < 2 || tab.isPaneMaximized {
                         if let pane = tab.activePane ?? tab.panes.first {
-                            ZStack(alignment: .topTrailing) {
-                                PaneContainerView(store: store, pane: pane, tab: tab, activeTabs: activeTabs, isBroadcastActive: isBroadcastActive)
-                                    .id(pane.id)
-                                
-                                if tab.isPaneMaximized && tab.panes.count > 1 {
-                                    Button {
-                                        tab.toggleMaximizeActivePane()
-                                    } label: {
-                                        HStack(spacing: 6) {
-                                            Image(systemName: "arrow.down.right.and.arrow.up.left")
-                                                .font(.system(size: 11, weight: .bold))
-                                                .foregroundColor(ApexStyle.accent)
-                                            Text("分屏已放大")
-                                                .font(.system(size: 11, weight: .medium))
-                                                .foregroundColor(ApexStyle.primary)
-                                            Text("⌘⇧Enter")
-                                                .apexKeycap()
-                                        }
-                                        .padding(.horizontal, 10)
-                                        .padding(.vertical, 5)
-                                    }
-                                    .buttonStyle(.plain)
-                                    .apexGlassCard(cornerRadius: 16, material: .regularMaterial, borderColor: ApexStyle.accent.opacity(0.4), shadowRadius: 6)
-                                    .padding(10)
-                                    .help("还原分屏布局 (⌘⇧Enter)")
-                                }
-                            }
+                            PaneContainerView(store: store, pane: pane, tab: tab, activeTabs: activeTabs, isBroadcastActive: isBroadcastActive)
+                                .id(pane.id)
                         }
                     } else if tab.splitMode == .vertical {
                         GeometryReader { paneGeo in
-                            let totalW = paneGeo.size.width
-                            let leftW = max(80, min(totalW - 88, (totalW - 8) * tab.paneSplitRatio))
-                            let rightW = max(80, totalW - 8 - leftW)
+                            let totalW = max(0, paneGeo.size.width)
+                            let usableW = max(0, totalW - 8)
+                            let minPaneW = min(80, usableW / 2)
+                            let leftW = min(max(minPaneW, usableW * tab.paneSplitRatio), max(minPaneW, usableW - minPaneW))
+                            let rightW = max(0, usableW - leftW)
                             
                             HStack(spacing: 0) {
                                 if let firstPane = tab.panes.first {
@@ -1713,7 +1753,7 @@ private struct WorkspaceActiveTabSplitView: View {
                                 }
                                 
                                 // Vertical draggable divider between panes
-                                ApexSplitDividerHandle(isVertical: true)
+                                ApexSplitDividerHandle(isVertical: true, background: .clear)
                                 .accessibilityElement(children: .ignore)
                                 .accessibilityLabel("左右终端分屏比例")
                                 .accessibilityValue("\(Int(tab.paneSplitRatio * 100))%")
@@ -1729,7 +1769,7 @@ private struct WorkspaceActiveTabSplitView: View {
                                         .onChanged { val in
                                             let start = paneDragStartRatio ?? tab.paneSplitRatio
                                             if paneDragStartRatio == nil { paneDragStartRatio = start }
-                                            let newRatio = start + val.translation.width / max(totalW - 8, 100)
+                                            let newRatio = start + val.translation.width / max(usableW, 100)
                                             tab.paneSplitRatio = min(max(newRatio, 0.15), 0.85)
                                         }
                                         .onEnded { _ in paneDragStartRatio = nil }
@@ -1745,9 +1785,11 @@ private struct WorkspaceActiveTabSplitView: View {
                         }
                     } else { // horizontal split
                         GeometryReader { paneGeo in
-                            let totalH = paneGeo.size.height
-                            let topH = max(60, min(totalH - 68, (totalH - 8) * tab.paneSplitRatio))
-                            let bottomH = max(60, totalH - 8 - topH)
+                            let totalH = max(0, paneGeo.size.height)
+                            let usableH = max(0, totalH - 8)
+                            let minPaneH = min(60, usableH / 2)
+                            let topH = min(max(minPaneH, usableH * tab.paneSplitRatio), max(minPaneH, usableH - minPaneH))
+                            let bottomH = max(0, usableH - topH)
                             
                             VStack(spacing: 0) {
                                 if let firstPane = tab.panes.first {
@@ -1757,7 +1799,7 @@ private struct WorkspaceActiveTabSplitView: View {
                                 }
                                 
                                 // Horizontal draggable divider between panes
-                                ApexSplitDividerHandle(isVertical: false)
+                                ApexSplitDividerHandle(isVertical: false, background: .clear)
                                 .accessibilityElement(children: .ignore)
                                 .accessibilityLabel("上下终端分屏比例")
                                 .accessibilityValue("\(Int(tab.paneSplitRatio * 100))%")
@@ -1773,7 +1815,7 @@ private struct WorkspaceActiveTabSplitView: View {
                                         .onChanged { val in
                                             let start = paneDragStartRatio ?? tab.paneSplitRatio
                                             if paneDragStartRatio == nil { paneDragStartRatio = start }
-                                            let newRatio = start + val.translation.height / max(totalH - 8, 80)
+                                            let newRatio = start + val.translation.height / max(usableH, 80)
                                             tab.paneSplitRatio = min(max(newRatio, 0.15), 0.85)
                                         }
                                         .onEnded { _ in paneDragStartRatio = nil }
@@ -1789,32 +1831,30 @@ private struct WorkspaceActiveTabSplitView: View {
                         }
                     }
                 }
-                .frame(height: isSFTPVisible ? geometry.size.height * splitRatio : geometry.size.height)
+                .frame(height: terminalHeight)
                 
                 if isSFTPVisible {
                     // Split Divider with draggable handle
                     ApexSplitDividerHandle(isVertical: false)
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel("终端与文件面板比例")
-                    .accessibilityValue("\(Int(splitRatio * 100))%")
+                    .accessibilityValue("\(Int(renderedSplitRatio * 100))%")
                     .accessibilityAdjustableAction { direction in
-                        let minimum = 120.0 / max(geometry.size.height, 240)
-                        let maximum = 1.0 - 100.0 / max(geometry.size.height, 240)
                         switch direction {
-                        case .increment: splitRatio = min(maximum, splitRatio + 0.05)
-                        case .decrement: splitRatio = max(minimum, splitRatio - 0.05)
+                        case .increment:
+                            splitRatio = Self.clampedSplitRatio(renderedSplitRatio + 0.05, availableHeight: geometry.size.height)
+                        case .decrement:
+                            splitRatio = Self.clampedSplitRatio(renderedSplitRatio - 0.05, availableHeight: geometry.size.height)
                         @unknown default: break
                         }
                     }
                     .gesture(
                         DragGesture()
                             .onChanged { value in
-                                let start = splitDragStartRatio ?? splitRatio
+                                let start = splitDragStartRatio ?? renderedSplitRatio
                                 if splitDragStartRatio == nil { splitDragStartRatio = start }
-                                let newRatio = start + value.translation.height / geometry.size.height
-                                let minRatio = 120.0 / max(geometry.size.height, 240)
-                                let maxRatio = 1.0 - (100.0 / max(geometry.size.height, 240))
-                                splitRatio = min(max(newRatio, minRatio), maxRatio)
+                                let newRatio = start + value.translation.height / max(geometry.size.height, 1)
+                                splitRatio = Self.clampedSplitRatio(newRatio, availableHeight: geometry.size.height)
                             }
                             .onEnded { _ in splitDragStartRatio = nil }
                     )
@@ -1830,7 +1870,7 @@ private struct WorkspaceActiveTabSplitView: View {
                         tabID: tab.id
                     )
                     .id(activeTargetPane?.id ?? tab.id)
-                    .frame(height: max(0, geometry.size.height * (1.0 - splitRatio) - 8))
+                    .frame(height: sftpHeight)
                 }
             }
         }
@@ -1846,9 +1886,37 @@ private struct PaneContainerView: View {
     let isBroadcastActive: Bool
     @State private var dropTransferNotice: String? = nil
     @State private var dropTransferIsError: Bool = false
+    @State private var isConnectionBannerDismissed: Bool = false
     
     var isFocused: Bool {
         tab.activePaneId == pane.id
+    }
+
+    private var hasMaximizedPill: Bool {
+        tab.isPaneMaximized && tab.panes.count > 1
+    }
+
+    @ViewBuilder
+    private func terminalTopBanner<Content: View>(
+        borderColor: Color,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack {
+            content()
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .apexGlassCard(
+                    cornerRadius: 12,
+                    material: .regularMaterial,
+                    borderColor: borderColor,
+                    shadowRadius: 8
+                )
+                .padding(.horizontal, ApexStyle.s4)
+                .padding(.top, hasMaximizedPill ? 48 : 12)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity)
+        .transition(.opacity)
     }
     
     var body: some View {
@@ -1862,6 +1930,9 @@ private struct PaneContainerView: View {
                     Text(pane.title)
                         .font(.system(size: 11, weight: isFocused ? .semibold : .regular, design: .monospaced))
                         .foregroundColor(isFocused ? ApexStyle.primary : ApexStyle.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(pane.title)
                     Spacer()
                     ApexIconButton(
                         icon: "xmark",
@@ -1881,7 +1952,7 @@ private struct PaneContainerView: View {
                 }
             }
             
-            ZStack {
+            ZStack(alignment: .topTrailing) {
                 TerminalRepresentable(
                     ringBuffer: pane.ringBuffer,
                     isFocused: isFocused,
@@ -1954,41 +2025,42 @@ private struct PaneContainerView: View {
                 
                 // Connecting / Reconnect floating prompt
                 if case .connecting(let step) = pane.connectionState, !tab.session.isLocal {
-                    VStack {
+                    terminalTopBanner(borderColor: ApexStyle.warning.opacity(0.4)) {
                         HStack(spacing: 8) {
                             ProgressView()
                                 .controlSize(.small)
                             Text(step.isEmpty || step == "正在连接" ? "正在连接 \(tab.session.username)@\(tab.session.host):\(tab.session.port)…" : step)
                                 .font(.system(size: 12, weight: .medium))
+                                .monospacedDigit()
                                 .foregroundColor(ApexStyle.primary)
                                 .lineLimit(1)
+                                .truncationMode(.middle)
                             Button("取消") {
                                 pane.cancelCurrentConnection()
                             }
                             .buttonStyle(.borderless)
                             .font(.system(size: 11))
                             .foregroundColor(ApexStyle.secondary)
+                            .fixedSize()
                         }
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
-                        .apexGlassCard(cornerRadius: 12, material: .regularMaterial, borderColor: ApexStyle.warning.opacity(0.4), shadowRadius: 8)
-                        .padding(.top, 12)
-                        Spacer()
                     }
-                    .transition(.opacity)
-                } else if case .disconnected = pane.connectionState {
-                    VStack {
+                } else if case .disconnected = pane.connectionState, !isConnectionBannerDismissed {
+                    terminalTopBanner(borderColor: (pane.isAutoReconnecting ? ApexStyle.warning : ApexStyle.secondary).opacity(0.35)) {
                         HStack(spacing: 8) {
                             Circle().fill(pane.isAutoReconnecting ? ApexStyle.warning : ApexStyle.secondary).frame(width: 8, height: 8)
                                 .shadow(color: (pane.isAutoReconnecting ? ApexStyle.warning : ApexStyle.secondary).opacity(0.5), radius: 3)
                             Text(pane.isAutoReconnecting ? "连接中断，正在自动重连 (\(pane.autoReconnectAttempt)/5)..." : "会话已断开")
                                 .font(.system(size: 12, weight: .medium))
+                                .monospacedDigit()
                                 .foregroundColor(ApexStyle.primary)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
                             Button(pane.isAutoReconnecting ? "立即重连" : "重新连接 (⌘R)") {
                                 tab.reconnect(pane: pane)
                             }
                             .apexProminentButton()
                             .controlSize(.small)
+                            .fixedSize()
                             if pane.isAutoReconnecting {
                                 Button("停止") {
                                     pane.cancelAutoReconnect()
@@ -1996,117 +2068,124 @@ private struct PaneContainerView: View {
                                 .buttonStyle(.borderless)
                                 .font(.system(size: 11))
                                 .foregroundColor(ApexStyle.secondary)
+                                .fixedSize()
+                            }
+                            ApexIconButton(icon: "xmark", label: "关闭提示", size: 20, iconSize: 9) {
+                                isConnectionBannerDismissed = true
                             }
                         }
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
-                        .apexGlassCard(cornerRadius: 12, material: .regularMaterial, borderColor: (pane.isAutoReconnecting ? ApexStyle.warning : ApexStyle.secondary).opacity(0.35), shadowRadius: 8)
-                        .padding(.top, 12)
-                        Spacer()
                     }
-                    .transition(.opacity)
-                } else if case .failed(let err) = pane.connectionState {
-                    VStack {
+                } else if case .failed(let err) = pane.connectionState, !isConnectionBannerDismissed {
+                    terminalTopBanner(borderColor: ApexStyle.error.opacity(0.4)) {
                         HStack(spacing: 8) {
                             Circle().fill(ApexStyle.error).frame(width: 8, height: 8)
                                 .shadow(color: ApexStyle.error.opacity(0.6), radius: 4)
                             Text("连接失败：\(err)")
                                 .font(.system(size: 12, weight: .medium))
+                                .monospacedDigit()
                                 .foregroundColor(ApexStyle.error)
                                 .lineLimit(1)
+                                .truncationMode(.tail)
+                                .help(err)
                             Button("重新连接 (⌘R)") {
                                 tab.reconnect(pane: pane)
                             }
                             .apexProminentButton()
                             .controlSize(.small)
+                            .fixedSize()
+                            ApexIconButton(icon: "xmark", label: "关闭提示", size: 20, iconSize: 9) {
+                                isConnectionBannerDismissed = true
+                            }
                         }
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
-                        .apexGlassCard(cornerRadius: 12, material: .regularMaterial, borderColor: ApexStyle.error.opacity(0.4), shadowRadius: 8)
-                        .padding(.top, 12)
-                        Spacer()
                     }
-                    .transition(.opacity)
                 } else if let missing = tab.terminfoWarning, pane.id == tab.panes.first?.id {
-                    VStack {
+                    let terminfoMessage = "远端缺少 \(missing.rawValue) 终端描述，长命令无法自动换行"
+                    terminalTopBanner(borderColor: ApexStyle.warning.opacity(0.4)) {
                         HStack(spacing: 8) {
                             Image(systemName: "exclamationmark.triangle.fill")
                                 .foregroundColor(ApexStyle.warning)
                                 .accessibilityHidden(true)
-                            Text("远端缺少 \(missing.rawValue) 终端描述，长命令无法自动换行")
+                            Text(terminfoMessage)
                                 .font(.system(size: 12, weight: .medium))
                                 .foregroundColor(ApexStyle.primary)
                                 .lineLimit(1)
+                                .truncationMode(.tail)
+                                .help(terminfoMessage)
                             Button("切换为 \(missing.fallback.rawValue) 并重连") {
                                 tab.applyTerminfoFallback(store: store)
                             }
                             .apexProminentButton()
                             .controlSize(.small)
+                            .fixedSize()
                             .accessibilityIdentifier("terminal.terminfoFallbackButton")
-                            Button {
+                            ApexIconButton(icon: "xmark", label: "关闭提示", size: 20, iconSize: 9) {
                                 tab.terminfoWarning = nil
-                            } label: {
-                                Image(systemName: "xmark")
                             }
-                            .buttonStyle(.borderless)
-                            .help("关闭提示")
-                            .accessibilityLabel("关闭提示")
                         }
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
-                        .apexGlassCard(cornerRadius: 12, material: .regularMaterial, borderColor: ApexStyle.warning.opacity(0.4), shadowRadius: 8)
-                        .padding(.top, 12)
-                        Spacer()
                     }
-                    .transition(.opacity)
                 } else if let osc52 = pane.pendingOSC52Request {
-                    VStack {
-                        let preview = osc52.text
-                            .replacingOccurrences(of: "\r", with: " ")
-                            .replacingOccurrences(of: "\n", with: " ")
-                        let truncated = preview.count > 80 ? String(preview.prefix(80)) + "…" : preview
-                        HStack(spacing: 8) {
-                            Image(systemName: "doc.on.clipboard")
-                                .foregroundColor(ApexStyle.accent)
-                                .accessibilityHidden(true)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("\(pane.session.name) 请求写入剪贴板 (\(osc52.byteCount) B)")
-                                    .font(.system(size: 12, weight: .medium))
-                                    .foregroundColor(ApexStyle.primary)
-                                    .lineLimit(1)
-                                Text(truncated)
-                                    .font(.system(size: 11, design: .monospaced))
-                                    .foregroundColor(ApexStyle.secondary)
-                                    .lineLimit(1)
-                            }
-                            Spacer(minLength: 8)
-                            Button("允许一次") {
-                                pane.allowPendingOSC52Once()
-                            }
-                            .apexProminentButton()
-                            .controlSize(.small)
-                            Button("本次会话允许") {
-                                pane.allowPendingOSC52ForSession()
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-                            Button("拒绝") {
-                                pane.denyPendingOSC52()
-                            }
-                            .buttonStyle(.borderless)
-                            .font(.system(size: 11))
-                            .foregroundColor(ApexStyle.secondary)
+                    let preview = osc52.text
+                        .replacingOccurrences(of: "\r", with: " ")
+                        .replacingOccurrences(of: "\n", with: " ")
+                    let truncated = preview.count > 80 ? String(preview.prefix(80)) + "…" : preview
+                    let osc52Header = HStack(spacing: 8) {
+                        Image(systemName: "doc.on.clipboard")
+                            .foregroundColor(ApexStyle.accent)
+                            .accessibilityHidden(true)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("\(pane.session.name) 请求写入剪贴板 (\(osc52.byteCount) B)")
+                                .font(.system(size: 12, weight: .medium))
+                                .monospacedDigit()
+                                .foregroundColor(ApexStyle.primary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Text(truncated)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundColor(ApexStyle.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                                .help(truncated)
                         }
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
-                        .apexGlassCard(cornerRadius: 12, material: .regularMaterial, borderColor: ApexStyle.accent.opacity(0.4), shadowRadius: 8)
-                        .padding(.horizontal, ApexStyle.s4)
-                        .padding(.top, 12)
-                        Spacer()
                     }
-                    .transition(.opacity)
+                    let osc52Buttons = HStack(spacing: 8) {
+                        Button("允许一次") {
+                            pane.allowPendingOSC52Once()
+                        }
+                        .apexProminentButton()
+                        .controlSize(.small)
+                        .fixedSize()
+                        Button("本次会话允许") {
+                            pane.allowPendingOSC52ForSession()
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .fixedSize()
+                        Button("拒绝") {
+                            pane.denyPendingOSC52()
+                        }
+                        .buttonStyle(.borderless)
+                        .font(.system(size: 11))
+                        .foregroundColor(ApexStyle.secondary)
+                        .fixedSize()
+                    }
+                    terminalTopBanner(borderColor: ApexStyle.accent.opacity(0.4)) {
+                        ViewThatFits(in: .horizontal) {
+                            HStack(spacing: 8) {
+                                osc52Header
+                                Spacer(minLength: 8)
+                                osc52Buttons
+                            }
+                            VStack(alignment: .leading, spacing: 8) {
+                                osc52Header
+                                HStack {
+                                    Spacer(minLength: 0)
+                                    osc52Buttons
+                                }
+                            }
+                        }
+                    }
                 } else if let notice = dropTransferNotice {
-                    VStack {
+                    terminalTopBanner(borderColor: (dropTransferIsError ? ApexStyle.error : ApexStyle.accent).opacity(0.4)) {
                         HStack(spacing: 8) {
                             Image(systemName: dropTransferIsError ? "exclamationmark.triangle.fill" : (notice.hasPrefix("正在上传") ? "arrow.up.circle.fill" : "checkmark.circle.fill"))
                                 .foregroundColor(dropTransferIsError ? ApexStyle.error : (notice.hasPrefix("正在上传") ? ApexStyle.accent : ApexStyle.success))
@@ -2114,28 +2193,46 @@ private struct PaneContainerView: View {
                                 .font(.system(size: 12, weight: .medium))
                                 .foregroundColor(dropTransferIsError ? ApexStyle.error : ApexStyle.primary)
                                 .lineLimit(1)
-                            Button {
+                                .truncationMode(.middle)
+                                .help(notice)
+                            ApexIconButton(icon: "xmark", label: "关闭提示", size: 20, iconSize: 9) {
                                 dropTransferNotice = nil
-                            } label: {
-                                Image(systemName: "xmark")
                             }
-                            .buttonStyle(.borderless)
-                            .help("关闭提示")
-                            .accessibilityLabel("关闭提示")
                         }
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
-                        .apexGlassCard(
-                            cornerRadius: 12,
-                            material: .regularMaterial,
-                            borderColor: (dropTransferIsError ? ApexStyle.error : ApexStyle.accent).opacity(0.4),
-                            shadowRadius: 8
-                        )
-                        .padding(.top, 12)
-                        Spacer()
                     }
-                    .transition(.opacity)
                 }
+
+                if hasMaximizedPill {
+                    Button {
+                        tab.toggleMaximizeActivePane()
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "arrow.down.right.and.arrow.up.left")
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundColor(ApexStyle.accent)
+                            Text("分屏已放大")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(ApexStyle.primary)
+                                .lineLimit(1)
+                            Text("⌘⇧Enter")
+                                .apexKeycap()
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                    }
+                    .buttonStyle(.plain)
+                    .apexGlassCard(cornerRadius: 16, material: .regularMaterial, borderColor: ApexStyle.accent.opacity(0.4), shadowRadius: 6)
+                    .padding(10)
+                    .help("还原分屏布局 (⌘⇧Enter)")
+                }
+            }
+        }
+        .onChange(of: pane.connectionState) { _, _ in
+            isConnectionBannerDismissed = false
+        }
+        .onChange(of: pane.isAutoReconnecting) { _, isReconnecting in
+            if isReconnecting {
+                isConnectionBannerDismissed = false
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: 6))
@@ -2200,6 +2297,7 @@ private struct StatusBarTransferIndicator: View {
     @ObservedObject private var transferManager = TransferManager.shared
     @ObservedObject var presentation: TransferDrawerPresentation
     let showsInlineProgress: Bool
+    var isCompact: Bool = false
 
     var body: some View {
         if !transferManager.tasks.isEmpty {
@@ -2234,6 +2332,9 @@ private struct StatusBarTransferIndicator: View {
                             if summary.otherActiveCount > 0 {
                                 Text("+\(summary.otherActiveCount)")
                                     .font(.system(size: 9.5, weight: .semibold))
+                                    .monospacedDigit()
+                                    .lineLimit(1)
+                                    .fixedSize()
                                     .padding(.horizontal, 4)
                                     .padding(.vertical, 1)
                                     .background(ApexStyle.accent.opacity(0.14), in: Capsule())
@@ -2250,12 +2351,16 @@ private struct StatusBarTransferIndicator: View {
                             Text(summary.percentText)
                                 .font(.caption.monospaced())
                                 .monospacedDigit()
+                                .lineLimit(1)
+                                .fixedSize()
                                 .foregroundColor(directionTint)
 
                             if !summary.speedText.isEmpty {
                                 Text(summary.speedText)
                                     .font(.caption.monospaced())
                                     .monospacedDigit()
+                                    .lineLimit(1)
+                                    .fixedSize()
                                     .foregroundColor(ApexStyle.secondary)
                             }
                         }
@@ -2279,7 +2384,7 @@ private struct StatusBarTransferIndicator: View {
                         presentation.toggle()
                     }
                 } label: {
-                    HStack(spacing: 6) {
+                    HStack(spacing: 5) {
                         Image(systemName: transferManager.activeCount > 0 ? "arrow.triangle.2.circlepath" : "arrow.up.arrow.down")
                             .font(.system(size: 10))
                             .foregroundColor((transferManager.activeCount > 0 || presentation.isPresented) ? ApexStyle.accent : ApexStyle.secondary)
@@ -2287,13 +2392,25 @@ private struct StatusBarTransferIndicator: View {
                             from: transferManager.tasks,
                             formattedTotalSpeed: transferManager.formattedTotalSpeed
                         ) {
-                            let speedSuffix = summary.speedText.isEmpty ? "" : " · \(summary.speedText)"
-                            Text("传输中 \(summary.activeCount) 项 · \(summary.percentText)\(speedSuffix)")
+                            let compactText: String = {
+                                if isCompact {
+                                    return summary.percentText
+                                }
+                                let speedSuffix = summary.speedText.isEmpty ? "" : " · \(summary.speedText)"
+                                return "传输中 \(summary.activeCount) 项 · \(summary.percentText)\(speedSuffix)"
+                            }()
+                            Text(compactText)
                                 .font(.caption.monospaced())
+                                .monospacedDigit()
+                                .lineLimit(1)
+                                .fixedSize(horizontal: true, vertical: false)
                                 .foregroundColor(ApexStyle.accent)
                         } else {
-                            Text("传输记录 \(transferManager.tasks.count) 项")
+                            Text(isCompact ? "\(transferManager.tasks.count) 项" : "传输记录 \(transferManager.tasks.count) 项")
                                 .font(.caption.monospaced())
+                                .monospacedDigit()
+                                .lineLimit(1)
+                                .fixedSize(horizontal: true, vertical: false)
                                 .foregroundColor(presentation.isPresented ? ApexStyle.accent : ApexStyle.secondary)
                         }
                     }
@@ -2306,20 +2423,83 @@ private struct StatusBarTransferIndicator: View {
     }
 }
 
+private struct StatusBarLinkageChip: View {
+    @Binding var isLinked: Bool
+    let compact: Bool
+    @State private var isHovered = false
+
+    var body: some View {
+        Button {
+            isLinked.toggle()
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: isLinked ? "link" : "link.slash")
+                    .font(.system(size: 10.5, weight: .medium))
+                if !compact {
+                    Text(isLinked ? L10n.linkageOn : L10n.linkageOff)
+                        .font(.system(size: 11, weight: isLinked ? .semibold : .medium))
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+            }
+            .foregroundStyle(isLinked ? ApexStyle.accent : ApexStyle.primary)
+            .padding(.horizontal, compact ? 6 : 8)
+            .frame(height: 22)
+            .background(
+                RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
+                    .fill(
+                        isLinked
+                            ? ApexStyle.accent.opacity(isHovered ? 0.20 : 0.14)
+                            : (isHovered ? ApexStyle.primary.opacity(0.06) : ApexStyle.subtleSurface)
+                    )
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
+                    .stroke(
+                        isLinked
+                            ? ApexStyle.accent.opacity(isHovered ? 0.55 : 0.40)
+                            : ApexStyle.border.opacity(isHovered ? 0.95 : 0.70),
+                        lineWidth: 0.75
+                    )
+            )
+            .contentShape(RoundedRectangle(cornerRadius: ApexStyle.controlRadius))
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            withAnimation(ApexStyle.hoverTransition) {
+                isHovered = hovering
+            }
+        }
+        .accessibilityLabel(isLinked ? L10n.linkageOn : L10n.linkageOff)
+        .accessibilityAddTraits(isLinked ? .isSelected : [])
+        .help(isLinked ? L10n.linkageHelpOn : L10n.linkageHelpOff)
+    }
+}
+
 private struct WorkspaceBottomStatusBar: View {
     @ObservedObject private var themeSettings = AppSettings.shared
     @ObservedObject var tab: TerminalTabItem
     let showsDirectoryControls: Bool
     let transferPresentation: TransferDrawerPresentation
+    @State private var barWidth: CGFloat = 800
     
     var body: some View {
-        HStack(spacing: 14) {
+        let isCompactLinkage = barWidth < 680
+        let showsInlineTransfer = barWidth >= 740
+        let isCompactTransfer = barWidth < 460
+        let showsDirectoryPath = barWidth >= 480
+        let rowSpacing: CGFloat = barWidth < 460 ? 6 : (barWidth < 620 ? 8 : 12)
+
+        HStack(spacing: rowSpacing) {
             if let pane = tab.activePane ?? tab.panes.first {
                 ConnectionStatusView(tab: tab, pane: pane)
+                    .frame(minWidth: 64, alignment: .leading)
             }
             
             Text("UTF-8")
                 .apexKeycap()
+                .lineLimit(1)
+                .fixedSize()
             
             if let pane = tab.activePane ?? tab.panes.first,
                let lastRecord = pane.ringBuffer.shellIntegration.lastCompletedRecord {
@@ -2351,10 +2531,14 @@ private struct WorkspaceBottomStatusBar: View {
                             .foregroundColor(lastRecord.isFailed ? ApexStyle.error : ApexStyle.success)
                         Text(lastRecord.isFailed ? "Exit \(lastRecord.exitCode ?? 1) · \(lastRecord.formattedDuration)" : lastRecord.formattedDuration)
                             .font(.caption.monospaced())
+                            .monospacedDigit()
+                            .lineLimit(1)
                             .foregroundColor(lastRecord.isFailed ? ApexStyle.error : ApexStyle.secondary)
                     }
                 }
-                .menuStyle(.borderlessButton)
+                .menuStyle(.button)
+                .buttonStyle(.plain)
+                .menuIndicator(.hidden)
                 .fixedSize()
                 .help("OSC 133 Shell 集成：最近命令执行状态与耗时记录")
 
@@ -2372,8 +2556,10 @@ private struct WorkspaceBottomStatusBar: View {
                             )
                         }
                     } label: {
-                        Text("exit \(lastRecord.exitCode ?? 1)")
-                            .font(.caption.monospaced())
+                        Text("复制输出")
+                            .font(.caption)
+                            .lineLimit(1)
+                            .fixedSize()
                             .foregroundColor(ApexStyle.error)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
@@ -2388,26 +2574,23 @@ private struct WorkspaceBottomStatusBar: View {
             
             if showsDirectoryControls {
                 Divider().frame(height: 12)
-                
-                Toggle(isOn: $tab.isDirectoryLinkageEnabled) {
-                    Label(tab.isDirectoryLinkageEnabled ? L10n.linkageOn : L10n.linkageOff,
-                          systemImage: tab.isDirectoryLinkageEnabled ? "link" : "link.slash")
-                }
-                .toggleStyle(.button)
-                .controlSize(.small)
-                .help(tab.isDirectoryLinkageEnabled ? L10n.linkageHelpOn : L10n.linkageHelpOff)
+                StatusBarLinkageChip(
+                    isLinked: $tab.isDirectoryLinkageEnabled,
+                    compact: isCompactLinkage
+                )
             }
 
             if showsDirectoryControls {
                 StatusBarTransferIndicator(
                     presentation: transferPresentation,
-                    showsInlineProgress: true
+                    showsInlineProgress: showsInlineTransfer,
+                    isCompact: isCompactTransfer
                 )
             }
             
-            Spacer()
+            Spacer(minLength: 4)
             
-            if showsDirectoryControls {
+            if showsDirectoryControls && showsDirectoryPath {
                 let activeState = (tab.activePane ?? tab.panes.first)?.connectionState ?? tab.connectionState
                 let pathText: String = {
                     switch activeState {
@@ -2424,12 +2607,13 @@ private struct WorkspaceBottomStatusBar: View {
                     .foregroundColor(ApexStyle.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                    .layoutPriority(-1)
             }
         }
         .padding(.horizontal, ApexStyle.s4)
-        .padding(.vertical, 8)
-        .frame(minHeight: 32)
+        .frame(height: 34)
         .background(ApexStyle.surface)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { barWidth = $0 }
     }
 }
 
@@ -2453,7 +2637,9 @@ private struct ConnectionStatusView: View {
             }
             Text("\(statusText) · \(tab.session.username)@\(tab.session.host):\(tab.session.port)")
                 .font(.caption.monospaced())
+                .monospacedDigit()
                 .lineLimit(1)
+                .truncationMode(.middle)
                 .help(helpText)
         }
     }
@@ -2506,7 +2692,7 @@ struct TabButton: View {
     private var dotColor: Color {
         switch tab.connectionState {
         case .connected:
-            return Color(hex: tab.session.colorHex ?? "#0A84FF") ?? .blue
+            return Color(hex: tab.session.colorHex ?? "#0A84FF") ?? ApexStyle.accent
         case .connecting:
             return ApexStyle.warning
         case .disconnected:
@@ -2534,6 +2720,7 @@ struct TabButton: View {
                 .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
                 .foregroundColor(isSelected ? ApexStyle.primary : (isHovered ? ApexStyle.primary.opacity(0.85) : ApexStyle.secondary))
                 .lineLimit(1)
+                .truncationMode(.tail)
             
             Button(action: onClose) {
                 ZStack {
@@ -2554,9 +2741,12 @@ struct TabButton: View {
                 isCloseHovered = closeHovering
             }
             .help("关闭标签页 (⌘W)")
+            .accessibilityLabel("关闭标签页")
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 6)
+        .frame(height: 26)
+        .frame(maxWidth: 200)
+        .help(tab.displayTitle)
         .background(
             RoundedRectangle(cornerRadius: 7)
                 .fill(

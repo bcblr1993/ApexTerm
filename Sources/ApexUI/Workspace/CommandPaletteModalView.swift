@@ -28,6 +28,7 @@ public struct CommandPaletteModalView: View {
         for action in CommandPaletteAppAction.allCases {
             items.append(
                 CommandPaletteItem(
+                    id: CommandPaletteItem.stableID(for: "action.\(action.rawValue)"),
                     title: action.title,
                     subtitle: "功能操作",
                     category: .action,
@@ -43,6 +44,7 @@ public struct CommandPaletteModalView: View {
             let sub = s.isLocal ? "本机 Shell (\(s.username))" : "\(s.username)@\(s.host):\(s.port)"
             items.append(
                 CommandPaletteItem(
+                    id: CommandPaletteItem.stableID(for: "session.\(s.id.uuidString)"),
                     title: s.name,
                     subtitle: sub,
                     category: .session,
@@ -57,6 +59,7 @@ public struct CommandPaletteModalView: View {
         for b in SFTPBookmarkManager.shared.allBookmarks {
             items.append(
                 CommandPaletteItem(
+                    id: CommandPaletteItem.stableID(for: "bookmark.\(b.id.uuidString)"),
                     title: b.name,
                     subtitle: b.path,
                     category: .bookmark,
@@ -71,6 +74,7 @@ public struct CommandPaletteModalView: View {
         for snip in store.snippets {
             items.append(
                 CommandPaletteItem(
+                    id: CommandPaletteItem.stableID(for: "snippet.\(snip.id.uuidString)"),
                     title: snip.title,
                     subtitle: snip.command,
                     category: .snippet,
@@ -89,118 +93,110 @@ public struct CommandPaletteModalView: View {
     }
     
     public var body: some View {
-        VStack(spacing: 0) {
-            // Search Input Header
-            HStack(spacing: ApexStyle.s3) {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 16, weight: .medium))
-                    .foregroundColor(ApexStyle.accent)
-                
-                TextField("搜索会话、SFTP路径、快捷命令或功能... (可输入 > @ / # 快速过滤)", text: $searchQuery)
-                    .font(.system(size: 14))
-                    .textFieldStyle(.plain)
-                    .focused($isInputFocused)
-                    .onChange(of: searchQuery) { _, _ in
-                        selectedIndex = 0
-                    }
-                    .onSubmit {
-                        executeCurrentSelection()
-                    }
-                
-                if !searchQuery.isEmpty {
-                    ApexIconButton(
-                        icon: "xmark.circle.fill",
-                        label: "清空搜索",
-                        size: 20,
-                        iconSize: 11
-                    ) {
-                        searchQuery = ""
-                    }
-                }
-                
-                Text("⎋ ESC")
-                    .apexKeycap()
-            }
-            .padding(.horizontal, ApexStyle.s4)
-            .padding(.vertical, 12)
-            .background(ApexStyle.surface.opacity(0.85))
-            
-            Divider()
-            
-            // Search Results List
-            if filteredItems.isEmpty {
-                VStack(spacing: ApexStyle.s2) {
-                    Spacer()
-                    Image(systemName: "text.magnifyingglass")
-                        .font(.system(size: 32))
-                        .foregroundColor(ApexStyle.secondary.opacity(0.6))
-                    Text("未找到匹配项")
-                        .font(.subheadline)
-                        .foregroundColor(ApexStyle.secondary)
-                    Spacer()
-                }
-                .frame(height: 220)
-            } else {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(spacing: 2) {
-                            ForEach(Array(filteredItems.enumerated()), id: \.element.id) { index, item in
-                                ItemRowView(
-                                    item: item,
-                                    isSelected: index == selectedIndex,
-                                    onSelect: {
-                                        selectedIndex = index
-                                        executeCurrentSelection()
-                                    }
-                                )
-                                .id(item.id)
-                            }
+        GeometryReader { geo in
+            let availableWidth = geo.size.width > 0 ? geo.size.width : 620
+            let availableHeight = geo.size.height > 0 ? geo.size.height : 500
+            let horizontalInset: CGFloat = availableWidth < 460 ? ApexStyle.s3 : ApexStyle.s4
+            let modalWidth = min(620, max(260, availableWidth - horizontalInset * 2))
+            let isCompactFooter = modalWidth < 500
+            let headerReserve: CGFloat = 50
+            let footerReserve: CGFloat = isCompactFooter ? 60 : 38
+            let maxListHeight = max(100, min(340, availableHeight - headerReserve - footerReserve))
+
+            VStack(spacing: 0) {
+                // Search Input Header
+                HStack(spacing: ApexStyle.s3) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundColor(ApexStyle.accent)
+                    
+                    TextField("搜索会话、SFTP路径、快捷命令或功能... (可输入 > @ / # 快速过滤)", text: $searchQuery)
+                        .font(.system(size: 14))
+                        .textFieldStyle(.plain)
+                        .focused($isInputFocused)
+                        .onChange(of: searchQuery) { _, _ in
+                            selectedIndex = 0
                         }
-                        .padding(.vertical, 6)
-                        .padding(.horizontal, 6)
-                    }
-                    .frame(maxHeight: 340)
-                    .onChange(of: selectedIndex) { _, newIndex in
-                        if filteredItems.indices.contains(newIndex) {
-                            withAnimation(.easeInOut(duration: 0.1)) {
-                                proxy.scrollTo(filteredItems[newIndex].id, anchor: .center)
-                            }
+                        .onSubmit {
+                            executeCurrentSelection()
+                        }
+                    
+                    if !searchQuery.isEmpty {
+                        ApexIconButton(
+                            icon: "xmark.circle.fill",
+                            label: "清空搜索",
+                            size: 20,
+                            iconSize: 11
+                        ) {
+                            searchQuery = ""
                         }
                     }
+                    
+                    Text("⎋ ESC")
+                        .apexKeycap()
                 }
-            }
-            
-            Divider()
-            
-            // Footer Hints
-            HStack(spacing: ApexStyle.s4) {
-                HStack(spacing: 4) {
-                    Text("↑↓").apexKeycap()
-                    Text("选择").font(.caption2).foregroundColor(ApexStyle.secondary)
-                }
-                HStack(spacing: 4) {
-                    Text("↵").apexKeycap()
-                    Text("确认执行").font(.caption2).foregroundColor(ApexStyle.secondary)
-                }
-                HStack(spacing: 6) {
-                    Text("> 功能").apexKeycap()
-                    Text("@ 主机").apexKeycap()
-                    Text("/ 目录").apexKeycap()
-                    Text("# 命令").apexKeycap()
+                .padding(.horizontal, ApexStyle.s4)
+                .padding(.vertical, 12)
+                
+                Divider()
+                
+                // Search Results List
+                if filteredItems.isEmpty {
+                    VStack(spacing: ApexStyle.s2) {
+                        Spacer()
+                        Image(systemName: "text.magnifyingglass")
+                            .font(.system(size: 32))
+                            .foregroundColor(ApexStyle.secondary.opacity(0.6))
+                        Text("未找到匹配项")
+                            .font(.subheadline)
+                            .foregroundColor(ApexStyle.secondary)
+                        Spacer()
+                    }
+                    .frame(height: min(220, maxListHeight))
+                } else {
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            LazyVStack(spacing: 2) {
+                                ForEach(Array(filteredItems.enumerated()), id: \.element.id) { index, item in
+                                    ItemRowView(
+                                        item: item,
+                                        isSelected: index == selectedIndex,
+                                        onSelect: {
+                                            selectedIndex = index
+                                            executeCurrentSelection()
+                                        }
+                                    )
+                                    .id(item.id)
+                                }
+                            }
+                            .padding(.vertical, 6)
+                            .padding(.horizontal, 6)
+                        }
+                        .frame(maxHeight: maxListHeight)
+                        .onChange(of: selectedIndex) { _, newIndex in
+                            if filteredItems.indices.contains(newIndex) {
+                                withAnimation(.easeInOut(duration: 0.1)) {
+                                    proxy.scrollTo(filteredItems[newIndex].id, anchor: .center)
+                                }
+                            }
+                        }
+                    }
                 }
                 
-                Spacer()
+                Divider()
                 
-                Text("共 \(filteredItems.count) 条结果")
-                    .font(.caption2)
-                    .foregroundColor(ApexStyle.secondary)
+                // Footer Hints
+                footerBar(isCompact: isCompactFooter)
             }
-            .padding(.horizontal, ApexStyle.s4)
-            .padding(.vertical, 8)
-            .background(ApexStyle.subtleSurface.opacity(0.5))
+            .frame(width: modalWidth)
+            .apexGlassCard(
+                cornerRadius: 14,
+                material: .regularMaterial,
+                borderColor: ApexStyle.border.opacity(0.6),
+                shadowRadius: 28
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
-        .frame(width: 620)
-        .apexGlassCard(cornerRadius: 14, material: .regularMaterial, borderColor: Color.primary.opacity(0.12), shadowRadius: 28)
         .onAppear {
             isInputFocused = true
             selectedIndex = 0
@@ -217,7 +213,56 @@ public struct CommandPaletteModalView: View {
             }
             .opacity(0)
             .frame(width: 0, height: 0)
+            .accessibilityHidden(true)
         )
+    }
+
+    @ViewBuilder
+    private func footerBar(isCompact: Bool) -> some View {
+        let navHints = HStack(spacing: ApexStyle.s3) {
+            HStack(spacing: 4) {
+                Text("↑↓").apexKeycap()
+                Text("选择").font(.caption2).foregroundColor(ApexStyle.secondary).lineLimit(1)
+            }
+            HStack(spacing: 4) {
+                Text("↵").apexKeycap()
+                Text("确认执行").font(.caption2).foregroundColor(ApexStyle.secondary).lineLimit(1)
+            }
+        }
+        let prefixHints = HStack(spacing: 6) {
+            Text("> 功能").apexKeycap()
+            Text("@ 主机").apexKeycap()
+            Text("/ 目录").apexKeycap()
+            Text("# 命令").apexKeycap()
+        }
+        let countText = Text("共 \(filteredItems.count) 条结果")
+            .font(.caption2)
+            .monospacedDigit()
+            .foregroundColor(ApexStyle.secondary)
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
+
+        Group {
+            if isCompact {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: ApexStyle.s2) {
+                        navHints
+                        Spacer(minLength: 4)
+                        countText
+                    }
+                    prefixHints
+                }
+            } else {
+                HStack(spacing: ApexStyle.s3) {
+                    navHints
+                    prefixHints
+                    Spacer(minLength: 4)
+                    countText
+                }
+            }
+        }
+        .padding(.horizontal, ApexStyle.s4)
+        .padding(.vertical, 8)
     }
     
     private func moveSelection(by delta: Int) {
@@ -252,10 +297,10 @@ private struct ItemRowView: View {
                 // Category Icon
                 Image(systemName: item.iconName)
                     .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(iconColor)
+                    .foregroundColor(categoryTint)
                     .frame(width: 26, height: 26)
-                    .background(iconColor.opacity(0.12), in: RoundedRectangle(cornerRadius: ApexStyle.badgeRadius))
-                    .shadow(color: isSelected ? iconColor.opacity(0.35) : .clear, radius: 4)
+                    .background(categoryTint.opacity(0.12), in: RoundedRectangle(cornerRadius: ApexStyle.badgeRadius))
+                    .shadow(color: isSelected ? categoryTint.opacity(0.35) : .clear, radius: 4)
                 
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
@@ -266,10 +311,12 @@ private struct ItemRowView: View {
                         
                         Text(item.category.rawValue)
                             .font(.system(size: 9, weight: .medium))
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
                             .padding(.horizontal, 5)
                             .padding(.vertical, 1)
-                            .background(categoryBadgeColor.opacity(0.15), in: RoundedRectangle(cornerRadius: 3))
-                            .foregroundColor(categoryBadgeColor)
+                            .background(categoryTint.opacity(0.15), in: RoundedRectangle(cornerRadius: 3))
+                            .foregroundColor(categoryTint)
                     }
                     
                     if !item.subtitle.isEmpty {
@@ -277,6 +324,7 @@ private struct ItemRowView: View {
                             .font(.system(size: 11, design: .monospaced))
                             .foregroundColor(ApexStyle.secondary)
                             .lineLimit(1)
+                            .truncationMode(.middle)
                     }
                 }
                 
@@ -305,21 +353,11 @@ private struct ItemRowView: View {
         .onHover { isHovered = $0 }
     }
     
-    private var iconColor: Color {
+    private var categoryTint: Color {
         switch item.category {
-        case .session: return .blue
-        case .bookmark: return .orange
-        case .snippet: return .green
-        case .action: return ApexStyle.accent
-        }
-    }
-    
-    private var categoryBadgeColor: Color {
-        switch item.category {
-        case .session: return .blue
-        case .bookmark: return .orange
-        case .snippet: return .green
-        case .action: return ApexStyle.accent
+        case .session, .action: return ApexStyle.accent
+        case .bookmark: return ApexStyle.warning
+        case .snippet: return ApexStyle.success
         }
     }
 }

@@ -66,6 +66,8 @@ public struct QuickCommandBarView: View {
                             Text("快捷命令")
                                 .font(.system(size: 11, weight: .semibold))
                                 .foregroundColor(ApexStyle.primary)
+                                .lineLimit(1)
+                                .fixedSize()
                         }
                         .padding(.trailing, 4)
                         
@@ -98,11 +100,10 @@ public struct QuickCommandBarView: View {
                         }
                         .help("添加新的常用快捷命令")
                     }
-                    .padding(.horizontal, ApexStyle.s4)
+                    .padding(.leading, ApexStyle.s4)
+                    .padding(.trailing, ApexStyle.s1)
                     .padding(.vertical, 6)
                 }
-                
-                Spacer(minLength: 4)
                 
                 // Hide bar button
                 ApexIconButton(
@@ -179,6 +180,7 @@ public struct VariableInputSheet: View {
     @Binding public var variableValues: [String: String]
     public let onConfirm: (String) -> Void
     public let onCancel: () -> Void
+    @State private var formContentHeight: CGFloat = 0
     
     public init(
         snippet: Snippet,
@@ -195,6 +197,8 @@ public struct VariableInputSheet: View {
     private var variables: [String] {
         snippet.extractVariables()
     }
+
+    private var maxScrollableHeight: CGFloat { 340 }
     
     public var body: some View {
         VStack(alignment: .leading, spacing: ApexStyle.s4) {
@@ -205,6 +209,7 @@ public struct VariableInputSheet: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(snippet.title)
                         .font(.headline)
+                        .lineLimit(1)
                     Text("请为以下变量输入参数值")
                         .font(.caption)
                         .foregroundColor(ApexStyle.secondary)
@@ -212,38 +217,48 @@ public struct VariableInputSheet: View {
                 Spacer()
             }
             
-            VStack(alignment: .leading, spacing: 4) {
-                Text("原始命令模板：")
-                    .font(.caption.weight(.semibold))
-                    .foregroundColor(ApexStyle.secondary)
-                Text(snippet.command)
-                    .font(.system(size: 11, design: .monospaced))
-                    .padding(8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(ApexStyle.surface, in: RoundedRectangle(cornerRadius: ApexStyle.controlRadius))
-                    .overlay(RoundedRectangle(cornerRadius: ApexStyle.controlRadius).stroke(ApexStyle.border, lineWidth: 1))
-            }
-            
-            VStack(spacing: ApexStyle.s3) {
-                ForEach(variables, id: \.self) { v in
-                    HStack(spacing: ApexStyle.s2) {
-                        Text(v)
-                            .font(.system(size: 12, weight: .medium, design: .monospaced))
-                            .foregroundColor(ApexStyle.accent)
-                            .frame(width: 120, alignment: .trailing)
-                        
-                        TextField("输入 \(v)...", text: Binding(
-                            get: { variableValues[v] ?? "" },
-                            set: { variableValues[v] = $0 }
-                        ))
-                        .textFieldStyle(.roundedBorder)
-                        .onSubmit {
-                            submitIfValid()
+            ScrollView(.vertical, showsIndicators: formContentHeight > maxScrollableHeight) {
+                VStack(alignment: .leading, spacing: ApexStyle.s3) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("原始命令模板：")
+                            .font(.caption.weight(.semibold))
+                            .foregroundColor(ApexStyle.secondary)
+                        Text(snippet.command)
+                            .font(.system(size: 11, design: .monospaced))
+                            .padding(8)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(ApexStyle.subtleSurface, in: RoundedRectangle(cornerRadius: ApexStyle.controlRadius))
+                            .overlay(RoundedRectangle(cornerRadius: ApexStyle.controlRadius).stroke(ApexStyle.border, lineWidth: 1))
+                    }
+                    
+                    VStack(spacing: ApexStyle.s3) {
+                        ForEach(variables, id: \.self) { v in
+                            HStack(spacing: ApexStyle.s2) {
+                                Text(v)
+                                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                                    .foregroundColor(ApexStyle.accent)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                    .help(v)
+                                    .frame(width: 120, alignment: .trailing)
+                                
+                                TextField("输入 \(v)...", text: Binding(
+                                    get: { variableValues[v] ?? "" },
+                                    set: { variableValues[v] = $0 }
+                                ))
+                                .textFieldStyle(.roundedBorder)
+                                .onSubmit {
+                                    submitIfValid()
+                                }
+                            }
                         }
                     }
+                    .padding(.vertical, 4)
                 }
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { formContentHeight = $0 }
             }
-            .padding(.vertical, 4)
+            .frame(height: formContentHeight > 0 ? min(formContentHeight, maxScrollableHeight) : nil)
+            .frame(maxHeight: maxScrollableHeight)
             
             HStack {
                 Spacer()
@@ -262,7 +277,7 @@ public struct VariableInputSheet: View {
                 .keyboardShortcut(.defaultAction)
             }
         }
-        .padding(ApexStyle.s5)
+        .padding(ApexStyle.s4)
         .frame(width: 480)
     }
     
@@ -328,7 +343,7 @@ private struct AddSnippetSheet: View {
                     .keyboardShortcut(.defaultAction)
             }
         }
-        .padding(ApexStyle.s5)
+        .padding(ApexStyle.s4)
         .frame(width: 460)
     }
 }

@@ -16,6 +16,20 @@ private extension FocusedValues {
     }
 }
 
+private struct SettingsOpenerBridge: View {
+    @Environment(\.openSettings) private var openSettings
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+            .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("OpenSettingsModal"))) { _ in
+                openSettings()
+            }
+    }
+}
+
 @MainActor
 private final class ApexTermAppDelegate: NSObject, NSApplicationDelegate {
     var reopenMainWindow: (() -> Void)?
@@ -136,7 +150,13 @@ struct ApexTermApp: App {
                 }
             }
             .navigationSplitViewStyle(.balanced)
-            .background(WindowStateView().frame(width: 0, height: 0))
+            .background {
+                ZStack {
+                    WindowStateView()
+                    SettingsOpenerBridge()
+                }
+                .frame(width: 0, height: 0)
+            }
             .apexTheme()
             .frame(minWidth: ApexStyle.minWindowWidth, minHeight: ApexStyle.minWindowHeight)
             .sheet(isPresented: $isAboutPresented) {

@@ -2,6 +2,41 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.27.0] - 2026-11-25
+
+### ✨ 新增特性 (Features)
+- **AetherTerm ⇄ AetherTerm 分组连接加密分享包（`.aetherpack` 导入与导出闭环）**：
+  - **三模式加密封装引擎 (`SharePackCrypto.swift`)**：
+    - **无口令内置加密含凭据（默认 `app_sealed`）**：基于随机 16 字节盐 + `HKDF-SHA256` + `AES-256-GCM` 认证加密，导出的 `.aetherpack` 文件不含任何明文密码或私钥，同事在另一台 AetherTerm 中免输口令即可一键导入并直接双击连接；
+    - **可选分享口令强加密（`passphrase`）**：填写自定义口令（支持一键生成随机口令并自动复制）后升级为 `PBKDF2-HMAC-SHA256`（`200,000` 次迭代）+ `AES-256-GCM` 加密，解锁前仅暴露分组与数量摘要，错口令或篡改密文会被严格拒绝；
+    - **零凭据分享（`zero_credential`）**：彻底剥离密码、口令与托管引用，保留纯拓扑配置并向下兼容历史 `.aetherpack.json`（v1）与 `[Session]` JSON。
+  - **跨分组跳板机发现与隔离落地 (`SessionBundleExporter.swift`, `SSHKeyVaultManager.swift`)**：自动递归识别所选主机引用的跨分组跳板机并提示一并附带（内置防环保护）；导入时为每台主机写入独立的本机 Keychain 凭据（`ssh_<UUID>` / `passphrase_<UUID>`），嵌入的密钥保险库私钥按 SHA-256 指纹去重收纳，并支持勾选主机子集、目标分组映射（`保留原分组` / `导入到已有分组` / `新建分组`）与重复主机策略（`跳过重复` / `覆盖更新` / `保留两份`）。
+  - **全入口交互、拖拽导入与 Finder 双击 `.aetherpack` 唤起 (`GroupShareExportSheet.swift`, `GroupShareImportSheet.swift`, `SidebarView.swift`, `SettingsView.swift`, `ApexTermApp.swift`, `IncomingShareCoordinator.swift`)**：
+    - 侧边栏分组右键菜单新增「导出该分组...」「导出为 OpenSSH Config...」，单会话右键菜单新增「导出此会话...」，顶部菜单统一整合 `.aetherpack` 导入/导出与 `~/.ssh/config` 导入；
+    - 支持将 `.aetherpack` / `.json` 文件直接拖入侧边栏唤起导入预览，并在打包配置（`CFBundleDocumentTypes` + `UTExportedTypeDeclarations`）中注册 `.aetherpack` 文档关联，支持在 Finder / 微信等处接收文件后直接双击唤起导入向导。
+
+### ⚡️ 体验优化 (Improvements)
+- **增强零凭据脱敏防护 (`SessionBundleExporter.swift`)**：将 `sanitizeSessionForShare` 中的密钥库引用识别统一升级为 `KeychainStore.isManagedReference`，确保零凭据模式下彻底清除 `vault.priv.<UUID>` 等托管引用。
+- **统一应用内外导出/导入入口 (`ApexTermApp.swift`, `SettingsView.swift`, `L10n.swift`)**：菜单栏「文件 → 导出/导入连接」与「设置 → 数据备份」统一接入 `.aetherpack` 交互式预览向导。
+
+### 🐞 问题修复 (Bug Fixes)
+- **修复连接中或已连接状态下修改会话标题/配置未实时联动刷新的问题 (`WorkspaceView.swift`, `ApexTermApp.swift`)**：
+  - 将 `TerminalTabItem.session` 与 `TerminalPaneItem.session` 改为可观测 `@Published var`，在 `SessionStore` 变更时通过 `WorkspaceView.syncActiveTabs(_:with:)` 与 `TerminalTabItem.applySessionUpdate(_:)` 实时同步已打开标签页标题、窗口标题、状态点颜色、底栏连接信息、分屏窗格标题以及右侧实时性能监控面板标题；同时保留单个标签页手工自定义的重命名（`customTitle`）。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- **全量自动化测试与 Tart VM 真机链路验证 (`./scripts/test_vm_acceptance.sh`)**：
+  - 新增 `SessionBundleExportImportTests` `TC-PACK-09 ~ TC-PACK-18`（18/18 通过）与 `UIQualityOverhaulTests` `testActiveTabAndMonitorSyncWhenSessionEditedInStore`（7/7 通过）；
+  - 全量执行 **689 项** XCTest（`ApexSSHTests` 586 项、`ApexCoreTests` 103 项；684 通过 / 5 环境条件跳过 / **0 失败**），含 **Tart VM (`macos27`) 真实 SSH/SFTP/监控集成测试 10/10 全部通过**，以及 `RG-08 ~ RG-15` 全线通过；Swift 6 `-warnings-as-errors` 零警告。
+- **8 大 Release 性能基准测试 (`swift test -c release --jobs 2 --filter FullPerformanceBenchmarkTests`, 8/8 通过)**：
+  - `[Benchmark 1]` RingBuffer 写入吞吐：`1,909,344 行/秒`（`193.01 MB/秒`）
+  - `[Benchmark 2]` ANSI / TrueColor 颜色解析：`342,348 spans/秒`（`2.921 μs/span`）
+  - `[Benchmark 3]` 内存水位与驻留集（RSS）：Release 初始 `36.67 MB`、峰值 `99.95 MB`（Debug 初始 `207.92 MB`、峰值 `231.28 MB`，均符合 `≤ 250 MB` 门禁）
+  - `[Benchmark 4]` 16 线程并发写入吞吐：`2,212,550 writes/秒`
+  - `[Benchmark 5]` 64 核 Linux 指标解析：`15,096 次/秒`
+  - `[Benchmark 6]` OpenSSH 500 主机批量解析：`152,861 hosts/秒`
+  - `[Benchmark 7]` SFTP 100 任务并发调度：`1,044 tasks/秒`
+  - `[Benchmark 8]` 终端按键直通延迟：`5.49 μs`（`182,285 keys/秒`）
+
 ## [v1.26.0] - 2026-11-25
 
 ### ✨ 新增特性 (Features)

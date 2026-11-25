@@ -303,4 +303,104 @@ final class UIQualityOverhaulTests: XCTestCase {
         WorkspaceView.syncActiveTabs([localTab], with: store.sessions)
         XCTAssertEqual(localTab.displayTitle, local.name)
     }
+
+    // MARK: - 8. Group Share, Settings Tabs, ProcessInspector & Cross-Theme Regression
+
+    func testGroupShareExportAndImportSheetsRenderCleanlyAcrossThemes() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("ui-share-sheets-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let store = SessionStore(baseDirectory: tempDir)
+        let bastion = Session(name: "Bastion", host: "bastion.example.invalid", username: "ops", folder: "Core")
+        let app = Session(name: "App01", host: "app01.example.invalid", username: "deploy", folder: "Prod", jumpServerChain: [bastion.id])
+        store.addSession(bastion)
+        store.addSession(app)
+
+        let prevPreset = AppSettings.shared.themePreset
+        let prevFollow = AppSettings.shared.followsSystemAppearance
+        defer {
+            AppSettings.shared.themePreset = prevPreset
+            AppSettings.shared.followsSystemAppearance = prevFollow
+        }
+        AppSettings.shared.followsSystemAppearance = false
+
+        for preset in [TerminalThemePreset.nativeLight, .modern, .solarized] {
+            AppSettings.shared.themePreset = preset
+
+            let exportSheet = GroupShareExportSheet(store: store, initialFolder: "Prod")
+            let exportHost = NSHostingView(rootView: exportSheet.apexTheme())
+            exportHost.frame = NSRect(x: 0, y: 0, width: 600, height: 610)
+            exportHost.layoutSubtreeIfNeeded()
+            XCTAssertGreaterThan(exportHost.subviews.count, 0)
+
+            let importSheet = GroupShareImportSheet(store: store)
+            let importHost = NSHostingView(rootView: importSheet.apexTheme())
+            importHost.frame = NSRect(x: 0, y: 0, width: 600, height: 600)
+            importHost.layoutSubtreeIfNeeded()
+            XCTAssertGreaterThan(importHost.subviews.count, 0)
+        }
+    }
+
+    func testSidebarLocalRowHasStableIDAndSettingsAllTabsRenderCleanly() {
+        let local1 = Session.local(id: SidebarView.sidebarLocalRowID)
+        let local2 = Session.local(id: SidebarView.sidebarLocalRowID)
+        XCTAssertEqual(local1.id, local2.id, "Sidebar virtual local row must use a deterministic UUID")
+
+        let prevPreset = AppSettings.shared.themePreset
+        let prevFollow = AppSettings.shared.followsSystemAppearance
+        defer {
+            AppSettings.shared.themePreset = prevPreset
+            AppSettings.shared.followsSystemAppearance = prevFollow
+        }
+        AppSettings.shared.followsSystemAppearance = false
+
+        for preset in [TerminalThemePreset.nativeLight, .modern] {
+            AppSettings.shared.themePreset = preset
+            for tabIndex in 0..<6 {
+                let settingsHost = NSHostingView(rootView: SettingsView(initialTab: tabIndex).apexTheme())
+                let window = NSWindow(
+                    contentRect: NSRect(x: 100, y: 100, width: 760, height: 560),
+                    styleMask: [.titled, .closable, .resizable],
+                    backing: .buffered,
+                    defer: false
+                )
+                window.contentView = settingsHost
+                window.makeKeyAndOrderFront(nil)
+                settingsHost.layoutSubtreeIfNeeded()
+                XCTAssertGreaterThan(settingsHost.subviews.count, 0, "Settings tab \(tabIndex) must render on \(preset.rawValue)")
+                window.orderOut(nil)
+            }
+        }
+    }
+
+    func testNewUIBugFixesSourceGuards() throws {
+        let root = repoRoot()
+
+        let appSource = try String(contentsOf: root.appendingPathComponent("Sources/ApexTerm/ApexTermApp.swift"), encoding: .utf8)
+        XCTAssertTrue(appSource.contains(".onOpenURL {"), "ApexTermApp must register .onOpenURL for .aetherpack file opening")
+
+        let workspaceSource = try String(contentsOf: root.appendingPathComponent("Sources/ApexUI/Workspace/WorkspaceView.swift"), encoding: .utf8)
+        XCTAssertTrue(workspaceSource.contains(".id(tab.id)\n                    .frame(height: sftpHeight)"),
+                      "SFTPTransferBoundView must key by tab.id so switching split panes preserves SFTP state")
+
+        let sftpSource = try String(contentsOf: root.appendingPathComponent("Sources/ApexUI/SFTP/SFTPView.swift"), encoding: .utf8)
+        XCTAssertTrue(sftpSource.contains("let isCustomBookmarked = bookmarkManager.customBookmarks.contains"),
+                      "SFTPView must distinguish custom bookmarks from built-in presets for unbookmark action")
+        XCTAssertTrue(sftpSource.contains("if item.isParentNavigationEntry {\n            navigateUp()"),
+                      "Double-clicking '..' in SFTPView must navigateUp() cleanly")
+
+        let metricSource = try String(contentsOf: root.appendingPathComponent("Sources/ApexUI/Dashboard/MetricCapsuleView.swift"), encoding: .utf8)
+        let popoverRange = try XCTUnwrap(metricSource.range(of: "content.popover(isPresented: $isPresented"))
+        let popoverSnippet = String(metricSource[popoverRange.upperBound...].prefix(180))
+        XCTAssertTrue(popoverSnippet.contains(".apexTheme()"), "Standalone MetricCapsuleView popover must apply .apexTheme()")
+
+        let processSource = try String(contentsOf: root.appendingPathComponent("Sources/ApexUI/Dashboard/ProcessInspectorView.swift"), encoding: .utf8)
+        XCTAssertTrue(processSource.contains("if sshClient == nil, fetchedItems.isEmpty"),
+                      "ProcessInspectorView must only inject sample preview data when sshClient is nil")
+
+        let settingsSource = try String(contentsOf: root.appendingPathComponent("Sources/ApexUI/Settings/SettingsView.swift"), encoding: .utf8)
+        XCTAssertTrue(settingsSource.contains("pendingForceSyncAction"),
+                      "BackupSettingsTab must confirm destructive iCloud force overwrite actions")
+    }
 }

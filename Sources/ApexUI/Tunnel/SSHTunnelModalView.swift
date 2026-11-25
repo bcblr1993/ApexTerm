@@ -269,6 +269,9 @@ private struct TunnelRowView: View {
                     Text(reason)
                         .font(.caption2)
                         .foregroundColor(ApexStyle.error)
+                        .lineLimit(2)
+                        .truncationMode(.tail)
+                        .help(reason)
                 }
             }
             

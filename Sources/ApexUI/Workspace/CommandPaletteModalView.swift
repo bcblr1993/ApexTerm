@@ -200,6 +200,16 @@ public struct CommandPaletteModalView: View {
         .onAppear {
             isInputFocused = true
             selectedIndex = 0
+            DispatchQueue.main.async {
+                isInputFocused = true
+            }
+        }
+        .onChange(of: filteredItems.count) { _, newCount in
+            if newCount == 0 {
+                selectedIndex = 0
+            } else if selectedIndex >= newCount {
+                selectedIndex = newCount - 1
+            }
         }
         .background(
             // Key listeners for Up / Down / Esc

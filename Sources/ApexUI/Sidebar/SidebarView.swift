@@ -34,7 +34,11 @@ public struct SidebarView: View {
     @State private var sessionToDelete: Session?
     @State private var collapsedFolders: Set<String> = []
     @State private var toastMessage: String?
+    @State private var toastToken = UUID()
     @State private var isToastSuccess = true
+
+    /// Stable identity for the virtual local-terminal row in `List(selection:)`.
+    public static let sidebarLocalRowID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
     
     public init(
         store: SessionStore,
@@ -179,18 +183,20 @@ public struct SidebarView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 // Session tree
+                let matchesLocalRow = searchFilter.isEmpty || "本地终端".localizedCaseInsensitiveContains(searchFilter) || "local".localizedCaseInsensitiveContains(searchFilter)
                 List(selection: selectedSessionID) {
-                    if searchFilter.isEmpty || "本地终端".localizedCaseInsensitiveContains(searchFilter) || "local".localizedCaseInsensitiveContains(searchFilter) {
+                    if matchesLocalRow {
                         Section(header: Label("本地环境", systemImage: "laptopcomputer").font(.caption).fontWeight(.semibold)) {
-                            let local = Session.local()
+                            let local = Session.local(id: Self.sidebarLocalRowID)
                             SessionRow(
                                 session: local,
                                 isSelected: selectedSession?.id == local.id,
-                                onConnect: { onConnect(local) }
+                                onConnect: { onConnect(Session.local()) }
                             )
                             .tag(local.id)
                             .onTapGesture {
-                                onConnect(local)
+                                selectedSession = local
+                                onConnect(Session.local())
                             }
                         }
                     }
@@ -275,7 +281,7 @@ public struct SidebarView: View {
                         }
                     }
 
-                    if !searchFilter.isEmpty && !store.sessions.contains(where: { Self.matchesSearch($0, filter: searchFilter) }) {
+                    if !searchFilter.isEmpty && !matchesLocalRow && !store.sessions.contains(where: { Self.matchesSearch($0, filter: searchFilter) }) {
                         ContentUnavailableView("未找到匹配会话", systemImage: "magnifyingglass",
                                                description: Text("检查会话名称、标签或主机地址，或清空搜索重试。"))
                     }
@@ -303,6 +309,7 @@ public struct SidebarView: View {
             ) { summary in
                 showToast(summary, isSuccess: true)
             }
+            .id(request.id)
             .apexTheme()
         }
         .sheet(item: $shareImportRequest) { request in
@@ -313,6 +320,7 @@ public struct SidebarView: View {
                 collapsedFolders.subtract(result.importedFolderNames)
                 showToast(result.summaryText, isSuccess: true)
             }
+            .id(request.id)
             .apexTheme()
         }
         .sheet(item: $editingSession) { session in
@@ -455,10 +463,12 @@ public struct SidebarView: View {
     }
 
     private func showToast(_ message: String, isSuccess: Bool = true) {
+        let token = UUID()
+        toastToken = token
         toastMessage = message
         isToastSuccess = isSuccess
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-            if self.toastMessage == message {
+            if self.toastToken == token {
                 withAnimation(.easeOut(duration: 0.2)) {
                     self.toastMessage = nil
                 }
@@ -469,7 +479,13 @@ public struct SidebarView: View {
     private var selectedSessionID: Binding<UUID?> {
         Binding(
             get: { selectedSession?.id },
-            set: { id in selectedSession = store.sessions.first(where: { $0.id == id }) }
+            set: { id in
+                if id == Self.sidebarLocalRowID {
+                    selectedSession = Session.local(id: Self.sidebarLocalRowID)
+                } else {
+                    selectedSession = store.sessions.first(where: { $0.id == id })
+                }
+            }
         )
     }
     

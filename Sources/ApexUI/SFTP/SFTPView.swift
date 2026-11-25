@@ -123,6 +123,7 @@ public struct SFTPView: View {
     @State private var editorContent = ""
     @State private var isDropTargeted = false
     @State private var transferNotice: String?
+    @State private var transferNoticeToken = UUID()
     @State private var transferNoticeKind: SFTPNoticeKind = .info
     @State private var transferNoticeIsTransferOutcome = false
     @State private var creationFailureDetails: String?
@@ -237,6 +238,8 @@ public struct SFTPView: View {
                 }
 
             // SFTP Quick Bookmarks & Directory Presets Menu
+            let trimmedCurrentPath = currentPath.trimmingCharacters(in: .whitespacesAndNewlines)
+            let isCustomBookmarked = bookmarkManager.customBookmarks.contains(where: { $0.path == trimmedCurrentPath })
             Menu {
                 Section("系统常用目录预设") {
                     ForEach(SFTPBookmarkManager.defaultPresets) { bookmark in
@@ -264,28 +267,28 @@ public struct SFTPView: View {
                 
                 Divider()
                 
-                if bookmarkManager.isBookmarked(path: currentPath) {
+                if isCustomBookmarked {
                     Button(role: .destructive) {
-                        if let b = bookmarkManager.customBookmarks.first(where: { $0.path == currentPath }) {
+                        if let b = bookmarkManager.customBookmarks.first(where: { $0.path == trimmedCurrentPath }) {
                             bookmarkManager.removeCustomBookmark(id: b.id)
                         }
                     } label: {
                         Label("取消收藏当前路径", systemImage: "star.slash")
                     }
-                } else if !currentPath.isEmpty {
+                } else if !trimmedCurrentPath.isEmpty {
                     Button {
-                        bookmarkManager.addCustomBookmark(name: currentPath, path: currentPath)
+                        bookmarkManager.addCustomBookmark(name: trimmedCurrentPath, path: trimmedCurrentPath)
                     } label: {
                         Label("收藏当前路径到书签", systemImage: "star")
                     }
                 }
             } label: {
                 ApexMenuTrigger(
-                    icon: bookmarkManager.isBookmarked(path: currentPath) ? "star.fill" : "bookmark",
+                    icon: isCustomBookmarked ? "star.fill" : "bookmark",
                     label: "常用目录预设与书签快速跳转",
                     size: 24,
                     iconSize: 11,
-                    tint: bookmarkManager.isBookmarked(path: currentPath) ? ApexStyle.warning : nil
+                    tint: isCustomBookmarked ? ApexStyle.warning : nil
                 )
             }
             .menuStyle(.button)
@@ -412,8 +415,10 @@ public struct SFTPView: View {
                 iconSize: 11,
                 isSelected: isRemoteSearchVisible
             ) {
-                isRemoteSearchVisible.toggle()
                 if isRemoteSearchVisible {
+                    closeRemoteSearch()
+                } else {
+                    isRemoteSearchVisible = true
                     isRemoteSearchFocused = true
                 }
             }
@@ -457,8 +462,10 @@ public struct SFTPView: View {
                         .keyboardShortcut(".", modifiers: [.command, .shift])
                         .accessibilityHidden(true)
                     Button("") {
-                        isRemoteSearchVisible.toggle()
                         if isRemoteSearchVisible {
+                            closeRemoteSearch()
+                        } else {
+                            isRemoteSearchVisible = true
                             isRemoteSearchFocused = true
                         }
                     }
@@ -1299,12 +1306,14 @@ public struct SFTPView: View {
         if creationFailureNotice != message {
             creationFailureNotice = nil
         }
+        let token = UUID()
+        transferNoticeToken = token
         transferNotice = message
         transferNoticeKind = kind
         transferNoticeIsTransferOutcome = isTransferOutcome
         if let seconds {
             DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
-                if self.transferNotice == message {
+                if self.transferNoticeToken == token {
                     self.clearNotice()
                 }
             }
@@ -1633,7 +1642,9 @@ public struct SFTPView: View {
     }
 
     private func handleDoubleClick(_ item: SFTPItem) {
-        if item.isDirectory {
+        if item.isParentNavigationEntry {
+            navigateUp()
+        } else if item.isDirectory {
             currentPath = item.path
         } else if item.isSymlink {
             Task {

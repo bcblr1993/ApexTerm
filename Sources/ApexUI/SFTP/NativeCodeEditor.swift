@@ -135,7 +135,7 @@ struct NativeCodeEditor: NSViewRepresentable {
             ruler.separatorColor = gutterSeparator
             ruler.needsDisplay = true
         }
-        let paletteKey = "\(highlightPalette?.surface ?? "sys")_\(isDarkTheme)"
+        let paletteKey = "\(highlightPalette?.surface ?? "sys")_\(highlightPalette?.accent ?? "sys")_\(highlightPalette?.ansi.first ?? "sys")_\(isDarkTheme)"
         if textReplaced || context.coordinator.lastLanguage != language || context.coordinator.lastPaletteKey != paletteKey {
             context.coordinator.applyHighlighting(to: editor)
         }
@@ -214,7 +214,7 @@ struct NativeCodeEditor: NSViewRepresentable {
             guard let layoutManager = editor.layoutManager,
                   let storage = editor.textStorage else { return }
             lastLanguage = parent.language
-            lastPaletteKey = "\(parent.highlightPalette?.surface ?? "sys")_\(parent.isDarkTheme)"
+            lastPaletteKey = "\(parent.highlightPalette?.surface ?? "sys")_\(parent.highlightPalette?.accent ?? "sys")_\(parent.highlightPalette?.ansi.first ?? "sys")_\(parent.isDarkTheme)"
 
             let fullRange = NSRange(location: 0, length: storage.length)
             if fullRange.length > 0 {

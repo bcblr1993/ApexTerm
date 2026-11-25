@@ -264,6 +264,7 @@ private struct InlineDetailPopover<Detail: View>: ViewModifier {
             content.popover(isPresented: $isPresented, arrowEdge: .bottom) {
                 detail()
                     .frame(width: 416)
+                    .apexTheme()
                     .onExitCommand { isPresented = false }
             }
         } else {

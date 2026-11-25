@@ -159,7 +159,7 @@ public struct GroupShareImportSheet: View {
             ApexActionButton("取消", tint: ApexStyle.secondary, size: .regular) {
                 dismiss()
             }
-            .keyboardShortcut(.escape, modifiers: [])
+            .keyboardShortcut(.cancelAction)
 
             if let bundle = decryptedBundle {
                 ApexActionButton(
@@ -173,6 +173,7 @@ public struct GroupShareImportSheet: View {
                     performImport(bundle: bundle)
                 }
                 .disabled(selectedSessionIDs.isEmpty || isImporting)
+                .keyboardShortcut(.defaultAction)
             } else if inspection?.requiresPassphrase == true {
                 ApexActionButton(
                     "解密并预览",
@@ -184,14 +185,19 @@ public struct GroupShareImportSheet: View {
                     unlockPassphraseProtectedPack()
                 }
                 .disabled(passphraseInput.isEmpty)
+                .keyboardShortcut(.defaultAction)
             } else {
                 ApexActionButton("选择分享文件...", icon: "doc.badge.plus", tint: ApexStyle.accent, size: .regular, isProminent: true) {
                     chooseFile()
                 }
+                .keyboardShortcut(.defaultAction)
             }
         }
         .padding(ApexStyle.s4)
         .background(ApexStyle.surface)
+        .onExitCommand {
+            dismiss()
+        }
     }
 
     // MARK: - Stage 1: File Chooser & Dropzone
@@ -333,7 +339,16 @@ public struct GroupShareImportSheet: View {
                 }
 
                 VStack(alignment: .leading, spacing: ApexStyle.s2) {
-                    ForEach(grouped, id: \.self) { folder in
+                    if candidates.isEmpty {
+                        ContentUnavailableView(
+                            "分享包中暂无可导入的远程主机",
+                            systemImage: "server.rack",
+                            description: Text("该文件未包含非本地 SSH 会话，请检查分享源或选择其他文件。")
+                        )
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, ApexStyle.s4)
+                    } else {
+                        ForEach(grouped, id: \.self) { folder in
                         let members = candidates.filter { SidebarView.normalizedFolder(of: $0) == folder }
                         VStack(alignment: .leading, spacing: 4) {
                             HStack(spacing: ApexStyle.sCompact) {
@@ -401,6 +416,7 @@ public struct GroupShareImportSheet: View {
                         if folder != grouped.last {
                             Divider().padding(.vertical, 2)
                         }
+                        }
                     }
                 }
                 .padding(ApexStyle.s3)
@@ -430,12 +446,18 @@ public struct GroupShareImportSheet: View {
                     if targetFolderChoice == .existingFolder {
                         HStack(spacing: ApexStyle.s2) {
                             Spacer().frame(width: 72)
-                            Picker("已有分组", selection: $selectedExistingFolder) {
-                                ForEach(existingFolders, id: \.self) { folder in
-                                    Text(folder).tag(folder)
+                            if existingFolders.isEmpty {
+                                Text("暂无已有分组（将导入到「\(L10n.generalFolder)」）")
+                                    .font(.caption)
+                                    .foregroundColor(ApexStyle.secondary)
+                            } else {
+                                Picker("已有分组", selection: $selectedExistingFolder) {
+                                    ForEach(existingFolders, id: \.self) { folder in
+                                        Text(folder).tag(folder)
+                                    }
                                 }
+                                .labelsHidden()
                             }
-                            .labelsHidden()
                         }
                     } else if targetFolderChoice == .newFolder {
                         HStack(spacing: ApexStyle.s2) {
@@ -460,7 +482,11 @@ public struct GroupShareImportSheet: View {
                         .pickerStyle(.segmented)
                     }
 
-                    HStack(spacing: ApexStyle.s4) {
+                    LazyVGrid(
+                        columns: [GridItem(.adaptive(minimum: 145), spacing: ApexStyle.s3, alignment: .leading)],
+                        alignment: .leading,
+                        spacing: ApexStyle.s2
+                    ) {
                         if bundle.credentials.hasAnySecret {
                             Toggle("写入加密凭据", isOn: $importCredentials)
                         }
@@ -478,6 +504,7 @@ public struct GroupShareImportSheet: View {
                         }
                     }
                     .font(.caption)
+                    .monospacedDigit()
                     .foregroundColor(ApexStyle.primary)
                 }
                 .padding(ApexStyle.s3)
@@ -581,6 +608,11 @@ public struct GroupShareImportSheet: View {
                 self.decryptedBundle = nil
             }
         } catch {
+            self.loadedURL = nil
+            self.fileData = nil
+            self.inspection = nil
+            self.decryptedBundle = nil
+            self.selectedSessionIDs = []
             self.loadError = error.localizedDescription
         }
     }

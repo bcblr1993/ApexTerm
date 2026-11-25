@@ -230,6 +230,121 @@ final class SidebarCloneAndPinnedMonitorTests: XCTestCase {
         XCTAssertEqual(agentMethod, .agent)
     }
 
+    func testSessionEditModalEditAuthMethodAndTestCredentialsRespectClearingAndSpecialChars() throws {
+        let sessionId = UUID()
+        let oldPassRef = "ssh_\(sessionId.uuidString)"
+        let oldPhraseRef = "passphrase_\(sessionId.uuidString)"
+        var mockKeychain: [String: String] = [:]
+        let writer: (String, String) throws -> String = { key, secret in
+            mockKeychain[key] = secret
+            return key
+        }
+
+        // 1. Special-char password (including $$, quotes, backticks, spaces) is preserved verbatim for save & test
+        let specialSecret = " p@$$w0rd!\"'`\\ "
+        let savedSpecial = try SessionEditModal.editAuthMethodForSave(
+            authType: .password,
+            sessionId: sessionId,
+            typedPassword: specialSecret,
+            typedPassphrase: "",
+            privateKeyPath: "",
+            certificatePath: "",
+            sourceAuthMethod: .password(keychainRef: oldPassRef),
+            didFinishLoadingSecret: true,
+            didLoadInitialSecretValue: true,
+            didFinishLoadingPassphrase: true,
+            didLoadInitialPassphraseValue: false,
+            secretWriter: writer
+        )
+        XCTAssertEqual(savedSpecial, .password(keychainRef: oldPassRef))
+        XCTAssertEqual(mockKeychain[oldPassRef], specialSecret)
+
+        let testSpecial = SessionEditModal.resolveTestCredentials(
+            authType: .password,
+            typedPassword: specialSecret,
+            typedPassphrase: "",
+            privateKeyPath: "",
+            certificatePath: "",
+            sourceAuthMethod: .password(keychainRef: oldPassRef),
+            didFinishLoadingSecret: true,
+            didLoadInitialSecretValue: true,
+            didFinishLoadingPassphrase: true,
+            didLoadInitialPassphraseValue: false
+        )
+        guard case .resolved(_, let explicitSecret) = testSpecial else {
+            return XCTFail("Expected resolved credentials for explicit special-char password")
+        }
+        XCTAssertEqual(explicitSecret, specialSecret)
+
+        // 2. Clearing loaded password after load finished clears keychainRef & blocks test connection
+        let clearedSave = try SessionEditModal.editAuthMethodForSave(
+            authType: .password,
+            sessionId: sessionId,
+            typedPassword: "",
+            typedPassphrase: "",
+            privateKeyPath: "",
+            certificatePath: "",
+            sourceAuthMethod: .password(keychainRef: oldPassRef),
+            didFinishLoadingSecret: true,
+            didLoadInitialSecretValue: true,
+            didFinishLoadingPassphrase: true,
+            didLoadInitialPassphraseValue: false,
+            secretWriter: writer
+        )
+        XCTAssertEqual(clearedSave, .password(keychainRef: ""))
+
+        let clearedTest = SessionEditModal.resolveTestCredentials(
+            authType: .password,
+            typedPassword: "",
+            typedPassphrase: "",
+            privateKeyPath: "",
+            certificatePath: "",
+            sourceAuthMethod: .password(keychainRef: oldPassRef),
+            didFinishLoadingSecret: true,
+            didLoadInitialSecretValue: true,
+            didFinishLoadingPassphrase: true,
+            didLoadInitialPassphraseValue: false
+        )
+        guard case .invalid(let failResult) = clearedTest else {
+            return XCTFail("Expected invalid result when loaded password was intentionally cleared")
+        }
+        XCTAssertEqual(failResult.errorMessage, "请输入密码后再测试")
+
+        // 3. Saving before async Keychain load completes preserves existing reference
+        let fastEditSave = try SessionEditModal.editAuthMethodForSave(
+            authType: .password,
+            sessionId: sessionId,
+            typedPassword: "",
+            typedPassphrase: "",
+            privateKeyPath: "",
+            certificatePath: "",
+            sourceAuthMethod: .password(keychainRef: oldPassRef),
+            didFinishLoadingSecret: false,
+            didLoadInitialSecretValue: false,
+            didFinishLoadingPassphrase: true,
+            didLoadInitialPassphraseValue: false,
+            secretWriter: writer
+        )
+        XCTAssertEqual(fastEditSave, .password(keychainRef: oldPassRef))
+
+        // 4. Clearing loaded passphrase on certificate/privateKey clears passphraseRef to nil
+        let clearedCertSave = try SessionEditModal.editAuthMethodForSave(
+            authType: .certificate,
+            sessionId: sessionId,
+            typedPassword: "",
+            typedPassphrase: "",
+            privateKeyPath: "~/.ssh/id_ed25519",
+            certificatePath: "~/.ssh/id_ed25519-cert.pub",
+            sourceAuthMethod: .certificate(keychainRef: "~/.ssh/id_ed25519", certificatePath: "~/.ssh/id_ed25519-cert.pub", passphraseRef: oldPhraseRef),
+            didFinishLoadingSecret: true,
+            didLoadInitialSecretValue: false,
+            didFinishLoadingPassphrase: true,
+            didLoadInitialPassphraseValue: true,
+            secretWriter: writer
+        )
+        XCTAssertEqual(clearedCertSave, .certificate(keychainRef: "~/.ssh/id_ed25519", certificatePath: "~/.ssh/id_ed25519-cert.pub", passphraseRef: nil))
+    }
+
     // MARK: - 4. Clone Modal Layout Render
 
     func testSessionEditModalCloneModeRendersCleanly() {

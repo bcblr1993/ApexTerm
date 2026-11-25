@@ -9,6 +9,7 @@ public struct KnownHostsSettingsView: View {
     @State private var entryToDelete: KnownHostEntry?
     @State private var showingDeleteAlert: Bool = false
     @State private var toastMessage: String?
+    @State private var toastToken = UUID()
     @State private var errorMessage: String?
 
     public init() {}
@@ -291,12 +292,14 @@ public struct KnownHostsSettingsView: View {
     }
 
     private func showToast(_ message: String) {
+        let token = UUID()
+        toastToken = token
         withAnimation {
             toastMessage = message
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) {
             withAnimation {
-                if toastMessage == message {
+                if toastToken == token {
                     toastMessage = nil
                 }
             }

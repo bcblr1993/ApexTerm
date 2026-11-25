@@ -141,10 +141,11 @@ public struct QuickCommandBarView: View {
                 command: $newCommand,
                 category: $newCategory,
                 onSave: {
+                    let trimmedCategory = newCategory.trimmingCharacters(in: .whitespacesAndNewlines)
                     let s = Snippet(
                         title: newTitle.trimmingCharacters(in: .whitespacesAndNewlines),
                         command: newCommand.trimmingCharacters(in: .whitespacesAndNewlines),
-                        category: newCategory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "自定义" : newCategory
+                        category: trimmedCategory.isEmpty ? "自定义" : trimmedCategory
                     )
                     store.addSnippet(s)
                     isAddSheetPresented = false

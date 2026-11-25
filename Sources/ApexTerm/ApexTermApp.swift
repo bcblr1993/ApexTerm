@@ -195,10 +195,18 @@ struct ApexTermApp: App {
             }
             .onChange(of: sessionStore.sessions) { _, updatedSessions in
                 WorkspaceView.syncActiveTabs(activeTabs, with: updatedSessions)
-                if let selected = selectedSidebarSession,
-                   let refreshed = updatedSessions.first(where: { $0.id == selected.id }) {
-                    selectedSidebarSession = refreshed
+                if let selected = selectedSidebarSession {
+                    if let refreshed = updatedSessions.first(where: { $0.id == selected.id }) {
+                        selectedSidebarSession = refreshed
+                    } else if !selected.isLocal {
+                        selectedSidebarSession = nil
+                    }
                 }
+            }
+            .onOpenURL { url in
+                guard SessionBundleExporter.isSupportedShareFileURL(url) else { return }
+                IncomingShareCoordinator.shared.requestImport(url: url)
+                showMainWindow()
             }
             .task {
                 appDelegate.reopenMainWindow = { showMainWindow() }
@@ -309,6 +317,7 @@ struct ApexTermApp: App {
                     }
                 }
                 .keyboardShortcut("d", modifiers: .command)
+                .disabled(!activeTabs.contains(where: { $0.id == selectedTabId }))
                 
                 Button("水平分屏") {
                     if let current = activeTabs.first(where: { $0.id == selectedTabId }) {
@@ -316,6 +325,7 @@ struct ApexTermApp: App {
                     }
                 }
                 .keyboardShortcut("d", modifiers: [.command, .shift])
+                .disabled(!activeTabs.contains(where: { $0.id == selectedTabId }))
                 
                 Button("全屏放大 / 恢复分屏") {
                     if let current = activeTabs.first(where: { $0.id == selectedTabId }) {
@@ -363,6 +373,7 @@ struct ApexTermApp: App {
                     }
                 }
                 .keyboardShortcut("k", modifiers: .command)
+                .disabled(!activeTabs.contains(where: { $0.id == selectedTabId }))
                 
                 Divider()
                 

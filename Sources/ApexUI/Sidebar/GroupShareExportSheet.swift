@@ -401,13 +401,18 @@ public struct GroupShareExportSheet: View {
                 .font(.subheadline.weight(.semibold))
                 .foregroundColor(ApexStyle.primary)
 
-            HStack(spacing: ApexStyle.s4) {
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 150), spacing: ApexStyle.s3, alignment: .leading)],
+                alignment: .leading,
+                spacing: ApexStyle.s2
+            ) {
                 Toggle("关联隧道 (\(scopedTunnelCount))", isOn: $includeTunnels)
                 Toggle("快捷命令 (\(store.snippets.count))", isOn: $includeSnippets)
                 Toggle("SFTP 书签 (\(bookmarkManager.customBookmarks.count))", isOn: $includeBookmarks)
                 Toggle("触发器 (\(store.triggers.count))", isOn: $includeTriggers)
             }
             .font(.caption)
+            .monospacedDigit()
             .foregroundColor(ApexStyle.primary)
         }
         .padding(ApexStyle.s3)
@@ -436,7 +441,7 @@ public struct GroupShareExportSheet: View {
             ApexActionButton("取消", tint: ApexStyle.secondary, size: .regular) {
                 dismiss()
             }
-            .keyboardShortcut(.escape, modifiers: [])
+            .keyboardShortcut(.cancelAction)
 
             ApexActionButton(
                 "导出 .aetherpack",
@@ -449,9 +454,13 @@ public struct GroupShareExportSheet: View {
                 startExport()
             }
             .disabled(!canExport)
+            .keyboardShortcut(.defaultAction)
         }
         .padding(ApexStyle.s4)
         .background(ApexStyle.surface)
+        .onExitCommand {
+            dismiss()
+        }
     }
 
     // MARK: - Actions

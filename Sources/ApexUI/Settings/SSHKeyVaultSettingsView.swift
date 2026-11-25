@@ -20,6 +20,7 @@ public struct SSHKeyVaultSettingsView: View {
     @State private var keyToDelete: SSHKeyIdentity?
     @State private var showingDeleteAlert: Bool = false
     @State private var toastMessage: String?
+    @State private var toastToken = UUID()
     
     // Import Form State
     @State private var importName: String = ""
@@ -378,9 +379,11 @@ public struct SSHKeyVaultSettingsView: View {
     }
     
     private func showToast(_ msg: String) {
+        let token = UUID()
+        toastToken = token
         toastMessage = msg
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
-            if self.toastMessage == msg {
+            if self.toastToken == token {
                 self.toastMessage = nil
             }
         }

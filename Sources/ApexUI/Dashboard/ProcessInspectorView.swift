@@ -138,7 +138,9 @@ public struct ProcessInspectorView: View {
         }
         .sheet(isPresented: $showingAllSystemdServices) {
             SystemdAllServicesSheet(services: services) { svc in
-                activeLogTarget = .systemd(svc)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                    activeLogTarget = .systemd(svc)
+                }
             }
             .apexTheme()
         }
@@ -715,8 +717,8 @@ public struct ProcessInspectorView: View {
                 }
             }
             
-            if fetchedItems.isEmpty {
-                // Populate default system processes for offline or preview mode
+            if sshClient == nil, fetchedItems.isEmpty {
+                // Populate default system processes only in standalone SwiftUI preview mode without a session client
                 fetchedItems = [
                     ProcessDetailItem(pid: 1, user: "root", cpuPercent: 0.0, memPercent: 0.1, rssBytes: 11840 * 1024, state: .sleeping, command: "systemd", fullCommandLine: "/sbin/init"),
                     ProcessDetailItem(pid: 684, user: "root", cpuPercent: 0.1, memPercent: 0.1, rssBytes: 8420 * 1024, state: .sleeping, command: "sshd", fullCommandLine: "/usr/sbin/sshd -D"),

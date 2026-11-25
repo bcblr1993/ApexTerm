@@ -431,11 +431,19 @@ private struct SFTPSettingsTab: View {
 private struct BackupSettingsTab: View {
     @ObservedObject private var themeSettings = AppSettings.shared
     @ObservedObject private var syncManager = iCloudSyncManager.shared
+    @State private var alertTitle: String = "提示"
     @State private var alertMessage: String?
     @State private var isShowingAlert = false
     @State private var isSyncingAction = false
+    @State private var pendingForceSyncAction: ForceSyncAction?
     @State private var showingGroupExportSheet = false
     @State private var showingGroupImportSheet = false
+
+    private enum ForceSyncAction: String, Identifiable {
+        case overwriteCloud
+        case overwriteLocal
+        var id: String { rawValue }
+    }
     
     var body: some View {
         Form {
@@ -510,7 +518,7 @@ private struct BackupSettingsTab: View {
                             tint: ApexStyle.accent,
                             size: .small
                         ) {
-                            runForceUpload()
+                            pendingForceSyncAction = .overwriteCloud
                         }
                         .disabled(isSyncingAction)
                         
@@ -520,7 +528,7 @@ private struct BackupSettingsTab: View {
                             tint: ApexStyle.accent,
                             size: .small
                         ) {
-                            runForceDownload()
+                            pendingForceSyncAction = .overwriteLocal
                         }
                         .disabled(isSyncingAction)
                     }
@@ -592,6 +600,7 @@ private struct BackupSettingsTab: View {
         .formStyle(.grouped)
         .sheet(isPresented: $showingGroupExportSheet) {
             GroupShareExportSheet(store: SessionStore.shared) { summary in
+                alertTitle = "导出完成"
                 alertMessage = summary
                 isShowingAlert = true
             }
@@ -599,15 +608,42 @@ private struct BackupSettingsTab: View {
         }
         .sheet(isPresented: $showingGroupImportSheet) {
             GroupShareImportSheet(store: SessionStore.shared) { result in
+                alertTitle = "导入完成"
                 alertMessage = result.summaryText
                 isShowingAlert = true
             }
             .apexTheme()
         }
-        .alert("同步状态", isPresented: $isShowingAlert) {
+        .alert(alertTitle, isPresented: $isShowingAlert) {
             Button("好的", role: .cancel) {}
         } message: {
             Text(alertMessage ?? "")
+        }
+        .confirmationDialog(
+            pendingForceSyncAction == .overwriteCloud ? "确认用本地配置覆盖云端？" : "确认用云端配置覆盖本地？",
+            isPresented: Binding(
+                get: { pendingForceSyncAction != nil },
+                set: { if !$0 { pendingForceSyncAction = nil } }
+            ),
+            presenting: pendingForceSyncAction
+        ) { action in
+            Button(action == .overwriteCloud ? "上传并覆盖云端" : "下载并覆盖本地", role: .destructive) {
+                pendingForceSyncAction = nil
+                if action == .overwriteCloud {
+                    runForceUpload()
+                } else {
+                    runForceDownload()
+                }
+            }
+            Button("取消", role: .cancel) {
+                pendingForceSyncAction = nil
+            }
+        } message: { action in
+            Text(
+                action == .overwriteCloud
+                    ? "将使用当前设备上的会话、命令和隧道覆盖 iCloud 云端备份。"
+                    : "将使用 iCloud 云端配置替换本机当前会话、命令、书签与隧道配置，不可撤销。"
+            )
         }
     }
     
@@ -654,12 +690,14 @@ private struct BackupSettingsTab: View {
                 let res = try await syncManager.syncNow()
                 await MainActor.run {
                     isSyncingAction = false
+                    alertTitle = "同步状态"
                     alertMessage = res.message
                     isShowingAlert = true
                 }
             } catch {
                 await MainActor.run {
                     isSyncingAction = false
+                    alertTitle = "同步状态"
                     alertMessage = error.localizedDescription
                     isShowingAlert = true
                 }
@@ -674,12 +712,14 @@ private struct BackupSettingsTab: View {
                 let res = try await syncManager.syncNow(withTemporaryStrategy: .overwriteCloud)
                 await MainActor.run {
                     isSyncingAction = false
+                    alertTitle = "同步状态"
                     alertMessage = res.message
                     isShowingAlert = true
                 }
             } catch {
                 await MainActor.run {
                     isSyncingAction = false
+                    alertTitle = "同步状态"
                     alertMessage = error.localizedDescription
                     isShowingAlert = true
                 }
@@ -694,12 +734,14 @@ private struct BackupSettingsTab: View {
                 let res = try await syncManager.syncNow(withTemporaryStrategy: .overwriteLocal)
                 await MainActor.run {
                     isSyncingAction = false
+                    alertTitle = "同步状态"
                     alertMessage = res.message
                     isShowingAlert = true
                 }
             } catch {
                 await MainActor.run {
                     isSyncingAction = false
+                    alertTitle = "同步状态"
                     alertMessage = error.localizedDescription
                     isShowingAlert = true
                 }
@@ -717,9 +759,11 @@ private struct BackupSettingsTab: View {
             do {
                 let data = try SessionStore.shared.exportSessionsJSON()
                 try data.write(to: url)
+                alertTitle = "导出完成"
                 alertMessage = L10n.exportSuccess
                 isShowingAlert = true
             } catch {
+                alertTitle = "导出失败"
                 alertMessage = "导出失败: \(error.localizedDescription)"
                 isShowingAlert = true
             }
@@ -735,9 +779,11 @@ private struct BackupSettingsTab: View {
             do {
                 let configText = SessionBundleExporter.generateOpenSSHConfig(from: SessionStore.shared.sessions)
                 try configText.write(to: url, atomically: true, encoding: .utf8)
+                alertTitle = "导出完成"
                 alertMessage = "已成功导出标准 OpenSSH Config 文件"
                 isShowingAlert = true
             } catch {
+                alertTitle = "导出失败"
                 alertMessage = "导出 OpenSSH Config 失败: \(error.localizedDescription)"
                 isShowingAlert = true
             }

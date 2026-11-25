@@ -23,6 +23,8 @@ public struct SessionEditModal: View {
     @State private var passphrase: String = ""
     @State private var didFinishLoadingInitialSecret: Bool = false
     @State private var didFinishLoadingInitialPassphrase: Bool = false
+    @State private var didLoadInitialSecretValue: Bool = false
+    @State private var didLoadInitialPassphraseValue: Bool = false
     @State private var selectedVaultKeyId: UUID? = nil
     @State private var jumpServerChain: [UUID] = []
     @State private var forwardAgent: Bool = false
@@ -41,6 +43,7 @@ public struct SessionEditModal: View {
     @State private var environmentVariablesText: String = ""
     @State private var saveError: String?
     @State private var isTestingConnection: Bool = false
+    @State private var testAttemptId: UUID = UUID()
     @State private var testResult: SSHTestConnectionResult?
     @State private var cachedCertificateInfo = SSHCertificateInfo(isValid: false, keyType: nil, comment: nil)
     
@@ -92,7 +95,7 @@ public struct SessionEditModal: View {
 
     /// Keeps writing to the session's current managed reference (which may have moved to a fresh
     /// `ssh_<UUID>` after a keychain ownership conflict) instead of always `ssh_<sessionId>`.
-    public static func secretReference(prefix: String, sessionId: UUID, existing: SSHAuthMethod?) -> String {
+    nonisolated public static func secretReference(prefix: String, sessionId: UUID, existing: SSHAuthMethod?) -> String {
         let current: String?
         switch existing {
         case .password(let ref): current = ref
@@ -216,6 +219,144 @@ public struct SessionEditModal: View {
             }
         }
         return nil
+    }
+
+    /// Builds an updated `SSHAuthMethod` when saving an edited (or newly created) session.
+    /// Respects intentional clearing once the initial Keychain secret has loaded while preserving
+    /// unreadable or still-loading references.
+    nonisolated public static func editAuthMethodForSave(
+        authType: AuthType,
+        sessionId: UUID,
+        typedPassword: String,
+        typedPassphrase: String,
+        privateKeyPath: String,
+        certificatePath: String,
+        sourceAuthMethod: SSHAuthMethod?,
+        didFinishLoadingSecret: Bool,
+        didLoadInitialSecretValue: Bool,
+        didFinishLoadingPassphrase: Bool,
+        didLoadInitialPassphraseValue: Bool,
+        secretWriter: (String, String) throws -> String
+    ) throws -> SSHAuthMethod {
+        switch authType {
+        case .agent:
+            return .agent
+
+        case .password:
+            if !typedPassword.isEmpty {
+                let ref = secretReference(prefix: "ssh_", sessionId: sessionId, existing: sourceAuthMethod)
+                let savedKey = try secretWriter(ref, typedPassword)
+                return .password(keychainRef: savedKey)
+            }
+            if (!didFinishLoadingSecret || !didLoadInitialSecretValue),
+               case .password(let ref) = sourceAuthMethod, !ref.isEmpty {
+                return .password(keychainRef: ref)
+            }
+            return .password(keychainRef: "")
+
+        case .privateKey:
+            let keyPath = privateKeyPath.trimmingCharacters(in: .whitespacesAndNewlines)
+            let oldPassRef: String? = if case .privateKey(_, let ref) = sourceAuthMethod { ref } else { nil }
+            let passRef = try resolveEditedPassphraseRef(
+                sessionId: sessionId,
+                typedPassphrase: typedPassphrase,
+                sourceAuthMethod: sourceAuthMethod,
+                oldPassRef: oldPassRef,
+                didFinishLoadingPassphrase: didFinishLoadingPassphrase,
+                didLoadInitialPassphraseValue: didLoadInitialPassphraseValue,
+                secretWriter: secretWriter
+            )
+            return .privateKey(keychainRef: keyPath, passphraseRef: passRef)
+
+        case .certificate:
+            let keyPath = privateKeyPath.trimmingCharacters(in: .whitespacesAndNewlines)
+            let certPath = certificatePath.trimmingCharacters(in: .whitespacesAndNewlines)
+            let oldPassRef: String? = if case .certificate(_, _, let ref) = sourceAuthMethod { ref } else { nil }
+            let passRef = try resolveEditedPassphraseRef(
+                sessionId: sessionId,
+                typedPassphrase: typedPassphrase,
+                sourceAuthMethod: sourceAuthMethod,
+                oldPassRef: oldPassRef,
+                didFinishLoadingPassphrase: didFinishLoadingPassphrase,
+                didLoadInitialPassphraseValue: didLoadInitialPassphraseValue,
+                secretWriter: secretWriter
+            )
+            return .certificate(keychainRef: keyPath, certificatePath: certPath, passphraseRef: passRef)
+        }
+    }
+
+    nonisolated private static func resolveEditedPassphraseRef(
+        sessionId: UUID,
+        typedPassphrase: String,
+        sourceAuthMethod: SSHAuthMethod?,
+        oldPassRef: String?,
+        didFinishLoadingPassphrase: Bool,
+        didLoadInitialPassphraseValue: Bool,
+        secretWriter: (String, String) throws -> String
+    ) throws -> String? {
+        if !typedPassphrase.isEmpty {
+            let ref = secretReference(prefix: "passphrase_", sessionId: sessionId, existing: sourceAuthMethod)
+            return try secretWriter(ref, typedPassphrase)
+        }
+        if (!didFinishLoadingPassphrase || !didLoadInitialPassphraseValue),
+           let oldPassRef, !oldPassRef.isEmpty {
+            return oldPassRef
+        }
+        return nil
+    }
+
+    public enum TestCredentialResolution: Sendable {
+        case resolved(authMethod: SSHAuthMethod, explicitSecret: String?)
+        case invalid(SSHTestConnectionResult)
+    }
+
+    /// Resolves candidate `SSHAuthMethod` and explicit secret (verbatim, including `$$`/quotes)
+    /// for "Test Connection", rejecting cleared passwords once loaded.
+    nonisolated public static func resolveTestCredentials(
+        authType: AuthType,
+        typedPassword: String,
+        typedPassphrase: String,
+        privateKeyPath: String,
+        certificatePath: String,
+        sourceAuthMethod: SSHAuthMethod?,
+        didFinishLoadingSecret: Bool,
+        didLoadInitialSecretValue: Bool,
+        didFinishLoadingPassphrase: Bool,
+        didLoadInitialPassphraseValue: Bool
+    ) -> TestCredentialResolution {
+        switch authType {
+        case .password:
+            if !typedPassword.isEmpty {
+                return .resolved(authMethod: .password(keychainRef: ""), explicitSecret: typedPassword)
+            }
+            if (!didFinishLoadingSecret || !didLoadInitialSecretValue),
+               case .password(let ref) = sourceAuthMethod, !ref.isEmpty {
+                return .resolved(authMethod: .password(keychainRef: ref), explicitSecret: nil)
+            }
+            return .invalid(SSHTestConnectionResult(isSuccess: false, latencyMs: 0, errorMessage: "请输入密码后再测试"))
+
+        case .privateKey:
+            let keyPath = privateKeyPath.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !typedPassphrase.isEmpty {
+                return .resolved(authMethod: .privateKey(keychainRef: keyPath, passphraseRef: nil), explicitSecret: typedPassphrase)
+            }
+            let existingPassRef: String? = if (!didFinishLoadingPassphrase || !didLoadInitialPassphraseValue),
+                                              case .privateKey(_, let passRef) = sourceAuthMethod { passRef } else { nil }
+            return .resolved(authMethod: .privateKey(keychainRef: keyPath, passphraseRef: existingPassRef), explicitSecret: nil)
+
+        case .certificate:
+            let keyPath = privateKeyPath.trimmingCharacters(in: .whitespacesAndNewlines)
+            let certPath = certificatePath.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !typedPassphrase.isEmpty {
+                return .resolved(authMethod: .certificate(keychainRef: keyPath, certificatePath: certPath, passphraseRef: nil), explicitSecret: typedPassphrase)
+            }
+            let existingPassRef: String? = if (!didFinishLoadingPassphrase || !didLoadInitialPassphraseValue),
+                                              case .certificate(_, _, let passRef) = sourceAuthMethod { passRef } else { nil }
+            return .resolved(authMethod: .certificate(keychainRef: keyPath, certificatePath: certPath, passphraseRef: existingPassRef), explicitSecret: nil)
+
+        case .agent:
+            return .resolved(authMethod: .agent, explicitSecret: nil)
+        }
     }
     
     public init(session: Session?, isCloning: Bool = false, onSave: @escaping (Session) -> Void) {
@@ -757,21 +898,21 @@ public struct SessionEditModal: View {
             transaction.disablesAnimations = true
             withTransaction(transaction) { loadInitialSessionData() }
         }
-        .onChange(of: host) { _, _ in testResult = nil }
-        .onChange(of: port) { _, _ in testResult = nil }
-        .onChange(of: username) { _, _ in testResult = nil }
-        .onChange(of: password) { _, _ in testResult = nil }
-        .onChange(of: authType) { _, _ in testResult = nil }
-        .onChange(of: privateKeyPath) { _, _ in testResult = nil }
-        .onChange(of: passphrase) { _, _ in testResult = nil }
+        .onChange(of: host) { _, _ in invalidateTestResult() }
+        .onChange(of: port) { _, _ in invalidateTestResult() }
+        .onChange(of: username) { _, _ in invalidateTestResult() }
+        .onChange(of: password) { _, _ in invalidateTestResult() }
+        .onChange(of: authType) { _, _ in invalidateTestResult() }
+        .onChange(of: privateKeyPath) { _, _ in invalidateTestResult() }
+        .onChange(of: passphrase) { _, _ in invalidateTestResult() }
         .onChange(of: certificatePath) { _, newValue in
-            testResult = nil
+            invalidateTestResult()
             cachedCertificateInfo = Self.inspectCertificateFile(atPath: newValue)
         }
-        .onChange(of: jumpServerChain) { _, _ in testResult = nil }
-        .onChange(of: forwardAgent) { _, _ in testResult = nil }
-        .onChange(of: compression) { _, _ in testResult = nil }
-        .onChange(of: proxyCommand) { _, _ in testResult = nil }
+        .onChange(of: jumpServerChain) { _, _ in invalidateTestResult() }
+        .onChange(of: forwardAgent) { _, _ in invalidateTestResult() }
+        .onChange(of: compression) { _, _ in invalidateTestResult() }
+        .onChange(of: proxyCommand) { _, _ in invalidateTestResult() }
     }
 
     nonisolated public static func inspectCertificateFile(atPath rawPath: String) -> SSHCertificateInfo {
@@ -852,8 +993,14 @@ public struct SessionEditModal: View {
         }
     }
 
+    private func invalidateTestResult() {
+        testAttemptId = UUID()
+        testResult = nil
+        isTestingConnection = false
+    }
+
     private var isValidPort: Bool {
-        guard let value = Int(port) else { return false }
+        guard let value = Int(port.trimmingCharacters(in: .whitespacesAndNewlines)) else { return false }
         return (1...65535).contains(value)
     }
 
@@ -874,57 +1021,29 @@ public struct SessionEditModal: View {
 
         let trimmedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines)
         let effectiveUsername = trimmedUsername.isEmpty ? "root" : trimmedUsername
-        let portInt = Int(port.trimmingCharacters(in: .whitespaces)) ?? 22
+        let portInt = Int(port.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 22
 
-        var candidateAuthMethod: SSHAuthMethod = .agent
-        var effectiveSecret: String? = nil
-
-        switch authType {
-        case .password:
-            if !password.isEmpty {
-                candidateAuthMethod = .password(keychainRef: "")
-                effectiveSecret = password
-            } else if case .password(let ref) = initialSession?.authMethod {
-                candidateAuthMethod = .password(keychainRef: ref)
-                effectiveSecret = nil
-            } else {
-                testResult = SSHTestConnectionResult(isSuccess: false, latencyMs: 0, errorMessage: "请输入密码后再测试")
-                return
-            }
-        case .privateKey:
-            let keyPath = privateKeyPath.trimmingCharacters(in: .whitespacesAndNewlines)
-            let existingPassRef: String?
-            if case .privateKey(_, let passRef) = initialSession?.authMethod {
-                existingPassRef = passRef
-            } else {
-                existingPassRef = nil
-            }
-            if !passphrase.isEmpty {
-                effectiveSecret = passphrase
-                candidateAuthMethod = .privateKey(keychainRef: keyPath, passphraseRef: nil)
-            } else {
-                effectiveSecret = nil
-                candidateAuthMethod = .privateKey(keychainRef: keyPath, passphraseRef: existingPassRef)
-            }
-        case .certificate:
-            let keyPath = privateKeyPath.trimmingCharacters(in: .whitespacesAndNewlines)
-            let certPath = certificatePath.trimmingCharacters(in: .whitespacesAndNewlines)
-            let existingPassRef: String?
-            if case .certificate(_, _, let passRef) = initialSession?.authMethod {
-                existingPassRef = passRef
-            } else {
-                existingPassRef = nil
-            }
-            if !passphrase.isEmpty {
-                effectiveSecret = passphrase
-                candidateAuthMethod = .certificate(keychainRef: keyPath, certificatePath: certPath, passphraseRef: nil)
-            } else {
-                effectiveSecret = nil
-                candidateAuthMethod = .certificate(keychainRef: keyPath, certificatePath: certPath, passphraseRef: existingPassRef)
-            }
-        case .agent:
-            candidateAuthMethod = .agent
-            effectiveSecret = nil
+        let resolvedCreds = Self.resolveTestCredentials(
+            authType: authType,
+            typedPassword: password,
+            typedPassphrase: passphrase,
+            privateKeyPath: privateKeyPath,
+            certificatePath: certificatePath,
+            sourceAuthMethod: initialSession?.authMethod,
+            didFinishLoadingSecret: didFinishLoadingInitialSecret,
+            didLoadInitialSecretValue: didLoadInitialSecretValue,
+            didFinishLoadingPassphrase: didFinishLoadingInitialPassphrase,
+            didLoadInitialPassphraseValue: didLoadInitialPassphraseValue
+        )
+        let candidateAuthMethod: SSHAuthMethod
+        let effectiveSecret: String?
+        switch resolvedCreds {
+        case .resolved(let authMethod, let secret):
+            candidateAuthMethod = authMethod
+            effectiveSecret = secret
+        case .invalid(let errorResult):
+            testResult = errorResult
+            return
         }
 
         let trimmedProxyCmd = proxyCommand.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -942,6 +1061,8 @@ public struct SessionEditModal: View {
             proxyCommand: trimmedProxyCmd.isEmpty ? nil : trimmedProxyCmd
         )
 
+        let attemptId = UUID()
+        testAttemptId = attemptId
         isTestingConnection = true
         testResult = nil
 
@@ -951,6 +1072,7 @@ public struct SessionEditModal: View {
                 explicitPassword: effectiveSecret
             )
             await MainActor.run {
+                guard self.testAttemptId == attemptId else { return }
                 withAnimation(ApexStyle.springSnappy) {
                     self.testResult = result
                     self.isTestingConnection = false
@@ -963,13 +1085,15 @@ public struct SessionEditModal: View {
         guard let s = initialSession else {
             didFinishLoadingInitialSecret = true
             didFinishLoadingInitialPassphrase = true
+            didLoadInitialSecretValue = false
+            didLoadInitialPassphraseValue = false
             return
         }
         name = Self.initialDisplayName(for: s, isCloning: isCloning)
         host = s.host
         port = "\(s.port)"
         username = s.username
-        folder = s.folder ?? "常用会话"
+        folder = SidebarView.normalizedFolder(of: s)
         tags = s.tags.joined(separator: ", ")
         colorHex = s.colorHex ?? "#0A84FF"
         agentlessMonitor = s.agentlessMonitorEnabled
@@ -991,6 +1115,8 @@ public struct SessionEditModal: View {
             authType = .password
             didFinishLoadingInitialSecret = false
             didFinishLoadingInitialPassphrase = true
+            didLoadInitialSecretValue = false
+            didLoadInitialPassphraseValue = false
             // If ref is the raw password or keychain key, load it
             Task {
                 let loaded: String?
@@ -1003,13 +1129,18 @@ public struct SessionEditModal: View {
                     loaded = nil
                 }
                 await MainActor.run {
-                    if let loaded, self.password.isEmpty { self.password = loaded }
+                    if let loaded, !loaded.isEmpty {
+                        self.didLoadInitialSecretValue = true
+                        if self.password.isEmpty { self.password = loaded }
+                    }
                     self.didFinishLoadingInitialSecret = true
                 }
             }
         case .privateKey(let keyPath, let passRef):
             authType = .privateKey
             didFinishLoadingInitialSecret = true
+            didLoadInitialSecretValue = false
+            didLoadInitialPassphraseValue = false
             privateKeyPath = keyPath
             selectedVaultKeyId = Self.matchedVaultKeyId(forPrivateKeyPath: keyPath, keys: SSHKeyVaultManager.shared.keys)
             if let ref = passRef, !ref.isEmpty {
@@ -1024,7 +1155,10 @@ public struct SessionEditModal: View {
                         loaded = nil
                     }
                     await MainActor.run {
-                        if let loaded, self.passphrase.isEmpty { self.passphrase = loaded }
+                        if let loaded, !loaded.isEmpty {
+                            self.didLoadInitialPassphraseValue = true
+                            if self.passphrase.isEmpty { self.passphrase = loaded }
+                        }
                         self.didFinishLoadingInitialPassphrase = true
                     }
                 }
@@ -1034,6 +1168,8 @@ public struct SessionEditModal: View {
         case .certificate(let keyPath, let certPath, let passRef):
             authType = .certificate
             didFinishLoadingInitialSecret = true
+            didLoadInitialSecretValue = false
+            didLoadInitialPassphraseValue = false
             privateKeyPath = keyPath
             certificatePath = certPath
             cachedCertificateInfo = Self.inspectCertificateFile(atPath: certPath)
@@ -1050,7 +1186,10 @@ public struct SessionEditModal: View {
                         loaded = nil
                     }
                     await MainActor.run {
-                        if let loaded, self.passphrase.isEmpty { self.passphrase = loaded }
+                        if let loaded, !loaded.isEmpty {
+                            self.didLoadInitialPassphraseValue = true
+                            if self.passphrase.isEmpty { self.passphrase = loaded }
+                        }
                         self.didFinishLoadingInitialPassphrase = true
                     }
                 }
@@ -1061,6 +1200,8 @@ public struct SessionEditModal: View {
             authType = .agent
             didFinishLoadingInitialSecret = true
             didFinishLoadingInitialPassphrase = true
+            didLoadInitialSecretValue = false
+            didLoadInitialPassphraseValue = false
         }
     }
     
@@ -1100,56 +1241,26 @@ public struct SessionEditModal: View {
                 saveError = (authType == .password ? "密码保存失败：" : "口令保存失败：") + error.localizedDescription
                 return
             }
-        } else if authType == .certificate {
-            let keyPath = privateKeyPath.trimmingCharacters(in: .whitespacesAndNewlines)
-            let certPath = certificatePath.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !passphrase.isEmpty {
-                let key: String
-                do {
-                    key = try KeychainStore.shared.save(key: Self.secretReference(prefix: "passphrase_", sessionId: sessionId, existing: initialSession?.authMethod), secret: passphrase)
-                } catch {
-                    saveError = "口令保存失败：\(error.localizedDescription)"
-                    return
-                }
-                authMethod = .certificate(keychainRef: keyPath, certificatePath: certPath, passphraseRef: key)
-            } else if case .certificate(_, _, let oldPassRef) = initialSession?.authMethod, passphrase.isEmpty {
-                authMethod = .certificate(keychainRef: keyPath, certificatePath: certPath, passphraseRef: oldPassRef)
-            } else {
-                authMethod = .certificate(keychainRef: keyPath, certificatePath: certPath, passphraseRef: nil)
-            }
-        } else if authType == .privateKey {
-            let path = privateKeyPath.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !passphrase.isEmpty {
-                let key: String
-                do {
-                    key = try KeychainStore.shared.save(key: Self.secretReference(prefix: "passphrase_", sessionId: sessionId, existing: initialSession?.authMethod), secret: passphrase)
-                } catch {
-                    saveError = "口令保存失败：\(error.localizedDescription)"
-                    return
-                }
-                authMethod = .privateKey(keychainRef: path, passphraseRef: key)
-            } else if case .privateKey(_, let oldPassRef) = initialSession?.authMethod, passphrase.isEmpty {
-                authMethod = .privateKey(keychainRef: path, passphraseRef: oldPassRef)
-            } else {
-                authMethod = .privateKey(keychainRef: path, passphraseRef: nil)
-            }
-        } else if authType == .password && !password.isEmpty {
-            let key: String
+        } else {
             do {
-                key = try KeychainStore.shared.save(key: Self.secretReference(prefix: "ssh_", sessionId: sessionId, existing: initialSession?.authMethod), secret: password)
+                authMethod = try Self.editAuthMethodForSave(
+                    authType: authType,
+                    sessionId: sessionId,
+                    typedPassword: password,
+                    typedPassphrase: passphrase,
+                    privateKeyPath: privateKeyPath,
+                    certificatePath: certificatePath,
+                    sourceAuthMethod: initialSession?.authMethod,
+                    didFinishLoadingSecret: didFinishLoadingInitialSecret,
+                    didLoadInitialSecretValue: didLoadInitialSecretValue,
+                    didFinishLoadingPassphrase: didFinishLoadingInitialPassphrase,
+                    didLoadInitialPassphraseValue: didLoadInitialPassphraseValue,
+                    secretWriter: { try KeychainStore.shared.save(key: $0, secret: $1) }
+                )
             } catch {
-                saveError = "密码保存失败：\(error.localizedDescription)"
+                saveError = (authType == .password ? "密码保存失败：" : "口令保存失败：") + error.localizedDescription
                 return
             }
-            authMethod = .password(keychainRef: key)
-        } else if authType == .password {
-            if case .password(let ref) = initialSession?.authMethod {
-                authMethod = .password(keychainRef: ref)
-            } else {
-                authMethod = .password(keychainRef: "")
-            }
-        } else {
-            authMethod = .agent
         }
 
         let newSession = Session(

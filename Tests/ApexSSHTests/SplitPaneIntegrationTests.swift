@@ -249,4 +249,35 @@ final class SplitPaneIntegrationTests: XCTestCase {
         XCTAssertEqual(tab.connectionState, .disconnected)
         XCTAssertEqual(tab.panes[0].connectionState, .disconnected)
     }
+
+    @MainActor
+    func testClosingPrimaryPaneMigratesActivePaneAndResetsMaximizeCleanly() {
+        let session = Session(name: "primary-close-test", host: "192.0.2.20", username: "ops")
+        let primaryClient = MockSSHSession(session: session)
+        let tab = TerminalTabItem(session: session, sshClient: primaryClient)
+        defer { tab.tearDown() }
+
+        tab.split(mode: .vertical)
+        XCTAssertEqual(tab.panes.count, 2)
+        tab.toggleMaximizeActivePane()
+        XCTAssertTrue(tab.isPaneMaximized)
+
+        let primaryPane = tab.panes[0]
+        let secondaryPane = tab.panes[1]
+
+        // Close primary pane -> secondary becomes primary, maximize resets, title & activePane migrate
+        tab.closePane(id: primaryPane.id)
+        XCTAssertTrue(primaryPane.isTornDown)
+        XCTAssertEqual(tab.panes.count, 1)
+        XCTAssertEqual(tab.splitMode, .single)
+        XCTAssertFalse(tab.isPaneMaximized)
+        XCTAssertEqual(tab.activePaneId, secondaryPane.id)
+        XCTAssertEqual(tab.panes[0].title, "primary-close-test")
+
+        var edited = session
+        edited.name = "primary-renamed"
+        tab.applySessionUpdate(edited)
+        XCTAssertEqual(tab.panes[0].title, "primary-renamed")
+        XCTAssertEqual(tab.displayTitle, "primary-renamed")
+    }
 }

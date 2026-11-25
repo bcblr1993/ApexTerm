@@ -589,6 +589,7 @@ private struct TransferTaskRow: View {
                             .foregroundColor(statusColor)
                             .lineLimit(1)
                             .truncationMode(.tail)
+                            .layoutPriority(1)
                             .help(statusLabel)
 
                         if task.status == .transferring {
@@ -600,21 +601,23 @@ private struct TransferTaskRow: View {
                                 .lineLimit(1)
                                 .fixedSize(horizontal: true, vertical: false)
                                 .foregroundColor(ApexStyle.accent)
-                            Text("·")
-                                .foregroundColor(ApexStyle.secondary)
                             if task.totalBytes > 0 {
+                                Text("·")
+                                    .foregroundColor(ApexStyle.secondary)
                                 Text("\(formattedBytes(task.transferredBytes)) / \(formattedBytes(task.totalBytes))")
                                     .font(.system(size: 10, design: .monospaced))
                                     .monospacedDigit()
                                     .lineLimit(1)
-                                    .fixedSize(horizontal: true, vertical: false)
+                                    .truncationMode(.tail)
                                     .foregroundColor(ApexStyle.secondary)
-                            } else {
+                            } else if task.transferredBytes > 0 {
+                                Text("·")
+                                    .foregroundColor(ApexStyle.secondary)
                                 Text(formattedBytes(task.transferredBytes))
                                     .font(.system(size: 10, design: .monospaced))
                                     .monospacedDigit()
                                     .lineLimit(1)
-                                    .fixedSize(horizontal: true, vertical: false)
+                                    .truncationMode(.tail)
                                     .foregroundColor(ApexStyle.secondary)
                             }
                         } else {

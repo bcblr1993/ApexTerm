@@ -462,4 +462,47 @@ final class TransferPanelUXTests: XCTestCase {
             window.orderOut(nil)
         }
     }
+
+    func testTransferDrawerNarrow320ptWithActiveTaskRendersCleanly() async throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TransferDrawerNarrowTests_\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let srcFile = tempDir.appendingPathComponent("very-long-production-bundle-archive-v2.0.tar.gz")
+        try Data(repeating: 0x41, count: 4096).write(to: srcFile)
+
+        let session = Session(name: "NarrowNode", host: "10.0.0.9", username: "root")
+        let mock = MockSSHSession(session: session)
+        let started = expectation(description: "Upload active")
+        let signaled = OSAllocatedUnfairLock(initialState: false)
+        mock.customUploadHandler = { _, _, progress in
+            progress(0.5)
+            let shouldSignal = signaled.withLock { flag -> Bool in
+                guard !flag else { return false }
+                flag = true
+                return true
+            }
+            if shouldSignal {
+                await MainActor.run { started.fulfill() }
+            }
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 50_000_000)
+            }
+        }
+
+        let manager = TransferManager(distributionChannel: .direct)
+        defer {
+            manager.cancelAllTasks()
+            manager.clearCompleted()
+        }
+        manager.enqueueUpload(session: mock, localURL: srcFile, remotePath: "/var/backups/\(srcFile.lastPathComponent)")
+        await fulfillment(of: [started], timeout: 3.0)
+
+        let drawer = TransferDrawer(isExpanded: .constant(true), manager: manager)
+        let host = NSHostingView(rootView: drawer.apexTheme())
+        host.frame = NSRect(x: 0, y: 0, width: 320, height: 220)
+        host.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(host.subviews.count, 0, "TransferDrawer must lay out cleanly at 320pt floating card width")
+    }
 }

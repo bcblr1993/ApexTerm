@@ -450,7 +450,8 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
                     if !SSHTunnelManager.shared.state(for: t.id).isRunning {
                         let pw = await SSHTunnelManager.resolveSecret(for: self.session)
                         guard p.isCurrentConnectAttempt(attemptId), !p.isTornDown, !self.isTornDown else { return }
-                        let sshpass = (self.sshClient as? NativeSSHSession)?.sshpassExecutablePath
+                        let sshpass = (p.sshClient as? NativeSSHSession)?.sshpassExecutablePath
+                            ?? (self.sshClient as? NativeSSHSession)?.sshpassExecutablePath
                         try? SSHTunnelManager.shared.startTunnel(id: t.id, session: self.session, password: pw, privateKeyPath: self.session.privateKeyPath, sshpassPath: sshpass)
                     }
                 }
@@ -640,6 +641,7 @@ public struct WorkspaceView: View {
     @State private var transferDrawer = TransferDrawerPresentation()
     @State private var workspaceContentSize: CGSize = .zero
     @State private var hudToastMessage: String?
+    @State private var hudToastToken = UUID()
     @State private var hudToastIsWarning: Bool = false
     @State private var pendingSnippetForVariables: Snippet? = nil
     @State private var pendingSnippetVariables: [String: String] = [:]
@@ -975,11 +977,15 @@ public struct WorkspaceView: View {
                     let trimmed = tabRenameText.trimmingCharacters(in: .whitespacesAndNewlines)
                     tab.customTitle = (trimmed.isEmpty || trimmed == tab.session.name) ? nil : trimmed
                 }
+                tabToRename = nil
             }
             Button("恢复默认名称", role: .destructive) {
                 tabToRename?.customTitle = nil
+                tabToRename = nil
             }
-            Button("取消", role: .cancel) {}
+            Button("取消", role: .cancel) {
+                tabToRename = nil
+            }
         } message: {
             Text("自定义该标签页的显示名称，输入留空或恢复默认将恢复为服务器名称。")
         }
@@ -1164,10 +1170,12 @@ public struct WorkspaceView: View {
     }
     
     private func showHUDToast(_ message: String, isWarning: Bool = false) {
+        let token = UUID()
+        hudToastToken = token
         hudToastIsWarning = isWarning || message.hasPrefix("未检测到")
         hudToastMessage = message
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-            if self.hudToastMessage == message {
+            if self.hudToastToken == token {
                 self.hudToastMessage = nil
             }
         }
@@ -1924,7 +1932,7 @@ private struct WorkspaceActiveTabSplitView: View {
                         connectionState: activeTargetPane?.connectionState ?? tab.connectionState,
                         tabID: tab.id
                     )
-                    .id(activeTargetPane?.id ?? tab.id)
+                    .id(tab.id)
                     .frame(height: sftpHeight)
                 }
             }

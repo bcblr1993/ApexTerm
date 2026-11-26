@@ -2,6 +2,43 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.31.0] - 2026-11-26 (Build 2026112603)
+
+### ✨ 新增特性 (Features)
+- **SSH ControlMaster 连接复用池与隧道自动重连 (`SSHControlMasterPool`, `NativeSSHSession`, `SSHTunnelManager`, `SSHTunnelModalView`)**：
+  - 新增 `SSHControlMasterPool`，对同主机、端口、认证密钥与跳板机链的多标签终端、SFTP、Agentless 监控与批量运维任务自动共享已认证主通道，消除重复密码/2FA 握手并在退出时按引用计数安全回收，零 Mux 进程泄漏；
+  - `SSHTunnelManager` 支持异常断线后按指数退避策略自动自愈重连，并在隧道配置面板直观展示当前重连状态与诊断信息。
+- **实时远程日志追踪、双栏文件管理与校验续传 (`RemoteLogTailStreamer`, `RemoteLogTailSheet`, `LocalDualPaneView`, `QuickEditorView`, `TransferManager`, `SFTPView`)**：
+  - 新增 `RemoteLogTailStreamer` 与 `RemoteLogTailSheet`，免下载直接对远端大日志执行流式 `tail -F`，支持 ANSI 转义剥离、关键字实时过滤与暂停/恢复追踪；
+  - 新增 `LocalDualPaneView` 本地/远程双栏文件管理视图、SFTP 可点击交互路径面包屑、快捷编辑器与远端版本双窗格 Diff 对比，以及 `TransferManager` 断点续传、SHA-256 校验与批量上传自动 `mkdir -p` 创建多级目录。
+- **终端专业交互增强：OSC 8 超链接、文件行跳转、触发器引擎与命令块时间线 (`TerminalViewBridge`, `RingBuffer`, `VTParser`, `SGRStyle`, `KeywordHighlighter`, `ShellIntegrationTracker`, `Trigger`)**：
+  - 支持 `⌘+点击` 终端 `OSC 8` 超链接与 `file:line[:col]` 路径智能识别（结合当前工作目录直达定位），新增命令块时间线（含退出码、耗时徽章与失败命令快速跳转）及 `SGR 2` 暗淡字效；
+  - 新增触发器规则引擎（关键字高亮、桌面通知与可选自动响应，默认关闭自动响应并内置 5 秒冷却防回声环）与终端正则（`.*`）/大小写敏感（`Aa`）查找。
+- **iCloud v2 多设备同步、加密密钥库备份与审计日志脱敏 (`iCloudSyncManager`, `iCloudSyncPayload`, `iCloudConflictDiffSheet`, `SSHKeyVaultManager`, `SSHKeyVaultSettingsView`, `SessionLogger`, `AuditLogViewerSheet`, `WorkspaceSnapshot`)**：
+  - 升级 iCloud Cloud Vault v2 同步协议，支持删除墓碑（Tombstone）传播、三向无损合并与 `iCloudConflictDiffSheet` 冲突差异预览；
+  - 新增 `.aetherkeyvault` 口令加密全库导出/导入备份（受 `AppLockManager` 鉴权保护）、会话审计日志敏感凭据自动脱敏与内置审计日志查看器（`AuditLogViewerSheet`），以及零凭据工作区拓扑快照保存与恢复。
+
+### ⚡️ 体验优化 (Improvements)
+- **多主机分屏布局、广播安全围栏与批量模板 (`WorkspaceView`, `BroadcastBar`, `BatchCommandTemplate`, `BatchOperationsSheet`, `SidebarView`, `CommandPaletteItem`)**：
+  - 新增 `1×2` / `2×1` / `1+2` / `2×2` 多窗格分屏布局与无损窗格放大（保留查找状态与滚动位置），支持按标签页勾选广播目标、`[PROD]` / `[STAGING]` / `[DEV]` 环境分级标签及生产环境高危二次确认；
+  - 新增 `BatchCommandTemplate` 可复用批量命令模板（支持 `{{var}}` 与 `{{date}}` 动态插值）以及命令面板/快捷键工作区全景联动。
+- **无代理容器实时指标与 Systemd 深度诊断 (`AgentlessMonitor`, `ContainerItem`, `ContainerAndLogsSheets`, `ProcessInspectorView`)**：
+  - 扩展 Docker / Podman 容器实时 CPU、内存与网络 IO 指标采集，以及 Systemd 单元状态、`cat` 配置查看与 `journalctl` 实时日志排查，全面保留核心系统服务防误停保护与注入校验。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- **全量自动化测试与 Tart VM 真机链路验证 (`./scripts/test_vm_acceptance.sh`)**：
+  - 全量执行 **817 项** XCTest（`ApexSSHTests` 707 项含 6 项环境条件跳过、`ApexCoreTests` 110 项；**0 失败**），覆盖 `TC-V31-01 ~ TC-V31-28`（29/29 通过）及全线历史门禁，含 **Tart VM (`macos27`) 真实 SSH/SFTP/监控集成测试 10/10 全部通过**；Swift 6 `-warnings-as-errors` 零警告。
+  - 真实公网 Linux 服务器端到端验证：`PublicServerIntegrationTests` 5/5 全部通过，`V31LiveSeoulE2ETests` 4/4 全部通过（覆盖连接复用池、实时 `tail -F`、批量模板与远端 `mkdir -p`、Systemd/容器探针、OSC 8/触发器、iCloud v2 墓碑同步与 `.aetherkeyvault` 加密往返）；全库保持 Zero-Bundle 安全合规（零私有 IP、明文凭据或私钥泄露）。
+- **8 大 Release 性能基准测试 (`FullPerformanceBenchmarkTests`, 8/8 通过)**：
+  - `[Benchmark 1]` RingBuffer 写入吞吐：`1,855,218 lines/s`（`187.54 MB/s`）
+  - `[Benchmark 2]` ANSI / TrueColor 颜色解析：`415,239 spans/s`
+  - `[Benchmark 3]` 内存水位与驻留集（RSS）：Release 峰值 `99.55 MB`（符合 `≤ 250 MB` 门禁）
+  - `[Benchmark 4]` 16 线程并发写入吞吐：`1,700,950 writes/s`
+  - `[Benchmark 5]` 64 核 Linux 指标解析：`14,664 parses/s`
+  - `[Benchmark 6]` OpenSSH 500 主机批量解析：`153,537 hosts/s`
+  - `[Benchmark 7]` SFTP 100 任务并发调度：`1,069 tasks/s`
+  - `[Benchmark 8]` 终端按键直通延迟：`6.59 μs`
+
 ## [v1.30.0] - 2026-11-26 (Build 2026112602)
 
 ### ✨ 新增特性 (Features)

@@ -11,6 +11,8 @@ public struct SSHTunnelModalView: View {
     @State private var isAddSheetPresented = false
     @State private var editingTunnel: SSHTunnel? = nil
     @State private var errorMessage: String? = nil
+    @State private var diagnosticTunnel: SSHTunnel? = nil
+    @State private var logViewerTunnel: SSHTunnel? = nil
     
     public init(store: SessionStore) {
         self.store = store
@@ -116,8 +118,17 @@ public struct SSHTunnelModalView: View {
                             tunnel: tunnel,
                             session: store.sessions.first(where: { $0.id == tunnel.sessionId }),
                             state: tunnelManager.state(for: tunnel.id),
+                            autoReconnect: tunnelManager.isAutoReconnectEnabled(for: tunnel.id),
+                            reconnectNote: tunnelManager.reconnectStatusNotes[tunnel.id],
+                            hasStderrLogs: !(tunnelManager.stderrLogs[tunnel.id]?.isEmpty ?? true),
                             onToggle: {
                                 toggleTunnel(tunnel)
+                            },
+                            onDiagnose: {
+                                diagnosticTunnel = tunnel
+                            },
+                            onViewLogs: {
+                                logViewerTunnel = tunnel
                             },
                             onEdit: {
                                 editingTunnel = tunnel
@@ -155,11 +166,13 @@ public struct SSHTunnelModalView: View {
         .sheet(isPresented: $isAddSheetPresented) {
             AddOrEditTunnelSheet(
                 existingTunnel: editingTunnel,
+                initialAutoReconnect: editingTunnel.map { tunnelManager.isAutoReconnectEnabled(for: $0.id) } ?? false,
                 sessions: store.sessions.filter { !$0.isLocal },
-                onSave: { newOrUpdated in
+                onSave: { newOrUpdated, autoReconnect in
                     if editingTunnel != nil {
                         let wasRunning = tunnelManager.state(for: newOrUpdated.id).canStop
                         try tunnelManager.updateTunnel(newOrUpdated)
+                        tunnelManager.setAutoReconnect(autoReconnect, for: newOrUpdated.id)
                         isAddSheetPresented = false
                         errorMessage = nil
                         if wasRunning {
@@ -168,6 +181,7 @@ public struct SSHTunnelModalView: View {
                         }
                     } else {
                         try tunnelManager.addTunnel(newOrUpdated)
+                        tunnelManager.setAutoReconnect(autoReconnect, for: newOrUpdated.id)
                         isAddSheetPresented = false
                         errorMessage = nil
                     }
@@ -175,6 +189,22 @@ public struct SSHTunnelModalView: View {
                 onCancel: {
                     isAddSheetPresented = false
                 }
+            )
+            .apexTheme()
+        }
+        .sheet(item: $diagnosticTunnel) { tunnel in
+            TunnelDiagnosticsSheet(
+                tunnel: tunnel,
+                session: store.sessions.first(where: { $0.id == tunnel.sessionId }),
+                availableSessions: store.sessions,
+                tunnelManager: tunnelManager
+            )
+            .apexTheme()
+        }
+        .sheet(item: $logViewerTunnel) { tunnel in
+            TunnelLogViewerSheet(
+                tunnel: tunnel,
+                tunnelManager: tunnelManager
             )
             .apexTheme()
         }
@@ -221,7 +251,12 @@ private struct TunnelRowView: View {
     let tunnel: SSHTunnel
     let session: Session?
     let state: SSHTunnelState
+    let autoReconnect: Bool
+    let reconnectNote: String?
+    let hasStderrLogs: Bool
     let onToggle: () -> Void
+    let onDiagnose: () -> Void
+    let onViewLogs: () -> Void
     let onEdit: () -> Void
     let onDelete: () -> Void
     
@@ -260,6 +295,17 @@ private struct TunnelRowView: View {
                             .background(ApexStyle.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 3))
                             .foregroundColor(ApexStyle.secondary)
                     }
+
+                    if autoReconnect {
+                        Text("自动重连")
+                            .font(.system(size: 9, weight: .medium))
+                            .lineLimit(1)
+                            .fixedSize()
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(ApexStyle.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 3))
+                            .foregroundColor(ApexStyle.accent)
+                    }
                 }
                 
                 HStack(spacing: 8) {
@@ -277,8 +323,14 @@ private struct TunnelRowView: View {
                             .truncationMode(.middle)
                     }
                 }
-                
-                if case .failed(let reason) = state {
+
+                if let reconnectNote, !reconnectNote.isEmpty {
+                    Text(reconnectNote)
+                        .font(.caption2)
+                        .foregroundColor(ApexStyle.warning)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                } else if case .failed(let reason) = state {
                     Text(reason)
                         .font(.caption2)
                         .foregroundColor(ApexStyle.error)
@@ -297,6 +349,21 @@ private struct TunnelRowView: View {
                 tint: state.canStop ? ApexStyle.error : ApexStyle.success
             ) {
                 onToggle()
+            }
+
+            ApexActionButton("诊断链路", icon: "stethoscope", tint: ApexStyle.accent, size: .small) {
+                onDiagnose()
+            }
+            .help("检查本地端口绑定、SSH Agent 与跳板机链路可达性")
+
+            ApexIconButton(
+                icon: "text.alignleft",
+                label: "查看实时 stderr 日志",
+                size: 24,
+                iconSize: 11,
+                tint: hasStderrLogs ? ApexStyle.accent : nil
+            ) {
+                onViewLogs()
             }
             
             // Edit Button
@@ -371,8 +438,9 @@ private struct TunnelRowView: View {
 /// Sheet to create or edit an SSH tunnel configuration
 struct AddOrEditTunnelSheet: View {
     let existingTunnel: SSHTunnel?
+    let initialAutoReconnect: Bool
     let sessions: [Session]
-    let onSave: (SSHTunnel) throws -> Void
+    let onSave: (SSHTunnel, Bool) throws -> Void
     let onCancel: () -> Void
     
     @State private var name: String = ""
@@ -383,6 +451,7 @@ struct AddOrEditTunnelSheet: View {
     @State private var targetHost: String = "localhost"
     @State private var targetPortString: String = "3306"
     @State private var autoStart: Bool = false
+    @State private var autoReconnect: Bool = false
     @State private var saveErrorMessage: String? = nil
     
     private var hasValidSession: Bool {
@@ -540,6 +609,9 @@ struct AddOrEditTunnelSheet: View {
             
             Toggle("连接会话时自动启动此隧道", isOn: $autoStart)
                 .font(.caption)
+
+            Toggle("断线自动重连 (异常退出 255 时指数退避重试)", isOn: $autoReconnect)
+                .font(.caption)
             
             Divider()
             
@@ -561,7 +633,7 @@ struct AddOrEditTunnelSheet: View {
                 ApexActionButton("保存", tint: ApexStyle.accent, size: .regular, isProminent: true) {
                     do {
                         saveErrorMessage = nil
-                        try onSave(draft)
+                        try onSave(draft, autoReconnect)
                     } catch {
                         saveErrorMessage = error.localizedDescription
                     }
@@ -582,6 +654,7 @@ struct AddOrEditTunnelSheet: View {
             onCancel()
         }
         .onAppear {
+            autoReconnect = initialAutoReconnect
             if let t = existingTunnel {
                 name = t.name
                 selectedSessionId = t.sessionId
@@ -595,5 +668,231 @@ struct AddOrEditTunnelSheet: View {
                 selectedSessionId = first.id
             }
         }
+    }
+}
+
+private struct TunnelDiagnosticsSheet: View {
+    let tunnel: SSHTunnel
+    let session: Session?
+    let availableSessions: [Session]
+    @ObservedObject var tunnelManager: SSHTunnelManager
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var report: SSHTunnelDiagnosticReport? = nil
+    @State private var isRunning: Bool = false
+    @State private var statusBanner: String? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: ApexStyle.s3) {
+            HStack(spacing: ApexStyle.s2) {
+                Image(systemName: "stethoscope")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundColor(ApexStyle.accent)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("隧道链路诊断 · \(tunnel.name)")
+                        .font(.headline)
+                    Text(tunnel.openSSHSpecifier)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundColor(ApexStyle.secondary)
+                }
+                Spacer()
+                if isRunning {
+                    ProgressView().controlSize(.small)
+                }
+                ApexActionButton("重新检测", icon: "arrow.clockwise", tint: ApexStyle.accent, size: .small) {
+                    runDiagnostics()
+                }
+                .disabled(isRunning)
+                ApexIconButton(icon: "xmark", label: "关闭", size: 24, iconSize: 11) {
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+            }
+
+            Divider()
+
+            if let statusBanner {
+                Text(statusBanner)
+                    .font(.caption)
+                    .foregroundColor(ApexStyle.success)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(ApexStyle.success.opacity(0.12), in: RoundedRectangle(cornerRadius: ApexStyle.controlRadius))
+            }
+
+            if let report {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: ApexStyle.s3) {
+                        diagnosticRow(
+                            title: "本地监听端口",
+                            ok: report.isLocalPortAvailable,
+                            detail: report.localPortMessage
+                        )
+                        diagnosticRow(
+                            title: "SSH Agent (SSH_AUTH_SOCK)",
+                            ok: report.isSSHAuthSockAvailable || !report.forwardAgentEnabled,
+                            detail: report.isSSHAuthSockAvailable
+                                ? "可用: \(report.sshAuthSockPath ?? "")"
+                                : (report.forwardAgentEnabled ? "未检测到有效的 SSH_AUTH_SOCK，agent 转发可能失败" : "未设置 SSH_AUTH_SOCK (当前未启用 ForwardAgent)")
+                        )
+
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("跳板链路与目标可达性 (\(report.hopResults.count) 跳)")
+                                .font(.caption.weight(.semibold))
+                                .foregroundColor(ApexStyle.secondary)
+                            ForEach(report.hopResults) { hop in
+                                diagnosticRow(
+                                    title: "\(hop.label) · \(hop.host):\(hop.port)",
+                                    ok: hop.isReachable && !hop.hasHostKeyConflict,
+                                    detail: hop.message
+                                )
+                            }
+                        }
+
+                        if report.hasHostKeyConflict, let cHost = report.conflictHost, let cPort = report.conflictPort {
+                            HStack(spacing: ApexStyle.s2) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundColor(ApexStyle.error)
+                                Text("检测到 \(cHost):\(cPort) 主机指纹冲突")
+                                    .font(.caption)
+                                    .foregroundColor(ApexStyle.error)
+                                Spacer()
+                                ApexActionButton("一键移除旧指纹", icon: "trash", tint: ApexStyle.warning, size: .small) {
+                                    do {
+                                        let removed = try SSHTunnelManager.clearHostKeyConflict(host: cHost, port: cPort)
+                                        statusBanner = "已从 known_hosts 移除 \(removed) 条冲突记录，正在重新诊断..."
+                                        runDiagnostics()
+                                    } catch {
+                                        statusBanner = "清理失败: \(error.localizedDescription)"
+                                    }
+                                }
+                            }
+                            .padding(10)
+                            .background(ApexStyle.error.opacity(0.10), in: RoundedRectangle(cornerRadius: ApexStyle.controlRadius))
+                        }
+                    }
+                }
+            } else if session == nil {
+                Text("未找到关联的 SSH 会话，无法诊断远端跳板链路。")
+                    .font(.caption)
+                    .foregroundColor(ApexStyle.error)
+                Spacer()
+            } else {
+                VStack {
+                    Spacer()
+                    ProgressView("正在检查本地端口与跳板链路...")
+                        .controlSize(.regular)
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity)
+            }
+
+            Divider()
+            HStack {
+                Spacer()
+                ApexActionButton("完成", tint: ApexStyle.accent, size: .regular, isProminent: true) {
+                    dismiss()
+                }
+            }
+        }
+        .padding(ApexStyle.s4)
+        .frame(width: 560, height: 420)
+        .onAppear {
+            runDiagnostics()
+        }
+    }
+
+    private func diagnosticRow(title: String, ok: Bool, detail: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: ok ? "checkmark.circle.fill" : "xmark.octagon.fill")
+                .font(.system(size: 13))
+                .foregroundColor(ok ? ApexStyle.success : ApexStyle.error)
+                .padding(.top, 1)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(ApexStyle.primary)
+                Text(detail)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(ApexStyle.secondary)
+                    .textSelection(.enabled)
+            }
+            Spacer()
+        }
+        .padding(8)
+        .background(ApexStyle.subtleSurface, in: RoundedRectangle(cornerRadius: ApexStyle.controlRadius))
+    }
+
+    private func runDiagnostics() {
+        guard let session else { return }
+        isRunning = true
+        let chain = SSHArgumentBuilder.resolveJumpChain(for: session, availableSessions: availableSessions).hops
+        Task {
+            let result = await tunnelManager.diagnoseTunnel(tunnel, session: session, jumpChain: chain)
+            await MainActor.run {
+                self.report = result
+                self.isRunning = false
+            }
+        }
+    }
+}
+
+private struct TunnelLogViewerSheet: View {
+    let tunnel: SSHTunnel
+    @ObservedObject var tunnelManager: SSHTunnelManager
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        let lines = tunnelManager.stderrLogs[tunnel.id] ?? []
+        VStack(alignment: .leading, spacing: ApexStyle.s3) {
+            HStack(spacing: ApexStyle.s2) {
+                Image(systemName: "text.alignleft")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundColor(ApexStyle.accent)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("隧道实时诊断输出 · \(tunnel.name)")
+                        .font(.headline)
+                    Text("显示最近 \(lines.count) 行 stderr / 重连事件")
+                        .font(.caption)
+                        .foregroundColor(ApexStyle.secondary)
+                }
+                Spacer()
+                ApexActionButton("复制", icon: "doc.on.doc", tint: ApexStyle.secondary, size: .small) {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(tunnelManager.stderrLogText(for: tunnel.id), forType: .string)
+                }
+                .disabled(lines.isEmpty)
+                ApexActionButton("清空", icon: "trash", tint: ApexStyle.secondary, size: .small) {
+                    tunnelManager.clearStderrLog(for: tunnel.id)
+                }
+                .disabled(lines.isEmpty)
+                ApexIconButton(icon: "xmark", label: "关闭", size: 24, iconSize: 11) {
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+            }
+
+            Divider()
+
+            ScrollView {
+                Text(lines.isEmpty ? "（暂无 stderr 日志输出）" : lines.joined(separator: "\n"))
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(ApexStyle.primary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+            }
+            .background(ApexStyle.subtleSurface, in: RoundedRectangle(cornerRadius: ApexStyle.controlRadius))
+
+            HStack {
+                Spacer()
+                ApexActionButton("关闭", tint: ApexStyle.accent, size: .regular, isProminent: true) {
+                    dismiss()
+                }
+            }
+        }
+        .padding(ApexStyle.s4)
+        .frame(width: 620, height: 420)
     }
 }

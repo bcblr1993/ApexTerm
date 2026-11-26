@@ -14,6 +14,7 @@ public struct ProcessInspectorView: View {
     @State private var processes: [ProcessDetailItem] = []
     @State private var services: [SystemdServiceItem] = []
     @State private var containers: [ContainerItem] = []
+    @State private var composeStacks: [DockerComposeStackItem] = []
     @State private var containerRuntime: ContainerRuntime? = nil
     @State private var containerErrorMessage: String? = nil
     @State private var listeningPorts: [ListeningPortItem] = []
@@ -212,9 +213,10 @@ public struct ProcessInspectorView: View {
     
     // MARK: - Systemd Services Strip
     private var systemdServicesStrip: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
+        let isOpenRC = services.first?.subState.lowercased().hasPrefix("openrc") ?? false
+        return ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                Text("Systemd 服务:")
+                Text(isOpenRC ? "OpenRC 服务:" : "Systemd 服务:")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundColor(ApexStyle.secondary)
                 
@@ -451,6 +453,38 @@ public struct ProcessInspectorView: View {
     // MARK: - Containers Table
     private var containersTable: some View {
         VStack(spacing: 0) {
+            if !composeStacks.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        Text("Compose 栈:")
+                            .font(.system(size: 10.5, weight: .semibold))
+                            .foregroundColor(ApexStyle.secondary)
+                        ForEach(composeStacks) { stack in
+                            HStack(spacing: 5) {
+                                Circle()
+                                    .fill(stack.isRunning ? ApexStyle.success : ApexStyle.secondary)
+                                    .frame(width: 6, height: 6)
+                                Text(stack.name)
+                                    .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+                                    .foregroundColor(ApexStyle.primary)
+                                Text(stack.status)
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundColor(stack.isRunning ? ApexStyle.success : ApexStyle.secondary)
+                            }
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(ApexStyle.subtleSurface, in: RoundedRectangle(cornerRadius: 5))
+                            .overlay(RoundedRectangle(cornerRadius: 5).stroke(ApexStyle.border.opacity(0.5), lineWidth: 0.75))
+                            .help(stack.configFiles.isEmpty ? stack.name : "\(stack.name)\n\(stack.configFiles)")
+                        }
+                    }
+                    .padding(.horizontal, ApexStyle.s4)
+                    .padding(.vertical, 6)
+                }
+                .background(ApexStyle.surface.opacity(0.5))
+                Divider()
+            }
+
             HStack(spacing: 8) {
                 Text("容器名 / ID")
                     .frame(width: 145, alignment: .leading)
@@ -459,8 +493,8 @@ public struct ProcessInspectorView: View {
                 Text("状态")
                     .frame(width: 72, alignment: .leading)
                 Text("运行时长")
-                    .frame(width: 88, alignment: .leading)
-                Text("端口映射")
+                    .frame(width: 82, alignment: .leading)
+                Text("实时资源 (CPU / MEM / NET / BLK) · 端口")
                     .frame(maxWidth: .infinity, alignment: .leading)
                 Text("操作")
                     .frame(width: 112, alignment: .trailing)
@@ -693,6 +727,7 @@ public struct ProcessInspectorView: View {
             var fetchedItems: [ProcessDetailItem] = []
             var fetchedServices: [SystemdServiceItem] = []
             var fetchedContainers: [ContainerItem] = []
+            var fetchedComposeStacks: [DockerComposeStackItem] = []
             var fetchedContainerRuntime: ContainerRuntime? = nil
             var fetchedContainerError: String? = nil
             var fetchedPorts: [ListeningPortItem] = []
@@ -711,12 +746,16 @@ public struct ProcessInspectorView: View {
                     do { return .success(try await client.executeCommandWithResult(AgentlessMonitor.containerListProbeCommand)) }
                     catch { return .failure(error) }
                 }()
+                async let composeAttempt: Result<SSHCommandResult, Error> = {
+                    do { return .success(try await client.executeCommandWithResult(AgentlessMonitor.dockerComposeStacksProbeCommand)) }
+                    catch { return .failure(error) }
+                }()
                 async let portsAttempt: Result<SSHCommandResult, Error> = {
                     do { return .success(try await client.executeCommandWithResult(AgentlessMonitor.listeningPortsProbeCommand)) }
                     catch { return .failure(error) }
                 }()
 
-                let (psResult, dynSvcResult, contResult, portsResult) = await (psAttempt, dynSvcAttempt, contAttempt, portsAttempt)
+                let (psResult, dynSvcResult, contResult, composeResult, portsResult) = await (psAttempt, dynSvcAttempt, contAttempt, composeAttempt, portsAttempt)
                 guard !Task.isCancelled else { return }
 
                 switch psResult {
@@ -741,6 +780,11 @@ public struct ProcessInspectorView: View {
                         fetchedServices = ProcessListParser.parseSystemdServices(rawSvc.stdout, monitoredServices: monitored)
                     }
                 }
+                if fetchedServices.isEmpty && !Task.isCancelled {
+                    if let rcRes = try? await client.executeCommandWithResult(AgentlessMonitor.openRCServicesProbeCommand), rcRes.exitCode == 0 {
+                        fetchedServices = AgentlessMonitor.parseOpenRCOutput(rcRes.stdout)
+                    }
+                }
 
                 switch contResult {
                 case .success(let res):
@@ -755,6 +799,18 @@ public struct ProcessInspectorView: View {
                     }
                 case .failure(let error):
                     fetchedContainerError = "容器探测失败: \(error.localizedDescription)"
+                }
+
+                if let runtime = fetchedContainerRuntime, fetchedContainers.contains(where: \.isRunning), !Task.isCancelled {
+                    if let statsRes = try? await client.executeCommandWithResult(AgentlessMonitor.containerStatsProbeCommand(runtime: runtime)),
+                       statsRes.exitCode == 0 {
+                        let stats = AgentlessMonitor.parseContainerStatsOutput(statsRes.stdout)
+                        fetchedContainers = AgentlessMonitor.mergingStats(stats, into: fetchedContainers)
+                    }
+                }
+
+                if case .success(let composeRes) = composeResult, composeRes.exitCode == 0 {
+                    fetchedComposeStacks = AgentlessMonitor.parseDockerComposeStacksOutput(composeRes.stdout)
                 }
 
                 if case .success(let portsRes) = portsResult, portsRes.exitCode == 0 {
@@ -795,6 +851,7 @@ public struct ProcessInspectorView: View {
             let finalItems = fetchedItems
             let finalServices = fetchedServices
             let finalContainers = fetchedContainers
+            let finalComposeStacks = fetchedComposeStacks
             let finalRuntime = fetchedContainerRuntime
             let finalContainerError = fetchedContainerError
             let finalPorts = fetchedPorts
@@ -804,6 +861,7 @@ public struct ProcessInspectorView: View {
                 self.processes = finalItems
                 self.services = finalServices
                 self.containers = finalContainers
+                self.composeStacks = finalComposeStacks
                 self.containerRuntime = finalRuntime
                 self.containerErrorMessage = finalContainerError
                 self.listeningPorts = finalPorts

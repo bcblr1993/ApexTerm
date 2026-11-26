@@ -26,6 +26,15 @@ struct SandboxSSHPaths: Sendable {
         controlSocket = temporary.appendingPathComponent("apx-" + identifier.replacingOccurrences(of: "-", with: "").prefix(16))
     }
 
+    static func pooled(
+        home: URL = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true),
+        temporary: URL = FileManager.default.temporaryDirectory,
+        hexIdentifier: String
+    ) -> SandboxSSHPaths {
+        let shortHex = String(hexIdentifier.replacingOccurrences(of: "-", with: "").prefix(6))
+        return SandboxSSHPaths(home: home, temporary: temporary, identifier: shortHex.isEmpty ? "000000" : shortHex)
+    }
+
     func prepare() throws {
         // Long sandbox temporary paths can still authenticate and transfer files
         // without multiplexing; never fall back to a shared non-container socket.

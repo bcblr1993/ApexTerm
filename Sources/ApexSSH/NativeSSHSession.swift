@@ -123,6 +123,11 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     private var storedConnectTimeoutSeconds: Int = 15
     private let controlSocketIdentifier: String
     private let disableControlPersist: Bool
+    private let controlPool: SSHControlMasterPool
+    private let useControlPoolOverride: Bool?
+    private let sandboxHomeURL: URL
+    private let sandboxTemporaryURL: URL
+    private var pooledLease: SSHControlMasterPool.Lease?
     private let controlSocketGate = ControlSocketGate()
     private let inputQueue = DispatchQueue(label: "com.apexterm.pty-input", qos: .userInteractive)
     private var childPid: pid_t = -1
@@ -306,19 +311,24 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     public init(session: Session, distributionChannel: DistributionChannel = .current,
                 fileAccessStore: FileAccessStore = .shared, bridgeExecutableURL: URL? = nil,
                 sandboxHomeURL: URL? = nil, sandboxTemporaryURL: URL? = nil,
-                availableSessions: [Session]? = nil, disableControlPersist: Bool = false) {
+                availableSessions: [Session]? = nil, disableControlPersist: Bool = false,
+                controlPool: SSHControlMasterPool = .shared, useControlPool: Bool? = nil) {
         self.session = session
         self.storedTerminalType = session.terminalType
         self.distributionChannel = distributionChannel
         self.fileAccessStore = fileAccessStore
         self.disableControlPersist = disableControlPersist
+        self.controlPool = controlPool
+        self.useControlPoolOverride = useControlPool
         self.bridgeExecutableURL = bridgeExecutableURL ?? URL(fileURLWithPath: Bundle.main.bundlePath + "/Contents/MacOS/ApexSSHBridge")
+        let homeURL = sandboxHomeURL ?? URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
         let tempDir = sandboxTemporaryURL ?? FileManager.default.temporaryDirectory
+        self.sandboxHomeURL = homeURL
+        self.sandboxTemporaryURL = tempDir
         self.connectionLogDirectory = tempDir
         let socketID = String(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(8))
         self.controlSocketIdentifier = socketID
-        self.sandboxPaths = SandboxSSHPaths(home: sandboxHomeURL ?? URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true),
-            temporary: tempDir, identifier: socketID)
+        self.sandboxPaths = SandboxSSHPaths(home: homeURL, temporary: tempDir, identifier: socketID)
         if let availableSessions {
             let resolved = SSHArgumentBuilder.resolveJumpChain(for: session, availableSessions: availableSessions)
             self.resolvedJumpChain = resolved.hops
@@ -659,12 +669,15 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         
         await resolvePasswordIfNeeded()
         if Task.isCancelled || stateLock.withLock({ self.activeAttemptId != attemptId || self.explicitDisconnectRequested }) {
+            releasePoolLeaseIfNeeded()
             transitionConnectionState(for: attemptId, to: .disconnected)
             throw CancellationError()
         }
+        _ = ensurePoolLeaseIfNeeded()
         let keyAccess: FileAccessLease?
         do { keyAccess = try acquirePrivateKeyAccess() }
         catch {
+            releasePoolLeaseIfNeeded()
             transitionConnectionState(for: attemptId, to: .failed(error.localizedDescription))
             throw error
         }
@@ -674,6 +687,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         let certAccess: FileAccessLease?
         do { certAccess = try acquireCertificateAccess() }
         catch {
+            releasePoolLeaseIfNeeded()
             transitionConnectionState(for: attemptId, to: .failed(error.localizedDescription))
             throw error
         }
@@ -687,6 +701,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         let logFd = open(logPath, O_RDONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC, 0o600)
         guard logFd >= 0 else {
             let err = NSError(domain: "ApexSSH", code: Int(errno), userInfo: [NSLocalizedDescriptionKey: "无法创建连接状态通道"])
+            releasePoolLeaseIfNeeded()
             transitionConnectionState(for: attemptId, to: .failed(err.localizedDescription))
             throw err
         }
@@ -707,6 +722,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             "-o", "LogLevel=DEBUG1",
             "-E", logPath
         ]
+        sshArgs.append(contentsOf: controlMuxConnectArguments())
         sshArgs.append(contentsOf: sshAuthArgs(privateKeyURL: keyAccess?.url, certificateURL: certAccess?.url))
         sshArgs.append(contentsOf: advancedConnectionArgs(channel: .interactiveSSH))
         sshArgs.append(contentsOf: [
@@ -980,6 +996,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
                         action.keepAlive?.cancel()
                         action.probe?.cancel()
                         self.endSessionActivityAssertion()
+                        self.releasePoolLeaseIfNeeded()
                         action.grants?.close()
                         action.keyAccess?.close()
                         action.certAccess?.close()
@@ -1037,6 +1054,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         guard activation.activated else {
             Self.killProcessTreeAndReap(pid, maxWaitIterations: 15)
             close(master)
+            releasePoolLeaseIfNeeded()
             transitionConnectionState(for: attemptId, to: .disconnected)
             throw CancellationError()
         }
@@ -1387,6 +1405,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         cleanup.readSource?.cancel()
         if cleanup.readSource == nil, cleanup.masterFd >= 0 { close(cleanup.masterFd) }
         endSessionActivityAssertion()
+        releasePoolLeaseIfNeeded()
         cleanup.grants?.close()
         cleanup.keyAccess?.close()
         cleanup.certAccess?.close()
@@ -1490,6 +1509,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             close(bundle.masterFd)
         }
         endSessionActivityAssertion()
+        releasePoolLeaseIfNeeded()
         bundle.grants?.close()
         bundle.keyAccess?.close()
         bundle.certAccess?.close()
@@ -1597,7 +1617,11 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             return (s, descriptor)
         }
         source?.cancel()
-        await cleanupControlSocketAsync()
+        if stateLock.withLock({ pooledLease != nil }) {
+            releasePoolLeaseIfNeeded()
+        } else {
+            await cleanupControlSocketAsync()
+        }
         terminatePTYProcess()
         // Once a read source owns the descriptor, only its cancel handler closes it.
         // Closing twice can close an unrelated descriptor reused by another connection.
@@ -1707,7 +1731,9 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         pr?.cancel()
         source?.cancel()
         if source == nil, master >= 0 { close(master) }
-        if !disableControlPersist {
+        if stateLock.withLock({ pooledLease != nil }) {
+            releasePoolLeaseIfNeeded()
+        } else if !disableControlPersist {
             let socket = controlSocketPath
             let controlOpt = controlSocketOption
             if controlOpt != "ControlPath=none", FileManager.default.fileExists(atPath: socket) {
@@ -1811,12 +1837,91 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         }
     }
     
+    private var shouldUseControlPool: Bool {
+        !disableControlPersist && (useControlPoolOverride ?? SSHControlMasterPool.isPoolEnabled)
+    }
+
+    @discardableResult
+    func ensurePoolLeaseIfNeeded() -> SSHControlMasterPool.Lease? {
+        guard shouldUseControlPool else { return nil }
+        let existing: SSHControlMasterPool.Lease? = stateLock.withLock { pooledLease }
+        if let existing { return existing }
+        let hops = stateLock.withLock { resolvedJumpChain }
+        let lease = controlPool.acquireSocket(
+            for: session,
+            resolvedJumpHops: hops,
+            distributionChannel: distributionChannel,
+            sandboxHomeURL: sandboxHomeURL,
+            sandboxTemporaryURL: sandboxTemporaryURL,
+            bridgeExecutableURL: bridgeExecutableURL
+        )
+        return stateLock.withLock {
+            if let already = pooledLease {
+                // Another thread acquired concurrently; drop duplicate lease immediately.
+                DispatchQueue.global(qos: .utility).async { [controlPool = self.controlPool] in
+                    controlPool.releaseSocket(lease)
+                }
+                return already
+            }
+            pooledLease = lease
+            return lease
+        }
+    }
+
+    func releasePoolLeaseIfNeeded() {
+        let lease: SSHControlMasterPool.Lease? = stateLock.withLock {
+            let l = pooledLease
+            pooledLease = nil
+            return l
+        }
+        if let lease {
+            controlPool.releaseSocket(lease)
+        }
+    }
+
     var controlSocketPath: String {
-        distributionChannel == .appStore ? sandboxPaths.controlSocket.path : "/tmp/apex_ctrl_\(controlSocketIdentifier)"
+        if let lease = stateLock.withLock({ pooledLease }) {
+            return lease.socketPath
+        }
+        return distributionChannel == .appStore ? sandboxPaths.controlSocket.path : "/tmp/apex_ctrl_\(controlSocketIdentifier)"
     }
 
     private var controlSocketOption: String {
-        distributionChannel == .appStore ? sandboxPaths.controlSocketOption : "ControlPath=" + controlSocketPath
+        if let lease = stateLock.withLock({ pooledLease }) {
+            return lease.controlSocketOption
+        }
+        return distributionChannel == .appStore ? sandboxPaths.controlSocketOption : "ControlPath=" + controlSocketPath
+    }
+
+    public func controlMuxConnectArguments() -> [String] {
+        if disableControlPersist {
+            return [
+                "-o", "ControlMaster=no",
+                "-o", "ControlPersist=no"
+            ]
+        }
+        return [
+            "-o", "ControlMaster=auto",
+            "-o", controlSocketOption,
+            "-o", "ControlPersist=4h"
+        ]
+    }
+
+    public func scpControlMasterArguments() -> [String] {
+        if disableControlPersist {
+            return [
+                "-o", "ControlMaster=no",
+                "-o", "ControlPersist=no"
+            ]
+        }
+        guard shouldUseControlPool else {
+            return []
+        }
+        return [
+            "-o", "ControlMaster=auto",
+            "-o", controlSocketOption,
+            "-o", "ControlPersist=4h"
+        ]
     }
 
     public var controlMasterArguments: [String] {
@@ -1856,6 +1961,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
 
     public func probeRemoteHome() async -> String? {
         await resolvePasswordIfNeeded()
+        _ = ensurePoolLeaseIfNeeded()
         return await withControlSocketGate {
             let keyAccess: FileAccessLease?
             do { keyAccess = try acquirePrivateKeyAccess() }
@@ -2054,7 +2160,8 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     }
 
     private func runSingleAgentlessProbeCycle() async -> Bool {
-        await withControlSocketGate {
+        _ = ensurePoolLeaseIfNeeded()
+        return await withControlSocketGate {
             let process = Process()
             let sshpass = self.sshpassExecutablePath
             let ctrlArgs = self.controlMasterArguments
@@ -2204,6 +2311,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     /// Executes a one-shot remote command over multiplexed SSH socket
     public func executeCommand(_ command: String) async throws -> String {
         await resolvePasswordIfNeeded()
+        _ = ensurePoolLeaseIfNeeded()
         return try await withControlSocketGate {
             let process = Process()
 
@@ -2224,6 +2332,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     /// Executes a one-shot remote command and captures stdout, stderr, exit code, and duration in milliseconds.
     public func executeCommandWithResult(_ command: String) async throws -> SSHCommandResult {
         await resolvePasswordIfNeeded()
+        _ = ensurePoolLeaseIfNeeded()
         return try await withControlSocketGate {
             let process = Process()
 
@@ -2501,6 +2610,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     // SFTP implementation
     public func listDirectory(path: String) async throws -> [SFTPItem] {
         await resolvePasswordIfNeeded()
+        _ = ensurePoolLeaseIfNeeded()
         let keyAccess = try acquirePrivateKeyAccess()
         defer { keyAccess?.close() }
         let certAccess = try acquireCertificateAccess()
@@ -2743,6 +2853,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
 
     public func downloadFile(remotePath: String, localURL: URL, progress: @Sendable @escaping (Double) -> Void) async throws {
         await resolvePasswordIfNeeded()
+        _ = ensurePoolLeaseIfNeeded()
         let resolvedRemotePath = await resolveRemotePathForTransfer(remotePath)
         let keyAccess = try acquirePrivateKeyAccess()
         defer { keyAccess?.close() }
@@ -2762,6 +2873,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             "-o", "ServerAliveInterval=15",
             "-o", "ServerAliveCountMax=3"
         ]
+        baseArgs.append(contentsOf: scpControlMasterArguments())
         baseArgs.append(contentsOf: sshAuthArgs(privateKeyURL: keyAccess?.url, certificateURL: certAccess?.url))
         baseArgs.append(contentsOf: advancedConnectionArgs(channel: .scp))
         // Modern scp uses SFTP: the remote path is already one argv operand.
@@ -2796,6 +2908,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     
     public func uploadFile(localURL: URL, remotePath: String, progress: @Sendable @escaping (Double) -> Void) async throws {
         await resolvePasswordIfNeeded()
+        _ = ensurePoolLeaseIfNeeded()
         let resolvedRemotePath = await resolveRemotePathForTransfer(remotePath)
         let keyAccess = try acquirePrivateKeyAccess()
         defer { keyAccess?.close() }
@@ -2815,6 +2928,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             "-o", "ServerAliveInterval=15",
             "-o", "ServerAliveCountMax=3"
         ]
+        baseArgs.append(contentsOf: scpControlMasterArguments())
         baseArgs.append(contentsOf: sshAuthArgs(privateKeyURL: keyAccess?.url, certificateURL: certAccess?.url))
         baseArgs.append(contentsOf: advancedConnectionArgs(channel: .scp))
         // Modern scp uses SFTP: the remote path is already one argv operand.
@@ -3002,6 +3116,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
 
     private func executeRemoteCommand(_ cmd: String) async throws {
         await resolvePasswordIfNeeded()
+        _ = ensurePoolLeaseIfNeeded()
         try await withControlSocketGate {
             let keyAccess = try acquirePrivateKeyAccess()
             defer { keyAccess?.close() }
@@ -3113,5 +3228,20 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     public func changePermissions(remotePath: String, permissions: String) async throws {
         let target = await quoteRemoteShellOperand(remotePath)
         try await executeRemoteCommand("chmod -- \(Self.quoteRemotePath(permissions)) \(target)")
+    }
+
+    /// Diagnoses every hop in `jumpChain` plus the target `session` for TCP reachability and `known_hosts` conflicts.
+    public static func diagnoseRoute(
+        for session: Session,
+        jumpChain: [Session] = [],
+        knownHostsManager: KnownHostsManager = .shared,
+        timeoutSeconds: TimeInterval = 2.5
+    ) async -> [SSHHopDiagnosticResult] {
+        await SSHTunnelManager.diagnoseRouteHops(
+            for: session,
+            jumpChain: jumpChain,
+            knownHostsManager: knownHostsManager,
+            timeoutSeconds: timeoutSeconds
+        )
     }
 }

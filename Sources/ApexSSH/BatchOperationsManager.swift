@@ -90,10 +90,12 @@ public final class BatchOperationsManager: ObservableObject {
 
     private enum BatchJobPayload: Sendable {
         case command(String)
-        case fileUpload(localURLs: [URL], remoteDirectory: String)
+        case fileUpload(localURLs: [URL], remoteDirectory: String, createRemoteDirectory: Bool)
     }
 
     private struct HostTimeoutError: Error {}
+
+    @Published public var createRemoteDirectoryBeforeUpload: Bool = false
 
     @Published public var maxConcurrency: Int {
         didSet {
@@ -162,6 +164,17 @@ public final class BatchOperationsManager: ObservableObject {
         return "\(base)/\(fileName)"
     }
 
+    public nonisolated static func makeRemoteDirectoryCommand(for remoteDirectory: String) -> String? {
+        let trimmed = remoteDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != "~", trimmed != "/" else { return nil }
+        if trimmed.hasPrefix("~/") {
+            let sub = String(trimmed.dropFirst(2))
+            guard !sub.isEmpty else { return nil }
+            return "mkdir -p \"$HOME/\"\(AgentlessMonitor.posixSingleQuoted(sub))"
+        }
+        return "mkdir -p \(AgentlessMonitor.posixSingleQuoted(trimmed))"
+    }
+
     // MARK: - Progress & Summary Helpers
 
     public var totalCount: Int { results.count }
@@ -221,21 +234,30 @@ public final class BatchOperationsManager: ObservableObject {
         _ localURL: URL,
         toRemoteDirectory remoteDirectory: String,
         on sessions: [Session],
+        createRemoteDirectory: Bool? = nil,
         clientProvider: SessionClientProvider? = nil
     ) async {
-        await distributeFiles([localURL], toRemoteDirectory: remoteDirectory, on: sessions, clientProvider: clientProvider)
+        await distributeFiles(
+            [localURL],
+            toRemoteDirectory: remoteDirectory,
+            on: sessions,
+            createRemoteDirectory: createRemoteDirectory,
+            clientProvider: clientProvider
+        )
     }
 
     public func distributeFiles(
         _ localURLs: [URL],
         toRemoteDirectory remoteDirectory: String,
         on sessions: [Session],
+        createRemoteDirectory: Bool? = nil,
         clientProvider: SessionClientProvider? = nil
     ) async {
         let task = startBatchFileDistribution(
             localURLs,
             toRemoteDirectory: remoteDirectory,
             on: sessions,
+            createRemoteDirectory: createRemoteDirectory,
             clientProvider: clientProvider
         )
         await task.value
@@ -246,12 +268,18 @@ public final class BatchOperationsManager: ObservableObject {
         _ localURLs: [URL],
         toRemoteDirectory remoteDirectory: String,
         on sessions: [Session],
+        createRemoteDirectory: Bool? = nil,
         clientProvider: SessionClientProvider? = nil
     ) -> Task<Void, Never> {
         currentMode = .fileDistribution
         lastUploadURLs = localURLs
         lastRemoteDirectory = remoteDirectory
-        let payload = BatchJobPayload.fileUpload(localURLs: localURLs, remoteDirectory: remoteDirectory)
+        let shouldCreateDir = createRemoteDirectory ?? createRemoteDirectoryBeforeUpload
+        let payload = BatchJobPayload.fileUpload(
+            localURLs: localURLs,
+            remoteDirectory: remoteDirectory,
+            createRemoteDirectory: shouldCreateDir
+        )
         return launchBatch(
             sessions: sessions,
             payload: payload,
@@ -325,10 +353,13 @@ public final class BatchOperationsManager: ObservableObject {
             } else if session.host == "192.0.2.10" {
                 return MockSSHSession(session: session)
             } else {
+                let resolvedHops = SSHArgumentBuilder.resolveJumpChain(for: session, availableSessions: sessionsSnapshot).hops
+                let reuseLiveMux = SSHControlMasterPool.isPoolEnabled
+                    && SSHControlMasterPool.shared.hasActiveSocket(for: session, resolvedJumpHops: resolvedHops)
                 return NativeSSHSession(
                     session: session,
                     availableSessions: sessionsSnapshot,
-                    disableControlPersist: true
+                    disableControlPersist: !reuseLiveMux
                 )
             }
         }
@@ -339,7 +370,7 @@ public final class BatchOperationsManager: ObservableObject {
         if resetAllResults {
             lastTargetSessions = deduplicatedSessions
             let remoteDirHint: String? = {
-                if case .fileUpload(_, let dir) = payload { return dir }
+                if case .fileUpload(_, let dir, _) = payload { return dir }
                 return nil
             }()
             results = deduplicatedSessions.map {
@@ -527,7 +558,7 @@ public final class BatchOperationsManager: ObservableObject {
                     await manager?.applyCommandResult(runID: runID, sessionID: session.id, result: result)
                 }
 
-            case .fileUpload(let localURLs, let remoteDirectory):
+            case .fileUpload(let localURLs, let remoteDirectory, let createRemoteDirectory):
                 guard !localURLs.isEmpty else {
                     throw NSError(
                         domain: "ApexSSH.Batch",
@@ -536,6 +567,20 @@ public final class BatchOperationsManager: ObservableObject {
                     )
                 }
                 let uploadedPaths = try await runWithTimeout(seconds: timeoutSeconds) { [weak manager] in
+                    if createRemoteDirectory, let mkdirCmd = makeRemoteDirectoryCommand(for: remoteDirectory) {
+                        let mkdirResult = try await client.executeCommandWithResult(mkdirCmd)
+                        if mkdirResult.exitCode != 0 {
+                            let detail = [mkdirResult.stderr, mkdirResult.stdout]
+                                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                                .filter { !$0.isEmpty }
+                                .joined(separator: " ")
+                            throw NSError(
+                                domain: "ApexSSH.Batch",
+                                code: Int(mkdirResult.exitCode),
+                                userInfo: [NSLocalizedDescriptionKey: detail.isEmpty ? "创建远端目录失败 (退出码 \(mkdirResult.exitCode))" : "创建远端目录失败: \(detail)"]
+                            )
+                        }
+                    }
                     let totalFiles = localURLs.count
                     var paths: [String] = []
                     for (index, localURL) in localURLs.enumerated() {
@@ -720,7 +765,7 @@ public final class BatchOperationsManager: ObservableObject {
         case .command(let cmd):
             lines.append("- 模式: 批量执行命令")
             lines.append("- 命令: `\(cmd.replacingOccurrences(of: "`", with: "\\`"))`")
-        case .fileUpload(let urls, let dir):
+        case .fileUpload(let urls, let dir, _):
             lines.append("- 模式: 批量分发文件")
             let names = urls.map(\.lastPathComponent).joined(separator: ", ")
             lines.append("- 文件: `\(names)` -> `\(dir)`")

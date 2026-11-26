@@ -257,6 +257,233 @@ public final class AgentlessMonitor: Sendable {
         let clamped = min(max(1, lines), 1000)
         return "journalctl -u \(posixSingleQuoted(trimmed)) -n \(clamped) --no-pager 2>&1"
     }
+
+    // MARK: - Container Stats, Compose Stacks, Systemd Unit Status/Cat & OpenRC Fallback (v1.31.0)
+
+    public static func systemdStatusCommand(unit: String) -> String? {
+        let trimmed = unit.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard isValidSystemdUnitName(trimmed) else { return nil }
+        return "systemctl status \(posixSingleQuoted(trimmed)) --no-pager -n 30 2>&1"
+    }
+
+    public static func systemdCatCommand(unit: String) -> String? {
+        let trimmed = unit.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard isValidSystemdUnitName(trimmed) else { return nil }
+        return "systemctl cat \(posixSingleQuoted(trimmed)) --no-pager 2>&1"
+    }
+
+    public static func containerStatsProbeCommand(runtime: ContainerRuntime) -> String {
+        """
+        LC_ALL=C; export LC_ALL
+        \(runtime.rawValue) stats --no-stream --format '{{.ID}}\t{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}\t{{.NetIO}}\t{{.BlockIO}}\t{{.PIDs}}' 2>/dev/null
+        """
+    }
+
+    public static let containerStatsAutoProbeCommand = """
+    LC_ALL=C; export LC_ALL
+    if command -v docker >/dev/null 2>&1; then
+        docker stats --no-stream --format '{{.ID}}\t{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}\t{{.NetIO}}\t{{.BlockIO}}\t{{.PIDs}}' 2>/dev/null
+    elif command -v podman >/dev/null 2>&1; then
+        podman stats --no-stream --format '{{.ID}}\t{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}\t{{.NetIO}}\t{{.BlockIO}}\t{{.PIDs}}' 2>/dev/null
+    fi
+    """
+
+    public static func parseContainerStatsOutput(_ raw: String) -> [ContainerStatsItem] {
+        var stats: [ContainerStatsItem] = []
+        for rawLine in raw.components(separatedBy: .newlines) {
+            let trimmed = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, rawLine.contains("\t") else { continue }
+            let cols = rawLine.split(separator: "\t", omittingEmptySubsequences: false).map {
+                String($0).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            guard cols.count >= 7 else { continue }
+            let id = cols[0]
+            let name = cols[1]
+            if id.isEmpty && name.isEmpty { continue }
+            if id.uppercased() == "CONTAINER ID" || id.uppercased() == "ID" { continue }
+
+            let cpuText = cols[2]
+            let memUsage = cols[3]
+            let memPctText = cols[4]
+            let netIO = cols[5]
+            let blockIO = cols[6]
+            let pids = cols.count > 7 ? cols[7] : ""
+
+            let cpuVal = parsePercentValue(cpuText)
+            let memVal = parsePercentValue(memPctText)
+            stats.append(
+                ContainerStatsItem(
+                    containerIdOrName: id.isEmpty ? name : id,
+                    name: name.isEmpty ? id : name,
+                    cpuPercentText: cpuText,
+                    cpuPercent: cpuVal,
+                    memUsageText: memUsage,
+                    memPercentText: memPctText,
+                    memPercent: memVal,
+                    netIOText: netIO,
+                    blockIOText: blockIO,
+                    pidsText: pids
+                )
+            )
+        }
+        return stats
+    }
+
+    public static func mergingStats(_ stats: [ContainerStatsItem], into containers: [ContainerItem]) -> [ContainerItem] {
+        guard !stats.isEmpty else { return containers }
+        return containers.map { container in
+            var updated = container
+            if let matched = stats.first(where: { stat in
+                stat.containerIdOrName == container.id
+                    || stat.containerIdOrName == container.shortId
+                    || stat.name == container.name
+                    || (!stat.containerIdOrName.isEmpty && (container.id.hasPrefix(stat.containerIdOrName) || stat.containerIdOrName.hasPrefix(container.shortId)))
+            }) {
+                updated.stats = matched
+            }
+            return updated
+        }
+    }
+
+    private static func parsePercentValue(_ raw: String) -> Double {
+        let clean = raw
+            .replacingOccurrences(of: "%", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return Double(clean) ?? 0.0
+    }
+
+    public static let dockerComposeStacksProbeCommand = """
+    LC_ALL=C; export LC_ALL
+    if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+        docker compose ls -a --format json 2>/dev/null || docker compose ls -a 2>/dev/null
+    elif command -v docker-compose >/dev/null 2>&1; then
+        docker-compose ls 2>/dev/null
+    fi
+    """
+
+    public static func parseDockerComposeStacksOutput(_ raw: String) -> [DockerComposeStackItem] {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+
+        if trimmed.hasPrefix("[") || trimmed.hasPrefix("{") {
+            struct ComposeJSONRow: Decodable {
+                let Name: String?
+                let Status: String?
+                let ConfigFiles: String?
+                let name: String?
+                let status: String?
+                let configFiles: String?
+            }
+            if let data = trimmed.data(using: .utf8) {
+                if let array = try? JSONDecoder().decode([ComposeJSONRow].self, from: data) {
+                    return array.compactMap { row in
+                        let name = (row.Name ?? row.name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                        let status = (row.Status ?? row.status ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                        let configs = (row.ConfigFiles ?? row.configFiles ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !name.isEmpty else { return nil }
+                        return DockerComposeStackItem(name: name, status: status, configFiles: configs)
+                    }
+                }
+                if let single = try? JSONDecoder().decode(ComposeJSONRow.self, from: data),
+                   let name = (single.Name ?? single.name)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !name.isEmpty {
+                    return [DockerComposeStackItem(
+                        name: name,
+                        status: (single.Status ?? single.status ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+                        configFiles: (single.ConfigFiles ?? single.configFiles ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                    )]
+                }
+            }
+        }
+
+        // Fallback tabular output: NAME  STATUS  CONFIG FILES
+        var stacks: [DockerComposeStackItem] = []
+        var seen: Set<String> = []
+        for rawLine in raw.components(separatedBy: .newlines) {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else { continue }
+            let upper = line.uppercased()
+            if upper.hasPrefix("NAME ") && upper.contains("STATUS") { continue }
+
+            let cols: [String]
+            if line.contains("\t") {
+                cols = line.split(separator: "\t").map { String($0).trimmingCharacters(in: .whitespaces) }
+            } else {
+                cols = line.components(separatedBy: "  ")
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty }
+            }
+            guard cols.count >= 2, !cols[0].isEmpty, seen.insert(cols[0]).inserted else { continue }
+            stacks.append(DockerComposeStackItem(
+                name: cols[0],
+                status: cols[1],
+                configFiles: cols.count > 2 ? cols[2] : ""
+            ))
+        }
+        return stacks
+    }
+
+    public static let openRCServicesProbeCommand = """
+    LC_ALL=C; export LC_ALL
+    if command -v rc-status >/dev/null 2>&1; then
+        rc-status -a 2>/dev/null || rc-status 2>/dev/null
+    fi
+    """
+
+    public static func parseOpenRCOutput(_ raw: String) -> [SystemdServiceItem] {
+        var items: [SystemdServiceItem] = []
+        var seen: Set<String> = []
+        for rawLine in raw.components(separatedBy: .newlines) {
+            let trimmed = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            if trimmed.hasPrefix("Runlevel:") || trimmed.hasPrefix("Dynamic Runlevel:") {
+                continue
+            }
+            guard let openBracket = trimmed.lastIndex(of: "["),
+                  let closeBracket = trimmed.lastIndex(of: "]"),
+                  openBracket < closeBracket else {
+                continue
+            }
+            let serviceName = String(trimmed[..<openBracket]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let stateText = String(trimmed[trimmed.index(after: openBracket)..<closeBracket])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            guard !serviceName.isEmpty,
+                  isValidSystemdUnitName(serviceName),
+                  seen.insert(serviceName).inserted else {
+                continue
+            }
+
+            let activeState: String
+            switch stateText {
+            case "started", "active", "running":
+                activeState = "active"
+            case "crashed", "failed", "error":
+                activeState = "failed"
+            case "starting":
+                activeState = "activating"
+            default:
+                activeState = "inactive"
+            }
+            items.append(SystemdServiceItem(name: serviceName, activeState: activeState, subState: "openrc (\(stateText))"))
+        }
+        return items.sorted { lhs, rhs in
+            let lhsPriority = (lhs.activeState == "failed" ? 0 : (lhs.isRunning ? 1 : 2))
+            let rhsPriority = (rhs.activeState == "failed" ? 0 : (rhs.isRunning ? 1 : 2))
+            if lhsPriority != rhsPriority { return lhsPriority < rhsPriority }
+            return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+        }
+    }
+
+    public static func openRCActionCommand(unit: String, action: SystemdServiceAction) -> String? {
+        let trimmed = unit.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard isValidSystemdUnitName(trimmed) else { return nil }
+        let probeItem = SystemdServiceItem(name: trimmed, activeState: "active")
+        if action == .stop && probeItem.isProtectedForStop {
+            return nil
+        }
+        return "rc-service \(posixSingleQuoted(trimmed)) \(action.rawValue) 2>&1"
+    }
     
     // Previous CPU state for calculating deltas: (idle, total)
     public struct CpuTickState: Sendable {

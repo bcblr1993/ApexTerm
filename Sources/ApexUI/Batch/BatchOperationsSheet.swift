@@ -7,6 +7,7 @@ import ApexSSH
 /// Multi-host batch command execution & file distribution sheet.
 public struct BatchOperationsSheet: View {
     @ObservedObject private var themeSettings = AppSettings.shared
+    @ObservedObject private var templateStore = BatchCommandTemplateStore.shared
     @ObservedObject public var manager: BatchOperationsManager
     @Environment(\.dismiss) private var dismiss
 
@@ -24,12 +25,22 @@ public struct BatchOperationsSheet: View {
     }
 
     @State private var selectedSessionIDs: Set<UUID>
-    @State private var folderFilter: String = "全部"
+    @State private var selectedFolders: Set<String> = []
+    @State private var selectedTags: Set<String> = []
     @State private var hostSearchText: String = ""
     @State private var mode: BatchOperationMode
     @State private var commandText: String
+    @State private var templateVariables: [String: String] = [:]
+    @State private var selectedTemplateID: UUID? = nil
+    @State private var showingSaveTemplateSheet: Bool = false
+    @State private var newTemplateName: String = ""
+    @State private var newTemplateCategory: String = "自定义"
+    @State private var showingVariablePromptSheet: Bool = false
+    @State private var pendingLaunchAfterVarPrompt: Bool = false
     @State private var selectedLocalURLs: [URL]
     @State private var remoteDirectory: String
+    @State private var createRemoteDirectory: Bool = true
+    @State private var showProdConfirmation: Bool = false
     @State private var expandedResultIDs: Set<UUID> = []
     @State private var resultFilter: ResultFilter = .all
     @State private var toastMessage: String?
@@ -71,7 +82,7 @@ public struct BatchOperationsSheet: View {
            !targetFolder.isEmpty {
             let folders = SidebarView.folderNames(sessions: remotes, extraFolders: [], searchFilter: "")
             if let canonical = folders.first(where: { $0.caseInsensitiveCompare(targetFolder) == .orderedSame }) {
-                self._folderFilter = State(initialValue: canonical)
+                self._selectedFolders = State(initialValue: [canonical])
             }
         }
 
@@ -105,17 +116,62 @@ public struct BatchOperationsSheet: View {
     }
 
     private var folderOptions: [String] {
-        ["全部"] + SidebarView.folderNames(sessions: availableSessions, extraFolders: [], searchFilter: "")
+        SidebarView.folderNames(sessions: availableSessions, extraFolders: [], searchFilter: "")
+    }
+
+    private var tagOptions: [String] {
+        var seen: Set<String> = []
+        var result: [String] = []
+        for session in availableSessions {
+            for rawTag in session.tags {
+                let tag = rawTag.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !tag.isEmpty && seen.insert(tag.lowercased()).inserted {
+                    result.append(tag)
+                }
+            }
+        }
+        return result.sorted()
     }
 
     private var filteredSessions: [Session] {
         availableSessions.filter { session in
-            let matchesFolder = folderFilter == "全部"
-                || SidebarView.normalizedFolder(of: session).caseInsensitiveCompare(folderFilter) == .orderedSame
+            let matchesFolder = selectedFolders.isEmpty
+                || selectedFolders.contains(where: { SidebarView.normalizedFolder(of: session).caseInsensitiveCompare($0) == .orderedSame })
+            let matchesTags = selectedTags.isEmpty
+                || session.tags.contains(where: { tag in
+                    let trimmed = tag.trimmingCharacters(in: .whitespacesAndNewlines)
+                    return selectedTags.contains(where: { $0.caseInsensitiveCompare(trimmed) == .orderedSame })
+                })
             let matchesQuery = hostSearchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 || SidebarView.matchesSearch(session, filter: hostSearchText)
-            return matchesFolder && matchesQuery
+            return matchesFolder && matchesTags && matchesQuery
         }
+    }
+
+    public static func isProductionSession(_ session: Session) -> Bool {
+        if let hex = session.colorHex?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased(),
+           hex == "#FF453A" {
+            return true
+        }
+        let hasProdTag = session.tags.contains { raw in
+            let upper = raw.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            return upper == "PROD" || upper == "[PROD]" || upper == "PRODUCTION" || upper.contains("生产")
+        }
+        if hasProdTag { return true }
+        let folderUpper = (session.folder ?? "").trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        return folderUpper == "PROD" || folderUpper == "PRODUCTION" || folderUpper == "生产环境"
+    }
+
+    private var selectedProductionSessions: [Session] {
+        selectedSessions.filter { Self.isProductionSession($0) }
+    }
+
+    private var detectedCommandVariables: [String] {
+        BatchCommandTemplate.extractVariables(from: commandText)
+    }
+
+    private var resolvedCommandPreview: String {
+        BatchCommandTemplate.interpolate(commandText, context: templateVariables)
     }
 
     private var filteredResults: [BatchHostResult] {
@@ -177,6 +233,27 @@ public struct BatchOperationsSheet: View {
             Button("继续等待", role: .cancel) {}
         } message: {
             Text("当前仍有 \(manager.runningCount + manager.pendingCount) 台主机尚未完成，确定要关闭窗口吗？")
+        }
+        .confirmationDialog(
+            "即将对生产环境 ([PROD] / 红色标记) 主机执行操作",
+            isPresented: $showProdConfirmation
+        ) {
+            Button("确认执行 (\(selectedProductionSessions.count) 台生产主机)", role: .destructive) {
+                executeBatchNow()
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            let names = selectedProductionSessions.prefix(5).map(\.name).joined(separator: "、")
+            let suffix = selectedProductionSessions.count > 5 ? " 等 \(selectedProductionSessions.count) 台" : ""
+            Text("目标包含生产标记主机：\(names)\(suffix)。请确认操作安全后继续。")
+        }
+        .sheet(isPresented: $showingSaveTemplateSheet) {
+            saveTemplateSheet
+                .apexTheme()
+        }
+        .sheet(isPresented: $showingVariablePromptSheet) {
+            variablePromptSheet
+                .apexTheme()
         }
     }
 
@@ -271,12 +348,39 @@ public struct BatchOperationsSheet: View {
 
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
+                    ApexPillButton(
+                        title: "全部",
+                        isSelected: selectedFolders.isEmpty && selectedTags.isEmpty
+                    ) {
+                        selectedFolders.removeAll()
+                        selectedTags.removeAll()
+                    }
                     ForEach(folderOptions, id: \.self) { folder in
                         ApexPillButton(
                             title: folder,
-                            isSelected: folderFilter == folder
+                            icon: "folder",
+                            isSelected: selectedFolders.contains(folder)
                         ) {
-                            folderFilter = folder
+                            if selectedFolders.contains(folder) {
+                                selectedFolders.remove(folder)
+                            } else {
+                                selectedFolders.insert(folder)
+                            }
+                        }
+                    }
+                    if !tagOptions.isEmpty {
+                        Divider().frame(height: 14)
+                        ForEach(tagOptions, id: \.self) { tag in
+                            ApexPillButton(
+                                title: "#\(tag)",
+                                isSelected: selectedTags.contains(tag)
+                            ) {
+                                if selectedTags.contains(tag) {
+                                    selectedTags.remove(tag)
+                                } else {
+                                    selectedTags.insert(tag)
+                                }
+                            }
                         }
                     }
                 }
@@ -315,6 +419,7 @@ public struct BatchOperationsSheet: View {
     private func hostCheckboxRow(_ session: Session) -> some View {
         let isSelected = selectedSessionIDs.contains(session.id)
         let state = activeConnectionStates[session.id] ?? .disconnected
+        let isProd = Self.isProductionSession(session)
 
         return Button {
             guard !manager.isRunning else { return }
@@ -327,13 +432,24 @@ public struct BatchOperationsSheet: View {
             HStack(spacing: ApexStyle.s2) {
                 Image(systemName: isSelected ? "checkmark.square.fill" : "square")
                     .font(.system(size: 13))
-                    .foregroundColor(isSelected ? ApexStyle.accent : ApexStyle.secondary)
+                    .foregroundColor(isSelected ? (isProd ? ApexStyle.error : ApexStyle.accent) : ApexStyle.secondary)
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(session.name)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(ApexStyle.primary)
-                        .lineLimit(1)
+                    HStack(spacing: 5) {
+                        Text(session.name)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(ApexStyle.primary)
+                            .lineLimit(1)
+                        if isProd {
+                            Text("PROD")
+                                .font(.system(size: 8.5, weight: .bold))
+                                .foregroundColor(ApexStyle.error)
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 1)
+                                .background(ApexStyle.error.opacity(0.14), in: RoundedRectangle(cornerRadius: 3))
+                                .fixedSize()
+                        }
+                    }
                     Text("\(session.username)@\(session.host):\(session.port)")
                         .font(.system(size: 10.5, design: .monospaced))
                         .foregroundColor(ApexStyle.secondary)
@@ -349,7 +465,11 @@ public struct BatchOperationsSheet: View {
             .padding(.vertical, 6)
             .background(
                 RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
-                    .fill(isSelected ? ApexStyle.accent.opacity(0.10) : Color.clear)
+                    .fill(isSelected ? (isProd ? ApexStyle.error.opacity(0.10) : ApexStyle.accent.opacity(0.10)) : Color.clear)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
+                    .stroke(isSelected && isProd ? ApexStyle.error.opacity(0.45) : Color.clear, lineWidth: 0.75)
             )
             .contentShape(Rectangle())
         }
@@ -412,17 +532,98 @@ public struct BatchOperationsSheet: View {
             }
 
             if mode == .command {
+                HStack(spacing: ApexStyle.s2) {
+                    Menu {
+                        ForEach(templateStore.templates) { tpl in
+                            Button {
+                                applyTemplate(tpl)
+                            } label: {
+                                Text("[\(tpl.category)] \(tpl.name)")
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "text.badge.star")
+                                .font(.system(size: 10, weight: .semibold))
+                            Text(selectedTemplateTitle)
+                                .font(.system(size: 11, weight: .medium))
+                                .lineLimit(1)
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 9))
+                        }
+                        .foregroundColor(ApexStyle.primary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(ApexStyle.subtleSurface, in: RoundedRectangle(cornerRadius: ApexStyle.controlRadius))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
+                                .stroke(ApexStyle.border, lineWidth: 0.75)
+                        )
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .disabled(manager.isRunning)
+
+                    ApexActionButton("保存为模板", icon: "square.and.arrow.down", tint: ApexStyle.accent, size: .small) {
+                        newTemplateName = ""
+                        newTemplateCategory = "自定义"
+                        showingSaveTemplateSheet = true
+                    }
+                    .disabled(commandText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || manager.isRunning)
+
+                    Spacer()
+
+                    if !detectedCommandVariables.isEmpty {
+                        ApexActionButton("填写变量 (\(detectedCommandVariables.count))", icon: "slider.horizontal.3", tint: ApexStyle.warning, size: .small) {
+                            pendingLaunchAfterVarPrompt = false
+                            showingVariablePromptSheet = true
+                        }
+                        .disabled(manager.isRunning)
+                    }
+                }
+
                 TextEditor(text: $commandText)
                     .font(.system(size: 12, design: .monospaced))
                     .scrollContentBackground(.hidden)
                     .padding(8)
-                    .frame(height: 82)
+                    .frame(height: 74)
                     .background(ApexStyle.subtleSurface, in: RoundedRectangle(cornerRadius: ApexStyle.controlRadius))
                     .overlay(
                         RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
                             .stroke(ApexStyle.border, lineWidth: 1)
                     )
                     .disabled(manager.isRunning)
+
+                if !detectedCommandVariables.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 8) {
+                                ForEach(detectedCommandVariables, id: \.self) { varName in
+                                    HStack(spacing: 4) {
+                                        Text("{{\(varName)}}")
+                                            .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+                                            .foregroundColor(ApexStyle.accent)
+                                        TextField(varName, text: Binding(
+                                            get: { templateVariables[varName] ?? "" },
+                                            set: { templateVariables[varName] = $0 }
+                                        ))
+                                        .textFieldStyle(.roundedBorder)
+                                        .font(.system(size: 11, design: .monospaced))
+                                        .frame(width: 110)
+                                    }
+                                }
+                            }
+                        }
+                        Text("预览: \(resolvedCommandPreview)")
+                            .font(.system(size: 10.5, design: .monospaced))
+                            .foregroundColor(ApexStyle.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .background(ApexStyle.subtleSurface.opacity(0.6), in: RoundedRectangle(cornerRadius: ApexStyle.controlRadius))
+                }
 
                 HStack(spacing: ApexStyle.s2) {
                     Text("常用:")
@@ -431,6 +632,7 @@ public struct BatchOperationsSheet: View {
                     ForEach(["uname -a", "df -h", "free -m", "uptime"], id: \.self) { preset in
                         ApexPillButton(title: preset, isSelected: commandText == preset) {
                             commandText = preset
+                            selectedTemplateID = nil
                         }
                         .disabled(manager.isRunning)
                     }
@@ -438,7 +640,7 @@ public struct BatchOperationsSheet: View {
             } else {
                 VStack(alignment: .leading, spacing: ApexStyle.s2) {
                     HStack(spacing: ApexStyle.s2) {
-                        ApexActionButton("选择本地文件...", icon: "doc.badge.plus", tint: ApexStyle.accent, size: .small) {
+                        ApexActionButton("选择文件或目录...", icon: "doc.badge.plus", tint: ApexStyle.accent, size: .small) {
                             chooseLocalFiles()
                         }
                         .disabled(manager.isRunning)
@@ -452,7 +654,7 @@ public struct BatchOperationsSheet: View {
 
                         Spacer()
 
-                        Text(selectedLocalURLs.isEmpty ? "未选择文件" : "已选 \(selectedLocalURLs.count) 个文件")
+                        Text(selectedLocalURLs.isEmpty ? "未选择文件或目录" : "已选 \(selectedLocalURLs.count) 项")
                             .font(.caption.monospacedDigit())
                             .foregroundColor(ApexStyle.secondary)
                     }
@@ -461,10 +663,11 @@ public struct BatchOperationsSheet: View {
                         ScrollView(.horizontal, showsIndicators: false) {
                             HStack(spacing: 6) {
                                 ForEach(selectedLocalURLs, id: \.path) { url in
+                                    let isDir = Self.isDirectoryURL(url)
                                     HStack(spacing: 4) {
-                                        Image(systemName: "doc.fill")
+                                        Image(systemName: isDir ? "folder.fill" : "doc.fill")
                                             .font(.system(size: 10))
-                                            .foregroundColor(ApexStyle.accent)
+                                            .foregroundColor(isDir ? ApexStyle.warning : ApexStyle.accent)
                                         Text(url.lastPathComponent)
                                             .font(.caption)
                                             .foregroundColor(ApexStyle.primary)
@@ -492,6 +695,10 @@ public struct BatchOperationsSheet: View {
                             .font(.system(size: 12, design: .monospaced))
                             .disabled(manager.isRunning)
                     }
+
+                    Toggle("上传前自动创建远端目录 (mkdir -p)", isOn: $createRemoteDirectory)
+                        .font(.caption)
+                        .disabled(manager.isRunning)
                 }
             }
 
@@ -795,22 +1002,163 @@ public struct BatchOperationsSheet: View {
         }
     }
 
+    private var selectedTemplateTitle: String {
+        if let id = selectedTemplateID,
+           let found = templateStore.templates.first(where: { $0.id == id }) {
+            return "模板: \(found.name)"
+        }
+        return "选择命令模板"
+    }
+
+    private func applyTemplate(_ template: BatchCommandTemplate) {
+        selectedTemplateID = template.id
+        commandText = template.command
+        for name in template.extractVariables() where templateVariables[name] == nil {
+            templateVariables[name] = ""
+        }
+    }
+
+    private var saveTemplateSheet: some View {
+        VStack(alignment: .leading, spacing: ApexStyle.s3) {
+            Text("保存批量命令模板")
+                .font(.headline)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("模板名称")
+                    .font(.caption.weight(.semibold))
+                    .foregroundColor(ApexStyle.secondary)
+                TextField("例如：Nginx 配置校验与重载", text: $newTemplateName)
+                    .textFieldStyle(.roundedBorder)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text("分类")
+                    .font(.caption.weight(.semibold))
+                    .foregroundColor(ApexStyle.secondary)
+                TextField("例如：服务 / 巡检 / 自定义", text: $newTemplateCategory)
+                    .textFieldStyle(.roundedBorder)
+            }
+            Text("命令内容: \(commandText)")
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundColor(ApexStyle.secondary)
+                .lineLimit(3)
+            HStack {
+                Spacer()
+                ApexActionButton("取消", tint: ApexStyle.secondary, size: .regular) {
+                    showingSaveTemplateSheet = false
+                }
+                ApexActionButton("保存", icon: "checkmark", tint: ApexStyle.accent, size: .regular, isProminent: true) {
+                    let saved = templateStore.addTemplate(
+                        name: newTemplateName,
+                        command: commandText,
+                        category: newTemplateCategory
+                    )
+                    selectedTemplateID = saved.id
+                    showingSaveTemplateSheet = false
+                    showToast("已保存模板「\(saved.name)」")
+                }
+                .disabled(newTemplateName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(ApexStyle.s4)
+        .frame(width: 400)
+    }
+
+    private var variablePromptSheet: some View {
+        let vars = detectedCommandVariables
+        return VStack(alignment: .leading, spacing: ApexStyle.s3) {
+            Text("填写命令模板变量")
+                .font(.headline)
+            ForEach(vars, id: \.self) { varName in
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("{{\(varName)}}")
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        .foregroundColor(ApexStyle.accent)
+                    TextField("请输入 \(varName)", text: Binding(
+                        get: { templateVariables[varName] ?? "" },
+                        set: { templateVariables[varName] = $0 }
+                    ))
+                    .textFieldStyle(.roundedBorder)
+                }
+            }
+            VStack(alignment: .leading, spacing: 3) {
+                Text("插值预览")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundColor(ApexStyle.secondary)
+                Text(resolvedCommandPreview)
+                    .font(.system(size: 11, design: .monospaced))
+                    .padding(6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(ApexStyle.subtleSurface, in: RoundedRectangle(cornerRadius: ApexStyle.controlRadius))
+            }
+            HStack {
+                Spacer()
+                ApexActionButton("取消", tint: ApexStyle.secondary, size: .regular) {
+                    showingVariablePromptSheet = false
+                    pendingLaunchAfterVarPrompt = false
+                }
+                ApexActionButton(pendingLaunchAfterVarPrompt ? "确认并继续" : "确定", icon: "checkmark", tint: ApexStyle.accent, size: .regular, isProminent: true) {
+                    let shouldRun = pendingLaunchAfterVarPrompt
+                    showingVariablePromptSheet = false
+                    pendingLaunchAfterVarPrompt = false
+                    if shouldRun {
+                        startBatchAfterVariableCheck()
+                    }
+                }
+                .disabled(vars.contains { (templateVariables[$0] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
+            }
+        }
+        .padding(ApexStyle.s4)
+        .frame(width: 440)
+    }
+
+    private static func isDirectoryURL(_ url: URL) -> Bool {
+        var isDir: ObjCBool = false
+        return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue
+    }
+
     private func startBatch() {
+        if mode == .command {
+            let missingVars = detectedCommandVariables.filter {
+                (templateVariables[$0] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
+            if !missingVars.isEmpty {
+                pendingLaunchAfterVarPrompt = true
+                showingVariablePromptSheet = true
+                return
+            }
+        }
+        startBatchAfterVariableCheck()
+    }
+
+    private func startBatchAfterVariableCheck() {
+        if !selectedProductionSessions.isEmpty {
+            showProdConfirmation = true
+            return
+        }
+        executeBatchNow()
+    }
+
+    private func executeBatchNow() {
         expandedResultIDs.removeAll()
         switch mode {
         case .command:
-            manager.startBatchCommand(commandText, on: selectedSessions)
+            let finalCmd = resolvedCommandPreview
+            manager.startBatchCommand(finalCmd, on: selectedSessions)
         case .fileDistribution:
-            manager.startBatchFileDistribution(selectedLocalURLs, toRemoteDirectory: remoteDirectory, on: selectedSessions)
+            manager.startBatchFileDistribution(
+                selectedLocalURLs,
+                toRemoteDirectory: remoteDirectory,
+                on: selectedSessions,
+                createRemoteDirectory: createRemoteDirectory
+            )
         }
     }
 
     private func chooseLocalFiles() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
-        panel.canChooseDirectories = false
+        panel.canChooseDirectories = true
         panel.allowsMultipleSelection = true
-        panel.prompt = "选择分发文件"
+        panel.prompt = "选择文件或目录"
         if panel.runModal() == .OK {
             for url in panel.urls {
                 try? FileAccessStore.shared.remember(url, readOnly: true)

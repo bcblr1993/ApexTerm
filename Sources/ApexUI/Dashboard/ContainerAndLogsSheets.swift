@@ -73,16 +73,33 @@ struct ContainerRowView: View {
                 .foregroundColor(ApexStyle.secondary)
                 .lineLimit(1)
                 .truncationMode(.tail)
-                .frame(width: 88, alignment: .leading)
+                .frame(width: 82, alignment: .leading)
                 .help(container.status)
 
-            Text(container.ports.isEmpty ? "—" : container.ports)
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundColor(ApexStyle.secondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
+            if let stats = container.stats {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("CPU \(stats.cpuPercentText) · MEM \(stats.memUsageText)")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundColor(ApexStyle.primary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Text("NET \(stats.netIOText) · BLK \(stats.blockIOText)")
+                        .font(.system(size: 9.5, design: .monospaced))
+                        .foregroundColor(ApexStyle.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .help(container.ports)
+                .help("CPU: \(stats.cpuPercentText)\nMem: \(stats.memUsageText) (\(stats.memPercentText))\nNet I/O: \(stats.netIOText)\nBlock I/O: \(stats.blockIOText)\nPorts: \(container.ports)")
+            } else {
+                Text(container.ports.isEmpty ? "—" : container.ports)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(ApexStyle.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .help(container.ports)
+            }
 
             HStack(spacing: 4) {
                 ApexIconButton(
@@ -191,9 +208,18 @@ struct RemoteLogViewerSheet: View {
     let onServiceMutated: () -> Void
     @Environment(\.dismiss) private var dismiss
 
+    private enum SystemdViewTab: String, CaseIterable, Identifiable {
+        case journal = "Journal 日志"
+        case status = "服务状态 (status)"
+        case unitFile = "单元定义 (cat)"
+
+        var id: String { rawValue }
+    }
+
     @State private var rawLogs: String = ""
     @State private var filterText: String = ""
     @State private var isLoading: Bool = false
+    @State private var systemdTab: SystemdViewTab = .journal
     @State private var actionFeedback: String? = nil
     @State private var pendingSystemdAction: SystemdServiceAction? = nil
     @State private var showSystemdActionConfirm: Bool = false
@@ -262,6 +288,35 @@ struct RemoteLogViewerSheet: View {
             .background(ApexStyle.subtleSurface)
 
             Divider()
+
+            if case .systemd(let svc) = target {
+                HStack(spacing: ApexStyle.s2) {
+                    Picker("视图", selection: $systemdTab) {
+                        ForEach(SystemdViewTab.allCases) { tab in
+                            Text(tab.rawValue).tag(tab)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(maxWidth: 360)
+                    .onChange(of: systemdTab) { _, _ in
+                        fetchLogs()
+                    }
+                    Spacer()
+                    if svc.subState.lowercased().hasPrefix("openrc") {
+                        Text("OpenRC 模式")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(ApexStyle.accent)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(ApexStyle.accent.opacity(0.12), in: Capsule())
+                    }
+                }
+                .padding(.horizontal, ApexStyle.s4)
+                .padding(.vertical, 6)
+                .background(ApexStyle.surface)
+                Divider()
+            }
 
             // Optional Systemd control strip + log filter toolbar
             HStack(spacing: 10) {
@@ -396,7 +451,21 @@ struct RemoteLogViewerSheet: View {
         case .container(let item):
             command = AgentlessMonitor.containerLogsCommand(runtime: item.runtime, id: item.id, tail: 200)
         case .systemd(let svc):
-            command = AgentlessMonitor.systemdJournalCommand(unit: svc.name, lines: 100)
+            let isOpenRC = svc.subState.lowercased().hasPrefix("openrc")
+            switch systemdTab {
+            case .journal:
+                command = isOpenRC
+                    ? "grep -F \(AgentlessMonitor.posixSingleQuoted(svc.name)) /var/log/messages 2>/dev/null | tail -n 100 || echo 'OpenRC 主机无 journald，请检查 /var/log/messages'"
+                    : AgentlessMonitor.systemdJournalCommand(unit: svc.name, lines: 100)
+            case .status:
+                command = isOpenRC
+                    ? "rc-service \(AgentlessMonitor.posixSingleQuoted(svc.name)) status 2>&1"
+                    : AgentlessMonitor.systemdStatusCommand(unit: svc.name)
+            case .unitFile:
+                command = isOpenRC
+                    ? "cat /etc/init.d/\(AgentlessMonitor.posixSingleQuoted(svc.name)) 2>&1"
+                    : AgentlessMonitor.systemdCatCommand(unit: svc.name)
+            }
         }
         guard let cmd = command else {
             rawLogs = "目标标识校验失败，已阻止不安全的命令执行。"
@@ -439,7 +508,11 @@ struct RemoteLogViewerSheet: View {
             actionFeedback = "会话未连接，无法执行服务操作"
             return
         }
-        guard let cmd = AgentlessMonitor.systemdActionCommand(unit: svc.name, action: action) else {
+        let isOpenRC = svc.subState.lowercased().hasPrefix("openrc")
+        let maybeCmd = isOpenRC
+            ? AgentlessMonitor.openRCActionCommand(unit: svc.name, action: action)
+            : AgentlessMonitor.systemdActionCommand(unit: svc.name, action: action)
+        guard let cmd = maybeCmd else {
             actionFeedback = "核心服务 \(svc.name) 受保护或名称非法，已阻止操作"
             return
         }

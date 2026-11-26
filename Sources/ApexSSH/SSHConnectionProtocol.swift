@@ -1,6 +1,21 @@
 import Foundation
 import ApexCore
 
+/// Result of executing a one-shot remote or local command
+public struct SSHCommandResult: Sendable, Equatable {
+    public let stdout: String
+    public let stderr: String
+    public let exitCode: Int32
+    public let durationMs: Double
+
+    public init(stdout: String, stderr: String, exitCode: Int32, durationMs: Double) {
+        self.stdout = stdout
+        self.stderr = stderr
+        self.exitCode = exitCode
+        self.durationMs = durationMs
+    }
+}
+
 /// Connection state of an SSH session
 public enum SSHConnectionState: Sendable, Equatable {
     case disconnected
@@ -42,6 +57,9 @@ public protocol SSHSessionProtocol: AnyObject, Sendable {
     
     /// Executes a one-shot command (remote over SSH or local shell)
     func executeCommand(_ command: String) async throws -> String
+
+    /// Executes a one-shot command and captures stdout, stderr, exitCode, and elapsed milliseconds
+    func executeCommandWithResult(_ command: String) async throws -> SSHCommandResult
     
     /// TERM advertised to the PTY on the next connect
     var terminalType: TerminalType { get }
@@ -70,6 +88,13 @@ public extension SSHSessionProtocol {
     
     func executeCommand(_ command: String) async throws -> String {
         return ""
+    }
+
+    func executeCommandWithResult(_ command: String) async throws -> SSHCommandResult {
+        let startNs = DispatchTime.now().uptimeNanoseconds
+        let output = try await executeCommand(command)
+        let elapsedMs = Double(DispatchTime.now().uptimeNanoseconds - startNs) / 1_000_000.0
+        return SSHCommandResult(stdout: output, stderr: "", exitCode: 0, durationMs: elapsedMs)
     }
     
     func setStateChangeHandler(_ handler: @Sendable @escaping (SSHConnectionState) -> Void) {}

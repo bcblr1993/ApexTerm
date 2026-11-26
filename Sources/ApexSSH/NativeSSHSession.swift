@@ -2105,20 +2105,15 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         return envVars
     }
     
-    /// Executes a one-shot remote command over multiplexed SSH socket
-    public func executeCommand(_ command: String) async throws -> String {
-        await resolvePasswordIfNeeded()
-        let needsGate = !FileManager.default.fileExists(atPath: controlSocketPath)
-        if needsGate { await controlSocketGate.acquire() }
-        defer { if needsGate { Task { await controlSocketGate.release() } } }
-        let process = Process()
+    private func configureOneShotCommandProcess(
+        _ process: Process,
+        command: String,
+        keyAccess: FileAccessLease?,
+        certAccess: FileAccessLease?,
+        connectTimeout: Int = 5
+    ) {
         let sshpass = self.sshpassExecutablePath
         let ctrlArgs = controlMasterArguments
-        
-        let keyAccess = try self.acquirePrivateKeyAccess()
-        defer { keyAccess?.close() }
-        let certAccess = try self.acquireCertificateAccess()
-        defer { certAccess?.close() }
         let authArgs = self.sshAuthArgs(privateKeyURL: keyAccess?.url, certificateURL: certAccess?.url)
         let jumpArgs = self.advancedConnectionArgs(channel: .nonInteractiveSSH)
         let pw = self.currentResolvedPassword
@@ -2127,7 +2122,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             process.executableURL = URL(fileURLWithPath: passBin)
             process.arguments = sshpassArguments(secret: pw, tool: "/usr/bin/ssh") + [
                 "-o", "StrictHostKeyChecking=accept-new",
-                "-o", "ConnectTimeout=5",
+                "-o", "ConnectTimeout=\(connectTimeout)",
             ] + authArgs + jumpArgs + ctrlArgs + [
                 "-p", "\(self.session.port)",
                 "\(self.session.username)@\(self.sshDestinationHost)",
@@ -2137,19 +2132,68 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
             process.arguments = (hasStoreAuth ? [] : ["-o", "BatchMode=yes"]) + [
                 "-o", "StrictHostKeyChecking=accept-new",
-                "-o", "ConnectTimeout=5",
+                "-o", "ConnectTimeout=\(connectTimeout)",
             ] + authArgs + jumpArgs + ctrlArgs + [
                 "-p", "\(self.session.port)",
                 "\(self.session.username)@\(self.sshDestinationHost)",
                 command
             ]
         }
-        
+    }
+
+    /// Executes a one-shot remote command over multiplexed SSH socket
+    public func executeCommand(_ command: String) async throws -> String {
+        await resolvePasswordIfNeeded()
+        let needsGate = !FileManager.default.fileExists(atPath: controlSocketPath)
+        if needsGate { await controlSocketGate.acquire() }
+        defer { if needsGate { Task { await controlSocketGate.release() } } }
+        let process = Process()
+
+        let keyAccess = try self.acquirePrivateKeyAccess()
+        defer { keyAccess?.close() }
+        let certAccess = try self.acquireCertificateAccess()
+        defer { certAccess?.close() }
+        configureOneShotCommandProcess(process, command: command, keyAccess: keyAccess, certAccess: certAccess)
+
         process.standardError = FileHandle.nullDevice
         let grants = try self.configureStoreProcess(process, accesses: [keyAccess, certAccess])
         defer { grants?.close() }
         let outData = try await Self.runProbeProcess(process)
         return String(data: outData, encoding: .utf8) ?? ""
+    }
+
+    /// Executes a one-shot remote command and captures stdout, stderr, exit code, and duration in milliseconds.
+    public func executeCommandWithResult(_ command: String) async throws -> SSHCommandResult {
+        await resolvePasswordIfNeeded()
+        let needsGate = !FileManager.default.fileExists(atPath: controlSocketPath)
+        if needsGate { await controlSocketGate.acquire() }
+        defer { if needsGate { Task { await controlSocketGate.release() } } }
+        let process = Process()
+
+        let keyAccess = try self.acquirePrivateKeyAccess()
+        defer { keyAccess?.close() }
+        let certAccess = try self.acquireCertificateAccess()
+        defer { certAccess?.close() }
+        configureOneShotCommandProcess(process, command: command, keyAccess: keyAccess, certAccess: certAccess, connectTimeout: 10)
+
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = outPipe
+        process.standardError = errPipe
+
+        let grants = try self.configureStoreProcess(process, accesses: [keyAccess, certAccess])
+        defer { grants?.close() }
+
+        let startNs = DispatchTime.now().uptimeNanoseconds
+        let (outData, errData) = try await Self.runProcessWithOutput(process, outPipe: outPipe, errPipe: errPipe)
+        let durationMs = Double(DispatchTime.now().uptimeNanoseconds - startNs) / 1_000_000.0
+        return SSHCommandResult(
+            stdout: String(decoding: outData, as: UTF8.self),
+            stderr: String(decoding: errData, as: UTF8.self),
+            exitCode: process.terminationStatus,
+            durationMs: durationMs
+        )
     }
     
     public func setExplicitPassword(_ password: String?) {

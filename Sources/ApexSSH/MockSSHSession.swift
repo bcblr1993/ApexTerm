@@ -29,6 +29,7 @@ public final class MockSSHSession: SSHSessionProtocol, @unchecked Sendable {
     public var customDownloadHandler: (@Sendable (String, URL, @Sendable @escaping (Double) -> Void) async throws -> Void)?
     public var customUploadHandler: (@Sendable (URL, String, @Sendable @escaping (Double) -> Void) async throws -> Void)?
     public var customExecuteCommandHandler: (@Sendable (String) async throws -> String)?
+    public var customExecuteCommandResultHandler: (@Sendable (String) async throws -> SSHCommandResult)?
     public var customTestConnectionHandler: (@Sendable () async -> SSHTestConnectionResult)?
     public private(set) var executedCommands: [String] = []
     public private(set) var sentInputs: [Data] = []
@@ -443,6 +444,27 @@ public final class MockSSHSession: SSHSessionProtocol, @unchecked Sendable {
             return try await customExecuteCommandHandler(cmd)
         }
         return ""
+    }
+
+    public func executeCommandWithResult(_ cmd: String) async throws -> SSHCommandResult {
+        let startNs = DispatchTime.now().uptimeNanoseconds
+        stateLock.withLock { executedCommands.append(cmd) }
+        if let customExecuteCommandResultHandler {
+            return try await customExecuteCommandResultHandler(cmd)
+        }
+        if let customExecuteCommandHandler {
+            let output = try await customExecuteCommandHandler(cmd)
+            let elapsedMs = Double(DispatchTime.now().uptimeNanoseconds - startNs) / 1_000_000.0
+            return SSHCommandResult(stdout: output, stderr: "", exitCode: 0, durationMs: elapsedMs)
+        }
+        try await Task.sleep(nanoseconds: 15_000_000)
+        let elapsedMs = Double(DispatchTime.now().uptimeNanoseconds - startNs) / 1_000_000.0
+        return SSHCommandResult(
+            stdout: "[\(session.name)] \(cmd)\n",
+            stderr: "",
+            exitCode: 0,
+            durationMs: elapsedMs
+        )
     }
 
     public func testConnection() async -> SSHTestConnectionResult {

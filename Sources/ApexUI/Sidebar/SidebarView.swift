@@ -266,6 +266,16 @@ public struct SidebarView: View {
                                     }
                                     .contentShape(Rectangle())
                                     .contextMenu {
+                                        Button("向该分组批量执行 / 分发...") {
+                                            let targetIDs = sessionsInFolder(folder)
+                                                .filter { !$0.isLocal }
+                                                .map(\.id)
+                                            CommandPaletteItem.postOpenBatchOperations(sessionIDs: targetIDs, folder: folder)
+                                        }
+                                        .disabled(sessionsInFolder(folder).allSatisfy { $0.isLocal })
+
+                                        Divider()
+
                                         Button("导出该分组...") {
                                             exportRequest = GroupShareExportRequest(folder: folder, sessionIDs: nil)
                                         }

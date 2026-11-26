@@ -100,6 +100,29 @@ public enum CommandPaletteAction: Codable, Sendable, Equatable {
 
 /// A searchable item in the Command Palette
 public struct CommandPaletteItem: Identifiable, Codable, Sendable, Equatable {
+    public static let openBatchOperationsNotification = Notification.Name("ApexTermOpenBatchOperations")
+
+    public static let batchOperationsTitle = "批量执行命令 / 分发文件"
+    public static let batchOperationsSubtitle = "向多台主机并发执行命令或分发本地文件"
+    public static let batchOperationsIconName = "square.stack.3d.up"
+    public static let batchOperationsShortcutHint = "⌘⌥B"
+
+    public static func batchOperationsUserInfo(sessionIDs: [UUID], folder: String? = nil) -> [AnyHashable: Any] {
+        var info: [AnyHashable: Any] = ["sessionIDs": sessionIDs]
+        if let folder, !folder.isEmpty {
+            info["folder"] = folder
+        }
+        return info
+    }
+
+    public static func postOpenBatchOperations(sessionIDs: [UUID] = [], folder: String? = nil) {
+        NotificationCenter.default.post(
+            name: openBatchOperationsNotification,
+            object: nil,
+            userInfo: batchOperationsUserInfo(sessionIDs: sessionIDs, folder: folder)
+        )
+    }
+
     public var id: UUID
     public var title: String
     public var subtitle: String

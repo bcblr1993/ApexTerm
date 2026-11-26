@@ -1,4 +1,5 @@
 import Foundation
+import ApexCore
 
 /// Represents a parsed shell integration or directory notification OSC sequence.
 public enum OSC133Event: Sendable, Equatable {
@@ -89,6 +90,13 @@ public final class ShellIntegrationTracker: @unchecked Sendable {
     private var promptPrefixSnapshot: String?
     private var activeRecord: CommandExecutionRecord?
     private var _workingDirectory: String?
+    private var _onCommandCompleted: (@Sendable (CommandExecutionRecord) -> Void)?
+
+    /// Optional callback invoked strictly outside the internal lock whenever an OSC 133 `D` command finishes.
+    public var onCommandCompleted: (@Sendable (CommandExecutionRecord) -> Void)? {
+        get { lock.withLock { _onCommandCompleted } }
+        set { lock.withLock { _onCommandCompleted = newValue } }
+    }
 
     public init(maxRecords: Int = 500) {
         self.maxRecords = max(1, maxRecords)
@@ -166,8 +174,9 @@ public final class ShellIntegrationTracker: @unchecked Sendable {
         timestamp: Date = Date()
     ) {
         guard let event = Self.parseOSCPayload(payload) else { return }
+        var completedRecord: CommandExecutionRecord?
+        var completionCallback: (@Sendable (CommandExecutionRecord) -> Void)?
         lock.lock()
-        defer { lock.unlock() }
 
         switch event {
         case .promptStart:
@@ -238,6 +247,7 @@ public final class ShellIntegrationTracker: @unchecked Sendable {
                 current.outputEndLine = max(current.outputStartLine, currentLineIndex)
                 current.durationMs = max(0, Int((timestamp.timeIntervalSince(current.startedAt) * 1000.0).rounded()))
                 appendRecordLocked(current)
+                completedRecord = current
                 activeRecord = nil
             } else if let pLine = currentPromptLine {
                 // Standalone D without C (e.g., empty return or minimal shell integration)
@@ -254,13 +264,20 @@ public final class ShellIntegrationTracker: @unchecked Sendable {
                     workingDirectory: _workingDirectory
                 )
                 appendRecordLocked(record)
+                completedRecord = record
             }
+            completionCallback = _onCommandCompleted
             currentPromptLine = nil
             currentCommandLine = nil
             promptPrefixSnapshot = nil
 
         case .workingDirectory(let path):
             _workingDirectory = path
+        }
+        lock.unlock()
+
+        if let completedRecord {
+            completionCallback?(completedRecord)
         }
     }
 
@@ -365,5 +382,25 @@ public final class ShellIntegrationTracker: @unchecked Sendable {
         activeRecord = nil
         _workingDirectory = nil
         lock.unlock()
+    }
+}
+
+@MainActor
+extension DesktopNotificationManager {
+    /// Evaluates a completed OSC 133 `CommandExecutionRecord` against user notification rules.
+    public func handleCommandCompleted(
+        record: CommandExecutionRecord,
+        tabID: UUID,
+        sessionTitle: String
+    ) {
+        handleCommandCompleted(
+            commandText: record.commandText,
+            durationMs: record.durationMs,
+            exitCode: record.exitCode,
+            workingDirectory: record.workingDirectory,
+            formattedDuration: record.formattedDuration,
+            tabID: tabID,
+            sessionTitle: sessionTitle
+        )
     }
 }

@@ -61,6 +61,60 @@ public enum OSC52Parser {
     }
 }
 
+/// Parsed desktop notification delivered via OSC 9 or OSC 777.
+public struct OSCDesktopNotification: Sendable, Equatable {
+    public let title: String?
+    public let body: String
+
+    public init(title: String?, body: String) {
+        self.title = title
+        self.body = body
+    }
+}
+
+/// Safe parser for OSC 9 (`9;<body>`) and OSC 777 (`777;notify;<title>;<body>`) sequences.
+/// Explicitly ignores ConEmu / Windows Terminal progress subcommands (`9;4;...`),
+/// strips control characters, and bounds payloads to `maxPayloadBytes`.
+public enum OSCNotificationParser {
+    public static let maxPayloadBytes = 1024
+
+    public static func parse(payload: String) -> OSCDesktopNotification? {
+        if payload.hasPrefix("9;") {
+            let rest = String(payload.dropFirst(2))
+            // Ignore ConEmu / Windows Terminal OSC 9;4 progress reporting subcommands.
+            if rest == "4" || rest.hasPrefix("4;") {
+                return nil
+            }
+            let sanitizedBody = DesktopNotificationManager.sanitize(rest, maxUTF8Bytes: maxPayloadBytes)
+            guard !sanitizedBody.isEmpty else { return nil }
+            return OSCDesktopNotification(title: nil, body: sanitizedBody)
+        }
+
+        if payload.hasPrefix("777;") {
+            let rest = String(payload.dropFirst(4))
+            guard rest.hasPrefix("notify;") else { return nil }
+            let notifyContent = String(rest.dropFirst("notify;".count))
+            if let sep = notifyContent.firstIndex(of: ";") {
+                let rawTitle = String(notifyContent[..<sep])
+                let rawBody = String(notifyContent[notifyContent.index(after: sep)...])
+                let title = DesktopNotificationManager.sanitize(rawTitle, maxUTF8Bytes: 256)
+                let body = DesktopNotificationManager.sanitize(rawBody, maxUTF8Bytes: maxPayloadBytes)
+                if body.isEmpty {
+                    guard !title.isEmpty else { return nil }
+                    return OSCDesktopNotification(title: nil, body: title)
+                }
+                return OSCDesktopNotification(title: title.isEmpty ? nil : title, body: body)
+            } else {
+                let body = DesktopNotificationManager.sanitize(notifyContent, maxUTF8Bytes: maxPayloadBytes)
+                guard !body.isEmpty else { return nil }
+                return OSCDesktopNotification(title: nil, body: body)
+            }
+        }
+
+        return nil
+    }
+}
+
 /// High-performance circular line buffer for terminal scrollback history with real-time update notifications
 public final class TerminalRingBuffer: @unchecked Sendable {
     private var historyLimit: Int
@@ -167,6 +221,7 @@ public final class TerminalRingBuffer: @unchecked Sendable {
     
     public var onUpdate: (@Sendable () -> Void)?
     public var onOSC52WriteRequest: (@Sendable (OSC52WriteRequest) -> Void)?
+    public var onDesktopNotification: (@Sendable (_ title: String?, _ body: String) -> Void)?
 
     public static let synchronizedOutputWatchdogTimeout: Duration = .milliseconds(120)
     public static let maxUnclosedOSCChars: Int = 163_840
@@ -359,15 +414,23 @@ public final class TerminalRingBuffer: @unchecked Sendable {
     /// Append streaming raw output from terminal PTY
     public func appendStream(_ text: String) {
         var osc52Requests: [OSC52WriteRequest] = []
+        var desktopNotifications: [OSCDesktopNotification] = []
         lock.lock()
         defer {
             let updateHandler = onUpdate
             let osc52Handler = onOSC52WriteRequest
             let requestsToDeliver = osc52Requests
+            let desktopNotificationHandler = onDesktopNotification
+            let notificationsToDeliver = desktopNotifications
             lock.unlock()
             if let osc52Handler, !requestsToDeliver.isEmpty {
                 for request in requestsToDeliver {
                     osc52Handler(request)
+                }
+            }
+            if let desktopNotificationHandler, !notificationsToDeliver.isEmpty {
+                for notification in notificationsToDeliver {
+                    desktopNotificationHandler(notification.title, notification.body)
                 }
             }
             updateHandler?()
@@ -547,6 +610,10 @@ public final class TerminalRingBuffer: @unchecked Sendable {
                     if oscPayload.hasPrefix("52;") {
                         if let request = OSC52Parser.parse(payload: String(oscPayload.dropFirst(3))) {
                             osc52Requests.append(request)
+                        }
+                    } else if oscPayload.hasPrefix("9;") || oscPayload.hasPrefix("777;") {
+                        if let notification = OSCNotificationParser.parse(payload: oscPayload) {
+                            desktopNotifications.append(notification)
                         }
                     } else {
                         let currentActive = isEditingActiveLine ? renderCellsToString(activeCells) : activeLine

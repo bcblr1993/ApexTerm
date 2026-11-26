@@ -166,6 +166,8 @@ public final class TerminalPaneItem: Identifiable, ObservableObject {
         sshClient.setMetricsHandler { _ in }
         ringBuffer.onUpdate = nil
         ringBuffer.onOSC52WriteRequest = nil
+        ringBuffer.onDesktopNotification = nil
+        ringBuffer.shellIntegration.onCommandCompleted = nil
         pendingOSC52Request = nil
         ringBuffer.finishStream()
         ringBuffer.clear()
@@ -342,8 +344,34 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
         }
 
         attachMetricsHandler(to: self.sshClient)
+        attachNotificationHandlers(to: primaryPane)
         
         registerDirectoryLinkage(for: self.sshClient, paneId: primaryPane.id)
+    }
+
+    private func attachNotificationHandlers(to pane: TerminalPaneItem) {
+        let tabID = self.id
+        pane.ringBuffer.shellIntegration.onCommandCompleted = { [weak self] record in
+            Task { @MainActor [weak self] in
+                guard let self, !self.isTornDown else { return }
+                DesktopNotificationManager.shared.handleCommandCompleted(
+                    record: record,
+                    tabID: tabID,
+                    sessionTitle: self.displayTitle
+                )
+            }
+        }
+        pane.ringBuffer.onDesktopNotification = { [weak self] title, body in
+            Task { @MainActor [weak self] in
+                guard let self, !self.isTornDown else { return }
+                DesktopNotificationManager.shared.handleOSCNotification(
+                    title: title,
+                    body: body,
+                    tabID: tabID,
+                    sessionTitle: self.displayTitle
+                )
+            }
+        }
     }
 
     private func attachMetricsHandler(to client: SSHSessionProtocol) {
@@ -533,6 +561,7 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
         self.activePaneId = newPane.id
         self.splitMode = mode
         self.paneSplitRatio = 0.5
+        attachNotificationHandlers(to: newPane)
         registerDirectoryLinkage(for: newClient, paneId: newPane.id)
         
         connect(pane: newPane)
@@ -943,6 +972,7 @@ public struct WorkspaceView: View {
         } ?? "SSH 与文件工作台")
         .onAppear {
             Self.syncActiveTabs(activeTabs, with: store.sessions)
+            DesktopNotificationManager.shared.trackedActiveTabID = currentTab?.id
         }
         .onChange(of: store.sessions) { _, updatedSessions in
             Self.syncActiveTabs(activeTabs, with: updatedSessions)
@@ -965,7 +995,13 @@ public struct WorkspaceView: View {
                 )
             }
         }
-        .onChange(of: selectedTabId) { _, _ in metricsDetail.handleTabChanged() }
+        .onChange(of: selectedTabId) { _, _ in
+            metricsDetail.handleTabChanged()
+            DesktopNotificationManager.shared.trackedActiveTabID = currentTab?.id
+        }
+        .onChange(of: activeTabs.map(\.id)) { _, _ in
+            DesktopNotificationManager.shared.trackedActiveTabID = currentTab?.id
+        }
         .onChange(of: activeTabs.count) { _, count in
             if count < 2 { isBroadcastActive = false }
             if count == 0 { isProcessInspectorPresented = false }
@@ -1013,6 +1049,23 @@ public struct WorkspaceView: View {
         .onReceive(NotificationCenter.default.publisher(for: Self.executeSnippetNotification)) { notif in
             if let snippet = notif.object as? Snippet {
                 executeSnippet(snippet)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: DesktopNotificationManager.focusTabNotification)) { notif in
+            let targetTabID: UUID? = (notif.object as? UUID)
+                ?? (notif.userInfo?["tabID"] as? UUID)
+                ?? (notif.userInfo?["tabID"] as? String).flatMap(UUID.init(uuidString:))
+            guard let targetTabID,
+                  activeTabs.contains(where: { $0.id == targetTabID }) else {
+                return
+            }
+            selectedTabId = targetTabID
+            NSApp?.activate(ignoringOtherApps: true)
+            if let window = NSApp?.windows.first(where: { $0.isVisible || $0.isMiniaturized }) ?? NSApp?.mainWindow {
+                if window.isMiniaturized {
+                    window.deminiaturize(nil)
+                }
+                window.makeKeyAndOrderFront(nil)
             }
         }
         .sheet(item: $pendingSnippetForVariables) { snippet in

@@ -142,9 +142,24 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         cell.extraStyle = currentStyle
         return cell
     }
+
+    private var hasBackgroundEraseColor: Bool {
+        currentStyle.background != nil || currentStyle.backgroundIndex != nil
+    }
+
+    private func styledEraseCell() -> TerminalCell {
+        var cell = TerminalCell(char: " ")
+        cell.extraStyle.background = currentStyle.background
+        cell.extraStyle.backgroundIndex = currentStyle.backgroundIndex
+        return cell
+    }
     private var pendingSequence: String = ""
     private let vtParser = VTParser()
     public let shellIntegration = ShellIntegrationTracker()
+    private let triggerEvaluator = KeywordHighlighter()
+    private var hasActionTriggers: Bool = false
+    private var pendingTriggerRawLines: [String] = []
+    private var lastEvaluatedActiveTriggerLine: String = ""
     private var screen: [[TerminalCell]]? = nil
     private var screenRows = 35
     private var screenColumns = 120
@@ -223,6 +238,24 @@ public final class TerminalRingBuffer: @unchecked Sendable {
     public var onUpdate: (@Sendable () -> Void)?
     public var onOSC52WriteRequest: (@Sendable (OSC52WriteRequest) -> Void)?
     public var onDesktopNotification: (@Sendable (_ title: String?, _ body: String) -> Void)?
+    public var onTriggerSendResponse: (@Sendable (String) -> Void)?
+    public var isTriggerAutoResponseEnabled: (@Sendable () -> Bool)?
+
+    public func setTriggers(_ triggers: [Trigger]) {
+        triggerEvaluator.setTriggers(triggers)
+        let active = triggerEvaluator.hasActiveActionTriggers
+        lock.withLock {
+            hasActionTriggers = active
+            if !active {
+                pendingTriggerRawLines.removeAll(keepingCapacity: false)
+                lastEvaluatedActiveTriggerLine = ""
+            }
+        }
+    }
+
+    public func resetTriggerCooldowns() {
+        triggerEvaluator.resetCooldowns()
+    }
 
     public static let synchronizedOutputWatchdogTimeout: Duration = .milliseconds(120)
     public static let maxUnclosedOSCChars: Int = 163_840
@@ -239,6 +272,8 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         historyLimit = limit
         count = retained
         head = 0
+        _normalContentRevision += 1
+        _normalClearEpoch += 1
         _isClearPending = true
         let update = onUpdate
         lock.unlock()
@@ -251,12 +286,26 @@ public final class TerminalRingBuffer: @unchecked Sendable {
     }
     
     private var _totalCommittedCount: Int64 = 0
+    private var _normalContentRevision: Int64 = 0
+    private var _normalClearEpoch: Int64 = 0
     private var _minRewoundCommittedCount: Int64? = nil
     private var _isClearPending: Bool = false
     private var _isBellPending: Bool = false
     private var _isBracketedPasteEnabled: Bool = false
     private var _isSynchronizedOutputActive: Bool = false
     private var _syncOutputStartedAt: ContinuousClock.Instant? = nil
+
+    public var normalContentRevision: Int64 {
+        lock.lock()
+        defer { lock.unlock() }
+        return _normalContentRevision
+    }
+
+    public var normalClearEpoch: Int64 {
+        lock.lock()
+        defer { lock.unlock() }
+        return _normalClearEpoch
+    }
 
     /// Whether DEC synchronized output mode (?2026h) is currently active, auto-resetting past watchdog timeout.
     public var isSynchronizedOutputActive: Bool {
@@ -416,14 +465,53 @@ public final class TerminalRingBuffer: @unchecked Sendable {
     public func appendStream(_ text: String) {
         var osc52Requests: [OSC52WriteRequest] = []
         var desktopNotifications: [OSCDesktopNotification] = []
+        var linesForTriggers: [String] = []
+        let allowAutoResponse = isTriggerAutoResponseEnabled?() ?? (onTriggerSendResponse != nil)
         lock.lock()
         defer {
+            if hasActionTriggers && screen == nil {
+                if !pendingTriggerRawLines.isEmpty {
+                    linesForTriggers.append(contentsOf: pendingTriggerRawLines)
+                    pendingTriggerRawLines.removeAll(keepingCapacity: true)
+                }
+                let activeText = activeRenderedLines().last ?? ""
+                if !activeText.isEmpty && activeText != lastEvaluatedActiveTriggerLine {
+                    linesForTriggers.append(activeText)
+                    lastEvaluatedActiveTriggerLine = activeText
+                }
+            }
             let updateHandler = onUpdate
             let osc52Handler = onOSC52WriteRequest
             let requestsToDeliver = osc52Requests
             let desktopNotificationHandler = onDesktopNotification
-            let notificationsToDeliver = desktopNotifications
+            var notificationsToDeliver = desktopNotifications
+            let triggerResponseHandler = onTriggerSendResponse
             lock.unlock()
+
+            var triggerResponses: [String] = []
+            if !linesForTriggers.isEmpty {
+                for rawLine in linesForTriggers {
+                    let plainLine = rawLine.contains("\u{1B}") ? vtParser.parseANSI(rawLine).map(\.text).joined() : rawLine
+                    guard !plainLine.isEmpty else { continue }
+                    let events = triggerEvaluator.evaluateActions(in: plainLine, allowAutoResponse: allowAutoResponse)
+                    for event in events {
+                        switch event.trigger.action {
+                        case .notify(let title):
+                            let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+                            notificationsToDeliver.append(
+                                OSCDesktopNotification(title: cleanTitle.isEmpty ? nil : cleanTitle, body: plainLine)
+                            )
+                        case .sendResponse(let responseText):
+                            if !responseText.isEmpty {
+                                triggerResponses.append(responseText)
+                            }
+                        case .highlight:
+                            break
+                        }
+                    }
+                }
+            }
+
             if let osc52Handler, !requestsToDeliver.isEmpty {
                 for request in requestsToDeliver {
                     osc52Handler(request)
@@ -434,6 +522,11 @@ public final class TerminalRingBuffer: @unchecked Sendable {
                     desktopNotificationHandler(notification.title, notification.body)
                 }
             }
+            if let triggerResponseHandler, !triggerResponses.isEmpty {
+                for response in triggerResponses {
+                    triggerResponseHandler(response)
+                }
+            }
             updateHandler?()
         }
         
@@ -442,6 +535,7 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         if screen == nil, pendingSequence.isEmpty, !isEditingActiveLine,
            currentStyle == SGRStyle(foreground: nil, index: nil, bold: false),
            text.utf8.allSatisfy({ $0 == 10 || ($0 >= 32 && $0 < 127) }) {
+            if !text.isEmpty { _normalContentRevision += 1 }
             let segments = text.utf8.split(separator: 10, omittingEmptySubsequences: false)
             for (offset, segment) in segments.enumerated() {
                 activeLine.append(String(decoding: segment, as: UTF8.self))
@@ -625,6 +719,11 @@ public final class TerminalRingBuffer: @unchecked Sendable {
                         if let notification = OSCNotificationParser.parse(payload: oscPayload) {
                             desktopNotifications.append(notification)
                         }
+                    } else if oscPayload.hasPrefix("8;") {
+                        let parsedLink = VTParser.parseOSC8LinkURI(oscPayload)
+                        if parsedLink.isOSC8 {
+                            currentStyle.linkURI = parsedLink.uri
+                        }
                     } else {
                         let currentActive = isEditingActiveLine ? renderCellsToString(activeCells) : activeLine
                         var fallbackLine: String? = nil
@@ -704,6 +803,7 @@ public final class TerminalRingBuffer: @unchecked Sendable {
                 } else {
                     activeLine.append(ch)
                 }
+                _normalContentRevision += 1
                 i = fullText.index(after: i)
             }
         }
@@ -718,10 +818,12 @@ public final class TerminalRingBuffer: @unchecked Sendable {
                 var cell = TerminalCell(char: c, fgHex: span.foregroundColorHex, isBold: span.isBold, ansiColorIndex: span.ansiColorIndex)
                 cell.extraStyle.background = span.backgroundColorHex
                 cell.extraStyle.backgroundIndex = span.backgroundANSIColorIndex
+                cell.extraStyle.dim = span.isDim
                 cell.extraStyle.italic = span.isItalic
                 cell.extraStyle.underline = span.isUnderlined
                 cell.extraStyle.strikethrough = span.isStrikethrough
                 cell.extraStyle.inverse = span.isInverse
+                cell.extraStyle.linkURI = span.linkURI
                 cells.append(cell)
                 if TerminalCharacterWidth.columns(c) == 2 {
                     var continuation = TerminalCell(char: " ")
@@ -744,6 +846,8 @@ public final class TerminalRingBuffer: @unchecked Sendable {
     private func moveNormalCursorUp(_ lines: Int) {
         let steps = min(max(1, lines), count, max(1, screenRows - 1))
         guard steps > 0 else { return }
+        _normalContentRevision += 1
+        _normalClearEpoch += 1
         for _ in 0..<steps {
             belowActiveRows.insert(activeCells, at: 0)
             let lastIndex = (head + count - 1) % historyLimit
@@ -759,6 +863,8 @@ public final class TerminalRingBuffer: @unchecked Sendable {
     private func moveNormalCursorDown(_ lines: Int) {
         let steps = min(max(1, lines), belowActiveRows.count)
         guard steps > 0 else { return }
+        _normalContentRevision += 1
+        _normalClearEpoch += 1
         for _ in 0..<steps {
             commitFastLine(renderCellsToString(activeCells, trimAfterColumn: 0))
             activeCells = belowActiveRows.removeFirst()
@@ -785,7 +891,7 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         while cells.count < end { cells.append(TerminalCell(char: " ")) }
         for column in start..<end {
             clearGlyph(in: &cells, at: column)
-            cells[column] = styledCell(" ")
+            cells[column] = styledEraseCell()
         }
     }
 
@@ -1071,7 +1177,7 @@ public final class TerminalRingBuffer: @unchecked Sendable {
                 if screenColumn > row.count {
                     row.append(contentsOf: repeatElement(TerminalCell(char: " "), count: screenColumn - row.count))
                 }
-                let blanks = Array(repeating: styledCell(" "), count: min(amount, screenColumns))
+                let blanks = Array(repeating: styledEraseCell(), count: min(amount, screenColumns))
                 row.insert(contentsOf: blanks, at: min(screenColumn, row.count))
                 if row.count > screenColumns {
                     row = Array(row.prefix(screenColumns))
@@ -1091,7 +1197,7 @@ public final class TerminalRingBuffer: @unchecked Sendable {
                 }
                 for c in screenColumn..<min(end, row.count) {
                     clearGlyph(in: &row, at: c)
-                    row[c] = styledCell(" ")
+                    row[c] = styledEraseCell()
                 }
                 grid[screenRow] = row
                 screen = grid; _screenRevision += 1
@@ -1125,18 +1231,40 @@ public final class TerminalRingBuffer: @unchecked Sendable {
             var style = currentStyle
             style.apply(param: param)
             currentStyle = style
-        case "J": // Erase in Display
+        case "J": // Erase in Display (with Back-Color Erase support)
             let mode = Int(param) ?? 0
+            _normalContentRevision += 1
             if mode == 0 {
                 ensureEditingMode()
-                if cursorCol < activeCells.count {
-                    activeCells.removeSubrange(cursorCol..<activeCells.count)
+                if hasBackgroundEraseColor {
+                    let end = max(cursorCol, screenColumns)
+                    while activeCells.count < end { activeCells.append(TerminalCell(char: " ")) }
+                    for k in cursorCol..<end {
+                        clearGlyph(in: &activeCells, at: k)
+                        activeCells[k] = styledEraseCell()
+                    }
+                    for rowIndex in belowActiveRows.indices {
+                        belowActiveRows[rowIndex] = Array(repeating: styledEraseCell(), count: screenColumns)
+                    }
+                } else {
+                    if cursorCol < activeCells.count {
+                        activeCells.removeSubrange(cursorCol..<activeCells.count)
+                    }
+                    belowActiveRows.removeAll(keepingCapacity: true)
                 }
-                belowActiveRows.removeAll(keepingCapacity: true)
+            } else if mode == 1 {
+                ensureEditingMode()
+                let limit = hasBackgroundEraseColor ? min(screenColumns, cursorCol + 1) : min(cursorCol + 1, activeCells.count)
+                while activeCells.count < limit { activeCells.append(TerminalCell(char: " ")) }
+                for k in 0..<limit {
+                    clearGlyph(in: &activeCells, at: k)
+                    activeCells[k] = styledEraseCell()
+                }
             } else if mode == 2 || mode == 3 {
                 head = 0
                 count = 0
                 _totalCommittedCount = 0
+                _normalClearEpoch += 1
                 _minRewoundCommittedCount = nil
                 activeLine = ""
                 activeCells.removeAll(keepingCapacity: true)
@@ -1146,21 +1274,35 @@ public final class TerminalRingBuffer: @unchecked Sendable {
                 shellIntegration.reset()
                 _isClearPending = true
             }
-        case "K": // Erase in Line
+        case "K": // Erase in Line (with Back-Color Erase support)
+            _normalContentRevision += 1
             if param.isEmpty || param == "0" {
                 // Erase from cursor to end of line
-                if cursorCol < activeCells.count {
+                if hasBackgroundEraseColor {
+                    let end = max(cursorCol, screenColumns)
+                    while activeCells.count < end { activeCells.append(TerminalCell(char: " ")) }
+                    for k in cursorCol..<end {
+                        clearGlyph(in: &activeCells, at: k)
+                        activeCells[k] = styledEraseCell()
+                    }
+                } else if cursorCol < activeCells.count {
                     activeCells.removeSubrange(cursorCol..<activeCells.count)
                 }
             } else if param == "1" {
                 // Erase from start of line to cursor
-                let limit = min(cursorCol + 1, activeCells.count)
+                let limit = hasBackgroundEraseColor ? min(screenColumns, cursorCol + 1) : min(cursorCol + 1, activeCells.count)
+                while activeCells.count < limit { activeCells.append(TerminalCell(char: " ")) }
                 for k in 0..<limit {
-                    activeCells[k] = TerminalCell(char: " ", fgHex: nil, isBold: false)
+                    clearGlyph(in: &activeCells, at: k)
+                    activeCells[k] = styledEraseCell()
                 }
             } else if param == "2" {
                 // Erase entire line
-                activeCells.removeAll(keepingCapacity: true)
+                if hasBackgroundEraseColor {
+                    activeCells = Array(repeating: styledEraseCell(), count: screenColumns)
+                } else {
+                    activeCells.removeAll(keepingCapacity: true)
+                }
             }
         case "C": // Cursor Forward (Right)
             let n = max(1, Int(param) ?? 1)
@@ -1191,25 +1333,36 @@ public final class TerminalRingBuffer: @unchecked Sendable {
                 cursorCol = 0
             }
         case "@": // Insert Character (ICH)
+            _normalContentRevision += 1
             let n = max(1, Int(param) ?? 1)
             if cursorCol > activeCells.count {
                 let pad = cursorCol - activeCells.count
                 activeCells.append(contentsOf: repeatElement(TerminalCell(char: " ", fgHex: nil, isBold: false), count: pad))
             }
-            let blanks = Array(repeating: styledCell(" "), count: n)
+            let blanks = Array(repeating: styledEraseCell(), count: n)
             activeCells.insert(contentsOf: blanks, at: min(cursorCol, activeCells.count))
         case "P": // Delete Character (DCH)
+            _normalContentRevision += 1
             let n = max(1, Int(param) ?? 1)
             if cursorCol < activeCells.count {
                 let toRemove = min(n, activeCells.count - cursorCol)
                 activeCells.removeSubrange(cursorCol..<(cursorCol + toRemove))
             }
-        case "X": // Erase Character (ECH)
+        case "X": // Erase Character (ECH, with Back-Color Erase support)
+            _normalContentRevision += 1
             let n = max(1, Int(param) ?? 1)
-            if cursorCol < activeCells.count {
+            if hasBackgroundEraseColor {
+                let end = min(screenColumns, cursorCol + n)
+                while activeCells.count < end { activeCells.append(TerminalCell(char: " ")) }
+                for k in cursorCol..<end {
+                    clearGlyph(in: &activeCells, at: k)
+                    activeCells[k] = styledEraseCell()
+                }
+            } else if cursorCol < activeCells.count {
                 let toErase = min(n, activeCells.count - cursorCol)
                 for k in cursorCol..<(cursorCol + toErase) {
-                    activeCells[k] = TerminalCell(char: " ", fgHex: nil, isBold: false)
+                    clearGlyph(in: &activeCells, at: k)
+                    activeCells[k] = styledEraseCell()
                 }
             }
         default:
@@ -1245,6 +1398,11 @@ public final class TerminalRingBuffer: @unchecked Sendable {
             head = (head + 1) % historyLimit
         }
         _totalCommittedCount += 1
+        _normalContentRevision += 1
+        if hasActionTriggers {
+            pendingTriggerRawLines.append(line)
+            lastEvaluatedActiveTriggerLine = ""
+        }
     }
     
     private func renderCellsToString(_ cells: [TerminalCell], trimAfterColumn: Int = 0) -> String {
@@ -1260,28 +1418,83 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         var previousStyle = defaultStyle
         for cell in cells.prefix(effectiveCount) where !cell.isContinuation {
             let style = cell.style
-            if style != previousStyle {
+            if !style.visualEquals(previousStyle) {
                 result.append(style.escapeSequence)
-                previousStyle = style
             }
+            if style.linkURI != previousStyle.linkURI {
+                if let uri = style.linkURI {
+                    result.append("\u{1B}]8;;\(uri)\u{1B}\\")
+                } else {
+                    result.append("\u{1B}]8;;\u{1B}\\")
+                }
+            }
+            previousStyle = style
             result.append(cell.char)
         }
-        if previousStyle != defaultStyle { result.append("\u{1B}[0m") }
+        if previousStyle.hasVisualAttributes { result.append("\u{1B}[0m") }
+        if previousStyle.linkURI != nil { result.append("\u{1B}]8;;\u{1B}\\") }
         return result
     }
     
+    private func deliverTriggers(for rawLines: [String], allowAutoResponse: Bool) {
+        guard !rawLines.isEmpty else { return }
+        let notificationHandler = onDesktopNotification
+        let responseHandler = onTriggerSendResponse
+        guard notificationHandler != nil || responseHandler != nil else { return }
+
+        var notifications: [OSCDesktopNotification] = []
+        var responses: [String] = []
+        for rawLine in rawLines {
+            let plain = rawLine.contains("\u{1B}") ? vtParser.parseANSI(rawLine).map(\.text).joined() : rawLine
+            guard !plain.isEmpty else { continue }
+            for event in triggerEvaluator.evaluateActions(in: plain, allowAutoResponse: allowAutoResponse) {
+                switch event.trigger.action {
+                case .notify(let title):
+                    let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+                    notifications.append(OSCDesktopNotification(title: cleanTitle.isEmpty ? nil : cleanTitle, body: plain))
+                case .sendResponse(let responseText):
+                    if !responseText.isEmpty {
+                        responses.append(responseText)
+                    }
+                case .highlight:
+                    break
+                }
+            }
+        }
+        if let notificationHandler {
+            for item in notifications {
+                notificationHandler(item.title, item.body)
+            }
+        }
+        if let responseHandler {
+            for response in responses {
+                responseHandler(response)
+            }
+        }
+    }
+
     /// Append a single line into circular buffer
     public func appendLine(_ line: String) {
+        let allowAutoResponse = isTriggerAutoResponseEnabled?() ?? (onTriggerSendResponse != nil)
         lock.lock()
         commitFastLine(line)
+        let linesToCheck: [String]
+        if hasActionTriggers {
+            linesToCheck = pendingTriggerRawLines
+            pendingTriggerRawLines.removeAll(keepingCapacity: true)
+        } else {
+            linesToCheck = []
+        }
         let updateHandler = onUpdate
         lock.unlock()
-        
+
+        deliverTriggers(for: linesToCheck, allowAutoResponse: allowAutoResponse)
         updateHandler?()
     }
     
     /// Append multiple lines
     public func appendLines(_ lines: [String]) {
+        let allowAutoResponse = isTriggerAutoResponseEnabled?() ?? (onTriggerSendResponse != nil)
         lock.lock()
         for line in lines {
             let index = (head + count) % historyLimit
@@ -1292,11 +1505,26 @@ public final class TerminalRingBuffer: @unchecked Sendable {
                 buffer[head] = line
                 head = (head + 1) % historyLimit
             }
+            if hasActionTriggers {
+                pendingTriggerRawLines.append(line)
+            }
         }
         _totalCommittedCount += Int64(lines.count)
+        if !lines.isEmpty {
+            _normalContentRevision += 1
+            lastEvaluatedActiveTriggerLine = ""
+        }
+        let linesToCheck: [String]
+        if hasActionTriggers {
+            linesToCheck = pendingTriggerRawLines
+            pendingTriggerRawLines.removeAll(keepingCapacity: true)
+        } else {
+            linesToCheck = []
+        }
         let updateHandler = onUpdate
         lock.unlock()
-        
+
+        deliverTriggers(for: linesToCheck, allowAutoResponse: allowAutoResponse)
         updateHandler?()
     }
     
@@ -1365,6 +1593,10 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         _isSynchronizedOutputActive = false
         _syncOutputStartedAt = nil
         shellIntegration.reset()
+        pendingTriggerRawLines.removeAll(keepingCapacity: false)
+        lastEvaluatedActiveTriggerLine = ""
+        _normalContentRevision += 1
+        _normalClearEpoch += 1
         _screenRevision += 1; _isClearPending = true
     }
 
@@ -1374,6 +1606,8 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         head = 0
         count = 0
         _totalCommittedCount = 0
+        _normalContentRevision += 1
+        _normalClearEpoch += 1
         _minRewoundCommittedCount = nil
         buffer = [String](repeating: "", count: historyLimit)
         activeLine = ""
@@ -1388,6 +1622,8 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         _isClearPending = true
         _isSynchronizedOutputActive = false
         _syncOutputStartedAt = nil
+        pendingTriggerRawLines.removeAll(keepingCapacity: false)
+        lastEvaluatedActiveTriggerLine = ""
         shellIntegration.reset()
         let updateHandler = onUpdate
         lock.unlock()

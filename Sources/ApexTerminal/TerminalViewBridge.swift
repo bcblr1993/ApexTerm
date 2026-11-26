@@ -12,6 +12,7 @@ public struct TerminalRepresentable: NSViewRepresentable {
     public var triggers: [Trigger] = []
     public var onResize: ((Int, Int) -> Void)? = nil
     public var onFileDrop: ((URL) -> Void)? = nil
+    public var onTriggerSendResponse: ((String) -> Void)? = nil
     public let onInput: (Data) -> Void
     
     public init(
@@ -22,6 +23,7 @@ public struct TerminalRepresentable: NSViewRepresentable {
         triggers: [Trigger] = [],
         onResize: ((Int, Int) -> Void)? = nil,
         onFileDrop: ((URL) -> Void)? = nil,
+        onTriggerSendResponse: ((String) -> Void)? = nil,
         onInput: @escaping (Data) -> Void
     ) {
         self.ringBuffer = ringBuffer
@@ -31,6 +33,7 @@ public struct TerminalRepresentable: NSViewRepresentable {
         self.triggers = triggers
         self.onResize = onResize
         self.onFileDrop = onFileDrop
+        self.onTriggerSendResponse = onTriggerSendResponse
         self.onInput = onInput
     }
     
@@ -38,6 +41,7 @@ public struct TerminalRepresentable: NSViewRepresentable {
         let scrollView = NativeTerminalScrollView()
         scrollView.requestsInitialFocus = isFocused
         scrollView.terminalView.onInput = onInput
+        scrollView.terminalView.onTriggerSendResponse = onTriggerSendResponse
         scrollView.terminalView.ringBuffer = ringBuffer
         scrollView.terminalView.setTriggers(triggers)
         scrollView.terminalView.isCopyOnSelectEnabled = isCopyOnSelectEnabled
@@ -81,6 +85,7 @@ public struct TerminalRepresentable: NSViewRepresentable {
             terminal.ringBuffer = ringBuffer
         }
         terminal.onInput = onInput
+        terminal.onTriggerSendResponse = onTriggerSendResponse
         terminal.setTriggers(triggers)
         terminal.isCopyOnSelectEnabled = isCopyOnSelectEnabled
         terminal.onResize = onResize
@@ -124,15 +129,38 @@ public struct TerminalRepresentable: NSViewRepresentable {
     }
 }
 
-/// Floating Find Bar overlay for Terminal with search field, match count and navigation
+/// Floating Find Bar overlay for Terminal with search field, Aa/Regex toggles, match count and navigation
 public final class TerminalFindBarView: NSView, NSTextFieldDelegate {
     public weak var terminalView: NativeTerminalView?
     
     public let searchField = NSTextField()
+    public let caseSensitiveButton = NSButton()
+    public let regexButton = NSButton()
     public let matchLabel = NSTextField(labelWithString: "")
     public let prevButton = NSButton()
     public let nextButton = NSButton()
     public let closeButton = NSButton()
+    public private(set) var showsInvalidRegexBadge: Bool = false
+
+    public var isCaseSensitive: Bool {
+        get { caseSensitiveButton.state == .on }
+        set {
+            caseSensitiveButton.state = newValue ? .on : .off
+            terminalView?.isFindCaseSensitive = newValue
+            applyTheme()
+            updateSearch()
+        }
+    }
+
+    public var isRegexEnabled: Bool {
+        get { regexButton.state == .on }
+        set {
+            regexButton.state = newValue ? .on : .off
+            terminalView?.isFindRegexEnabled = newValue
+            applyTheme()
+            updateSearch()
+        }
+    }
     
     override public init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -158,10 +186,42 @@ public final class TerminalFindBarView: NSView, NSTextFieldDelegate {
         layer?.borderColor = NSColor(hex: p.border)?.cgColor
         searchField.backgroundColor = NSColor(hex: p.sidebar) ?? .controlBackgroundColor
         searchField.textColor = NSColor(hex: p.foreground)
-        matchLabel.textColor = NSColor(hex: p.secondary)
+        matchLabel.textColor = showsInvalidRegexBadge ? .systemRed : NSColor(hex: p.secondary)
         for button in [prevButton, nextButton, closeButton] {
             button.contentTintColor = NSColor(hex: p.foreground)
         }
+        styleToggleButton(caseSensitiveButton, isActive: caseSensitiveButton.state == .on, isInvalid: false, palette: p)
+        styleToggleButton(regexButton, isActive: regexButton.state == .on, isInvalid: showsInvalidRegexBadge, palette: p)
+    }
+
+    private func styleToggleButton(_ button: NSButton, isActive: Bool, isInvalid: Bool, palette: ThemePalette) {
+        button.wantsLayer = true
+        button.layer?.cornerRadius = 4
+        let accent = NSColor(hex: palette.accent) ?? .controlAccentColor
+        if isInvalid {
+            button.layer?.backgroundColor = NSColor.systemRed.withAlphaComponent(0.18).cgColor
+            button.layer?.borderWidth = 1
+            button.layer?.borderColor = NSColor.systemRed.cgColor
+            button.contentTintColor = .systemRed
+        } else if isActive {
+            button.layer?.backgroundColor = accent.withAlphaComponent(0.22).cgColor
+            button.layer?.borderWidth = 1
+            button.layer?.borderColor = accent.withAlphaComponent(0.7).cgColor
+            button.contentTintColor = accent
+        } else {
+            button.layer?.backgroundColor = NSColor.clear.cgColor
+            button.layer?.borderWidth = 0
+            button.layer?.borderColor = nil
+            button.contentTintColor = NSColor(hex: palette.secondary) ?? .secondaryLabelColor
+        }
+        let titleColor = button.contentTintColor ?? .secondaryLabelColor
+        button.attributedTitle = NSAttributedString(
+            string: button.title,
+            attributes: [
+                .font: NSFont.monospacedSystemFont(ofSize: 10.5, weight: isActive ? .semibold : .regular),
+                .foregroundColor: titleColor
+            ]
+        )
     }
 
     private func setupUI() {
@@ -188,15 +248,31 @@ public final class TerminalFindBarView: NSView, NSTextFieldDelegate {
         matchLabel.textColor = .secondaryLabelColor
         matchLabel.alignment = .right
         
+        configureToggleButton(caseSensitiveButton, title: "Aa", tooltip: "区分大小写", action: #selector(toggleCaseSensitiveClicked))
+        configureToggleButton(regexButton, title: ".*", tooltip: "正则表达式", action: #selector(toggleRegexClicked))
         configureButton(prevButton, symbolName: "chevron.up", tooltip: "上一个 (⇧Enter)", action: #selector(prevClicked))
         configureButton(nextButton, symbolName: "chevron.down", tooltip: "下一个 (Enter)", action: #selector(nextClicked))
         configureButton(closeButton, symbolName: "xmark", tooltip: "关闭 (Esc)", action: #selector(closeClicked))
         
         addSubview(searchField)
+        addSubview(caseSensitiveButton)
+        addSubview(regexButton)
         addSubview(matchLabel)
         addSubview(prevButton)
         addSubview(nextButton)
         addSubview(closeButton)
+        applyTheme()
+    }
+
+    private func configureToggleButton(_ btn: NSButton, title: String, tooltip: String, action: Selector) {
+        btn.setButtonType(.toggle)
+        btn.bezelStyle = .regularSquare
+        btn.isBordered = false
+        btn.title = title
+        btn.toolTip = tooltip
+        btn.setAccessibilityLabel(tooltip)
+        btn.target = self
+        btn.action = action
     }
     
     private func configureButton(_ btn: NSButton, symbolName: String, tooltip: String, action: Selector) {
@@ -213,18 +289,21 @@ public final class TerminalFindBarView: NSView, NSTextFieldDelegate {
     override public func layout() {
         super.layout()
         let h = bounds.height
-        let btnW: CGFloat = 22
-        let closeW: CGFloat = 22
+        let btnW: CGFloat = 20
+        let toggleW: CGFloat = 24
+        let closeW: CGFloat = 20
         let margin: CGFloat = 6
-        let matchW: CGFloat = 55
+        let matchW: CGFloat = 52
         
         closeButton.frame = NSRect(x: bounds.width - closeW - margin, y: (h - 20) / 2, width: closeW, height: 20)
         nextButton.frame = NSRect(x: closeButton.frame.minX - btnW - 2, y: (h - 20) / 2, width: btnW, height: 20)
         prevButton.frame = NSRect(x: nextButton.frame.minX - btnW - 2, y: (h - 20) / 2, width: btnW, height: 20)
         matchLabel.frame = NSRect(x: prevButton.frame.minX - matchW - 4, y: (h - 16) / 2, width: matchW, height: 16)
+        regexButton.frame = NSRect(x: matchLabel.frame.minX - toggleW - 3, y: (h - 20) / 2, width: toggleW, height: 20)
+        caseSensitiveButton.frame = NSRect(x: regexButton.frame.minX - toggleW - 2, y: (h - 20) / 2, width: toggleW, height: 20)
         
-        let searchW = matchLabel.frame.minX - margin - 4
-        searchField.frame = NSRect(x: margin, y: (h - 22) / 2, width: max(50, searchW), height: 22)
+        let searchW = caseSensitiveButton.frame.minX - margin - 4
+        searchField.frame = NSRect(x: margin, y: (h - 22) / 2, width: max(48, searchW), height: 22)
     }
     
     public func show(withInitialText text: String? = nil) {
@@ -240,11 +319,25 @@ public final class TerminalFindBarView: NSView, NSTextFieldDelegate {
     
     public func hide() {
         isHidden = true
+        showsInvalidRegexBadge = false
         terminalView?.clearFind()
         matchLabel.stringValue = ""
+        applyTheme()
         if let term = terminalView {
             window?.makeFirstResponder(term)
         }
+    }
+
+    @objc private func toggleCaseSensitiveClicked() {
+        terminalView?.isFindCaseSensitive = (caseSensitiveButton.state == .on)
+        applyTheme()
+        updateSearch()
+    }
+
+    @objc private func toggleRegexClicked() {
+        terminalView?.isFindRegexEnabled = (regexButton.state == .on)
+        applyTheme()
+        updateSearch()
     }
     
     @objc private func prevClicked() {
@@ -285,14 +378,30 @@ public final class TerminalFindBarView: NSView, NSTextFieldDelegate {
     private func updateSearch() {
         guard let term = terminalView else { return }
         let query = searchField.stringValue
-        _ = term.performFind(query: query)
+        _ = term.performFind(
+            query: query,
+            caseSensitive: caseSensitiveButton.state == .on,
+            isRegex: regexButton.state == .on,
+            scrollToMatch: true
+        )
         updateMatchLabel()
     }
     
     public func updateMatchLabel() {
         guard let term = terminalView else {
+            showsInvalidRegexBadge = false
             matchLabel.stringValue = ""
             return
+        }
+        if term.isFindRegexInvalid && !searchField.stringValue.isEmpty {
+            showsInvalidRegexBadge = true
+            matchLabel.stringValue = "正则无效"
+            applyTheme()
+            return
+        }
+        if showsInvalidRegexBadge {
+            showsInvalidRegexBadge = false
+            applyTheme()
         }
         let total = term.currentMatches.count
         if total == 0 {
@@ -389,6 +498,7 @@ public final class TerminalClipView: NSClipView {
 public final class NativeTerminalScrollView: NSScrollView {
     public let terminalView = NativeTerminalView()
     public let searchBarOverlay = TerminalFindBarView()
+    private var commandTimelinePopover: NSPopover?
     var requestsInitialFocus = false
 
     override public var scrollerStyle: NSScroller.Style {
@@ -480,6 +590,7 @@ public final class NativeTerminalScrollView: NSScrollView {
         self.addSubview(searchBarOverlay)
         
         NotificationCenter.default.addObserver(self, selector: #selector(handleTriggerFindNotification), name: NSNotification.Name("TriggerTerminalFind"), object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(handleToggleCommandTimelineNotification), name: NativeTerminalView.toggleCommandTimelineNotification, object: nil)
         
         // Register for file drop
         self.unregisterDraggedTypes()
@@ -488,7 +599,7 @@ public final class NativeTerminalScrollView: NSScrollView {
     
     override public func layout() {
         super.layout()
-        let barW = min(300, max(160, bounds.width - 22))
+        let barW = min(360, max(180, bounds.width - 22))
         let barH: CGFloat = 32
         let x = max(8, bounds.width - barW - 14)
         let y = max(8, bounds.height - barH - 8)
@@ -509,9 +620,50 @@ public final class NativeTerminalScrollView: NSScrollView {
     public func hideFindBar() {
         searchBarOverlay.hide()
     }
+
+    public func toggleCommandTimeline(relativeTo positioningView: NSView? = nil) {
+        if let popover = commandTimelinePopover, popover.isShown {
+            popover.close()
+            commandTimelinePopover = nil
+            return
+        }
+        showCommandTimeline(relativeTo: positioningView)
+    }
+
+    public func showCommandTimeline(relativeTo positioningView: NSView? = nil) {
+        commandTimelinePopover?.close()
+        let popover = NSPopover()
+        popover.behavior = .transient
+        let timelineView = TerminalCommandTimelineView(
+            records: (terminalView.ringBuffer?.shellIntegration.timelineRecords() ?? []).reversed(),
+            onJumpToRecord: { [weak self, weak popover] record in
+                _ = self?.terminalView.jumpToCommandRecord(record)
+                popover?.close()
+            },
+            onCopyOutput: { [weak self] record in
+                _ = self?.terminalView.copyCommandOutput(for: record)
+            },
+            onRerun: { [weak self, weak popover] record in
+                _ = self?.terminalView.rerunCommand(record)
+                popover?.close()
+            },
+            onJumpPreviousFailed: { [weak self, weak popover] in
+                _ = self?.terminalView.jumpToPreviousFailedCommand()
+                popover?.close()
+            }
+        )
+        let controller = NSHostingController(rootView: timelineView)
+        popover.contentViewController = controller
+        let anchorView = positioningView ?? self
+        let anchorRect = NSRect(x: max(0, anchorView.bounds.width - 180), y: max(0, anchorView.bounds.height - 28), width: 160, height: 24)
+        popover.show(relativeTo: anchorRect, of: anchorView, preferredEdge: .minY)
+        commandTimelinePopover = popover
+    }
     
     /// Explicitly releases observers, timers, and backing text storage when the scroll view is dismantled.
     public func tearDown() {
+        commandTimelinePopover?.close()
+        commandTimelinePopover = nil
         NotificationCenter.default.removeObserver(self)
         searchBarOverlay.terminalView = nil
         terminalView.tearDown()
@@ -530,6 +682,16 @@ public final class NativeTerminalScrollView: NSScrollView {
             || (responder as? NSView)?.isDescendant(of: searchBarOverlay) == true
         if isTerminalOrFindBar {
             showFindBar()
+        }
+    }
+
+    @objc private func handleToggleCommandTimelineNotification(_ note: Notification) {
+        guard let win = window, win.isKeyWindow else { return }
+        let responder = win.firstResponder
+        let isFocusedTerminal = responder === terminalView
+            || (responder as? NSView)?.isDescendant(of: self) == true
+        if isFocusedTerminal {
+            toggleCommandTimeline()
         }
     }
     
@@ -610,6 +772,9 @@ public final class NativeTerminalView: NSTextView {
     /// Configurable hooks wired by the app layer (`AppSettings`) without adding a direct dependency cycle.
     public static var isOptionAsMetaEnabled: () -> Bool = { AppSettings.shared.optionAsMeta }
     public static var shouldConvertCJKPunctuation: () -> Bool = { AppSettings.shared.autoConvertCJKPunctuation }
+    public static var isTriggerAutoResponseEnabled: () -> Bool = { false }
+    public static let openDetectedFilePathNotification = Notification.Name("ApexTermOpenDetectedFilePath")
+    public static let toggleCommandTimelineNotification = Notification.Name("ApexTermToggleCommandTimeline")
 
     @MainActor
     internal static func resolvedThemePreset(for appearance: NSAppearance? = nil) -> TerminalThemePreset {
@@ -622,6 +787,18 @@ public final class NativeTerminalView: NSTextView {
         return isDark ? .modern : .nativeLight
     }
 
+    private struct NormalModeSnapshot {
+        let attributedString: NSAttributedString
+        let lastCommittedIndex: Int64
+        let committedLineLengths: [Int]
+        let lineHead: Int
+        let activeLine: String
+        let activeLineStartLocation: Int
+        let wasPinnedToBottom: Bool
+        let scrollOrigin: NSPoint
+        let normalClearEpoch: Int64
+    }
+
     public var ringBuffer: TerminalRingBuffer? {
         didSet {
             if oldValue !== ringBuffer {
@@ -629,6 +806,8 @@ public final class NativeTerminalView: NSTextView {
                 resizeDebounceTask = nil
                 syncWatchdogTask?.cancel()
                 syncWatchdogTask = nil
+                findResyncTask?.cancel()
+                findResyncTask = nil
                 pendingDimensions = nil
                 lastReportedDimensions = nil
                 lastPromptNavigationLine = nil
@@ -637,13 +816,19 @@ public final class NativeTerminalView: NSTextView {
                 activeLineStartLocation = 0
                 renderedScreenRows = nil
                 renderedScreenLines = nil
+                isRenderingAlternateScreen = false
+                normalModeSnapshot = nil
                 clearFind()
                 textStorage?.setAttributedString(NSAttributedString())
+                if let buffer = ringBuffer {
+                    attachTriggerHooks(to: buffer)
+                }
                 scheduleRefresh()
             }
         }
     }
     public var onInput: ((Data) -> Void)?
+    public var onTriggerSendResponse: ((String) -> Void)?
     public var isCopyOnSelectEnabled: Bool = true
     public private(set) var bellTriggerCount: Int = 0
     private var visualBellLayer: CALayer?
@@ -654,20 +839,77 @@ public final class NativeTerminalView: NSTextView {
     private var lastReportedDimensions: (cols: Int, rows: Int)? = nil
     private var renderedScreenRows: [NSAttributedString]?
     private var renderedScreenLines: [String]?
+    private var isRenderingAlternateScreen: Bool = false
+    private var normalModeSnapshot: NormalModeSnapshot?
+    public private(set) var normalSnapshotCacheHits: Int = 0
+    public private(set) var normalSnapshotCacheMisses: Int = 0
+    public var hasCachedNormalSnapshot: Bool { normalModeSnapshot != nil }
     private var resizeDebounceTask: Task<Void, Never>? = nil
     private var syncWatchdogTask: Task<Void, Never>? = nil
+    private var findResyncTask: Task<Void, Never>? = nil
     private var pendingDimensions: (cols: Int, rows: Int)?
     private var lastPromptNavigationLine: Int? = nil
+    private let autoResponseLock = NSLock()
+    nonisolated(unsafe) private var _cachedTriggerAutoResponseEnabled: Bool = false
     
     private let parser = VTParser()
     private let keywordHighlighter = KeywordHighlighter()
     private var activeTriggers: [Trigger] = []
 
+    private func syncTriggerAutoResponseFlag() {
+        let enabled = Self.isTriggerAutoResponseEnabled()
+        autoResponseLock.lock()
+        _cachedTriggerAutoResponseEnabled = enabled
+        autoResponseLock.unlock()
+    }
+
+    private func attachTriggerHooks(to buffer: TerminalRingBuffer) {
+        syncTriggerAutoResponseFlag()
+        buffer.setTriggers(activeTriggers)
+        buffer.isTriggerAutoResponseEnabled = { [weak self] in
+            if Thread.isMainThread {
+                return MainActor.assumeIsolated {
+                    NativeTerminalView.isTriggerAutoResponseEnabled()
+                }
+            }
+            guard let self else { return false }
+            self.autoResponseLock.lock()
+            let enabled = self._cachedTriggerAutoResponseEnabled
+            self.autoResponseLock.unlock()
+            return enabled
+        }
+        if buffer.onTriggerSendResponse == nil {
+            buffer.onTriggerSendResponse = { [weak self] responseText in
+                if Thread.isMainThread {
+                    MainActor.assumeIsolated {
+                        self?.deliverTriggerSendResponse(responseText)
+                    }
+                } else {
+                    Task { @MainActor [weak self] in
+                        self?.deliverTriggerSendResponse(responseText)
+                    }
+                }
+            }
+        }
+    }
+
+    private func deliverTriggerSendResponse(_ responseText: String) {
+        guard Self.isTriggerAutoResponseEnabled() else { return }
+        if let handler = onTriggerSendResponse {
+            handler(responseText)
+        } else if let data = responseText.data(using: .utf8) {
+            onInput?(data)
+        }
+    }
+
     public func setTriggers(_ triggers: [Trigger]) {
+        syncTriggerAutoResponseFlag()
         guard triggers != activeTriggers else { return }
         activeTriggers = triggers
         keywordHighlighter.setTriggers(triggers)
+        ringBuffer?.setTriggers(triggers)
         renderedScreenRows = nil
+        normalModeSnapshot = nil
         if (textStorage?.length ?? 0) > 0 {
             textStorage?.setAttributedString(NSAttributedString())
             lastCommittedIndex = 0
@@ -923,6 +1165,76 @@ public final class NativeTerminalView: NSTextView {
         }
         return false
     }
+
+    @discardableResult
+    public func jumpToCommandRecord(_ record: CommandExecutionRecord) -> Bool {
+        guard ringBuffer?.isInAlternateScreen != true else { return false }
+        return scrollToLineIndex(record.promptStartLine)
+    }
+
+    @discardableResult
+    public func jumpToPreviousFailedCommand() -> Bool {
+        guard let buffer = ringBuffer, !buffer.isInAlternateScreen else { return false }
+        let refLine = currentTopVisibleLineIndex()
+        guard let failed = buffer.shellIntegration.previousFailedRecord(before: refLine) else {
+            return false
+        }
+        return scrollToLineIndex(failed.promptStartLine)
+    }
+
+    @discardableResult
+    public func jumpToNextFailedCommand() -> Bool {
+        guard let buffer = ringBuffer, !buffer.isInAlternateScreen else { return false }
+        let refLine = currentTopVisibleLineIndex()
+        guard let failed = buffer.shellIntegration.nextFailedRecord(after: refLine) else {
+            return false
+        }
+        return scrollToLineIndex(failed.promptStartLine)
+    }
+
+    @discardableResult
+    public func copyCommandOutput(for record: CommandExecutionRecord) -> Bool {
+        guard let output = ringBuffer?.extractOSC133CommandOutput(for: record), !output.isEmpty else {
+            return false
+        }
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(output, forType: .string)
+        return true
+    }
+
+    @discardableResult
+    public func rerunCommand(_ record: CommandExecutionRecord) -> Bool {
+        guard let cmd = record.commandText?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !cmd.isEmpty,
+              let data = (cmd + "\r").data(using: .utf8) else {
+            return false
+        }
+        onInput?(data)
+        return true
+    }
+
+    public func commandRecordAtPoint(_ point: NSPoint) -> CommandExecutionRecord? {
+        guard let buffer = ringBuffer, !buffer.isInAlternateScreen,
+              let storage = self.textStorage, storage.length > 0,
+              let layoutManager = self.layoutManager,
+              let textContainer = self.textContainer else { return nil }
+        let containerPoint = NSPoint(x: point.x - textContainerOrigin.x, y: point.y - textContainerOrigin.y)
+        let glyphIndex = layoutManager.glyphIndex(for: containerPoint, in: textContainer)
+        let charIndex = layoutManager.characterIndexForGlyph(at: glyphIndex)
+        guard charIndex < storage.length else { return nil }
+        let visibleCount = max(0, renderedCommittedLineLengths.count - renderedLineHead)
+        let oldestLine = Int(lastCommittedIndex) - visibleCount
+        var running = 0
+        for offset in 0..<visibleCount {
+            let len = renderedCommittedLineLengths[renderedLineHead + offset]
+            if charIndex < running + len {
+                return buffer.shellIntegration.record(atLine: oldestLine + offset)
+            }
+            running += len
+        }
+        return buffer.shellIntegration.record(atLine: Int(lastCommittedIndex))
+    }
     
     /// Notify remote PTY of new dimensions with debounce (prevents SIGWINCH storm during drag)
     public func notifyDimensionsChangedIfNeeded(immediate: Bool = false) {
@@ -1092,6 +1404,7 @@ public final class NativeTerminalView: NSTextView {
         self.isSelectable = true
         self.drawsBackground = true
         self.insertionPointColor = NSColor.cyan
+        self.linkTextAttributes = [.cursor: NSCursor.pointingHand]
         
         // Apply settings initially
         applyAppSettings()
@@ -1191,10 +1504,12 @@ public final class NativeTerminalView: NSTextView {
             storage.beginEditing()
             storage.enumerateAttribute(NSAttributedString.Key("ApexThemeColor"), in: NSRange(location: 0, length: storage.length)) { value, range, _ in
                 guard let index = value as? Int else { return }
-                if index == -1 { storage.addAttribute(.foregroundColor, value: fg, range: range) }
-                else if index == -3 { storage.addAttribute(.foregroundColor, value: bg, range: range) }
+                let isDim = (storage.attribute(NSAttributedString.Key("ApexThemeDim"), at: range.location, effectiveRange: nil) as? Bool) == true
+                let alphaMultiplier: CGFloat = isDim ? 0.55 : 1.0
+                if index == -1 { storage.addAttribute(.foregroundColor, value: fg.withAlphaComponent(fg.alphaComponent * alphaMultiplier), range: range) }
+                else if index == -3 { storage.addAttribute(.foregroundColor, value: bg.withAlphaComponent(bg.alphaComponent * alphaMultiplier), range: range) }
                 else if index >= 0, let color = NSColor(hex: theme.palette.terminalColor(at: index)) {
-                    storage.addAttribute(.foregroundColor, value: color, range: range)
+                    storage.addAttribute(.foregroundColor, value: color.withAlphaComponent(color.alphaComponent * alphaMultiplier), range: range)
                 }
             }
             storage.enumerateAttribute(NSAttributedString.Key("ApexThemeBackground"), in: NSRange(location: 0, length: storage.length)) { value, range, _ in
@@ -1214,6 +1529,7 @@ public final class NativeTerminalView: NSTextView {
         }
         
         renderedScreenRows = nil
+        normalModeSnapshot = nil
         if ringBuffer?.isInAlternateScreen == true { refresh() }
         else if fontChanged, ringBuffer != nil {
             // Recompute wide-glyph advances and ANSI font traits for existing output.
@@ -1296,6 +1612,8 @@ public final class NativeTerminalView: NSTextView {
         resizeDebounceTask = nil
         syncWatchdogTask?.cancel()
         syncWatchdogTask = nil
+        findResyncTask?.cancel()
+        findResyncTask = nil
         pendingDimensions = nil
         lastPromptNavigationLine = nil
         scrollDeltaAccumulator = 0
@@ -1309,11 +1627,14 @@ public final class NativeTerminalView: NSTextView {
         ringBuffer?.onUpdate = nil
         ringBuffer = nil
         onInput = nil
+        onTriggerSendResponse = nil
         onResize = nil
         onFileDrop = nil
         onFocus = nil
         renderedScreenRows = nil
         renderedScreenLines = nil
+        isRenderingAlternateScreen = false
+        normalModeSnapshot = nil
         renderedCommittedLineLengths.removeAll(keepingCapacity: false)
         glyphAdvanceCache.removeAll(keepingCapacity: false)
         textStorage?.setAttributedString(NSAttributedString())
@@ -1323,6 +1644,7 @@ public final class NativeTerminalView: NSTextView {
         cursorBlinkTimer?.invalidate()
         resizeDebounceTask?.cancel()
         syncWatchdogTask?.cancel()
+        findResyncTask?.cancel()
         NotificationCenter.default.removeObserver(self)
         NSWorkspace.shared.notificationCenter.removeObserver(self)
         if let settingsObserver { NotificationCenter.default.removeObserver(settingsObserver) }
@@ -1415,6 +1737,7 @@ public final class NativeTerminalView: NSTextView {
     
     override public func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
+        drawCommandGutterIndicators(in: dirtyRect)
         
         if !currentMarkedText.isEmpty {
             drawComposition()
@@ -1443,6 +1766,58 @@ public final class NativeTerminalView: NSTextView {
             let path = NSBezierPath(roundedRect: strokeRect, xRadius: 1.0, yRadius: 1.0)
             path.lineWidth = 1.2
             path.stroke()
+        }
+    }
+
+    private func drawCommandGutterIndicators(in dirtyRect: NSRect) {
+        guard let buffer = ringBuffer, !buffer.isInAlternateScreen,
+              let layoutManager = self.layoutManager,
+              let textContainer = self.textContainer,
+              let storage = self.textStorage, storage.length > 0 else { return }
+        let records = buffer.shellIntegration.allRecords()
+        guard !records.isEmpty else { return }
+        let visibleCount = max(0, renderedCommittedLineLengths.count - renderedLineHead)
+        guard visibleCount > 0 else { return }
+        let oldestLine = Int(lastCommittedIndex) - visibleCount
+
+        let containerRect = dirtyRect.offsetBy(dx: -textContainerOrigin.x, dy: -textContainerOrigin.y)
+        let visibleGlyphRange = layoutManager.glyphRange(forBoundingRectWithoutAdditionalLayout: containerRect, in: textContainer)
+        guard visibleGlyphRange.length > 0 else { return }
+        let visibleCharRange = layoutManager.characterRange(forGlyphRange: visibleGlyphRange, actualGlyphRange: nil)
+
+        // Build fast cumulative character offset for visible lines only inside the visible char range
+        var lineOffsets: [(line: Int, charOffset: Int)] = []
+        var running = 0
+        for offset in 0..<visibleCount {
+            let lineIdx = oldestLine + offset
+            let len = renderedCommittedLineLengths[renderedLineHead + offset]
+            if running + len >= visibleCharRange.location && running <= NSMaxRange(visibleCharRange) {
+                lineOffsets.append((lineIdx, running))
+            }
+            running += len
+            if running > NSMaxRange(visibleCharRange) { break }
+        }
+        guard let minVisibleLine = lineOffsets.first?.line, let maxVisibleLine = lineOffsets.last?.line else { return }
+        let offsetMap = Dictionary(uniqueKeysWithValues: lineOffsets.map { ($0.line, $0.charOffset) })
+
+        for record in records where record.promptStartLine >= minVisibleLine && record.promptStartLine <= maxVisibleLine {
+            guard let charOffset = offsetMap[record.promptStartLine], charOffset < storage.length else { continue }
+            let glyphIndex = layoutManager.glyphIndexForCharacter(at: charOffset)
+            let fragRect = layoutManager.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil)
+            let indicatorColor: NSColor
+            if let exitCode = record.exitCode {
+                indicatorColor = (exitCode == 0) ? NSColor(hex: "#30D158") ?? .systemGreen : NSColor(hex: "#FF453A") ?? .systemRed
+            } else {
+                indicatorColor = NSColor(hex: "#FFD60A") ?? .systemYellow
+            }
+            let dotRect = NSRect(
+                x: 3,
+                y: textContainerOrigin.y + fragRect.minY + max(2, (fragRect.height - 8) / 2),
+                width: 3,
+                height: min(10, max(6, fragRect.height - 4))
+            )
+            indicatorColor.withAlphaComponent(0.85).setFill()
+            NSBezierPath(roundedRect: dotRect, xRadius: 1.5, yRadius: 1.5).fill()
         }
     }
     
@@ -1529,6 +1904,10 @@ public final class NativeTerminalView: NSTextView {
     
     public private(set) var currentMatches: [NSRange] = []
     public private(set) var currentMatchIndex: Int = -1
+    public private(set) var lastFindQuery: String = ""
+    public var isFindCaseSensitive: Bool = false
+    public var isFindRegexEnabled: Bool = false
+    public private(set) var isFindRegexInvalid: Bool = false
     
     public func selectedRangeText() -> String? {
         let range = selectedRange()
@@ -1536,37 +1915,96 @@ public final class NativeTerminalView: NSTextView {
         return (storage.string as NSString).substring(with: range)
     }
     
+    @discardableResult
     public func performFind(query: String) -> Int {
+        performFind(query: query, caseSensitive: isFindCaseSensitive, isRegex: isFindRegexEnabled, scrollToMatch: true)
+    }
+
+    @discardableResult
+    public func performFind(
+        query: String,
+        caseSensitive: Bool,
+        isRegex: Bool,
+        scrollToMatch: Bool = true
+    ) -> Int {
+        isFindCaseSensitive = caseSensitive
+        isFindRegexEnabled = isRegex
+        isFindRegexInvalid = false
         clearHighlightAttributes()
         currentMatches.removeAll()
         currentMatchIndex = -1
         
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, let storage = self.textStorage else {
+            lastFindQuery = ""
             return 0
         }
+        lastFindQuery = query
         
         let string = storage.string as NSString
         let totalLength = string.length
-        var searchRange = NSRange(location: 0, length: totalLength)
-        
-        while searchRange.location < totalLength {
-            searchRange.length = totalLength - searchRange.location
-            let found = string.range(of: trimmed, options: .caseInsensitive, range: searchRange)
-            if found.location != NSNotFound {
-                currentMatches.append(found)
-                searchRange.location = found.location + max(1, found.length)
-            } else {
-                break
+        if isRegex {
+            let options: NSRegularExpression.Options = caseSensitive ? [] : [.caseInsensitive]
+            do {
+                let regex = try NSRegularExpression(pattern: query, options: options)
+                let results = regex.matches(in: storage.string, options: [], range: NSRange(location: 0, length: totalLength))
+                for result in results where result.range.length > 0 {
+                    currentMatches.append(result.range)
+                }
+            } catch {
+                isFindRegexInvalid = true
+                return 0
+            }
+        } else {
+            let options: NSString.CompareOptions = caseSensitive ? [] : .caseInsensitive
+            var searchRange = NSRange(location: 0, length: totalLength)
+            while searchRange.location < totalLength {
+                searchRange.length = totalLength - searchRange.location
+                let found = string.range(of: trimmed, options: options, range: searchRange)
+                if found.location != NSNotFound {
+                    currentMatches.append(found)
+                    searchRange.location = found.location + max(1, found.length)
+                } else {
+                    break
+                }
             }
         }
         
         if !currentMatches.isEmpty {
             currentMatchIndex = 0
             highlightAllMatches()
-            scrollToCurrentMatch()
+            if scrollToMatch {
+                scrollToCurrentMatch()
+            }
         }
         return currentMatches.count
+    }
+
+    public func resyncFindIfNeeded() {
+        guard !lastFindQuery.isEmpty else { return }
+        let prevIndex = currentMatchIndex
+        let count = performFind(
+            query: lastFindQuery,
+            caseSensitive: isFindCaseSensitive,
+            isRegex: isFindRegexEnabled,
+            scrollToMatch: false
+        )
+        if count > 0, prevIndex >= 0 {
+            currentMatchIndex = min(prevIndex, count - 1)
+            highlightAllMatches()
+        }
+        (enclosingScrollView as? NativeTerminalScrollView)?.searchBarOverlay.updateMatchLabel()
+    }
+
+    private func scheduleFindResync() {
+        guard !lastFindQuery.isEmpty else { return }
+        findResyncTask?.cancel()
+        findResyncTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(120))
+            guard !Task.isCancelled, let self else { return }
+            self.findResyncTask = nil
+            self.resyncFindIfNeeded()
+        }
     }
     
     public func findNext() -> NSRange? {
@@ -1596,6 +2034,10 @@ public final class NativeTerminalView: NSTextView {
     }
     
     public func clearFind() {
+        findResyncTask?.cancel()
+        findResyncTask = nil
+        lastFindQuery = ""
+        isFindRegexInvalid = false
         clearHighlightAttributes()
         currentMatches.removeAll()
         currentMatchIndex = -1
@@ -1639,7 +2081,7 @@ public final class NativeTerminalView: NSTextView {
         self.scrollRangeToVisible(range)
     }
     
-    // MARK: - URL Detection & Cmd+Click Support
+    // MARK: - URL Detection, File Path Detection & Cmd+Click Support
     
     public struct DetectedURLMatch: Equatable, Sendable {
         public let url: URL
@@ -1652,8 +2094,26 @@ public final class NativeTerminalView: NSTextView {
             self.originalString = originalString
         }
     }
+
+    public struct DetectedFileLocation: Equatable, Sendable {
+        public let path: String
+        public let line: Int?
+        public let column: Int?
+        public let range: NSRange
+
+        public init(path: String, line: Int? = nil, column: Int? = nil, range: NSRange) {
+            self.path = path
+            self.line = line
+            self.column = column
+            self.range = range
+        }
+    }
     
     private nonisolated static let linkDetector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
+    private nonisolated static let fileLocationRegex = try? NSRegularExpression(
+        pattern: #"(?<![A-Za-z0-9_:])((?:(?:\.\.?|~)?/(?:[A-Za-z0-9._+\-@]+/)*[A-Za-z0-9._+\-@]+)|(?:(?:[A-Za-z0-9._+\-@]+/)+[A-Za-z0-9._+\-@]+)|(?:[A-Za-z0-9._+\-@]+\.[A-Za-z][A-Za-z0-9]{0,9})):([1-9]\d*)(?::([1-9]\d*))?(?!:\d|/)"#,
+        options: []
+    )
 
     public nonisolated static func detectURLs(in text: String) -> [DetectedURLMatch] {
         guard let detector = Self.linkDetector else { return [] }
@@ -1681,30 +2141,124 @@ public final class NativeTerminalView: NSTextView {
         }
         return results
     }
-    
-    public func urlAtPoint(_ point: NSPoint) -> URL? {
+
+    public nonisolated static func detectFileLocations(in text: String) -> [DetectedFileLocation] {
+        guard let regex = Self.fileLocationRegex, !text.isEmpty else { return [] }
+        let urlRanges = detectURLs(in: text).map(\.range)
+        let nsText = text as NSString
+        let rawMatches = regex.matches(in: text, options: [], range: NSRange(location: 0, length: nsText.length))
+        var results: [DetectedFileLocation] = []
+
+        for match in rawMatches {
+            let fullRange = match.range
+            if urlRanges.contains(where: { NSIntersectionRange($0, fullRange).length > 0 }) {
+                continue
+            }
+            let pathRange = match.range(at: 1)
+            let lineRange = match.range(at: 2)
+            guard pathRange.location != NSNotFound, lineRange.location != NSNotFound else { continue }
+            let path = nsText.substring(with: pathRange)
+            guard !path.isEmpty, let line = Int(nsText.substring(with: lineRange)) else { continue }
+            var column: Int? = nil
+            let colRange = match.range(at: 3)
+            if colRange.location != NSNotFound {
+                column = Int(nsText.substring(with: colRange))
+            }
+            results.append(DetectedFileLocation(path: path, line: line, column: column, range: fullRange))
+        }
+        return results
+    }
+
+    private func resolvedPointLineContext(at point: NSPoint) -> (charIndex: Int, lineRange: NSRange, lineText: String)? {
         guard let storage = self.textStorage, storage.length > 0,
               let layoutManager = self.layoutManager,
               let textContainer = self.textContainer else { return nil }
-        
         let containerPoint = NSPoint(x: point.x - textContainerOrigin.x, y: point.y - textContainerOrigin.y)
         let glyphIndex = layoutManager.glyphIndex(for: containerPoint, in: textContainer)
         let charIndex = layoutManager.characterIndexForGlyph(at: glyphIndex)
         guard charIndex < storage.length else { return nil }
-        
+
         let lineRect = layoutManager.lineFragmentUsedRect(forGlyphAt: glyphIndex, effectiveRange: nil)
         guard lineRect.insetBy(dx: -4, dy: -4).contains(containerPoint) else { return nil }
-        
+
         let text = storage.string as NSString
         let lineRange = text.lineRange(for: NSRange(location: charIndex, length: 0))
         let lineText = text.substring(with: lineRange)
+        return (charIndex, lineRange, lineText)
+    }
+
+    public func fileLocationAtPoint(_ point: NSPoint) -> DetectedFileLocation? {
+        guard let storage = self.textStorage,
+              let context = resolvedPointLineContext(at: point) else { return nil }
+        if (storage.attribute(.link, at: context.charIndex, effectiveRange: nil) as? URL) != nil {
+            return nil
+        }
+        for match in Self.detectURLs(in: context.lineText) {
+            let globalRange = NSRange(location: context.lineRange.location + match.range.location, length: match.range.length)
+            if NSLocationInRange(context.charIndex, globalRange) {
+                return nil
+            }
+        }
+        for location in Self.detectFileLocations(in: context.lineText) {
+            let globalRange = NSRange(location: context.lineRange.location + location.range.location, length: location.range.length)
+            if NSLocationInRange(context.charIndex, globalRange) {
+                return DetectedFileLocation(
+                    path: location.path,
+                    line: location.line,
+                    column: location.column,
+                    range: globalRange
+                )
+            }
+        }
+        return nil
+    }
+
+    private func fileURL(for location: DetectedFileLocation) -> URL {
+        let rawPath = location.path
+        if rawPath.hasPrefix("/") {
+            return URL(fileURLWithPath: rawPath)
+        }
+        if rawPath.hasPrefix("~/") {
+            let expanded = (rawPath as NSString).expandingTildeInPath
+            return URL(fileURLWithPath: expanded)
+        }
+        if let cwd = ringBuffer?.shellIntegration.workingDirectory, !cwd.isEmpty {
+            let cleanRelative = rawPath.hasPrefix("./") ? String(rawPath.dropFirst(2)) : rawPath
+            return URL(fileURLWithPath: cwd).appendingPathComponent(cleanRelative).standardized
+        }
+        return URL(fileURLWithPath: rawPath)
+    }
+
+    public func openDetectedFileLocation(_ location: DetectedFileLocation) {
+        var userInfo: [String: Any] = ["path": location.path]
+        if let line = location.line { userInfo["line"] = line }
+        if let column = location.column { userInfo["column"] = column }
+        if let cwd = ringBuffer?.shellIntegration.workingDirectory {
+            userInfo["workingDirectory"] = cwd
+        }
+        NotificationCenter.default.post(
+            name: Self.openDetectedFilePathNotification,
+            object: self,
+            userInfo: userInfo
+        )
+    }
+    
+    public func urlAtPoint(_ point: NSPoint) -> URL? {
+        guard let storage = self.textStorage,
+              let context = resolvedPointLineContext(at: point) else { return nil }
+        if let osc8URL = storage.attribute(.link, at: context.charIndex, effectiveRange: nil) as? URL {
+            return osc8URL
+        }
         
-        let matches = Self.detectURLs(in: lineText)
+        let matches = Self.detectURLs(in: context.lineText)
         for match in matches {
-            let globalRange = NSRange(location: lineRange.location + match.range.location, length: match.range.length)
-            if NSLocationInRange(charIndex, globalRange) {
+            let globalRange = NSRange(location: context.lineRange.location + match.range.location, length: match.range.length)
+            if NSLocationInRange(context.charIndex, globalRange) {
                 return match.url
             }
+        }
+        if let fileLocation = fileLocationAtPoint(point) {
+            return fileURL(for: fileLocation)
         }
         return nil
     }
@@ -1838,12 +2392,26 @@ public final class NativeTerminalView: NSTextView {
         if sendMouseReport(event, button: 0) { return }
         if event.modifierFlags.contains(.command) {
             let pt = convert(event.locationInWindow, from: nil)
+            if let fileLocation = fileLocationAtPoint(pt) {
+                openDetectedFileLocation(fileLocation)
+                return
+            }
             if let url = urlAtPoint(pt) {
                 NSWorkspace.shared.open(url)
                 return
             }
         }
         super.mouseDown(with: event)
+    }
+
+    override public func clicked(onLink link: Any, at charIndex: Int) {
+        // Require Cmd+Click to open OSC 8 links so plain clicks remain available for text selection.
+        guard NSApp.currentEvent?.modifierFlags.contains(.command) == true else { return }
+        if let url = link as? URL {
+            NSWorkspace.shared.open(url)
+        } else if let str = link as? String, let url = URL(string: str) {
+            NSWorkspace.shared.open(url)
+        }
     }
     
     override public func setSelectedRanges(_ ranges: [NSValue], affinity: NSSelectionAffinity, stillSelecting stillSelectingFlag: Bool) {
@@ -2264,8 +2832,16 @@ public final class NativeTerminalView: NSTextView {
         let hasSelection = self.selectedRange().length > 0
         let pt = convert(event.locationInWindow, from: nil)
         
-        // Check if clicked or selected a URL
-        if let clickedURL = urlAtPoint(pt) {
+        // Check if clicked on a detected file location, URL, or selected URL
+        if let fileLocation = fileLocationAtPoint(pt) {
+            let fileName = (fileLocation.path as NSString).lastPathComponent
+            let suffix = fileLocation.line.map { ":\($0)" } ?? ""
+            let fileItem = NSMenuItem(title: "打开文件位置 (\(fileName)\(suffix))", action: #selector(openFileLocationAction(_:)), keyEquivalent: "")
+            fileItem.target = self
+            fileItem.representedObject = fileLocation
+            menu.addItem(fileItem)
+            menu.addItem(NSMenuItem.separator())
+        } else if let clickedURL = urlAtPoint(pt) {
             let shortURL = clickedURL.absoluteString.count > 30 ? String(clickedURL.absoluteString.prefix(28)) + "..." : clickedURL.absoluteString
             let urlItem = NSMenuItem(title: "在浏览器中打开链接 (\(shortURL))", action: #selector(openURLAction(_:)), keyEquivalent: "")
             urlItem.target = self
@@ -2279,6 +2855,40 @@ public final class NativeTerminalView: NSTextView {
             urlItem.representedObject = selectedURL
             menu.addItem(urlItem)
             menu.addItem(NSMenuItem.separator())
+        }
+
+        // OSC 133 Command Block actions
+        if ringBuffer?.isInAlternateScreen != true {
+            var addedCommandSection = false
+            if let record = commandRecordAtPoint(pt) {
+                let copyOutItem = NSMenuItem(title: "复制该命令输出", action: #selector(copyCommandRecordOutputAction(_:)), keyEquivalent: "")
+                copyOutItem.target = self
+                copyOutItem.representedObject = record
+                copyOutItem.isEnabled = ringBuffer?.extractOSC133CommandOutput(for: record) != nil
+                menu.addItem(copyOutItem)
+
+                let rerunItem = NSMenuItem(title: "重新执行命令", action: #selector(rerunCommandRecordAction(_:)), keyEquivalent: "")
+                rerunItem.target = self
+                rerunItem.representedObject = record
+                rerunItem.isEnabled = !(record.commandText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+                menu.addItem(rerunItem)
+                addedCommandSection = true
+            }
+            if ringBuffer?.shellIntegration.failedRecords().isEmpty == false {
+                let jumpFailedItem = NSMenuItem(title: "跳至上一条失败命令", action: #selector(jumpToPreviousFailedCommandAction(_:)), keyEquivalent: "")
+                jumpFailedItem.target = self
+                menu.addItem(jumpFailedItem)
+                addedCommandSection = true
+            }
+            if ringBuffer?.shellIntegration.allRecords().isEmpty == false {
+                let timelineItem = NSMenuItem(title: "命令块时间线...", action: #selector(toggleCommandTimelineAction(_:)), keyEquivalent: "")
+                timelineItem.target = self
+                menu.addItem(timelineItem)
+                addedCommandSection = true
+            }
+            if addedCommandSection {
+                menu.addItem(NSMenuItem.separator())
+            }
         }
         
         // 1. 复制 (Copy)
@@ -2318,6 +2928,32 @@ public final class NativeTerminalView: NSTextView {
         if let url = sender.representedObject as? URL {
             NSWorkspace.shared.open(url)
         }
+    }
+
+    @objc private func openFileLocationAction(_ sender: NSMenuItem) {
+        if let location = sender.representedObject as? DetectedFileLocation {
+            openDetectedFileLocation(location)
+        }
+    }
+
+    @objc private func copyCommandRecordOutputAction(_ sender: NSMenuItem) {
+        if let record = sender.representedObject as? CommandExecutionRecord {
+            _ = copyCommandOutput(for: record)
+        }
+    }
+
+    @objc private func rerunCommandRecordAction(_ sender: NSMenuItem) {
+        if let record = sender.representedObject as? CommandExecutionRecord {
+            _ = rerunCommand(record)
+        }
+    }
+
+    @objc private func jumpToPreviousFailedCommandAction(_ sender: Any?) {
+        _ = jumpToPreviousFailedCommand()
+    }
+
+    @objc private func toggleCommandTimelineAction(_ sender: Any?) {
+        (enclosingScrollView as? NativeTerminalScrollView)?.toggleCommandTimeline()
     }
     
     @objc private func findMenuAction(_ sender: Any?) {
@@ -2573,6 +3209,9 @@ public final class NativeTerminalView: NSTextView {
                 textColor = background ?? NSColor(hex: theme.backgroundColorHex) ?? self.backgroundColor
                 background = originalForeground
             }
+            if span.isDim {
+                textColor = textColor.withAlphaComponent(textColor.alphaComponent * 0.55)
+            }
             var attrs: [NSAttributedString.Key: Any] = [
                 .font: renderFont,
                 .foregroundColor: textColor,
@@ -2583,6 +3222,13 @@ public final class NativeTerminalView: NSTextView {
             if let background { attrs[.backgroundColor] = background }
             if span.isUnderlined { attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue }
             if span.isStrikethrough { attrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
+            if span.isDim { attrs[NSAttributedString.Key("ApexThemeDim")] = true }
+            if let linkStr = span.linkURI, let linkURL = URL(string: linkStr) {
+                attrs[.link] = linkURL
+                if !span.isUnderlined {
+                    attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
+                }
+            }
             attrs[NSAttributedString.Key("ApexThemeColor")] = span.isInverse
                 ? (span.backgroundANSIColorIndex ?? (span.backgroundColorHex == nil ? -3 : -2))
                 : (span.ansiColorIndex ?? (span.foregroundColorHex == nil ? -1 : -2))
@@ -2706,9 +3352,26 @@ public final class NativeTerminalView: NSTextView {
             syncWatchdogTask = nil
 
             if let screenLines = buffer.screenLines {
-                if renderedScreenRows == nil && !currentMatches.isEmpty {
-                    clearFind()
-                    (enclosingScrollView as? NativeTerminalScrollView)?.searchBarOverlay.updateMatchLabel()
+                if !isRenderingAlternateScreen {
+                    isRenderingAlternateScreen = true
+                    if normalModeSnapshot == nil, let storage = textStorage {
+                        let captured = NSAttributedString(attributedString: storage)
+                        normalModeSnapshot = NormalModeSnapshot(
+                            attributedString: captured,
+                            lastCommittedIndex: lastCommittedIndex,
+                            committedLineLengths: renderedCommittedLineLengths,
+                            lineHead: renderedLineHead,
+                            activeLine: renderedActiveLine ?? "",
+                            activeLineStartLocation: activeLineStartLocation,
+                            wasPinnedToBottom: isPinnedToBottom,
+                            scrollOrigin: enclosingScrollView?.contentView.bounds.origin ?? .zero,
+                            normalClearEpoch: buffer.normalClearEpoch
+                        )
+                    }
+                    if !currentMatches.isEmpty {
+                        clearFind()
+                        (enclosingScrollView as? NativeTerminalScrollView)?.searchBarOverlay.updateMatchLabel()
+                    }
                 }
                 let paragraph = cachedParagraphStyle
                 let reusableRows = renderedScreenRows?.count == screenLines.count
@@ -2759,16 +3422,64 @@ public final class NativeTerminalView: NSTextView {
                 return
             }
 
-            let exitedAlternateScreen = (renderedScreenRows != nil)
+            let exitedAlternateScreen = isRenderingAlternateScreen || (renderedScreenRows != nil)
+            isRenderingAlternateScreen = false
             renderedScreenRows = nil
             renderedScreenLines = nil
             let currentTotal = buffer.totalCommittedCount
             let bufferCleared = buffer.consumeClearFlag()
             let rewindWatermark = buffer.consumeRewindCommittedIndex()
+
+            var restoredNormalSnapshot = false
+            if exitedAlternateScreen {
+                if let snap = normalModeSnapshot,
+                   snap.normalClearEpoch == buffer.normalClearEpoch,
+                   currentTotal >= snap.lastCommittedIndex,
+                   (currentTotal - snap.lastCommittedIndex) <= Int64(buffer.maxLines) {
+                    normalModeSnapshot = nil
+                    normalSnapshotCacheHits += 1
+                    restoredNormalSnapshot = true
+                    CATransaction.begin()
+                    CATransaction.setDisableActions(true)
+                    textStorage?.beginEditing()
+                    textStorage?.setAttributedString(snap.attributedString)
+                    textStorage?.endEditing()
+                    CATransaction.commit()
+                    lastCommittedIndex = snap.lastCommittedIndex
+                    renderedCommittedLineLengths = snap.committedLineLengths
+                    renderedLineHead = snap.lineHead
+                    renderedActiveLine = snap.activeLine
+                    activeLineStartLocation = snap.activeLineStartLocation
+                    isPinnedToBottom = snap.wasPinnedToBottom
+                    if !currentMatches.isEmpty {
+                        clearFind()
+                        (enclosingScrollView as? NativeTerminalScrollView)?.searchBarOverlay.updateMatchLabel()
+                    }
+                    let activeNow = buffer.currentActiveLine
+                    if currentTotal == lastCommittedIndex && activeNow == renderedActiveLine {
+                        if snap.wasPinnedToBottom {
+                            scrollToBottom(forceLayout: true)
+                        } else if let clipView = enclosingScrollView?.contentView {
+                            clipView.scroll(to: snap.scrollOrigin)
+                            enclosingScrollView?.reflectScrolledClipView(clipView)
+                        }
+                        self.needsDisplay = true
+                        self.resetCursorBlink()
+                        return
+                    }
+                    // Otherwise fall through to incrementally append only post-exit delta lines
+                } else {
+                    normalSnapshotCacheMisses += 1
+                    normalModeSnapshot = nil
+                }
+            }
+
             let rewindTarget = min(currentTotal, rewindWatermark ?? currentTotal)
             let rewoundLines = (!bufferCleared && rewindTarget < lastCommittedIndex) ? Int(lastCommittedIndex - rewindTarget) : 0
-            let canIncrementalRewind = rewoundLines > 0 && rewoundLines <= (renderedCommittedLineLengths.count - renderedLineHead)
-            let isCleared = bufferCleared || (rewindTarget < lastCommittedIndex && !canIncrementalRewind)
+            let canIncrementalRewind = !exitedAlternateScreen && rewoundLines > 0 && rewoundLines <= (renderedCommittedLineLengths.count - renderedLineHead)
+            let isCleared = restoredNormalSnapshot
+                ? false
+                : (exitedAlternateScreen || bufferCleared || (rewindTarget < lastCommittedIndex && !canIncrementalRewind))
             let active = buffer.currentActiveLine
             if (exitedAlternateScreen || isCleared) && !currentMatches.isEmpty {
                 clearFind()
@@ -2871,9 +3582,27 @@ public final class NativeTerminalView: NSTextView {
             textStorage?.endEditing()
             CATransaction.commit()
 
-            if invalidatedFindMatches && !currentMatches.isEmpty {
+            if isCleared {
                 clearFind()
                 (enclosingScrollView as? NativeTerminalScrollView)?.searchBarOverlay.updateMatchLabel()
+            } else if invalidatedFindMatches && !currentMatches.isEmpty {
+                let preservedQuery = lastFindQuery
+                clearHighlightAttributes()
+                currentMatches.removeAll()
+                currentMatchIndex = -1
+                (enclosingScrollView as? NativeTerminalScrollView)?.searchBarOverlay.updateMatchLabel()
+                if !preservedQuery.isEmpty {
+                    lastFindQuery = preservedQuery
+                    scheduleFindResync()
+                }
+            } else if !lastFindQuery.isEmpty {
+                let storageLen = textStorage?.length ?? 0
+                if currentMatches.contains(where: { NSMaxRange($0) > storageLen }) {
+                    clearHighlightAttributes()
+                    currentMatches.removeAll()
+                    currentMatchIndex = -1
+                }
+                scheduleFindResync()
             }
 
             if self.isPinnedToBottom && (hasNewCommittedLines || isCleared || !self.isScrolledToBottom()) {
@@ -2882,6 +3611,115 @@ public final class NativeTerminalView: NSTextView {
             }
             self.resetCursorBlink()
         }
+    }
+}
+
+/// Interactive OSC 133 command block timeline popover view.
+public struct TerminalCommandTimelineView: View {
+    public let records: [CommandExecutionRecord]
+    public let onJumpToRecord: (CommandExecutionRecord) -> Void
+    public let onCopyOutput: (CommandExecutionRecord) -> Void
+    public let onRerun: (CommandExecutionRecord) -> Void
+    public let onJumpPreviousFailed: () -> Void
+
+    public init(
+        records: [CommandExecutionRecord],
+        onJumpToRecord: @escaping (CommandExecutionRecord) -> Void,
+        onCopyOutput: @escaping (CommandExecutionRecord) -> Void,
+        onRerun: @escaping (CommandExecutionRecord) -> Void,
+        onJumpPreviousFailed: @escaping () -> Void
+    ) {
+        self.records = records
+        self.onJumpToRecord = onJumpToRecord
+        self.onCopyOutput = onCopyOutput
+        self.onRerun = onRerun
+        self.onJumpPreviousFailed = onJumpPreviousFailed
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label("命令块时间线", systemImage: "list.bullet.rectangle")
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer()
+                if records.contains(where: \.isFailed) {
+                    Button("跳至上一条失败命令", action: onJumpPreviousFailed)
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 10)
+
+            Divider()
+
+            if records.isEmpty {
+                Text("暂无 OSC 133 命令执行记录")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 80)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 6) {
+                        ForEach(records) { record in
+                            HStack(spacing: 8) {
+                                Text(exitBadgeText(for: record))
+                                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(exitBadgeColor(for: record).opacity(0.18))
+                                    .foregroundStyle(exitBadgeColor(for: record))
+                                    .clipShape(Capsule())
+
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(record.commandText ?? "(无命令文本)")
+                                        .font(.system(size: 11.5, weight: .medium, design: .monospaced))
+                                        .lineLimit(1)
+                                    Text(record.formattedDuration)
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(.secondary)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    onJumpToRecord(record)
+                                }
+
+                                Button("复制该命令输出") {
+                                    onCopyOutput(record)
+                                }
+                                .buttonStyle(.borderless)
+                                .font(.system(size: 10.5))
+
+                                Button("重新执行命令") {
+                                    onRerun(record)
+                                }
+                                .buttonStyle(.borderless)
+                                .font(.system(size: 10.5))
+                                .disabled((record.commandText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true))
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(Color.primary.opacity(0.04))
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                        }
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 10)
+                }
+            }
+        }
+        .frame(width: 440, height: 280)
+    }
+
+    private func exitBadgeText(for record: CommandExecutionRecord) -> String {
+        guard let code = record.exitCode else { return "RUN" }
+        return "\(code)"
+    }
+
+    private func exitBadgeColor(for record: CommandExecutionRecord) -> Color {
+        guard let code = record.exitCode else { return .orange }
+        return code == 0 ? .green : .red
     }
 }
 

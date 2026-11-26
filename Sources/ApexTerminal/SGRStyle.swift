@@ -5,12 +5,14 @@ struct SGRStyle: Equatable {
     var foreground: String?
     var index: Int?
     var bold: Bool
+    var dim = false
     var background: String? = nil
     var backgroundIndex: Int? = nil
     var italic = false
     var underline = false
     var strikethrough = false
     var inverse = false
+    var linkURI: String? = nil
 
     private static let standard = ["#1E1E1E", "#FF453A", "#30D158", "#FFD60A", "#0A84FF", "#BF5AF2", "#64D2FF", "#FFFFFF", "#8E8E93", "#FF6961", "#77DD77", "#FDFD96", "#84B6F4", "#FDCAE1", "#B2FBA5", "#FFFFFF"]
 
@@ -72,13 +74,18 @@ struct SGRStyle: Equatable {
         while offset < codes.count {
             let code = codes[offset]
             switch code {
-            case 0: self = SGRStyle(foreground: nil, index: nil, bold: false)
+            case 0:
+                // SGR 0 resets visual attributes while preserving an active OSC 8 hyperlink.
+                let activeLink = linkURI
+                self = SGRStyle(foreground: nil, index: nil, bold: false)
+                self.linkURI = activeLink
             case 1: bold = true
+            case 2: dim = true
             case 3: italic = true
             case 4: underline = true
             case 7: inverse = true
             case 9: strikethrough = true
-            case 22: bold = false
+            case 22: bold = false; dim = false
             case 23: italic = false
             case 24: underline = false
             case 27: inverse = false
@@ -111,9 +118,27 @@ struct SGRStyle: Equatable {
             offset += 1
         }
     }
+    var hasVisualAttributes: Bool {
+        foreground != nil || index != nil || bold || dim || background != nil || backgroundIndex != nil || italic || underline || strikethrough || inverse
+    }
+
+    func visualEquals(_ other: SGRStyle) -> Bool {
+        foreground == other.foreground &&
+        index == other.index &&
+        bold == other.bold &&
+        dim == other.dim &&
+        background == other.background &&
+        backgroundIndex == other.backgroundIndex &&
+        italic == other.italic &&
+        underline == other.underline &&
+        strikethrough == other.strikethrough &&
+        inverse == other.inverse
+    }
+
     var escapeSequence: String {
         var codes = ["0"]
         if bold { codes.append("1") }
+        if dim { codes.append("2") }
         if italic { codes.append("3") }
         if underline { codes.append("4") }
         if inverse { codes.append("7") }

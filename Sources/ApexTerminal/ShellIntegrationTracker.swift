@@ -384,6 +384,51 @@ public final class ShellIntegrationTracker: @unchecked Sendable {
         return promptLines.first(where: { $0 > lineIndex })
     }
 
+    /// Returns the command execution record whose prompt or output span covers `lineIndex`.
+    public func record(atLine lineIndex: Int) -> CommandExecutionRecord? {
+        lock.lock()
+        defer { lock.unlock() }
+        if let active = activeRecord {
+            let activeEnd = max(active.outputStartLine, active.promptStartLine)
+            if lineIndex >= active.promptStartLine && lineIndex <= activeEnd {
+                return active
+            }
+        }
+        return records.last { rec in
+            let endLine = rec.outputEndLine ?? max(rec.outputStartLine, rec.promptStartLine)
+            return lineIndex >= rec.promptStartLine && lineIndex <= endLine
+        }
+    }
+
+    /// Returns the most recent failed command record strictly before `lineIndex`.
+    public func previousFailedRecord(before lineIndex: Int) -> CommandExecutionRecord? {
+        lock.lock()
+        defer { lock.unlock() }
+        return records.last { $0.isFailed && $0.promptStartLine < lineIndex }
+    }
+
+    /// Returns the earliest failed command record strictly after `lineIndex`.
+    public func nextFailedRecord(after lineIndex: Int) -> CommandExecutionRecord? {
+        lock.lock()
+        defer { lock.unlock() }
+        return records.first { $0.isFailed && $0.promptStartLine > lineIndex }
+    }
+
+    /// Returns the latest failed command record regardless of scroll position.
+    public func latestFailedRecord() -> CommandExecutionRecord? {
+        lock.lock()
+        defer { lock.unlock() }
+        return records.last(where: \.isFailed)
+    }
+
+    /// Returns the most recent `limit` command records in chronological order.
+    public func timelineRecords(limit: Int = 50) -> [CommandExecutionRecord] {
+        lock.lock()
+        defer { lock.unlock() }
+        guard limit > 0 else { return [] }
+        return Array(records.suffix(limit))
+    }
+
     public func reset() {
         lock.lock()
         records.removeAll()

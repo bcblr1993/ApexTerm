@@ -7,10 +7,12 @@ public struct FormattedSpan: Sendable, Equatable {
     public let ansiColorIndex: Int?
     public var backgroundColorHex: String? = nil
     public var backgroundANSIColorIndex: Int? = nil
+    public var isDim = false
     public var isItalic = false
     public var isUnderlined = false
     public var isStrikethrough = false
     public var isInverse = false
+    public var linkURI: String? = nil
     
     public init(text: String, foregroundColorHex: String? = nil, isBold: Bool = false, ansiColorIndex: Int? = nil) {
         self.text = text
@@ -22,16 +24,41 @@ public struct FormattedSpan: Sendable, Equatable {
 
 /// ANSI and VT100 stream parser
 public final class VTParser: Sendable {
+    private static let allowedOSC8Schemes: Set<String> = ["http", "https", "file", "ssh", "ftp", "mailto"]
+    private static let maxOSC8URILength = 2048
+
     public init() {}
+
+    /// Parses an OSC payload for `8;<params>;<uri>`, returning `(true, uri)` when it is an OSC 8 hyperlink command.
+    public static func parseOSC8LinkURI(_ payload: String) -> (isOSC8: Bool, uri: String?) {
+        guard payload.hasPrefix("8;") else { return (false, nil) }
+        let after8 = payload.dropFirst(2)
+        guard let separator = after8.firstIndex(of: ";") else { return (true, nil) }
+        let rawURI = String(after8[after8.index(after: separator)...])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rawURI.isEmpty, rawURI.count <= maxOSC8URILength else {
+            return (true, nil)
+        }
+        let cleaned = String(rawURI.unicodeScalars.filter { $0.value >= 0x20 && $0.value != 0x7F })
+        guard !cleaned.isEmpty,
+              let url = URL(string: cleaned),
+              let scheme = url.scheme?.lowercased(),
+              allowedOSC8Schemes.contains(scheme) else {
+            return (true, nil)
+        }
+        return (true, cleaned)
+    }
     
     private func span(_ text: String, style: SGRStyle) -> FormattedSpan {
         var result = FormattedSpan(text: text, foregroundColorHex: style.foreground, isBold: style.bold, ansiColorIndex: style.index)
         result.backgroundColorHex = style.background
         result.backgroundANSIColorIndex = style.backgroundIndex
+        result.isDim = style.dim
         result.isItalic = style.italic
         result.isUnderlined = style.underline
         result.isStrikethrough = style.strikethrough
         result.isInverse = style.inverse
+        result.linkURI = style.linkURI
         return result
     }
 
@@ -98,8 +125,9 @@ public final class VTParser: Sendable {
                         continue
                     }
                 } else if nextChar == "]" { // OSC
-                    // Skip OSC sequences like OSC 7 or OSC 0 title
-                    var j = raw.index(after: nextIndex)
+                    // Parse OSC 8 hyperlinks and skip other OSC sequences (e.g. OSC 7 / OSC 0 title)
+                    let payloadStart = raw.index(after: nextIndex)
+                    var j = payloadStart
                     while j < raw.endIndex && raw[j] != "\u{0007}" && raw[j] != "\u{001B}" {
                         j = raw.index(after: j)
                     }
@@ -107,6 +135,7 @@ public final class VTParser: Sendable {
                         i = raw.endIndex
                         break
                     }
+                    let payloadEnd = j
                     if raw[j] == "\u{001B}" {
                         let next = raw.index(after: j)
                         guard next < raw.endIndex else {
@@ -114,6 +143,11 @@ public final class VTParser: Sendable {
                             break
                         }
                         if raw[next] == "\\" {
+                            let oscPayload = String(raw[payloadStart..<payloadEnd])
+                            let parsedLink = Self.parseOSC8LinkURI(oscPayload)
+                            if parsedLink.isOSC8 {
+                                style.linkURI = parsedLink.uri
+                            }
                             i = raw.index(after: next)
                             continue
                         } else {
@@ -122,6 +156,11 @@ public final class VTParser: Sendable {
                             continue
                         }
                     } else {
+                        let oscPayload = String(raw[payloadStart..<payloadEnd])
+                        let parsedLink = Self.parseOSC8LinkURI(oscPayload)
+                        if parsedLink.isOSC8 {
+                            style.linkURI = parsedLink.uri
+                        }
                         i = raw.index(after: j)
                         continue
                     }

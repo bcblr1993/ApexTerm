@@ -362,6 +362,7 @@ public struct TransferDrawer: View {
                             HStack(spacing: 6) {
                                 drawerTitleView(compact: true)
                                 Spacer(minLength: 4)
+                                drawerChecksumToggleButton
                                 drawerClearButton(iconOnly: true, visible: hasTerminalTasks)
                                 drawerCloseButton
                             }
@@ -374,6 +375,7 @@ public struct TransferDrawer: View {
                             drawerTitleView(compact: isUltraCompactHeader)
                             Spacer(minLength: isCompactHeader ? 4 : 8)
                             drawerFilterPicker(compactLabels: isCompactHeader)
+                            drawerChecksumToggleButton
                             drawerClearButton(iconOnly: isCompactHeader, visible: hasTerminalTasks)
                             drawerCloseButton
                         }
@@ -407,6 +409,8 @@ public struct TransferDrawer: View {
                                 ForEach(filteredTasks) { task in
                                     TransferTaskRow(
                                         task: task,
+                                        checksumStatus: manager.checksumStatuses[task.id],
+                                        isResumed: manager.resumedTaskIDs.contains(task.id),
                                         onRetry: manager.canRetryTask(id: task.id) ? {
                                             _ = manager.retryTask(id: task.id)
                                         } : nil
@@ -533,6 +537,21 @@ public struct TransferDrawer: View {
         }
     }
 
+    private var drawerChecksumToggleButton: some View {
+        ApexIconButton(
+            icon: manager.verifyChecksumAfterTransfer ? "checkmark.shield.fill" : "checkmark.shield",
+            label: manager.verifyChecksumAfterTransfer ? "已开启传后 SHA-256 校验" : "开启传后 SHA-256 校验",
+            size: 22,
+            iconSize: 11,
+            isSelected: manager.verifyChecksumAfterTransfer,
+            tint: manager.verifyChecksumAfterTransfer ? ApexStyle.success : nil
+        ) {
+            manager.verifyChecksumAfterTransfer.toggle()
+        }
+        .help(manager.verifyChecksumAfterTransfer ? "传输完成后自动比对 SHA-256（已开启）" : "传输完成后自动比对 SHA-256（点击开启）")
+        .accessibilityIdentifier("transfer.checksumToggle")
+    }
+
     private var drawerCloseButton: some View {
         ApexIconButton(
             icon: "xmark",
@@ -549,6 +568,8 @@ public struct TransferDrawer: View {
 private struct TransferTaskRow: View {
     @ObservedObject private var themeSettings = AppSettings.shared
     let task: TransferTask
+    var checksumStatus: TransferChecksumStatus? = nil
+    var isResumed: Bool = false
     var onRetry: (() -> Void)? = nil
     let onCancel: () -> Void
 
@@ -577,10 +598,32 @@ private struct TransferTaskRow: View {
                     .font(.system(size: 14))
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(task.fileName)
-                        .font(.system(size: 12, weight: .medium, design: .monospaced))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                    HStack(spacing: 6) {
+                        Text(task.fileName)
+                            .font(.system(size: 12, weight: .medium, design: .monospaced))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+
+                        if isResumed {
+                            Text("续传")
+                                .font(.system(size: 9, weight: .semibold))
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 1)
+                                .background(ApexStyle.accent.opacity(0.14), in: RoundedRectangle(cornerRadius: 3))
+                                .foregroundColor(ApexStyle.accent)
+                                .fixedSize(horizontal: true, vertical: false)
+                        }
+
+                        if let checksumBadge {
+                            Text(checksumBadge.text)
+                                .font(.system(size: 9, weight: .semibold))
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 1)
+                                .background(checksumBadge.color.opacity(0.14), in: RoundedRectangle(cornerRadius: 3))
+                                .foregroundColor(checksumBadge.color)
+                                .fixedSize(horizontal: true, vertical: false)
+                        }
+                    }
 
                     // Path detail
                     Text(pathDescription)
@@ -601,7 +644,7 @@ private struct TransferTaskRow: View {
                         if task.status == .transferring {
                             Text("·")
                                 .foregroundColor(ApexStyle.secondary)
-                            Text(task.formattedSpeed)
+                            Text(TransferManager.formatSpeed(task.speedBytesPerSec))
                                 .font(.system(size: 10, design: .monospaced))
                                 .monospacedDigit()
                                 .lineLimit(1)
@@ -792,6 +835,21 @@ private struct TransferTaskRow: View {
                 .stroke(ApexStyle.border.opacity(0.45), lineWidth: 0.75)
         )
         .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var checksumBadge: (text: String, color: Color)? {
+        switch checksumStatus {
+        case .verifying:
+            return ("校验中…", ApexStyle.accent)
+        case .verified:
+            return ("SHA-256 ✓", ApexStyle.success)
+        case .mismatch:
+            return ("校验失败", ApexStyle.error)
+        case .unavailable:
+            return ("未校验", ApexStyle.secondary)
+        case .idle, .none:
+            return nil
+        }
     }
 
     private var pathDescription: String {

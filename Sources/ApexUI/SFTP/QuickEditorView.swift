@@ -264,12 +264,15 @@ public struct QuickEditorView: View {
     
     @State private var isSaving = false
     @State private var isReloading = false
+    @State private var isComparingRemote = false
     @State private var saveNotice: String?
     @State private var saveNoticeIsError = false
     @State private var isSearchVisible = false
     @State private var hasUnsavedChanges = false
     @State private var initialContent = ""
+    @State private var initialLineEnding: QuickEditorLineEnding = .lf
     @State private var pendingDiscard: DiscardAction?
+    @State private var remoteDiffComparison: QuickEditorDiffSnapshot?
     @State private var metricsTask: Task<Void, Never>?
 
     private enum DiscardAction: String, Identifiable {
@@ -444,7 +447,52 @@ public struct QuickEditorView: View {
             HStack(spacing: 12) {
                 HStack(spacing: 8) {
                     Circle().fill(ApexStyle.success).frame(width: 6, height: 6)
-                    Text("\(documentMeta.encoding.displayName) · \(documentMeta.lineEnding.rawValue) · 远程文件")
+                    Text("\(documentMeta.encoding.displayName) ·")
+                        .font(.caption.monospaced())
+                        .foregroundColor(ApexStyle.secondary)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+
+                    Menu {
+                        Section("转换为 LF / CRLF") {
+                            Button {
+                                setLineEnding(.lf)
+                            } label: {
+                                Label(
+                                    "转换为 LF (\\n · Unix/macOS)",
+                                    systemImage: documentMeta.lineEnding == .lf ? "checkmark" : "arrow.turn.down.left"
+                                )
+                            }
+                            Button {
+                                setLineEnding(.crlf)
+                            } label: {
+                                Label(
+                                    "转换为 CRLF (\\r\\n · Windows)",
+                                    systemImage: documentMeta.lineEnding == .crlf ? "checkmark" : "return"
+                                )
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 3) {
+                            Text(documentMeta.lineEnding.rawValue)
+                                .font(.caption.monospaced())
+                                .fontWeight(.semibold)
+                            Image(systemName: "chevron.up.chevron.down")
+                                .font(.system(size: 8.5, weight: .semibold))
+                        }
+                        .foregroundColor(ApexStyle.accent)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(ApexStyle.accent.opacity(0.10), in: RoundedRectangle(cornerRadius: 4))
+                    }
+                    .menuStyle(.button)
+                    .buttonStyle(.plain)
+                    .menuIndicator(.hidden)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .help("转换为 LF / CRLF 换行符格式")
+                    .accessibilityLabel("转换为 LF / CRLF")
+
+                    Text("· 远程文件")
                         .font(.caption.monospaced())
                         .foregroundColor(ApexStyle.secondary)
                         .lineLimit(1)
@@ -488,6 +536,18 @@ public struct QuickEditorView: View {
                 }
                 
                 Spacer(minLength: 8)
+
+                ApexActionButton(
+                    "重新拉取对比",
+                    icon: "arrow.left.arrow.right",
+                    tint: ApexStyle.secondary,
+                    size: .small,
+                    isLoading: isComparingRemote,
+                    action: compareWithRemoteLatest
+                )
+                .fixedSize(horizontal: true, vertical: false)
+                .help("从服务器拉取最新内容并与当前编辑文本逐行对比")
+                .disabled(isSaving || isReloading || isComparingRemote)
                 
                 ApexActionButton(
                     "关闭",
@@ -532,8 +592,24 @@ public struct QuickEditorView: View {
                       if action == .close { dismiss() } else { reloadContent() }
                   }, secondaryButton: .cancel(Text("继续编辑")))
         }
+        .sheet(item: $remoteDiffComparison) { snapshot in
+            QuickEditorDiffSheet(
+                fileName: item.name,
+                snapshot: snapshot,
+                onUseRemote: {
+                    content = snapshot.remoteText
+                    initialContent = snapshot.remoteText
+                    initialLineEnding = documentMeta.lineEnding
+                    hasUnsavedChanges = false
+                    saveNoticeIsError = false
+                    saveNotice = "已应用远端最新内容"
+                }
+            )
+            .apexTheme()
+        }
         .onAppear {
             initialContent = content
+            initialLineEnding = documentMeta.lineEnding
             updateMetricsImmediately(for: content)
         }
         .onDisappear {
@@ -545,13 +621,14 @@ public struct QuickEditorView: View {
     private func scheduleMetricsUpdate(for newValue: String) {
         metricsTask?.cancel()
         let baseline = initialContent
+        let lineEndingChanged = documentMeta.lineEnding != initialLineEnding
         metricsTask = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(100))
             guard !Task.isCancelled else { return }
             let computed = await Task.detached(priority: .utility) {
                 let lines = 1 + newValue.utf8.reduce(0) { $0 + ($1 == 10 ? 1 : 0) }
                 let bytes = newValue.utf8.count
-                let dirty = newValue != baseline
+                let dirty = (newValue != baseline) || lineEndingChanged
                 return (lines, bytes, dirty)
             }.value
             guard !Task.isCancelled else { return }
@@ -564,7 +641,39 @@ public struct QuickEditorView: View {
     private func updateMetricsImmediately(for text: String) {
         lineCount = 1 + text.utf8.reduce(0) { $0 + ($1 == 10 ? 1 : 0) }
         contentByteCount = text.utf8.count
-        hasUnsavedChanges = text != initialContent
+        hasUnsavedChanges = (text != initialContent) || (documentMeta.lineEnding != initialLineEnding)
+    }
+
+    private func setLineEnding(_ target: QuickEditorLineEnding) {
+        guard documentMeta.lineEnding != target else { return }
+        documentMeta.lineEnding = target
+        updateMetricsImmediately(for: content)
+        saveNoticeIsError = false
+        saveNotice = "已将换行符切换为 \(target.rawValue)（保存后生效）"
+    }
+
+    private func compareWithRemoteLatest() {
+        guard !isComparingRemote && !isReloading && !isSaving else { return }
+        isComparingRemote = true
+        let localSnapshot = content
+        Task {
+            do {
+                let remoteLatest = try await onReload()
+                await MainActor.run {
+                    self.isComparingRemote = false
+                    self.remoteDiffComparison = QuickEditorDiffSnapshot.build(
+                        localText: localSnapshot,
+                        remoteText: remoteLatest
+                    )
+                }
+            } catch {
+                await MainActor.run {
+                    self.isComparingRemote = false
+                    self.saveNoticeIsError = true
+                    self.saveNotice = "拉取远端对比失败: \(error.localizedDescription)"
+                }
+            }
+        }
     }
     
     private func requestClose() {
@@ -592,6 +701,7 @@ public struct QuickEditorView: View {
                 await MainActor.run {
                     self.isSaving = false
                     self.initialContent = savedContent
+                    self.initialLineEnding = self.documentMeta.lineEnding
                     self.hasUnsavedChanges = self.content != savedContent
                     self.saveNoticeIsError = false
                     let time = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
@@ -618,6 +728,7 @@ public struct QuickEditorView: View {
                 await MainActor.run {
                     self.content = reloaded
                     self.initialContent = reloaded
+                    self.initialLineEnding = self.documentMeta.lineEnding
                     self.hasUnsavedChanges = false
                     self.isReloading = false
                     self.saveNotice = "已重新拉取远端最新内容"
@@ -657,6 +768,196 @@ public struct QuickEditorView: View {
         case "yaml", "yml", "json", "toml", "conf", "ini": return "slider.horizontal.3"
         case "log": return "doc.text.fill"
         default: return "doc.text"
+        }
+    }
+}
+
+private struct QuickEditorDiffLine: Identifiable, Equatable {
+    enum Kind: Equatable {
+        case context
+        case removed
+        case added
+    }
+    let id: Int
+    let kind: Kind
+    let text: String
+}
+
+private struct QuickEditorDiffSnapshot: Identifiable {
+    let id = UUID()
+    let remoteText: String
+    let lines: [QuickEditorDiffLine]
+    let addedCount: Int
+    let removedCount: Int
+
+    var hasChanges: Bool {
+        addedCount > 0 || removedCount > 0
+    }
+
+    static func build(localText: String, remoteText: String) -> QuickEditorDiffSnapshot {
+        let localLines = localText.components(separatedBy: "\n")
+        let remoteLines = remoteText.components(separatedBy: "\n")
+        let diff = remoteLines.difference(from: localLines)
+
+        var removedIndices = Set<Int>()
+        var insertionsByOffset: [Int: [String]] = [:]
+        for change in diff {
+            switch change {
+            case .remove(let offset, _, _):
+                removedIndices.insert(offset)
+            case .insert(let offset, let element, _):
+                insertionsByOffset[offset, default: []].append(element)
+            }
+        }
+
+        // Rebuild unified line stream in display order
+        var result: [QuickEditorDiffLine] = []
+        var nextID = 0
+        var localIdx = 0
+        var remoteIdx = 0
+        let totalLocal = localLines.count
+
+        while localIdx < totalLocal || insertionsByOffset[remoteIdx] != nil {
+            if let inserted = insertionsByOffset[remoteIdx], !inserted.isEmpty {
+                for line in inserted {
+                    result.append(QuickEditorDiffLine(id: nextID, kind: .added, text: line))
+                    nextID += 1
+                    remoteIdx += 1
+                }
+                continue
+            }
+            if localIdx < totalLocal {
+                if removedIndices.contains(localIdx) {
+                    result.append(QuickEditorDiffLine(id: nextID, kind: .removed, text: localLines[localIdx]))
+                    nextID += 1
+                } else {
+                    result.append(QuickEditorDiffLine(id: nextID, kind: .context, text: localLines[localIdx]))
+                    nextID += 1
+                    remoteIdx += 1
+                }
+                localIdx += 1
+            } else {
+                break
+            }
+        }
+
+        return QuickEditorDiffSnapshot(
+            remoteText: remoteText,
+            lines: result,
+            addedCount: diff.insertions.count,
+            removedCount: diff.removals.count
+        )
+    }
+}
+
+private struct QuickEditorDiffSheet: View {
+    let fileName: String
+    let snapshot: QuickEditorDiffSnapshot
+    let onUseRemote: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Image(systemName: "arrow.left.arrow.right")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(ApexStyle.accent)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("与服务器最新内容对比 · \(fileName)")
+                        .font(.system(size: 14, weight: .semibold))
+                    Text(snapshot.hasChanges
+                         ? "远端相对当前编辑：+\(snapshot.addedCount) 行 / -\(snapshot.removedCount) 行"
+                         : "当前编辑内容与服务器完全一致")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(snapshot.hasChanges ? ApexStyle.warning : ApexStyle.success)
+                }
+                Spacer()
+                ApexIconButton(icon: "xmark", label: "关闭对比", size: 24, iconSize: 11) {
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+            }
+            .padding(.horizontal, ApexStyle.s4)
+            .padding(.vertical, 10)
+            .background(ApexStyle.surface)
+
+            Divider()
+
+            if !snapshot.hasChanges {
+                ContentUnavailableView(
+                    "无差异",
+                    systemImage: "checkmark.circle",
+                    description: Text("当前编辑器中的文本与远端服务器上的最新版本一致。")
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView([.vertical, .horizontal]) {
+                    LazyVStack(alignment: .leading, spacing: 1) {
+                        ForEach(snapshot.lines) { line in
+                            HStack(spacing: 8) {
+                                Text(prefix(for: line.kind))
+                                    .font(.system(size: 11.5, weight: .bold, design: .monospaced))
+                                    .foregroundStyle(color(for: line.kind))
+                                    .frame(width: 12, alignment: .center)
+                                Text(line.text.isEmpty ? " " : line.text)
+                                    .font(.system(size: 12, design: .monospaced))
+                                    .foregroundStyle(line.kind == .context ? ApexStyle.secondary : ApexStyle.primary)
+                                    .textSelection(.enabled)
+                                Spacer(minLength: 0)
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 2)
+                            .background(background(for: line.kind))
+                        }
+                    }
+                    .padding(.vertical, 6)
+                }
+                .background(ApexStyle.surface)
+            }
+
+            Divider()
+
+            HStack(spacing: 8) {
+                Spacer()
+                ApexActionButton("保留本地继续编辑", tint: ApexStyle.secondary, size: .small) {
+                    dismiss()
+                }
+                if snapshot.hasChanges {
+                    ApexActionButton("采用远端最新内容", icon: "arrow.down.doc", tint: ApexStyle.accent, size: .small, isProminent: true) {
+                        onUseRemote()
+                        dismiss()
+                    }
+                }
+            }
+            .padding(.horizontal, ApexStyle.s4)
+            .padding(.vertical, 8)
+            .background(ApexStyle.surface)
+        }
+        .frame(minWidth: 680, idealWidth: 780, minHeight: 440, idealHeight: 520)
+        .background(ApexStyle.surface)
+    }
+
+    private func prefix(for kind: QuickEditorDiffLine.Kind) -> String {
+        switch kind {
+        case .added: return "+"
+        case .removed: return "-"
+        case .context: return " "
+        }
+    }
+
+    private func color(for kind: QuickEditorDiffLine.Kind) -> Color {
+        switch kind {
+        case .added: return ApexStyle.success
+        case .removed: return ApexStyle.error
+        case .context: return ApexStyle.secondary
+        }
+    }
+
+    private func background(for kind: QuickEditorDiffLine.Kind) -> Color {
+        switch kind {
+        case .added: return ApexStyle.success.opacity(0.10)
+        case .removed: return ApexStyle.error.opacity(0.10)
+        case .context: return Color.clear
         }
     }
 }

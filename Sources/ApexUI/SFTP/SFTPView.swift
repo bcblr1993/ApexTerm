@@ -130,6 +130,11 @@ public struct SFTPView: View {
     @State private var displayItems: [SFTPItem] = []
     @State private var isFilterVisible = false
     @State private var pathInput = ""
+    @State private var isEditingPath = false
+    @State private var isDualPaneEnabled = false
+    @State private var localDualPanePath = FileManager.default.homeDirectoryForCurrentUser.path
+    @State private var tailingLogItem: SFTPItem? = nil
+    @State private var pendingLargeLogTailPrompt: SFTPItem? = nil
     @State private var toolbarWidth: CGFloat = 0
     @State private var windowReference = WindowReference()
     @FocusState private var isPathFocused: Bool
@@ -226,7 +231,7 @@ public struct SFTPView: View {
 
     private var pathControls: some View {
         HStack(alignment: .center, spacing: 6) {
-            // Folder icon & Path breadcrumbs
+            // Folder icon & Interactive Path Breadcrumbs
             ApexIconButton(
                 icon: "folder.fill",
                 label: "前往文件夹 (⌘L)",
@@ -234,37 +239,22 @@ public struct SFTPView: View {
                 iconSize: 12
             ) {
                 pathInput = currentPath
+                isEditingPath = true
                 isPathFocused = true
             }
             .keyboardShortcut("l", modifiers: .command)
 
-            TextField(L10n.remotePath, text: $pathInput)
-                .onSubmit {
-                    let target = pathInput.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !target.isEmpty else { pathInput = currentPath; return }
-                    pathInput = target
-                    if target != currentPath { currentPath = target }
-                    isPathFocused = false
+            SFTPPathBreadcrumbBar(
+                currentPath: $currentPath,
+                pathInput: $pathInput,
+                isEditingPath: $isEditingPath,
+                isFocused: $isPathFocused,
+                placeholder: L10n.remotePath
+            ) { target in
+                if target != currentPath {
+                    currentPath = target
                 }
-                .focused($isPathFocused)
-                .onExitCommand { pathInput = currentPath; isPathFocused = false }
-                .autocorrectionDisabled()
-                .textFieldStyle(.plain)
-                .font(.system(size: 12, design: .monospaced))
-                .padding(.horizontal, 8)
-                .frame(minWidth: 80, maxWidth: .infinity, minHeight: 24, maxHeight: 24, alignment: .leading)
-                .background(
-                    RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
-                        .fill(ApexStyle.subtleSurface)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
-                        .stroke(isPathFocused ? ApexStyle.accent.opacity(0.85) : ApexStyle.border.opacity(0.65), lineWidth: isPathFocused ? 1.25 : 0.75)
-                )
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    isPathFocused = true
-                }
+            }
 
             // SFTP Quick Bookmarks & Directory Presets Menu
             let trimmedCurrentPath = currentPath.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -453,6 +443,22 @@ public struct SFTPView: View {
             }
             .help("在远端目录按文件名或内容搜索 (⌘⇧F)")
             .disabled(connectionState != .connected)
+
+            SFTPToolbarChip(
+                title: "双栏",
+                compact: compact,
+                isHighlighted: isDualPaneEnabled
+            ) {
+                withAnimation(ApexStyle.springSnappy) {
+                    isDualPaneEnabled.toggle()
+                }
+            } icon: {
+                Image(systemName: "rectangle.split.2x1")
+                    .font(.system(size: 11, weight: .medium))
+            }
+            .accessibilityLabel("切换本地与远端双栏对比视图")
+            .accessibilityAddTraits(isDualPaneEnabled ? .isSelected : [])
+            .help("显示或隐藏本地目录侧边对比栏")
 
             Divider().frame(height: 14)
 
@@ -696,8 +702,37 @@ public struct SFTPView: View {
                 )
                 ZStack(alignment: .bottom) {
                     VStack(spacing: 0) {
-                        fileTableContainer
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        Group {
+                            if isDualPaneEnabled {
+                                HSplitView {
+                                    LocalDualPaneView(
+                                        localPath: $localDualPanePath,
+                                        remotePath: currentPath,
+                                        remoteItems: items,
+                                        isRemoteConnected: connectionState == .connected,
+                                        hasSelectedRemoteItems: !SFTPItem.modifiableSelection(from: items, selectedPaths: selectedPaths).isEmpty,
+                                        onUploadURLs: { urls in
+                                            requestBatchUpload(urls, targetDirectory: currentPath)
+                                        },
+                                        onDownloadSelectedRemoteToLocal: { localDir in
+                                            let selected = SFTPItem.modifiableSelection(from: items, selectedPaths: selectedPaths)
+                                            downloadBatchAction(selected, targetDirectory: localDir)
+                                        },
+                                        onDownloadRemoteItemsToLocal: { remoteTargets, localDir in
+                                            downloadBatchAction(remoteTargets, targetDirectory: localDir)
+                                        }
+                                    )
+                                    .frame(minWidth: 220, idealWidth: 300)
+
+                                    fileTableContainer
+                                        .frame(minWidth: 260, maxWidth: .infinity, maxHeight: .infinity)
+                                }
+                            } else {
+                                fileTableContainer
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                         if case .dockedSplit(let drawerHeight) = drawerMode {
                             Divider()
@@ -1086,6 +1121,29 @@ public struct SFTPView: View {
             )
             .apexTheme()
         }
+        .sheet(item: $tailingLogItem) { item in
+            RemoteLogTailSheet(item: item, session: session)
+                .apexTheme()
+        }
+        .confirmationDialog(
+            "日志文件超过 1 MB，暂不支持直接在线编辑",
+            isPresented: isShowingLargeLogTailPrompt,
+            presenting: pendingLargeLogTailPrompt
+        ) { item in
+            Button("实时追踪日志") {
+                pendingLargeLogTailPrompt = nil
+                tailingLogItem = item
+            }
+            Button(DistributionChannel.current == .appStore ? "下载并保存…" : L10n.downloadToDownloads) {
+                pendingLargeLogTailPrompt = nil
+                downloadAction(item)
+            }
+            Button("取消", role: .cancel) {
+                pendingLargeLogTailPrompt = nil
+            }
+        } message: { item in
+            Text("「\(item.name)」大小为 \(item.formattedSize)（超过 1 MB）。您可以直接使用实时追踪日志 (tail -f) 查看最新输出，或下载到本地查看。")
+        }
         .confirmationDialog(
             "文件较大，确定使用外部编辑器打开？",
             isPresented: isShowingLargeExternalEditConfirmation,
@@ -1295,6 +1353,13 @@ public struct SFTPView: View {
         }
     }
 
+    private var isShowingLargeLogTailPrompt: Binding<Bool> {
+        Binding<Bool>(
+            get: { pendingLargeLogTailPrompt != nil },
+            set: { if !$0 { pendingLargeLogTailPrompt = nil } }
+        )
+    }
+
     private var isShowingLargeExternalEditConfirmation: Binding<Bool> {
         Binding<Bool>(
             get: { pendingLargeExternalEdit != nil },
@@ -1372,6 +1437,11 @@ public struct SFTPView: View {
                     openEditor(item)
                 }
                 .disabled(symlinkBlocksFileEdit)
+                Button("实时追踪日志 (tail -f)") {
+                    selectedPaths = [item.path]
+                    tailingLogItem = item
+                }
+                .disabled(connectionState != .connected || symlinkBlocksFileEdit)
                 Menu("使用外部编辑器打开") {
                     Button {
                         selectedPaths = [item.path]
@@ -1610,10 +1680,20 @@ public struct SFTPView: View {
         }
     }
 
-    private func downloadBatchAction(_ targetItems: [SFTPItem]) {
+    private func downloadBatchAction(_ targetItems: [SFTPItem], targetDirectory: URL? = nil) {
         guard let s = session, Self.shouldLoadDirectory(for: connectionState), !targetItems.isEmpty else { return }
         let access: FileAccessLease
-        do { access = try downloadDirectoryAccess() }
+        do {
+            if let targetDirectory {
+                access = try FileAccessStore.shared.acquire(targetDirectory)
+                guard FileManager.default.isWritableFile(atPath: access.url.path) else {
+                    access.close()
+                    throw CocoaError(.fileWriteNoPermission)
+                }
+            } else {
+                access = try downloadDirectoryAccess()
+            }
+        }
         catch is CancellationError { return }
         catch {
             setNotice("无法访问下载目录：\(error.localizedDescription)", kind: .error)
@@ -2171,10 +2251,19 @@ public struct SFTPView: View {
         }
     }
 
+    private static func isLogFileName(_ name: String) -> Bool {
+        let lower = name.lowercased()
+        return lower.hasSuffix(".log") || lower.contains(".log.")
+    }
+
     private func openEditor(_ item: SFTPItem, lineNumber: Int? = nil) {
         guard !isOpeningEditor else { return }
         guard item.size <= 1_000_000 else {
-            setNotice("文件超过 1 MB，请先下载后编辑", kind: .warning)
+            if Self.isLogFileName(item.name) && connectionState == .connected {
+                pendingLargeLogTailPrompt = item
+            } else {
+                setNotice("文件超过 1 MB，请先下载后编辑", kind: .warning)
+            }
             return
         }
         guard let session, Self.shouldLoadDirectory(for: connectionState) else { return }

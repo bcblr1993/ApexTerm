@@ -1,6 +1,16 @@
 import Foundation
 import SwiftUI
+import CryptoKit
 import ApexCore
+
+/// Post-transfer SHA-256 verification status tracked per `TransferTask.id`.
+public enum TransferChecksumStatus: Sendable, Equatable {
+    case idle
+    case verifying
+    case verified(String)
+    case mismatch(local: String, remote: String)
+    case unavailable(String)
+}
 
 /// High-performance non-blocking SFTP Transfer Manager
 /// Manages upload/download task queue, throttling UI updates for 120Hz smoothness
@@ -9,6 +19,10 @@ public final class TransferManager: ObservableObject {
     public static let shared = TransferManager()
     
     @Published public private(set) var tasks: [TransferTask] = []
+    @Published public var verifyChecksumAfterTransfer: Bool
+    @Published public var enableRsyncPartialResume: Bool
+    @Published public private(set) var checksumStatuses: [UUID: TransferChecksumStatus] = [:]
+    @Published public private(set) var resumedTaskIDs: Set<UUID> = []
     public var maxConcurrentTransfers: Int?
     /// Upper bound on retained completed/failed/cancelled task records to prevent unbounded memory growth.
     public var maxCompletedHistory: Int = 200
@@ -56,6 +70,7 @@ public final class TransferManager: ObservableObject {
     private var activeTaskHandles: [UUID: Task<Void, Never>] = [:]
     private var externalCancelHandlers: [UUID: @Sendable () -> Void] = [:]
     private var retryContexts: [UUID: RetryContext] = [:]
+    private var retainedStagingURLs: [UUID: URL] = [:]
     private var runningTransferCount: Int = 0
     private var slotWaiters: [(id: UUID, maxConcurrent: Int, continuation: CheckedContinuation<Bool, Never>)] = []
     private var lastSpeedSampleTime: [UUID: Date] = [:]
@@ -63,15 +78,25 @@ public final class TransferManager: ObservableObject {
     
     private let distributionChannel: DistributionChannel
     private let fileAccessStore: FileAccessStore
+    private let remoteChecksumProvider: (@Sendable (_ remotePath: String, _ session: SSHSessionProtocol) async -> String?)?
+    private let rsyncResumeHandler: (@Sendable (_ session: SSHSessionProtocol, _ remotePath: String, _ stagingURL: URL, _ progress: @Sendable @escaping (Double) -> Void) async throws -> Bool)?
 
     public init(distributionChannel: DistributionChannel = .current,
                 fileAccessStore: FileAccessStore = .shared,
                 maxConcurrentTransfers: Int? = nil,
-                maxCompletedHistory: Int = 200) {
+                maxCompletedHistory: Int = 200,
+                verifyChecksumAfterTransfer: Bool = false,
+                enableRsyncPartialResume: Bool = true,
+                remoteChecksumProvider: (@Sendable (_ remotePath: String, _ session: SSHSessionProtocol) async -> String?)? = nil,
+                rsyncResumeHandler: (@Sendable (_ session: SSHSessionProtocol, _ remotePath: String, _ stagingURL: URL, _ progress: @Sendable @escaping (Double) -> Void) async throws -> Bool)? = nil) {
         self.distributionChannel = distributionChannel
         self.fileAccessStore = fileAccessStore
         self.maxConcurrentTransfers = maxConcurrentTransfers
         self.maxCompletedHistory = max(1, maxCompletedHistory)
+        self.verifyChecksumAfterTransfer = verifyChecksumAfterTransfer
+        self.enableRsyncPartialResume = enableRsyncPartialResume
+        self.remoteChecksumProvider = remoteChecksumProvider
+        self.rsyncResumeHandler = rsyncResumeHandler
     }
 
     /// Prunes oldest terminal (`.completed`, `.failed`, `.cancelled`) tasks when count exceeds `maxCompletedHistory`,
@@ -87,6 +112,11 @@ public final class TransferManager: ObservableObject {
             activeTaskHandles.removeValue(forKey: id)
             externalCancelHandlers.removeValue(forKey: id)
             retryContexts.removeValue(forKey: id)?.closeAccessLease()
+            if let stalePart = retainedStagingURLs.removeValue(forKey: id) {
+                try? FileManager.default.removeItem(at: stalePart)
+            }
+            checksumStatuses.removeValue(forKey: id)
+            resumedTaskIDs.remove(id)
             lastSpeedSampleTime.removeValue(forKey: id)
             lastSampledBytes.removeValue(forKey: id)
         }
@@ -141,14 +171,100 @@ public final class TransferManager: ObservableObject {
     }
     
     public var formattedTotalSpeed: String {
-        let speed = totalSpeedBytesPerSec
-        if speed >= 1024 * 1024 {
+        Self.formatSpeed(totalSpeedBytesPerSec)
+    }
+
+    /// Formats a byte-per-second throughput into a human-readable string (`B/s`, `KB/s`, `MB/s`, `GB/s`).
+    nonisolated public static func formatSpeed(_ bytesPerSec: Double) -> String {
+        let speed = max(0, bytesPerSec)
+        if speed >= 1024 * 1024 * 1024 {
+            return String(format: "%.2f GB/s", speed / (1024 * 1024 * 1024))
+        } else if speed >= 1024 * 1024 {
             return String(format: "%.1f MB/s", speed / (1024 * 1024))
         } else if speed >= 1024 {
             return String(format: "%.0f KB/s", speed / 1024)
         } else {
             return String(format: "%.0f B/s", speed)
         }
+    }
+
+    /// Computes a lowercase hex SHA-256 digest of a local file by streaming chunks off-heap.
+    nonisolated public static func computeLocalSHA256(at url: URL, chunkSize: Int = 64 * 1024) throws -> String {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        let readSize = max(4096, chunkSize)
+        while true {
+            let chunk = try handle.read(upToCount: readSize) ?? Data()
+            if chunk.isEmpty { break }
+            hasher.update(data: chunk)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Detects a non-empty `.aetherpart` staging file eligible for resume when retrying a download.
+    nonisolated public static func detectResumablePartialFile(
+        for localURL: URL,
+        preferredStagingURL: URL? = nil,
+        distributionChannel: DistributionChannel = .current
+    ) -> URL? {
+        let fm = FileManager.default
+        if let preferredStagingURL {
+            var isDir: ObjCBool = false
+            if fm.fileExists(atPath: preferredStagingURL.path, isDirectory: &isDir),
+               !isDir.boolValue,
+               currentTransferredBytes(at: preferredStagingURL) > 0 {
+                return preferredStagingURL
+            }
+        }
+        let fileName = localURL.lastPathComponent
+        let destDir = localURL.deletingLastPathComponent()
+        let searchDirs: [URL] = distributionChannel != .appStore
+            ? [destDir, fm.temporaryDirectory]
+            : [fm.temporaryDirectory]
+
+        var bestCandidate: (url: URL, bytes: Int64)?
+        for dir in searchDirs {
+            guard let contents = try? fm.contentsOfDirectory(
+                at: dir,
+                includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
+                options: []
+            ) else { continue }
+            for candidate in contents {
+                let name = candidate.lastPathComponent
+                let matchesCanonical = name == ".\(fileName).aetherpart" || name == "\(fileName).aetherpart"
+                let matchesTaskScoped = (name.hasPrefix(".\(fileName).") || name.hasPrefix("\(fileName)."))
+                    && name.hasSuffix(".aetherpart")
+                guard matchesCanonical || matchesTaskScoped else { continue }
+                let bytes = currentTransferredBytes(at: candidate)
+                guard bytes > 0 else { continue }
+                if bestCandidate == nil || bytes > bestCandidate!.bytes {
+                    bestCandidate = (candidate, bytes)
+                }
+            }
+        }
+        return bestCandidate?.url
+    }
+
+    /// Builds `rsync --partial` arguments for resuming an interrupted download into `stagingURL`.
+    nonisolated public static func buildRsyncPartialArguments(
+        session: Session,
+        remotePath: String,
+        stagingURL: URL,
+        sshCommand: String
+    ) -> [String] {
+        let host = session.host.contains(":") && !session.host.hasPrefix("[")
+            ? "[\(session.host)]"
+            : session.host
+        let escapedRemote = SFTPRemoteOperations.shellQuotedRemotePath(remotePath)
+        return [
+            "-t",
+            "--partial",
+            "--inplace",
+            "-e", sshCommand,
+            "\(session.username)@\(host):\(escapedRemote)",
+            stagingURL.path
+        ]
     }
     
     /// Enqueue an upload task
@@ -279,6 +395,7 @@ public final class TransferManager: ObservableObject {
             localURL: localURL,
             totalBytes: totalBytes,
             retainedLease: nil,
+            resumeStagingURL: nil,
             onCompleted: onCompleted,
             onResult: onResult
         )
@@ -291,6 +408,7 @@ public final class TransferManager: ObservableObject {
         localURL: URL,
         totalBytes: Int64,
         retainedLease: FileAccessLease?,
+        resumeStagingURL: URL? = nil,
         onCompleted: (@Sendable () -> Void)?,
         onResult: (@Sendable (Result<URL, Error>) -> Void)?
     ) -> UUID {
@@ -347,6 +465,7 @@ public final class TransferManager: ObservableObject {
                 session: session,
                 remotePath: remotePath,
                 localURL: localURL,
+                resumeStagingURL: resumeStagingURL,
                 onCompleted: onCompleted,
                 onResult: onResult
             )
@@ -366,6 +485,11 @@ public final class TransferManager: ObservableObject {
         activeTaskHandles[id]?.cancel()
         activeTaskHandles.removeValue(forKey: id)
         let externalCancel = externalCancelHandlers.removeValue(forKey: id)
+        if let stalePart = retainedStagingURLs.removeValue(forKey: id) {
+            try? FileManager.default.removeItem(at: stalePart)
+        }
+        checksumStatuses.removeValue(forKey: id)
+        resumedTaskIDs.remove(id)
         lastSpeedSampleTime.removeValue(forKey: id)
         lastSampledBytes.removeValue(forKey: id)
         tasks[idx].status = .cancelled
@@ -381,6 +505,11 @@ public final class TransferManager: ObservableObject {
             activeTaskHandles[id]?.cancel()
             activeTaskHandles.removeValue(forKey: id)
             externalCancelHandlers.removeValue(forKey: id)
+            if let stalePart = retainedStagingURLs.removeValue(forKey: id) {
+                try? FileManager.default.removeItem(at: stalePart)
+            }
+            checksumStatuses.removeValue(forKey: id)
+            resumedTaskIDs.remove(id)
             lastSpeedSampleTime.removeValue(forKey: id)
             lastSampledBytes.removeValue(forKey: id)
         }
@@ -409,6 +538,14 @@ public final class TransferManager: ObservableObject {
         }
         guard let context = retryContexts[id], let session = context.session else { return nil }
         let retainedLease = context.takeAccessLease()
+        let preferredPart = retainedStagingURLs.removeValue(forKey: id)
+        let resumeURL = task.direction == .download
+            ? Self.detectResumablePartialFile(
+                for: task.localURL,
+                preferredStagingURL: preferredPart,
+                distributionChannel: distributionChannel
+            )
+            : nil
         removeTask(id: id)
         switch task.direction {
         case .upload:
@@ -428,6 +565,7 @@ public final class TransferManager: ObservableObject {
                 localURL: task.localURL,
                 totalBytes: task.totalBytes,
                 retainedLease: retainedLease,
+                resumeStagingURL: resumeURL,
                 onCompleted: context.onCompleted,
                 onResult: context.onDownloadResult
             )
@@ -446,12 +584,18 @@ public final class TransferManager: ObservableObject {
         activeTaskHandles.removeAll()
         let cancelHandlers = Array(externalCancelHandlers.values)
         externalCancelHandlers.removeAll()
+        for (_, stalePart) in retainedStagingURLs {
+            try? FileManager.default.removeItem(at: stalePart)
+        }
+        retainedStagingURLs.removeAll()
         lastSpeedSampleTime.removeAll()
         lastSampledBytes.removeAll()
         let now = Date()
         for idx in tasks.indices where tasks[idx].status == .queued || tasks[idx].status == .transferring {
             tasks[idx].status = .cancelled
             tasks[idx].completedAt = now
+            checksumStatuses.removeValue(forKey: tasks[idx].id)
+            resumedTaskIDs.remove(tasks[idx].id)
         }
         for handler in cancelHandlers {
             handler()
@@ -465,6 +609,11 @@ public final class TransferManager: ObservableObject {
             activeTaskHandles.removeValue(forKey: id)
             externalCancelHandlers.removeValue(forKey: id)
             retryContexts.removeValue(forKey: id)?.closeAccessLease()
+            if let stalePart = retainedStagingURLs.removeValue(forKey: id) {
+                try? FileManager.default.removeItem(at: stalePart)
+            }
+            checksumStatuses.removeValue(forKey: id)
+            resumedTaskIDs.remove(id)
             lastSpeedSampleTime.removeValue(forKey: id)
             lastSampledBytes.removeValue(forKey: id)
         }
@@ -629,6 +778,32 @@ public final class TransferManager: ObservableObject {
             }
             
             try Task.checkCancellation()
+
+            var isDirObj: ObjCBool = false
+            let isDirectory = FileManager.default.fileExists(atPath: localURL.path, isDirectory: &isDirObj) && isDirObj.boolValue
+            if verifyChecksumAfterTransfer && !isDirectory {
+                checksumStatuses[taskId] = .verifying
+                let localHex = try Self.computeLocalSHA256(at: localURL)
+                if let remoteHex = await resolveRemoteSHA256(
+                    remotePath: remotePath,
+                    fileName: localURL.lastPathComponent,
+                    session: session
+                ) {
+                    if remoteHex.lowercased() == localHex.lowercased() {
+                        checksumStatuses[taskId] = .verified(localHex)
+                    } else {
+                        checksumStatuses[taskId] = .mismatch(local: localHex, remote: remoteHex)
+                        throw NSError(
+                            domain: "ApexSSH.TransferChecksum",
+                            code: 1,
+                            userInfo: [NSLocalizedDescriptionKey: "SHA-256 校验不匹配（本地 \(localHex.prefix(12))… / 远端 \(remoteHex.prefix(12))…）"]
+                        )
+                    }
+                } else {
+                    checksumStatuses[taskId] = .unavailable("远端未返回 SHA-256 摘要")
+                }
+            }
+
             if let finalIdx = tasks.firstIndex(where: { $0.id == taskId }) {
                 tasks[finalIdx].transferredBytes = tasks[finalIdx].totalBytes
                 tasks[finalIdx].status = .completed
@@ -668,6 +843,7 @@ public final class TransferManager: ObservableObject {
         session: SSHSessionProtocol,
         remotePath: String,
         localURL: URL,
+        resumeStagingURL: URL? = nil,
         onCompleted: (@Sendable () -> Void)?,
         onResult: (@Sendable (Result<URL, Error>) -> Void)? = nil
     ) async {
@@ -678,6 +854,9 @@ public final class TransferManager: ObservableObject {
                 tasks[idx].status = .cancelled
                 tasks[idx].completedAt = Date()
             }
+            if let resumeStagingURL {
+                try? FileManager.default.removeItem(at: resumeStagingURL)
+            }
             activeTaskHandles.removeValue(forKey: taskId)
             onResult?(.failure(CancellationError()))
             return
@@ -687,25 +866,36 @@ public final class TransferManager: ObservableObject {
         guard let idx = tasks.firstIndex(where: { $0.id == taskId }),
               tasks[idx].status != .cancelled,
               !Task.isCancelled else {
+            if let resumeStagingURL {
+                try? FileManager.default.removeItem(at: resumeStagingURL)
+            }
             activeTaskHandles.removeValue(forKey: taskId)
             onResult?(.failure(CancellationError()))
             return
         }
         tasks[idx].status = .transferring
         tasks[idx].startedAt = Date()
-        lastSpeedSampleTime[taskId] = Date()
-        lastSampledBytes[taskId] = 0
-        let totalBytes = tasks[idx].totalBytes
-
-        let destDir = localURL.deletingLastPathComponent()
+        let initialBytes: Int64
         let stagingURL: URL
-        if distributionChannel != .appStore,
-           FileManager.default.isWritableFile(atPath: destDir.path) {
-            stagingURL = destDir.appendingPathComponent(".\(localURL.lastPathComponent).\(taskId.uuidString.prefix(8)).aetherpart")
+        if let resumeStagingURL {
+            stagingURL = resumeStagingURL
+            resumedTaskIDs.insert(taskId)
+            initialBytes = Self.currentTransferredBytes(at: stagingURL)
+            tasks[idx].transferredBytes = initialBytes
         } else {
-            stagingURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent("\(localURL.lastPathComponent).\(taskId.uuidString.prefix(8)).aetherpart")
+            let destDir = localURL.deletingLastPathComponent()
+            if distributionChannel != .appStore,
+               FileManager.default.isWritableFile(atPath: destDir.path) {
+                stagingURL = destDir.appendingPathComponent(".\(localURL.lastPathComponent).\(taskId.uuidString.prefix(8)).aetherpart")
+            } else {
+                stagingURL = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("\(localURL.lastPathComponent).\(taskId.uuidString.prefix(8)).aetherpart")
+            }
+            initialBytes = 0
         }
+        lastSpeedSampleTime[taskId] = Date()
+        lastSampledBytes[taskId] = initialBytes
+        let totalBytes = tasks[idx].totalBytes
         
         // Active file size poller off the main thread to ensure real-time progress & throughput updates
         let progressMonitor = Task.detached(priority: .utility) { [weak self] in
@@ -725,16 +915,64 @@ public final class TransferManager: ObservableObject {
         defer { progressMonitor.cancel() }
         
         do {
-            try await session.downloadFile(remotePath: remotePath, localURL: stagingURL) { [weak self] fraction in
-                Task { @MainActor [weak self] in
-                    self?.updateProgress(taskId: taskId, fraction: fraction)
+            var didResumeViaRsync = false
+            if resumeStagingURL != nil {
+                if let rsyncResumeHandler {
+                    didResumeViaRsync = try await rsyncResumeHandler(session, remotePath, stagingURL) { [weak self] fraction in
+                        Task { @MainActor [weak self] in
+                            self?.updateProgress(taskId: taskId, fraction: fraction)
+                        }
+                    }
+                } else if enableRsyncPartialResume {
+                    didResumeViaRsync = try await attemptRsyncPartialDownload(
+                        session: session,
+                        remotePath: remotePath,
+                        stagingURL: stagingURL
+                    ) { [weak self] fraction in
+                        Task { @MainActor [weak self] in
+                            self?.updateProgress(taskId: taskId, fraction: fraction)
+                        }
+                    }
+                }
+            }
+
+            if !didResumeViaRsync {
+                try await session.downloadFile(remotePath: remotePath, localURL: stagingURL) { [weak self] fraction in
+                    Task { @MainActor [weak self] in
+                        self?.updateProgress(taskId: taskId, fraction: fraction)
+                    }
                 }
             }
             
             try Task.checkCancellation()
             progressMonitor.cancel()
 
-            if FileManager.default.fileExists(atPath: stagingURL.path) {
+            var isDirObj: ObjCBool = false
+            let stagingExists = FileManager.default.fileExists(atPath: stagingURL.path, isDirectory: &isDirObj)
+            if verifyChecksumAfterTransfer && stagingExists && !isDirObj.boolValue {
+                checksumStatuses[taskId] = .verifying
+                let localHex = try Self.computeLocalSHA256(at: stagingURL)
+                if let remoteHex = await resolveRemoteSHA256(
+                    remotePath: remotePath,
+                    fileName: localURL.lastPathComponent,
+                    session: session
+                ) {
+                    if remoteHex.lowercased() == localHex.lowercased() {
+                        checksumStatuses[taskId] = .verified(localHex)
+                    } else {
+                        checksumStatuses[taskId] = .mismatch(local: localHex, remote: remoteHex)
+                        throw NSError(
+                            domain: "ApexSSH.TransferChecksum",
+                            code: 2,
+                            userInfo: [NSLocalizedDescriptionKey: "SHA-256 校验不匹配（本地 \(localHex.prefix(12))… / 远端 \(remoteHex.prefix(12))…）"]
+                        )
+                    }
+                } else {
+                    checksumStatuses[taskId] = .unavailable("远端未返回 SHA-256 摘要")
+                }
+            }
+
+            if stagingExists {
                 let parentDir = localURL.deletingLastPathComponent()
                 if !FileManager.default.fileExists(atPath: parentDir.path) {
                     try FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true)
@@ -745,6 +983,7 @@ public final class TransferManager: ObservableObject {
                     try FileManager.default.moveItem(at: stagingURL, to: localURL)
                 }
             }
+            retainedStagingURLs.removeValue(forKey: taskId)
 
             if let finalIdx = tasks.firstIndex(where: { $0.id == taskId }) {
                 let actualSize = Self.currentTransferredBytes(at: localURL)
@@ -759,9 +998,21 @@ public final class TransferManager: ObservableObject {
             retryContexts.removeValue(forKey: taskId)?.closeAccessLease()
         } catch {
             progressMonitor.cancel()
-            try? FileManager.default.removeItem(at: stagingURL)
+            let isCancelled = Task.isCancelled
+                || error is CancellationError
+                || (tasks.first(where: { $0.id == taskId })?.status == .cancelled)
+            let isChecksumMismatch: Bool = {
+                if case .mismatch = checksumStatuses[taskId] { return true }
+                return false
+            }()
+            if !isCancelled && !isChecksumMismatch && Self.currentTransferredBytes(at: stagingURL) > 0 {
+                retainedStagingURLs[taskId] = stagingURL
+            } else {
+                try? FileManager.default.removeItem(at: stagingURL)
+                retainedStagingURLs.removeValue(forKey: taskId)
+            }
             if let finalIdx = tasks.firstIndex(where: { $0.id == taskId }) {
-                if Task.isCancelled || error is CancellationError || tasks[finalIdx].status == .cancelled {
+                if isCancelled {
                     tasks[finalIdx].status = .cancelled
                 } else {
                     tasks[finalIdx].status = .failed(error.localizedDescription)
@@ -775,6 +1026,74 @@ public final class TransferManager: ObservableObject {
         lastSpeedSampleTime.removeValue(forKey: taskId)
         lastSampledBytes.removeValue(forKey: taskId)
         pruneCompletedHistoryIfNeeded()
+    }
+
+    private func resolveRemoteSHA256(
+        remotePath: String,
+        fileName: String,
+        session: SSHSessionProtocol
+    ) async -> String? {
+        if let remoteChecksumProvider {
+            return await remoteChecksumProvider(remotePath, session)
+        }
+        let item = SFTPItem(name: fileName, path: remotePath, isDirectory: false)
+        return await SFTPInspectorHelper.computeRemoteChecksum(for: item, algorithm: .sha256, session: session)
+    }
+
+    private func attemptRsyncPartialDownload(
+        session: SSHSessionProtocol,
+        remotePath: String,
+        stagingURL: URL,
+        progress: @Sendable @escaping (Double) -> Void
+    ) async throws -> Bool {
+        guard distributionChannel != .appStore,
+              let nativeSession = session as? NativeSSHSession,
+              FileManager.default.isExecutableFile(atPath: "/usr/bin/rsync") else {
+            return false
+        }
+        let secret = await SSHTunnelManager.resolveSecret(for: nativeSession.session)
+        let authArgs = nativeSession.sshAuthArgs()
+        let jumpArgs = nativeSession.advancedConnectionArgs(channel: .nonInteractiveSSH)
+        let ctrlArgs = nativeSession.controlMasterArguments
+
+        var sshParts = ["/usr/bin/ssh", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=10", "-p", "\(nativeSession.session.port)"]
+        if secret?.isEmpty ?? true {
+            sshParts.append(contentsOf: ["-o", "BatchMode=yes"])
+        }
+        sshParts.append(contentsOf: authArgs + jumpArgs + ctrlArgs)
+
+        let sshCommand = sshParts.map { SFTPRemoteOperations.posixSingleQuoted($0) }.joined(separator: " ")
+        let rsyncArgs = Self.buildRsyncPartialArguments(
+            session: nativeSession.session,
+            remotePath: remotePath,
+            stagingURL: stagingURL,
+            sshCommand: sshCommand
+        )
+
+        let process = Process()
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        if let secret, !secret.isEmpty, let passBin = nativeSession.sshpassExecutablePath {
+            process.executableURL = URL(fileURLWithPath: passBin)
+            process.arguments = nativeSession.sshpassArguments(secret: secret, tool: "/usr/bin/rsync") + rsyncArgs
+        } else {
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/rsync")
+            process.arguments = rsyncArgs
+        }
+
+        do {
+            try await NativeSSHSession.runTransferProcess(process)
+            if process.terminationStatus == 0 {
+                progress(1.0)
+                return true
+            }
+            return false
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return false
+        }
     }
     
     public func updateProgress(taskId: UUID, fraction: Double, transferredBytes: Int64? = nil) {

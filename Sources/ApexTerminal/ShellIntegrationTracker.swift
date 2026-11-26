@@ -159,11 +159,17 @@ public final class ShellIntegrationTracker: @unchecked Sendable {
             let withoutScheme = String(rawURI.dropFirst("file://".count))
             guard let slashIdx = withoutScheme.firstIndex(of: "/") else { return nil }
             let encodedPath = String(withoutScheme[slashIdx...])
-            return encodedPath.removingPercentEncoding ?? encodedPath
+            let decoded = encodedPath.removingPercentEncoding ?? encodedPath
+            return decoded.isEmpty ? nil : decoded
         } else if rawURI.hasPrefix("/") {
-            return rawURI
+            return rawURI.isEmpty ? nil : rawURI
         }
         return nil
+    }
+
+    /// Returns the line index recorded by `OSC 133;B` if a command input is active.
+    public var activeCommandLineIndex: Int? {
+        lock.withLock { currentCommandLine }
     }
 
     /// Processes a raw OSC payload and updates prompt bookmarks and command execution records.
@@ -171,7 +177,8 @@ public final class ShellIntegrationTracker: @unchecked Sendable {
         _ payload: String,
         currentLineIndex: Int,
         activeLineText: String? = nil,
-        timestamp: Date = Date()
+        timestamp: Date = Date(),
+        fallbackCommandLineText: String? = nil
     ) {
         guard let event = Self.parseOSCPayload(payload) else { return }
         var completedRecord: CommandExecutionRecord?
@@ -207,21 +214,26 @@ public final class ShellIntegrationTracker: @unchecked Sendable {
             appendPromptLineLocked(pLine)
 
             var extractedCommand = explicitCommand
-            if extractedCommand == nil, let rawActive = activeLineText {
-                let cleanActive = Self.stripANSI(rawActive)
-                if let prefix = promptPrefixSnapshot {
-                    let cleanPrefix = Self.stripANSI(prefix)
-                    if cleanActive.hasPrefix(cleanPrefix) {
-                        let candidate = String(cleanActive.dropFirst(cleanPrefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            if extractedCommand == nil {
+                let candidateRaw = [activeLineText, fallbackCommandLineText].compactMap { $0 }.first {
+                    !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                }
+                if let rawSource = candidateRaw {
+                    let cleanActive = Self.stripANSI(rawSource)
+                    if let prefix = promptPrefixSnapshot {
+                        let cleanPrefix = Self.stripANSI(prefix)
+                        if cleanActive.hasPrefix(cleanPrefix) {
+                            let candidate = String(cleanActive.dropFirst(cleanPrefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                            if !candidate.isEmpty {
+                                extractedCommand = candidate
+                            }
+                        }
+                    }
+                    if extractedCommand == nil {
+                        let candidate = Self.stripCommonPromptPrefix(cleanActive)
                         if !candidate.isEmpty {
                             extractedCommand = candidate
                         }
-                    }
-                }
-                if extractedCommand == nil {
-                    let candidate = Self.stripCommonPromptPrefix(cleanActive)
-                    if !candidate.isEmpty {
-                        extractedCommand = candidate
                     }
                 }
             }

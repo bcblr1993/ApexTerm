@@ -48,17 +48,50 @@ public final class TerminalFontManager {
     /// Detects if a font family name matches Nerd Font naming conventions
     public nonisolated static func detectNerdFont(_ name: String) -> Bool {
         let lower = name.lowercased()
-        return lower.contains("nerd") || lower.contains("nf") || lower.contains("powerline")
+        if lower.contains("nerd") || lower.contains("powerline") {
+            return true
+        }
+        let tokens = lower.split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+        if tokens.contains(where: { $0 == "nf" || $0 == "nfm" || $0 == "nfp" }) {
+            return true
+        }
+        return name.hasSuffix("NF") || name.hasSuffix("NFM") || name.hasSuffix("NFP")
+    }
+
+    /// Resolves an `NSFont` by family name via `NSFontDescriptor`, preferring Regular weight,
+    /// and falling back to PostScript name lookup if needed.
+    public nonisolated static func resolveFont(familyName: String, size: CGFloat) -> NSFont? {
+        if familyName == "SF Mono" || familyName == "System Monospaced" {
+            return NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
+        }
+        let descriptor = NSFontDescriptor(fontAttributes: [.family: familyName])
+        let matches = descriptor.matchingFontDescriptors(withMandatoryKeys: [.family])
+        if !matches.isEmpty {
+            let preferred = matches.first(where: { desc in
+                let traits = (desc.object(forKey: .traits) as? [NSFontDescriptor.TraitKey: Any]) ?? [:]
+                let symbolic = (traits[.symbolic] as? UInt32).map(NSFontDescriptor.SymbolicTraits.init(rawValue:)) ?? []
+                let weight = (traits[.weight] as? CGFloat) ?? 0
+                return !symbolic.contains(.bold) && !symbolic.contains(.italic) && abs(weight) < 0.15
+            }) ?? matches.first(where: { desc in
+                let traits = (desc.object(forKey: .traits) as? [NSFontDescriptor.TraitKey: Any]) ?? [:]
+                let symbolic = (traits[.symbolic] as? UInt32).map(NSFontDescriptor.SymbolicTraits.init(rawValue:)) ?? []
+                return !symbolic.contains(.bold) && !symbolic.contains(.italic)
+            }) ?? matches.first
+            if let preferred, let font = NSFont(descriptor: preferred, size: size) {
+                return font
+            }
+        }
+        return NSFont(name: familyName, size: size)
     }
 
     /// Determines whether a given font family is monospace / fixed-pitch
     public nonisolated static func isMonospace(fontName: String) -> Bool {
         if curatedMonospaceFamilies.contains(fontName) { return true }
-        if let font = NSFont(name: fontName, size: 12) {
+        if let font = resolveFont(familyName: fontName, size: 12) {
             return font.isFixedPitch
         }
         let lower = fontName.lowercased()
-        return lower.contains("mono") || lower.contains("code") || lower.contains("nf")
+        return lower.contains("mono") || lower.contains("code") || detectNerdFont(fontName)
     }
 
     private var cachedFonts: [TerminalFontOption]? = nil

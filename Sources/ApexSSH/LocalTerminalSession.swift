@@ -126,7 +126,6 @@ public final class LocalTerminalSession: SSHSessionProtocol, @unchecked Sendable
         connectionState = .connecting(step: "启动本地终端...")
         
         var master: Int32 = 0
-        var slave: Int32 = 0
         let dims = stateLock.withLock { currentDimensions }
         var win = winsize(
             ws_row: UInt16(dims.rows),
@@ -134,26 +133,7 @@ public final class LocalTerminalSession: SSHSessionProtocol, @unchecked Sendable
             ws_xpixel: 0,
             ws_ypixel: 0
         )
-        
-        guard openpty(&master, &slave, nil, nil, &win) == 0 else {
-            let err = NSError(domain: "ApexLocalTerminal", code: 1, userInfo: [NSLocalizedDescriptionKey: "无法分配 Darwin PTY"])
-            connectionState = .failed(err.localizedDescription)
-            throw err
-        }
-        
-        // Non-blocking PTY master
-        let flags = fcntl(master, F_GETFL, 0)
-        _ = fcntl(master, F_SETFL, flags | O_NONBLOCK)
-        
-        var fileActions: posix_spawn_file_actions_t?
-        posix_spawn_file_actions_init(&fileActions)
-        defer { posix_spawn_file_actions_destroy(&fileActions) }
-        
-        posix_spawn_file_actions_adddup2(&fileActions, slave, STDIN_FILENO)
-        posix_spawn_file_actions_adddup2(&fileActions, slave, STDOUT_FILENO)
-        posix_spawn_file_actions_adddup2(&fileActions, slave, STDERR_FILENO)
-        posix_spawn_file_actions_addclose(&fileActions, master)
-        
+
         let homeDir = NSHomeDirectory()
         let workingDir: String = {
             if let raw = session.initialWorkingDirectory?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
@@ -165,52 +145,124 @@ public final class LocalTerminalSession: SSHSessionProtocol, @unchecked Sendable
             }
             return homeDir
         }()
-        posix_spawn_file_actions_addchdir_np(&fileActions, workingDir)
-        
-        var spawnAttributes: posix_spawnattr_t?
-        posix_spawnattr_init(&spawnAttributes)
-        defer { posix_spawnattr_destroy(&spawnAttributes) }
-        
-        var signalMask = sigset_t()
-        sigemptyset(&signalMask)
-        posix_spawnattr_setsigmask(&spawnAttributes, &signalMask)
-        var defaultSignals = sigset_t()
-        sigemptyset(&defaultSignals)
-        sigaddset(&defaultSignals, SIGWINCH)
-        posix_spawnattr_setsigdefault(&spawnAttributes, &defaultSignals)
-        posix_spawnattr_setflags(&spawnAttributes, Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF))
-        posix_spawnattr_setpgroup(&spawnAttributes, 0)
-        
+
         let shellPath = Self.resolveShellPath()
         let shellName = (shellPath as NSString).lastPathComponent
         let loginArgv0 = "-" + shellName
-        
-        let cArgs: [UnsafeMutablePointer<CChar>?] = [
-            strdup(loginArgv0),
-            nil
-        ]
-        
         let envVars = Self.buildSpawnEnvironment(
             session: session,
             homeDirectory: homeDir,
             workingDirectory: workingDir
         )
-        
-        var cEnv: [UnsafeMutablePointer<CChar>?] = envVars.map { strdup("\($0.key)=\($0.value)") }
-        cEnv.append(nil)
-        
+
         var pid: pid_t = 0
-        let spawnResult = posix_spawnp(&pid, shellPath, &fileActions, &spawnAttributes, cArgs, cEnv)
-        
-        for p in cArgs { if let ptr = p { free(ptr) } }
-        for p in cEnv { if let ptr = p { free(ptr) } }
-        close(slave)
-        
-        guard spawnResult == 0 else {
-            close(master)
-            let err = NSError(domain: "ApexLocalTerminal", code: Int(spawnResult), userInfo: [NSLocalizedDescriptionKey: "启动本地 Shell 失败 (code: \(spawnResult))"])
-            connectionState = .failed(err.localizedDescription)
-            throw err
+        if DistributionChannel.current == .appStore {
+            var slave: Int32 = 0
+            guard openpty(&master, &slave, nil, nil, &win) == 0 else {
+                let err = NSError(domain: "ApexLocalTerminal", code: 1, userInfo: [NSLocalizedDescriptionKey: "无法分配 Darwin PTY"])
+                connectionState = .failed(err.localizedDescription)
+                throw err
+            }
+
+            var fileActions: posix_spawn_file_actions_t?
+            posix_spawn_file_actions_init(&fileActions)
+            defer { posix_spawn_file_actions_destroy(&fileActions) }
+
+            posix_spawn_file_actions_adddup2(&fileActions, slave, STDIN_FILENO)
+            posix_spawn_file_actions_adddup2(&fileActions, slave, STDOUT_FILENO)
+            posix_spawn_file_actions_adddup2(&fileActions, slave, STDERR_FILENO)
+            if slave > STDERR_FILENO {
+                posix_spawn_file_actions_addclose(&fileActions, slave)
+            }
+            posix_spawn_file_actions_addclose(&fileActions, master)
+            posix_spawn_file_actions_addchdir_np(&fileActions, workingDir)
+
+            var spawnAttributes: posix_spawnattr_t?
+            posix_spawnattr_init(&spawnAttributes)
+            defer { posix_spawnattr_destroy(&spawnAttributes) }
+
+            var signalMask = sigset_t()
+            sigemptyset(&signalMask)
+            posix_spawnattr_setsigmask(&spawnAttributes, &signalMask)
+            var defaultSignals = sigset_t()
+            sigemptyset(&defaultSignals)
+            sigaddset(&defaultSignals, SIGWINCH)
+            posix_spawnattr_setsigdefault(&spawnAttributes, &defaultSignals)
+            posix_spawnattr_setflags(&spawnAttributes, Int16(POSIX_SPAWN_SETSID | POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF))
+
+            let cArgs: [UnsafeMutablePointer<CChar>?] = [strdup(loginArgv0), nil]
+            var cEnv: [UnsafeMutablePointer<CChar>?] = envVars.map { strdup("\($0.key)=\($0.value)") }
+            cEnv.append(nil)
+
+            let spawnResult = posix_spawnp(&pid, shellPath, &fileActions, &spawnAttributes, cArgs, cEnv)
+
+            for p in cArgs { if let ptr = p { free(ptr) } }
+            for p in cEnv { if let ptr = p { free(ptr) } }
+            close(slave)
+
+            guard spawnResult == 0 else {
+                close(master)
+                let err = NSError(domain: "ApexLocalTerminal", code: Int(spawnResult), userInfo: [NSLocalizedDescriptionKey: "启动本地 Shell 失败 (code: \(spawnResult))"])
+                connectionState = .failed(err.localizedDescription)
+                throw err
+            }
+        } else {
+            // Allocate all C buffers before forkpty so the child executes strictly async-signal-safe calls
+            // while acquiring a controlling terminal (/dev/tty) via setsid + TIOCSCTTY.
+            let cShell = strdup(shellPath)
+            let cWorkingDir = strdup(workingDir)
+            let cArgv = UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>.allocate(capacity: 2)
+            cArgv[0] = strdup(loginArgv0)
+            cArgv[1] = nil
+            let cEnvCount = envVars.count
+            let cEnvp = UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>.allocate(capacity: cEnvCount + 1)
+            for (idx, item) in envVars.enumerated() {
+                cEnvp[idx] = strdup("\(item.key)=\(item.value)")
+            }
+            cEnvp[cEnvCount] = nil
+
+            defer {
+                if let cShell { free(cShell) }
+                if let cWorkingDir { free(cWorkingDir) }
+                if let p = cArgv[0] { free(p) }
+                cArgv.deallocate()
+                for idx in 0..<cEnvCount {
+                    if let p = cEnvp[idx] { free(p) }
+                }
+                cEnvp.deallocate()
+            }
+
+            pid = forkpty(&master, nil, nil, &win)
+            if pid == 0 {
+                var mask = sigset_t()
+                sigemptyset(&mask)
+                sigprocmask(SIG_SETMASK, &mask, nil)
+                signal(SIGWINCH, SIG_DFL)
+                if let cWorkingDir {
+                    _ = chdir(cWorkingDir)
+                }
+                if let cShell {
+                    execve(cShell, cArgv, cEnvp)
+                }
+                _exit(127)
+            }
+
+            guard pid > 0 else {
+                let errCode = Int(errno)
+                let err = NSError(domain: "ApexLocalTerminal", code: errCode, userInfo: [NSLocalizedDescriptionKey: "无法分配 Darwin PTY (errno: \(errCode))"])
+                connectionState = .failed(err.localizedDescription)
+                throw err
+            }
+        }
+
+        // Non-blocking PTY master & close-on-exec so helper spawns never inherit master fd
+        let flags = fcntl(master, F_GETFL, 0)
+        if flags >= 0 {
+            _ = fcntl(master, F_SETFL, flags | O_NONBLOCK)
+        }
+        let fdFlags = fcntl(master, F_GETFD, 0)
+        if fdFlags >= 0 {
+            _ = fcntl(master, F_SETFD, fdFlags | FD_CLOEXEC)
         }
         
         stateLock.withLock {
@@ -223,23 +275,37 @@ public final class LocalTerminalSession: SSHSessionProtocol, @unchecked Sendable
         source.setEventHandler { [weak self, weak source] in
             guard let self = self else { return }
             var buffer = [UInt8](repeating: 0, count: 16384)
-            let bytesRead = read(master, &buffer, buffer.count)
-            if bytesRead > 0 {
-                let data = Data(buffer[0..<bytesRead])
-                let (outHandler, dirHandler, paths) = self.stateLock.withLock { () -> ((@Sendable (Data) -> Void)?, (@Sendable (String) -> Void)?, [String]) in
-                    let parsed = self.directoryStream.consume(data)
-                    return (self.outputHandler, self.directoryChangeHandler, parsed.paths)
+            for _ in 0..<16 {
+                let bytesRead = read(master, &buffer, buffer.count)
+                if bytesRead > 0 {
+                    let data = Data(buffer[0..<bytesRead])
+                    let (outHandler, dirHandler, paths) = self.stateLock.withLock { () -> ((@Sendable (Data) -> Void)?, (@Sendable (String) -> Void)?, [String]) in
+                        let parsed = self.directoryStream.consume(data)
+                        return (self.outputHandler, self.directoryChangeHandler, parsed.paths)
+                    }
+                    outHandler?(data)
+                    for path in paths {
+                        dirHandler?(path)
+                    }
+                } else {
+                    let err = errno
+                    if bytesRead < 0 && err == EINTR {
+                        continue
+                    }
+                    if NativeSSHSession.shouldKeepReadingAfterReadResult(bytesRead: bytesRead, errnoValue: err) {
+                        break
+                    }
+                    // Retain `source` strongly across clearing `self.readSource`, since `[weak source]`
+                    // would otherwise drop to nil before `.cancel()` runs and never invoke `cancelHandler`.
+                    let activeSource = source ?? self.stateLock.withLock { self.readSource }
+                    self.stateLock.withLock {
+                        if let src = activeSource, self.readSource === src {
+                            self.readSource = nil
+                        }
+                    }
+                    activeSource?.cancel()
+                    break
                 }
-                outHandler?(data)
-                for path in paths {
-                    dirHandler?(path)
-                }
-            } else {
-                let err = errno
-                if NativeSSHSession.shouldKeepReadingAfterReadResult(bytesRead: bytesRead, errnoValue: err) {
-                    return
-                }
-                source?.cancel()
             }
         }
         
@@ -257,11 +323,33 @@ public final class LocalTerminalSession: SSHSessionProtocol, @unchecked Sendable
             }
         }
         
-        // Setup process exit listener
+        // Setup process exit listener: reap child on queue and let readSource drain remaining PTY bytes to EOF.
         let procSource = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: queue)
-        procSource.setEventHandler { [weak self] in
-            Task { @MainActor [weak self] in
-                await self?.disconnect()
+        procSource.setEventHandler { [weak self, weak source] in
+            guard let self else { return }
+            let (timer, pSrc, exited) = self.stateLock.withLock { () -> (Task<Void, Never>?, DispatchSourceProcess?, Bool) in
+                let t = self.metricsTimer; self.metricsTimer = nil
+                let p = self.processSource; self.processSource = nil
+                let isCurrent = (self.childPid == pid)
+                if isCurrent {
+                    self.childPid = -1
+                }
+                return (t, p, isCurrent)
+            }
+            timer?.cancel()
+            pSrc?.cancel()
+            if exited {
+                var status: Int32 = 0
+                _ = waitpid(pid, &status, WNOHANG)
+                self.queue.asyncAfter(deadline: .now() + .milliseconds(300)) { [weak self, weak source] in
+                    guard let self, let source else { return }
+                    let pendingRead = self.stateLock.withLock { () -> DispatchSourceRead? in
+                        guard self.readSource === source else { return nil }
+                        self.readSource = nil
+                        return source
+                    }
+                    pendingRead?.cancel()
+                }
             }
         }
         stateLock.withLock {
@@ -273,6 +361,29 @@ public final class LocalTerminalSession: SSHSessionProtocol, @unchecked Sendable
         
         self.connectionState = .connected
         startLocalMetricsCollector()
+    }
+
+    private static func reapAndKillIfNeeded(pid: pid_t) {
+        guard pid > 0 else { return }
+        _ = kill(-pid, SIGHUP)
+        _ = kill(pid, SIGHUP)
+        _ = kill(-pid, SIGTERM)
+        _ = kill(pid, SIGTERM)
+        var status: Int32 = 0
+        var reaped = false
+        for _ in 0..<10 {
+            let result = waitpid(pid, &status, WNOHANG)
+            if result > 0 || (result == -1 && errno == ECHILD) {
+                reaped = true
+                break
+            }
+            usleep(5000)
+        }
+        if !reaped {
+            _ = kill(-pid, SIGKILL)
+            _ = kill(pid, SIGKILL)
+            _ = waitpid(pid, &status, WNOHANG)
+        }
     }
     
     public func terminatePTYProcess() {
@@ -291,27 +402,41 @@ public final class LocalTerminalSession: SSHSessionProtocol, @unchecked Sendable
         if readSrc == nil, fd != -1 {
             close(fd)
         }
+        connectionState = .disconnected
 
         if pid > 0 {
-            kill(-pid, SIGHUP)
-            kill(pid, SIGHUP)
-            kill(-pid, SIGTERM)
-            kill(pid, SIGTERM)
-            var status: Int32 = 0
-            for _ in 0..<10 {
-                if waitpid(pid, &status, WNOHANG) != 0 { break }
-                usleep(5000)
+            queue.async {
+                Self.reapAndKillIfNeeded(pid: pid)
             }
-            kill(-pid, SIGKILL)
-            kill(pid, SIGKILL)
-            waitpid(pid, &status, WNOHANG)
         }
-
-        connectionState = .disconnected
     }
 
     public func disconnect() async {
-        terminatePTYProcess()
+        let (timer, procSource, readSrc, pid, fd) = stateLock.withLock {
+            () -> (Task<Void, Never>?, DispatchSourceProcess?, DispatchSourceRead?, pid_t, Int32) in
+            let t = metricsTimer; metricsTimer = nil
+            let pSrc = processSource; processSource = nil
+            let rSrc = readSource; readSource = nil
+            let child = childPid; childPid = -1
+            let master = ptyMasterFd; ptyMasterFd = -1
+            return (t, pSrc, rSrc, child, master)
+        }
+        timer?.cancel()
+        procSource?.cancel()
+        readSrc?.cancel()
+        if readSrc == nil, fd != -1 {
+            close(fd)
+        }
+        connectionState = .disconnected
+
+        if pid > 0 {
+            await withCheckedContinuation { continuation in
+                queue.async {
+                    Self.reapAndKillIfNeeded(pid: pid)
+                    continuation.resume()
+                }
+            }
+        }
     }
     
     deinit {
@@ -331,10 +456,13 @@ public final class LocalTerminalSession: SSHSessionProtocol, @unchecked Sendable
             close(fd)
         }
         if pid > 0 {
-            kill(-pid, SIGKILL)
-            kill(pid, SIGKILL)
             var status: Int32 = 0
-            waitpid(pid, &status, WNOHANG)
+            let w = waitpid(pid, &status, WNOHANG)
+            if w == 0 || (w == -1 && errno == EINTR) {
+                _ = kill(-pid, SIGKILL)
+                _ = kill(pid, SIGKILL)
+                _ = waitpid(pid, &status, WNOHANG)
+            }
         }
     }
     

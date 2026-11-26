@@ -51,70 +51,102 @@ public final class VTParser: Sendable {
                 }
                 
                 let nextIndex = raw.index(after: i)
-                if nextIndex < raw.endIndex && raw[nextIndex] == "[" { // CSI
+                guard nextIndex < raw.endIndex else {
+                    i = raw.endIndex
+                    break
+                }
+                let nextChar = raw[nextIndex]
+                if nextChar == "[" { // CSI
                     var j = raw.index(after: nextIndex)
                     var csiParam = ""
-                    var hasSpaceBeforeQ = false
-                    var isValidCsi = true
-                    while j < raw.endIndex && !raw[j].isLetter && raw[j] != "@" && raw[j] != "~" {
+                    var hasIntermediates = false
+                    var foundFinal = false
+                    while j < raw.endIndex {
                         let c = raw[j]
-                        if (c.isNumber || c == ";" || c == ":" || c == "?" || c == ">" || c == "<" || c == "=") && !hasSpaceBeforeQ {
+                        let ascii = c.asciiValue ?? 0
+                        if ascii >= 0x30 && ascii <= 0x3F { // ECMA-48 parameter bytes (0-9:;<=>?)
+                            if hasIntermediates { break }
                             csiParam.append(c)
                             j = raw.index(after: j)
-                        } else if c == " ", !hasSpaceBeforeQ,
-                                  raw.index(after: j) < raw.endIndex,
-                                  raw[raw.index(after: j)] == "q" {
-                            hasSpaceBeforeQ = true
+                        } else if ascii >= 0x21 && ascii <= 0x2F { // ECMA-48 intermediate bytes (!"#$%&'()*+,-./)
+                            hasIntermediates = true
                             j = raw.index(after: j)
+                        } else if ascii == 0x20 { // Space intermediate (e.g. DECSCUSR `\e[6 q`)
+                            let afterSpace = raw.index(after: j)
+                            if afterSpace < raw.endIndex, "q@APQR~".contains(raw[afterSpace]) {
+                                hasIntermediates = true
+                                j = afterSpace
+                            } else {
+                                break
+                            }
+                        } else if ascii >= 0x40 && ascii <= 0x7E { // ECMA-48 final byte (@A-Z[\]^_`a-z{|}~)
+                            foundFinal = true
+                            break
                         } else {
-                            isValidCsi = false
                             break
                         }
                     }
-                    if isValidCsi && j < raw.endIndex {
+                    if foundFinal && j < raw.endIndex {
                         let finalChar = raw[j]
-                        if finalChar == "m" && !hasSpaceBeforeQ && !csiParam.hasPrefix("?") && !csiParam.hasPrefix(">") && !csiParam.hasPrefix("<") && !csiParam.hasPrefix("=") { // SGR color/style
+                        if finalChar == "m" && !hasIntermediates && !csiParam.hasPrefix("?") && !csiParam.hasPrefix(">") && !csiParam.hasPrefix("<") && !csiParam.hasPrefix("=") { // SGR color/style
                             style.apply(param: csiParam)
                         }
-                        i = j
+                        i = raw.index(after: j)
+                        continue
                     } else {
-                        i = raw.index(after: i)
+                        i = nextIndex
+                        continue
                     }
-                } else if nextIndex < raw.endIndex && raw[nextIndex] == "]" { // OSC
+                } else if nextChar == "]" { // OSC
                     // Skip OSC sequences like OSC 7 or OSC 0 title
                     var j = raw.index(after: nextIndex)
                     while j < raw.endIndex && raw[j] != "\u{0007}" && raw[j] != "\u{001B}" {
                         j = raw.index(after: j)
                     }
-                    if j < raw.endIndex && raw[j] == "\u{001B}" {
+                    guard j < raw.endIndex else {
+                        i = raw.endIndex
+                        break
+                    }
+                    if raw[j] == "\u{001B}" {
                         let next = raw.index(after: j)
-                        if next < raw.endIndex && raw[next] == "\\" {
-                            j = next
+                        guard next < raw.endIndex else {
+                            i = raw.endIndex
+                            break
+                        }
+                        if raw[next] == "\\" {
+                            i = raw.index(after: next)
+                            continue
                         } else {
                             // ESC started a new sequence rather than terminating OSC with ST
                             i = j
                             continue
                         }
+                    } else {
+                        i = raw.index(after: j)
+                        continue
                     }
-                    i = j
-                } else if nextIndex < raw.endIndex && "P^_X".contains(raw[nextIndex]) { // DCS/PM/APC/SOS
+                } else if "P^_X".contains(nextChar) { // DCS/PM/APC/SOS
                     let payloadStart = raw.index(after: nextIndex)
                     if let terminator = raw.range(of: "\u{1B}\\", range: payloadStart..<raw.endIndex) {
                         i = terminator.upperBound
                         continue
                     }
                     i = raw.endIndex
-                    continue
-                } else if nextIndex < raw.endIndex && "()*+-./%# ".contains(raw[nextIndex]) { // 3-byte ESC sequence
+                    break
+                } else if "()*+-./%# ".contains(nextChar) { // 3-byte ESC sequence
                     let designator = raw.index(after: nextIndex)
-                    i = designator < raw.endIndex ? designator : nextIndex
+                    i = designator < raw.endIndex ? raw.index(after: designator) : raw.endIndex
+                    continue
                 } else {
-                    i = nextIndex
+                    i = raw.index(after: nextIndex)
+                    continue
                 }
             } else {
                 currentText.append(raw[i])
+                if i < raw.endIndex {
+                    i = raw.index(after: i)
+                }
             }
-            i = raw.index(after: i)
         }
         
         if !currentText.isEmpty {

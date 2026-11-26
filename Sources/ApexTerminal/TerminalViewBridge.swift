@@ -292,6 +292,35 @@ public final class TerminalFindBarView: NSView, NSTextFieldDelegate {
             matchLabel.stringValue = "\(term.currentMatchIndex + 1)/\(total)"
         }
     }
+
+    override public func performKeyEquivalent(with event: NSEvent) -> Bool {
+        guard !isHidden, let win = window else {
+            return super.performKeyEquivalent(with: event)
+        }
+        let responder = win.firstResponder
+        let isEditingFindBar = responder === searchField
+            || responder === searchField.currentEditor()
+            || (responder as? NSView)?.isDescendant(of: self) == true
+        guard isEditingFindBar else {
+            return super.performKeyEquivalent(with: event)
+        }
+        let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
+        let key = event.charactersIgnoringModifiers?.lowercased()
+        if modifiers == [.command], key == "f" {
+            win.makeFirstResponder(searchField)
+            searchField.selectText(nil)
+            return true
+        }
+        if key == "g", modifiers == [.command] || modifiers == [.command, .shift] {
+            if modifiers.contains(.shift) {
+                prevClicked()
+            } else {
+                nextClicked()
+            }
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
 }
 
 /// Dedicated Flipped ClipView for Terminal ensuring 1:1 coordinate alignment with NSTextView
@@ -462,6 +491,9 @@ public final class NativeTerminalScrollView: NSScrollView {
             initialText = sel
         }
         searchBarOverlay.show(withInitialText: initialText)
+        if initialText == nil, !searchBarOverlay.searchField.stringValue.isEmpty {
+            searchBarOverlay.searchField.selectText(nil)
+        }
     }
     
     public func hideFindBar() {
@@ -480,7 +512,13 @@ public final class NativeTerminalScrollView: NSScrollView {
     }
     
     @objc private func handleTriggerFindNotification(_ note: Notification) {
-        if let win = window, win.isKeyWindow, win.firstResponder === terminalView {
+        guard let win = window, win.isKeyWindow else { return }
+        let responder = win.firstResponder
+        let isTerminalOrFindBar = responder === terminalView
+            || responder === searchBarOverlay.searchField
+            || responder === searchBarOverlay.searchField.currentEditor()
+            || (responder as? NSView)?.isDescendant(of: searchBarOverlay) == true
+        if isTerminalOrFindBar {
             showFindBar()
         }
     }
@@ -559,6 +597,10 @@ public final class NativeTerminalScrollView: NSScrollView {
 /// Native Terminal View with full macOS Chinese IME (拼音/五笔) support and incremental 120Hz rendering
 @MainActor
 public final class NativeTerminalView: NSTextView {
+    /// Configurable hooks wired by the app layer (`AppSettings`) without adding a direct dependency cycle.
+    public static var isOptionAsMetaEnabled: () -> Bool = { false }
+    public static var shouldConvertCJKPunctuation: () -> Bool = { true }
+
     public var ringBuffer: TerminalRingBuffer? {
         didSet {
             if oldValue !== ringBuffer {
@@ -569,10 +611,12 @@ public final class NativeTerminalView: NSTextView {
                 pendingDimensions = nil
                 lastReportedDimensions = nil
                 lastPromptNavigationLine = nil
+                scrollDeltaAccumulator = 0
                 lastCommittedIndex = 0
                 activeLineStartLocation = 0
                 renderedScreenRows = nil
                 renderedScreenLines = nil
+                clearFind()
                 textStorage?.setAttributedString(NSAttributedString())
                 scheduleRefresh()
             }
@@ -642,6 +686,15 @@ public final class NativeTerminalView: NSTextView {
     // High-performance styling cache for zero-allocation 120Hz rendering
     private var cachedBaseFont: NSFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
     private var cachedBoldFont: NSFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .bold)
+    private var cachedItalicFont: NSFont = NSFontManager.shared.convert(NSFont.monospacedSystemFont(ofSize: 13, weight: .regular), toHaveTrait: .italicFontMask)
+    private var cachedBoldItalicFont: NSFont = NSFontManager.shared.convert(NSFont.monospacedSystemFont(ofSize: 13, weight: .bold), toHaveTrait: .italicFontMask)
+    private var cachedParagraphStyle: NSParagraphStyle = {
+        let style = NSMutableParagraphStyle()
+        style.minimumLineHeight = 16
+        style.maximumLineHeight = 16
+        return style
+    }()
+    private var scrollDeltaAccumulator: CGFloat = 0
     private var glyphAdvanceCache: [String: CGFloat] = [:]
     public static let maxColorCacheEntries: Int = 1024
     private static var colorCache: [String: NSColor] = [:]
@@ -1048,8 +1101,21 @@ public final class NativeTerminalView: NSTextView {
             }
         }
         
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleClearTerminalScreenNotification(_:)),
+            name: Notification.Name("ApexTermClearTerminalScreen"),
+            object: nil
+        )
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(accessibilityOptionsChanged), name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
         startCursorBlink()
+    }
+
+    @objc private func handleClearTerminalScreenNotification(_ note: Notification) {
+        guard let win = window, win.firstResponder === self else { return }
+        guard win.isKeyWindow || NSApp.keyWindow == nil else { return }
+        guard ringBuffer?.isInAlternateScreen != true else { return }
+        clearScreen()
     }
 
     @objc private func accessibilityOptionsChanged() {
@@ -1065,18 +1131,20 @@ public final class NativeTerminalView: NSTextView {
         
         // 1. Font
         let baseSize = CGFloat(settings.fontSize)
-        let resolvedFont: NSFont
-        if settings.fontName == "SF Mono" || settings.fontName == "System Monospaced" {
-            resolvedFont = NSFont.monospacedSystemFont(ofSize: baseSize, weight: .regular)
-        } else if let custom = NSFont(name: settings.fontName, size: baseSize) {
-            resolvedFont = custom
-        } else {
-            resolvedFont = NSFont.monospacedSystemFont(ofSize: baseSize, weight: .regular)
-        }
+        let resolvedFont = TerminalFontManager.resolveFont(familyName: settings.fontName, size: baseSize)
+            ?? NSFont.monospacedSystemFont(ofSize: baseSize, weight: .regular)
         let fontChanged = cachedBaseFont.fontName != resolvedFont.fontName || cachedBaseFont.pointSize != resolvedFont.pointSize
         if fontChanged || (textStorage?.length ?? 0) == 0 { self.font = resolvedFont }
         self.cachedBaseFont = resolvedFont
-        self.cachedBoldFont = NSFontManager.shared.convert(resolvedFont, toHaveTrait: .boldFontMask)
+        let boldFont = NSFontManager.shared.convert(resolvedFont, toHaveTrait: .boldFontMask)
+        self.cachedBoldFont = boldFont
+        self.cachedItalicFont = NSFontManager.shared.convert(resolvedFont, toHaveTrait: .italicFontMask)
+        self.cachedBoldItalicFont = NSFontManager.shared.convert(boldFont, toHaveTrait: .italicFontMask)
+        let lineHeight = max(12, layoutManager?.defaultLineHeight(for: resolvedFont) ?? ceil(resolvedFont.ascender - resolvedFont.descender + resolvedFont.leading))
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.minimumLineHeight = lineHeight
+        paragraph.maximumLineHeight = lineHeight
+        self.cachedParagraphStyle = paragraph
         glyphAdvanceCache.removeAll(keepingCapacity: true)
         
         // 2. Theme & Colors
@@ -1202,6 +1270,8 @@ public final class NativeTerminalView: NSTextView {
         syncWatchdogTask = nil
         pendingDimensions = nil
         lastPromptNavigationLine = nil
+        scrollDeltaAccumulator = 0
+        clearFind()
         NotificationCenter.default.removeObserver(self)
         NSWorkspace.shared.notificationCenter.removeObserver(self)
         if let settingsObserver {
@@ -1472,18 +1542,28 @@ public final class NativeTerminalView: NSTextView {
     
     public func findNext() -> NSRange? {
         guard !currentMatches.isEmpty else { return nil }
+        if let storage = textStorage, currentMatches.contains(where: { NSMaxRange($0) > storage.length }) {
+            clearFind()
+            (enclosingScrollView as? NativeTerminalScrollView)?.searchBarOverlay.updateMatchLabel()
+            return nil
+        }
         currentMatchIndex = (currentMatchIndex + 1) % currentMatches.count
         highlightAllMatches()
         scrollToCurrentMatch()
-        return currentMatches[currentMatchIndex]
+        return currentMatchIndex >= 0 && currentMatchIndex < currentMatches.count ? currentMatches[currentMatchIndex] : nil
     }
     
     public func findPrevious() -> NSRange? {
         guard !currentMatches.isEmpty else { return nil }
+        if let storage = textStorage, currentMatches.contains(where: { NSMaxRange($0) > storage.length }) {
+            clearFind()
+            (enclosingScrollView as? NativeTerminalScrollView)?.searchBarOverlay.updateMatchLabel()
+            return nil
+        }
         currentMatchIndex = (currentMatchIndex - 1 + currentMatches.count) % currentMatches.count
         highlightAllMatches()
         scrollToCurrentMatch()
-        return currentMatches[currentMatchIndex]
+        return currentMatchIndex >= 0 && currentMatchIndex < currentMatches.count ? currentMatches[currentMatchIndex] : nil
     }
     
     public func clearFind() {
@@ -1519,8 +1599,14 @@ public final class NativeTerminalView: NSTextView {
     }
     
     private func scrollToCurrentMatch() {
-        guard currentMatchIndex >= 0 && currentMatchIndex < currentMatches.count else { return }
+        guard currentMatchIndex >= 0 && currentMatchIndex < currentMatches.count,
+              let storage = self.textStorage else { return }
         let range = currentMatches[currentMatchIndex]
+        guard NSMaxRange(range) <= storage.length else {
+            clearFind()
+            (enclosingScrollView as? NativeTerminalScrollView)?.searchBarOverlay.updateMatchLabel()
+            return
+        }
         self.scrollRangeToVisible(range)
     }
     
@@ -1748,26 +1834,64 @@ public final class NativeTerminalView: NSTextView {
     
     override public func scrollWheel(with event: NSEvent) {
         lastPromptNavigationLine = nil
-        if abs(event.scrollingDeltaY) > 0.1,
-           sendMouseReport(event, button: event.scrollingDeltaY > 0 ? 64 : 65) { return }
-        if let buffer = ringBuffer, buffer.isInAlternateScreen {
-            // When in alternate screen mode (e.g. Vim, less, htop), scrolling trackpad/mouse
-            // should send Up/Down arrow sequences to navigate the document instead of scrolling the clipview
-            let deltaY = event.scrollingDeltaY
-            if abs(deltaY) > 0.1 {
-                let isUp = deltaY > 0
-                let count = max(1, min(5, Int(abs(deltaY) / 4.0)))
-                let isApp = buffer.isApplicationCursorKeys
-                let seq = isUp ? (isApp ? "\u{1B}OA" : "\u{1B}[A") : (isApp ? "\u{1B}OB" : "\u{1B}[B")
-                var fullSeq = ""
-                for _ in 0..<count { fullSeq.append(seq) }
-                if let data = fullSeq.data(using: .utf8) {
-                    onInput?(data)
-                }
+        let buffer = ringBuffer
+        let wantsMouseWheelReport = buffer != nil
+            && buffer!.mouseTrackingMode != 0
+            && !event.modifierFlags.contains(.shift)
+            && !event.modifierFlags.contains(.command)
+        let isAltScreen = buffer?.isInAlternateScreen == true
+
+        guard wantsMouseWheelReport || isAltScreen else {
+            scrollDeltaAccumulator = 0
+            super.scrollWheel(with: event)
+            return
+        }
+
+        if event.phase == .began || event.momentumPhase == .began {
+            scrollDeltaAccumulator = 0
+        }
+        let deltaY = event.scrollingDeltaY
+        if deltaY == 0 {
+            if event.phase == .ended || event.phase == .cancelled || event.momentumPhase == .ended {
+                scrollDeltaAccumulator = 0
             }
             return
         }
-        super.scrollWheel(with: event)
+        if (scrollDeltaAccumulator > 0 && deltaY < 0) || (scrollDeltaAccumulator < 0 && deltaY > 0) {
+            scrollDeltaAccumulator = 0
+        }
+        scrollDeltaAccumulator += deltaY
+
+        let lineHeight = max(12.0, layoutManager?.defaultLineHeight(for: cachedBaseFont) ?? 16.0)
+        let threshold: CGFloat = event.hasPreciseScrollingDeltas ? lineHeight : 1.0
+        let rawSteps = Int(abs(scrollDeltaAccumulator) / threshold)
+        guard rawSteps > 0 else { return }
+
+        let steps = min(5, rawSteps)
+        let isUp = scrollDeltaAccumulator > 0
+        scrollDeltaAccumulator -= (isUp ? 1.0 : -1.0) * CGFloat(rawSteps) * threshold
+
+        if wantsMouseWheelReport {
+            let button = isUp ? 64 : 65
+            if let report = mouseReport(event, button: button) {
+                var combined = Data()
+                combined.reserveCapacity(report.count * steps)
+                for _ in 0..<steps { combined.append(report) }
+                onInput?(combined)
+                return
+            }
+        }
+
+        if isAltScreen, let buffer {
+            let isApp = buffer.isApplicationCursorKeys
+            let seq = isUp ? (isApp ? "\u{1B}OA" : "\u{1B}[A") : (isApp ? "\u{1B}OB" : "\u{1B}[B")
+            var fullSeq = ""
+            fullSeq.reserveCapacity(seq.count * steps)
+            for _ in 0..<steps { fullSeq.append(seq) }
+            if let data = fullSeq.data(using: .utf8) {
+                onInput?(data)
+            }
+        }
     }
     
     func shouldOpenContextMenuOnRightClick(with event: NSEvent) -> Bool {
@@ -1803,21 +1927,36 @@ public final class NativeTerminalView: NSTextView {
     
     override public func performKeyEquivalent(with event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
-        if window?.firstResponder === self,
-           modifiers == [.command] {
-            if event.charactersIgnoringModifiers?.lowercased() == "v" {
-                _ = pasteFromClipboard()
+        if window?.firstResponder === self {
+            let key = event.charactersIgnoringModifiers?.lowercased()
+            if modifiers == [.command] {
+                if key == "v" {
+                    _ = pasteFromClipboard()
+                    return true
+                }
+                if key == "f" {
+                    (enclosingScrollView as? NativeTerminalScrollView)?.showFindBar()
+                    return true
+                }
+                if key == "g" {
+                    _ = findNext()
+                    (enclosingScrollView as? NativeTerminalScrollView)?.searchBarOverlay.updateMatchLabel()
+                    return true
+                }
+                if ringBuffer?.isInAlternateScreen != true {
+                    if event.keyCode == 126 {
+                        _ = jumpToPreviousPrompt()
+                        return true
+                    }
+                    if event.keyCode == 125 {
+                        _ = jumpToNextPrompt()
+                        return true
+                    }
+                }
+            } else if modifiers == [.command, .shift], key == "g" {
+                _ = findPrevious()
+                (enclosingScrollView as? NativeTerminalScrollView)?.searchBarOverlay.updateMatchLabel()
                 return true
-            }
-            if ringBuffer?.isInAlternateScreen != true {
-                if event.keyCode == 126 {
-                    _ = jumpToPreviousPrompt()
-                    return true
-                }
-                if event.keyCode == 125 {
-                    _ = jumpToNextPrompt()
-                    return true
-                }
             }
         }
         return super.performKeyEquivalent(with: event)
@@ -1901,7 +2040,7 @@ public final class NativeTerminalView: NSTextView {
             return
         }
         
-        // 1. Handle Ctrl key combinations: Ctrl+C, Ctrl+D, Ctrl+Z, Ctrl+L, Ctrl+[, Ctrl+], etc. (HIGHEST PRIORITY)
+        // 1. Handle Ctrl key combinations: Ctrl+C, Ctrl+D, Ctrl+Z, Ctrl+L, Ctrl+[, Ctrl+/, etc. (HIGHEST PRIORITY)
         if event.modifierFlags.contains(.control),
            let chars = event.charactersIgnoringModifiers,
            let firstChar = chars.unicodeScalars.first {
@@ -1915,11 +2054,17 @@ public final class NativeTerminalView: NSTextView {
                 ctrlByte = 0x00
             } else if val >= 0x5B && val <= 0x5F { // [, \, ], ^, _
                 ctrlByte = UInt8(val - 64)
+            } else if val == 0x2F { // Ctrl+/ -> US (0x1F)
+                ctrlByte = 0x1F
             } else {
                 ctrlByte = nil
             }
             if let ctrlByte {
-                onInput?(Data([ctrlByte]))
+                if event.modifierFlags.contains(.option), Self.isOptionAsMetaEnabled() {
+                    onInput?(Data([0x1B, ctrlByte]))
+                } else {
+                    onInput?(Data([ctrlByte]))
+                }
                 return
             }
         }
@@ -1950,9 +2095,13 @@ public final class NativeTerminalView: NSTextView {
             return
         }
 
-        // Preserve Option-as-Meta for ordinary shell character shortcuts.
-        if event.modifierFlags.contains(.option) && !event.modifierFlags.contains(.control),
-           let chars = event.charactersIgnoringModifiers?.lowercased(),
+        // Preserve Option-as-Meta only when explicitly enabled and not composing IME text,
+        // so dead keys (Option+e) and AltGr layouts (@ [ ] { } | ~) work cleanly out of the box.
+        if Self.isOptionAsMetaEnabled(),
+           !hasMarkedText(),
+           event.modifierFlags.contains(.option),
+           !event.modifierFlags.contains(.control),
+           let chars = event.characters(byApplyingModifiers: event.modifierFlags.intersection([.shift])) ?? event.charactersIgnoringModifiers,
            let first = chars.first, first.isASCII {
             onInput?(Data("\u{1B}\(first)".utf8))
             return
@@ -2168,6 +2317,8 @@ public final class NativeTerminalView: NSTextView {
     }
     
     public func clearScreen() {
+        clearFind()
+        (enclosingScrollView as? NativeTerminalScrollView)?.searchBarOverlay.updateMatchLabel()
         ringBuffer?.clear()
         self.textStorage?.setAttributedString(NSAttributedString())
         self.renderedCommittedLineLengths.removeAll(keepingCapacity: true)
@@ -2206,9 +2357,11 @@ public final class NativeTerminalView: NSTextView {
         needsDisplay = true
         
         if !text.isEmpty {
-            // Normalize full-width symbols commonly entered by Chinese/CJK input methods that break terminal commands and Vim
-            text = text.replacingOccurrences(of: "：", with: ":")
-                       .replacingOccurrences(of: "；", with: ";")
+            if Self.shouldConvertCJKPunctuation() {
+                // Normalize full-width symbols commonly entered by Chinese/CJK input methods that break terminal commands and Vim
+                text = text.replacingOccurrences(of: "：", with: ":")
+                           .replacingOccurrences(of: "；", with: ";")
+            }
             text = text.replacingOccurrences(of: "\r\n", with: "\r").replacingOccurrences(of: "\n", with: "\r")
             if let data = text.data(using: .utf8) {
                 onInput?(data)
@@ -2347,6 +2500,9 @@ public final class NativeTerminalView: NSTextView {
         // All terminal cells must retain the configured monospaced grid.
         let baseFont = cachedBaseFont
         let boldFont = self.cachedBoldFont
+        let italicFont = self.cachedItalicFont
+        let boldItalicFont = self.cachedBoldItalicFont
+        let paragraphStyle = self.cachedParagraphStyle
         let palette = AppSettings.shared.themePreset.palette
         let defaultColor = NSColor(hex: palette.foreground) ?? .labelColor
         
@@ -2373,8 +2529,13 @@ public final class NativeTerminalView: NSTextView {
             if let index = span.ansiColorIndex {
                 textColor = NSColor(hex: palette.terminalColor(at: index)) ?? defaultColor
             }
-            var renderFont = span.isBold ? boldFont : baseFont
-            if span.isItalic { renderFont = NSFontManager.shared.convert(renderFont, toHaveTrait: .italicFontMask) }
+            let renderFont: NSFont
+            switch (span.isBold, span.isItalic) {
+            case (false, false): renderFont = baseFont
+            case (true, false): renderFont = boldFont
+            case (false, true): renderFont = italicFont
+            case (true, true): renderFont = boldItalicFont
+            }
             var background = span.backgroundColorHex.flatMap(NSColor.init(hex:))
             if let index = span.backgroundANSIColorIndex { background = NSColor(hex: palette.terminalColor(at: index)) }
             if span.isInverse {
@@ -2382,7 +2543,13 @@ public final class NativeTerminalView: NSTextView {
                 textColor = background ?? NSColor(hex: AppSettings.shared.themePreset.backgroundColorHex) ?? self.backgroundColor
                 background = originalForeground
             }
-            var attrs: [NSAttributedString.Key: Any] = [.font: renderFont, .foregroundColor: textColor, .ligature: 0, .kern: 0]
+            var attrs: [NSAttributedString.Key: Any] = [
+                .font: renderFont,
+                .foregroundColor: textColor,
+                .paragraphStyle: paragraphStyle,
+                .ligature: 0,
+                .kern: 0
+            ]
             if let background { attrs[.backgroundColor] = background }
             if span.isUnderlined { attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue }
             if span.isStrikethrough { attrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
@@ -2509,10 +2676,11 @@ public final class NativeTerminalView: NSTextView {
             syncWatchdogTask = nil
 
             if let screenLines = buffer.screenLines {
-                let lineHeight = layoutManager?.defaultLineHeight(for: cachedBaseFont) ?? 16
-                let paragraph = NSMutableParagraphStyle()
-                paragraph.minimumLineHeight = lineHeight
-                paragraph.maximumLineHeight = lineHeight
+                if renderedScreenRows == nil && !currentMatches.isEmpty {
+                    clearFind()
+                    (enclosingScrollView as? NativeTerminalScrollView)?.searchBarOverlay.updateMatchLabel()
+                }
+                let paragraph = cachedParagraphStyle
                 let reusableRows = renderedScreenRows?.count == screenLines.count
                     && renderedScreenLines?.count == screenLines.count
                 let rows = screenLines.enumerated().map { index, line -> NSAttributedString in
@@ -2561,6 +2729,7 @@ public final class NativeTerminalView: NSTextView {
                 return
             }
 
+            let exitedAlternateScreen = (renderedScreenRows != nil)
             renderedScreenRows = nil
             renderedScreenLines = nil
             let currentTotal = buffer.totalCommittedCount
@@ -2571,12 +2740,17 @@ public final class NativeTerminalView: NSTextView {
             let canIncrementalRewind = rewoundLines > 0 && rewoundLines <= (renderedCommittedLineLengths.count - renderedLineHead)
             let isCleared = bufferCleared || (rewindTarget < lastCommittedIndex && !canIncrementalRewind)
             let active = buffer.currentActiveLine
+            if (exitedAlternateScreen || isCleared) && !currentMatches.isEmpty {
+                clearFind()
+                (enclosingScrollView as? NativeTerminalScrollView)?.searchBarOverlay.updateMatchLabel()
+            }
             if !isCleared, !canIncrementalRewind, currentTotal == lastCommittedIndex, active == renderedActiveLine {
                 // Cursor/control-only packets do not invalidate the entire scrollback layout.
                 self.needsDisplay = true
                 self.resetCursorBlink()
                 return
             }
+            var invalidatedFindMatches = canIncrementalRewind
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             // Active-line replacement, appended history and eviction form one edit.
@@ -2647,6 +2821,7 @@ public final class NativeTerminalView: NSTextView {
                     }
                     if removedCharacters > 0 {
                         storage.deleteCharacters(in: NSRange(location: 0, length: min(removedCharacters, storage.length)))
+                        invalidatedFindMatches = true
                     }
                     if renderedLineHead > 4096 && renderedLineHead * 2 > renderedCommittedLineLengths.count {
                         renderedCommittedLineLengths.removeFirst(renderedLineHead)
@@ -2665,6 +2840,11 @@ public final class NativeTerminalView: NSTextView {
             renderedActiveLine = active
             textStorage?.endEditing()
             CATransaction.commit()
+
+            if invalidatedFindMatches && !currentMatches.isEmpty {
+                clearFind()
+                (enclosingScrollView as? NativeTerminalScrollView)?.searchBarOverlay.updateMatchLabel()
+            }
 
             if self.isPinnedToBottom && (hasNewCommittedLines || isCleared || !self.isScrolledToBottom()) {
                 // NSTextView may not have resized its document frame for the appended lines yet.

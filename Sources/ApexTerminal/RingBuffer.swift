@@ -132,6 +132,7 @@ public final class TerminalRingBuffer: @unchecked Sendable {
     private var belowActiveRows: [[TerminalCell]] = []
     private var cursorCol: Int = 0
     private var currentStyle = SGRStyle(foreground: nil, index: nil, bold: false)
+    private var savedNormalStyle: SGRStyle? = nil
     private var currentFgHex: String? { get { currentStyle.foreground } set { currentStyle.foreground = newValue } }
     private var currentANSIIndex: Int? { get { currentStyle.index } set { currentStyle.index = newValue } }
     private var currentBold: Bool { get { currentStyle.bold } set { currentStyle.bold = newValue } }
@@ -501,14 +502,17 @@ public final class TerminalRingBuffer: @unchecked Sendable {
                 if nextChar == "[" { // CSI Sequence
                     var j = fullText.index(after: next)
                     var csiParam = ""
+                    var hasIntermediates = false
                     var foundFinal = false
                     while j < fullText.endIndex {
                         let c = fullText[j]
                         let ascii = c.asciiValue ?? 0
                         if ascii >= 0x30 && ascii <= 0x3F { // Parameter bytes
+                            if hasIntermediates { break }
                             csiParam.append(c)
                             j = fullText.index(after: j)
                         } else if ascii >= 0x20 && ascii <= 0x2F { // Intermediate bytes
+                            hasIntermediates = true
                             j = fullText.index(after: j)
                         } else if ascii >= 0x40 && ascii <= 0x7E { // Final byte
                             foundFinal = true
@@ -529,8 +533,14 @@ public final class TerminalRingBuffer: @unchecked Sendable {
                     let finalChar = fullText[j]
                     if csiParam.hasPrefix("?") {
                         handleDECPrivateMode(finalChar: finalChar, param: csiParam)
+                    } else if csiParam.hasPrefix(">") || csiParam.hasPrefix("<") || csiParam.hasPrefix("=") || hasIntermediates {
+                        // Private / extended CSI (modifyOtherKeys, Kitty keyboard, DECRQM, DECSCUSR) - ignore cleanly
                     } else if screen != nil {
                         handleScreenCSI(finalChar: finalChar, param: csiParam)
+                    } else if finalChar == "m" {
+                        var style = currentStyle
+                        style.apply(param: csiParam)
+                        currentStyle = style
                     } else {
                         ensureEditingMode()
                         handleCSI(finalChar: finalChar, param: csiParam)
@@ -617,10 +627,20 @@ public final class TerminalRingBuffer: @unchecked Sendable {
                         }
                     } else {
                         let currentActive = isEditingActiveLine ? renderCellsToString(activeCells) : activeLine
+                        var fallbackLine: String? = nil
+                        if oscPayload.hasPrefix("133;"),
+                           currentActive.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                           let cmdLine = shellIntegration.activeCommandLineIndex {
+                            let oldestLifetime = Int(_totalCommittedCount) - count
+                            if cmdLine >= oldestLifetime && cmdLine < Int(_totalCommittedCount) {
+                                fallbackLine = buffer[(head + (cmdLine - oldestLifetime)) % historyLimit]
+                            }
+                        }
                         shellIntegration.handleOSCPayload(
                             oscPayload,
                             currentLineIndex: Int(_totalCommittedCount),
-                            activeLineText: currentActive
+                            activeLineText: currentActive,
+                            fallbackCommandLineText: fallbackLine
                         )
                     }
                     i = oscAbortedByNewESC ? j : fullText.index(after: j)
@@ -667,7 +687,7 @@ public final class TerminalRingBuffer: @unchecked Sendable {
                     continue
                 }
             } else {
-                if let ascii = ch.asciiValue, ascii < 32 {
+                if let ascii = ch.asciiValue, ascii < 32 || ascii == 0x7F {
                     i = fullText.index(after: i)
                     continue
                 }
@@ -881,6 +901,12 @@ public final class TerminalRingBuffer: @unchecked Sendable {
             switch mode {
             case 1049, 1047, 47:
                 if isSet {
+                    if screen == nil {
+                        savedNormalStyle = currentStyle
+                    }
+                    if mode == 1049 {
+                        currentStyle = SGRStyle(foreground: nil, index: nil, bold: false)
+                    }
                     screen = Array(repeating: [], count: screenRows)
                     screenRow = 0
                     screenColumn = 0
@@ -889,13 +915,22 @@ public final class TerminalRingBuffer: @unchecked Sendable {
                     savedScreenPosition = nil
                     _screenRevision += 1
                 } else {
+                    let wasInAltScreen = (screen != nil)
                     screen = nil
                     scrollTop = 0
                     scrollBottom = max(0, screenRows - 1)
                     _isCursorHidden = false
                     _isApplicationCursorKeys = false
+                    if let saved = savedNormalStyle {
+                        currentStyle = saved
+                        savedNormalStyle = nil
+                    } else if wasInAltScreen {
+                        currentStyle = SGRStyle(foreground: nil, index: nil, bold: false)
+                    }
                     _screenRevision += 1
-                    _isClearPending = true
+                    if wasInAltScreen {
+                        _isClearPending = true
+                    }
                 }
             case 1000, 1002, 1003:
                 if isSet { _mouseTrackingMode = mode }
@@ -1319,6 +1354,7 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         belowActiveRows.removeAll(keepingCapacity: false)
         isEditingActiveLine = false; cursorCol = 0
         currentStyle = SGRStyle(foreground: nil, index: nil, bold: false)
+        savedNormalStyle = nil
         pendingSequence = ""; screen = nil
         screenRow = 0; screenColumn = 0
         scrollTop = 0; scrollBottom = screenRows - 1
@@ -1347,6 +1383,7 @@ public final class TerminalRingBuffer: @unchecked Sendable {
         cursorCol = 0
         pendingSequence = ""
         currentStyle = SGRStyle(foreground: nil, index: nil, bold: false)
+        savedNormalStyle = nil
         _isBellPending = false
         _isClearPending = true
         _isSynchronizedOutputActive = false

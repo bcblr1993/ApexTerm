@@ -15,12 +15,17 @@ struct SGRStyle: Equatable {
     private static let standard = ["#1E1E1E", "#FF453A", "#30D158", "#FFD60A", "#0A84FF", "#BF5AF2", "#64D2FF", "#FFFFFF", "#8E8E93", "#FF6961", "#77DD77", "#FDFD96", "#84B6F4", "#FDCAE1", "#B2FBA5", "#FFFFFF"]
 
     mutating func apply(param: String) {
+        if param.isEmpty {
+            apply([0])
+            return
+        }
+        // Reject private/non-SGR parameter prefixes (e.g. '>', '<', '=', '?') so sequences like
+        // modifyOtherKeys (`\e[>4;1m`) or Kitty keyboard (`\e[<u`) never alter SGR attributes.
+        guard param.unicodeScalars.allSatisfy({ ($0.value >= 0x30 && $0.value <= 0x39) || $0.value == 0x3B || $0.value == 0x3A }) else {
+            return
+        }
         if !param.contains(":") {
-            if param.isEmpty {
-                apply([0])
-            } else {
-                apply(param.split(separator: ";", omittingEmptySubsequences: false).compactMap { $0.isEmpty ? 0 : Int($0) })
-            }
+            apply(param.split(separator: ";", omittingEmptySubsequences: false).compactMap { $0.isEmpty ? 0 : Int($0) })
             return
         }
         var codes: [Int] = []

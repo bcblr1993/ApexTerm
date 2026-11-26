@@ -23,6 +23,7 @@ public struct GroupShareExportSheet: View {
     @State private var confirmPassphrase = ""
     @State private var showPassphrase = false
     @State private var generatedPassphraseHint: String?
+    @State private var lastGeneratedPassphrase: String?
     @State private var includeTunnels = true
     @State private var includeSnippets = false
     @State private var includeBookmarks = false
@@ -125,8 +126,18 @@ public struct GroupShareExportSheet: View {
             Divider()
             footerBar
         }
-        .frame(width: 600, height: 610)
+        .frame(minWidth: 460, idealWidth: 600, maxWidth: 720, minHeight: 340, idealHeight: 580, maxHeight: 720)
         .background(ApexStyle.surface)
+        .onExitCommand {
+            dismiss()
+        }
+        .background(
+            Button("") { dismiss() }
+                .keyboardShortcut("w", modifiers: .command)
+                .opacity(0)
+                .frame(width: 0, height: 0)
+                .accessibilityHidden(true)
+        )
     }
 
     // MARK: - Subviews
@@ -330,6 +341,12 @@ public struct GroupShareExportSheet: View {
                         }
                         .textFieldStyle(.roundedBorder)
                         .accessibilityLabel("分享口令")
+                        .onChange(of: passphrase) { _, newValue in
+                            if newValue != lastGeneratedPassphrase {
+                                generatedPassphraseHint = nil
+                                lastGeneratedPassphrase = nil
+                            }
+                        }
 
                         ApexIconButton(
                             icon: showPassphrase ? "eye.slash" : "eye",
@@ -342,6 +359,7 @@ public struct GroupShareExportSheet: View {
 
                         ApexActionButton("随机口令", icon: "dice", tint: ApexStyle.accent, size: .small) {
                             let generated = SharePackCrypto.generateReadablePassphrase()
+                            lastGeneratedPassphrase = generated
                             passphrase = generated
                             confirmPassphrase = generated
                             showPassphrase = true
@@ -377,7 +395,7 @@ public struct GroupShareExportSheet: View {
 
                     Text(
                         passphrase.isEmpty
-                            ? "加密方式：内置加密封装（AES-256-GCM），文件落盘无明文，无需口令即可在另一台 AetherTerm 导入。"
+                            ? "加密方式：内置加密封装（AES-256-GCM，仅防明文直读，跨团队分发请设独立口令），可在另一台 AetherTerm 直接导入。"
                             : "加密方式：口令强加密（PBKDF2 20万次 + AES-256-GCM），适合公网群聊或邮件发送。"
                     )
                     .font(.caption)

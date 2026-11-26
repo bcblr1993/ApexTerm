@@ -3,6 +3,7 @@ import ApexCore
 
 /// Spotlight-style Command Palette modal overlay for quick fuzzy navigation and action triggering
 public struct CommandPaletteModalView: View {
+    @ObservedObject private var themeSettings = AppSettings.shared
     @ObservedObject public var store: SessionStore
     @Binding public var isPresented: Bool
     public let onSelectAction: (CommandPaletteAction) -> Void
@@ -109,11 +110,13 @@ public struct CommandPaletteModalView: View {
                     Image(systemName: "magnifyingglass")
                         .font(.system(size: 16, weight: .medium))
                         .foregroundColor(ApexStyle.accent)
+                        .accessibilityHidden(true)
                     
                     TextField("搜索会话、SFTP路径、快捷命令或功能... (可输入 > @ / # 快速过滤)", text: $searchQuery)
                         .font(.system(size: 14))
                         .textFieldStyle(.plain)
                         .focused($isInputFocused)
+                        .accessibilityLabel("命令面板搜索框")
                         .onChange(of: searchQuery) { _, _ in
                             selectedIndex = 0
                         }
@@ -134,6 +137,7 @@ public struct CommandPaletteModalView: View {
                     
                     Text("⎋ ESC")
                         .apexKeycap()
+                        .accessibilityHidden(true)
                 }
                 .padding(.horizontal, ApexStyle.s4)
                 .padding(.vertical, 12)
@@ -361,6 +365,9 @@ private struct ItemRowView: View {
         }
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(item.category.rawValue)：\(item.title)\(item.subtitle.isEmpty ? "" : "，\(item.subtitle)")\(item.shortcutHint.map { "，快捷键 \($0)" } ?? "")")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
     
     private var categoryTint: Color {

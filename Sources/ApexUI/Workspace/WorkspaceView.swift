@@ -27,6 +27,9 @@ public final class TerminalPaneItem: Identifiable, ObservableObject {
     public var onAutoReconnectRequested: ((TerminalPaneItem) -> Void)?
     @Published public var connectionState: SSHConnectionState {
         didSet {
+            if oldValue != connectionState {
+                isConnectionBannerDismissed = false
+            }
             if case .connected = connectionState {
                 hasEverConnected = true
                 isAutoReconnecting = false
@@ -44,6 +47,9 @@ public final class TerminalPaneItem: Identifiable, ObservableObject {
     public private(set) var isTornDown: Bool = false
     @Published public var pendingOSC52Request: OSC52WriteRequest? = nil
     @Published public var isOSC52SessionAllowed: Bool = false
+    @Published public var dropTransferNotice: String? = nil
+    @Published public var dropTransferIsError: Bool = false
+    @Published public var isConnectionBannerDismissed: Bool = false
     public var onWriteClipboard: (String) -> Void = { text in
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
@@ -169,6 +175,8 @@ public final class TerminalPaneItem: Identifiable, ObservableObject {
         ringBuffer.onDesktopNotification = nil
         ringBuffer.shellIntegration.onCommandCompleted = nil
         pendingOSC52Request = nil
+        dropTransferNotice = nil
+        dropTransferIsError = false
         ringBuffer.finishStream()
         ringBuffer.clear()
         logger?.close()
@@ -182,6 +190,7 @@ public final class TerminalPaneItem: Identifiable, ObservableObject {
         autoReconnectTask?.cancel()
         autoReconnectAttempt += 1
         isAutoReconnecting = true
+        isConnectionBannerDismissed = false
         let attempt = autoReconnectAttempt
         let delays: [UInt64] = [1_500_000_000, 3_000_000_000, 5_000_000_000, 8_000_000_000, 12_000_000_000]
         let delayNs = delays[min(max(attempt - 1, 0), delays.count - 1)]
@@ -539,12 +548,13 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
         }
     }
     
-    public func split(mode: PaneSplitMode) {
+    public func split(mode: PaneSplitMode, sshClient customClient: SSHSessionProtocol? = nil) {
         if panes.count >= 2 {
             self.splitMode = mode
+            self.isPaneMaximized = false
             return
         }
-        let newClient = SSHClientFactory.makeClient(for: session)
+        let newClient = customClient ?? SSHClientFactory.makeClient(for: session)
         let inheritedTerminalType = (activePane ?? panes.first)?.sshClient.terminalType ?? sshClient.terminalType
         newClient.setTerminalType(inheritedTerminalType)
         
@@ -562,6 +572,7 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
         self.activePaneId = newPane.id
         self.splitMode = mode
         self.paneSplitRatio = 0.5
+        self.isPaneMaximized = false
         attachNotificationHandlers(to: newPane)
         registerDirectoryLinkage(for: newClient, paneId: newPane.id)
         
@@ -661,6 +672,9 @@ public struct WorkspaceView: View {
     @State private var isCommandPalettePresented: Bool = false
     @State private var isTunnelModalPresented: Bool = false
     @State private var isProcessInspectorPresented: Bool = false
+    @State private var isNewSessionSheetPresented: Bool = false
+    @State private var isSSHConfigImportPresented: Bool = false
+    @State private var isConfirmingBroadcastEnable: Bool = false
     @State private var batchOperationsRequest: BatchOperationsRequest?
     /// Owned here, not by the toolbar-hosted capsule, so the popover survives toolbar rebuilds.
     /// Held without observation: toggling it must not re-evaluate the toolbar, which would tear
@@ -682,13 +696,154 @@ public struct WorkspaceView: View {
     @State private var hudToastIsWarning: Bool = false
     @State private var pendingSnippetForVariables: Snippet? = nil
     @State private var pendingSnippetVariables: [String: String] = [:]
+    @State private var pendingCloseRequest: PendingCloseRequest? = nil
     
     public static let executeSnippetNotification = NSNotification.Name("ExecuteSnippetInWorkspace")
+    public static let clearTerminalScreenNotification = Notification.Name("ApexTermClearTerminalScreen")
+    public static let requestCloseCurrentTabNotification = Notification.Name("ApexTermRequestCloseCurrentTab")
     
     // Tab Rename
     @State private var tabToRename: TerminalTabItem?
     @State private var tabRenameText: String = ""
     @State private var isShowingTabRenameAlert: Bool = false
+
+    public struct TabCloseGuardSummary: Equatable, Sendable {
+        public let activeExternalEditsCount: Int
+        public let activeExternalEditFiles: [String]
+        public let liveTUICount: Int
+        public let runningCommandCount: Int
+
+        public var requiresConfirmation: Bool {
+            activeExternalEditsCount > 0 || liveTUICount > 0 || runningCommandCount > 0
+        }
+
+        public var confirmationMessage: String {
+            var reasons: [String] = []
+            if activeExternalEditsCount > 0 {
+                let sample = activeExternalEditFiles.prefix(3).joined(separator: "、")
+                let suffix = activeExternalEditFiles.count > 3 ? " 等 \(activeExternalEditsCount) 个文件" : ""
+                reasons.append("存在未关闭的外部编辑器实时同步文件（\(sample)\(suffix)）")
+            }
+            if liveTUICount > 0 {
+                reasons.append("检测到 \(liveTUICount) 个窗格正在运行全屏交互程序（如 Vim/htop/tmux）")
+            }
+            if runningCommandCount > 0 {
+                reasons.append("检测到 \(runningCommandCount) 个正在运行的前台命令")
+            }
+            return reasons.joined(separator: "；") + "。关闭后将立即终止对应连接并清理临时编辑状态。"
+        }
+    }
+
+    private enum PendingCloseRequest {
+        case closeTab(TerminalTabItem, String, TabCloseGuardSummary)
+        case closeOtherTabs(TerminalTabItem, TabCloseGuardSummary)
+        case closeTabsToTheRight(TerminalTabItem, TabCloseGuardSummary)
+        case closePane(TerminalTabItem, UUID, TabCloseGuardSummary)
+
+        var summary: TabCloseGuardSummary {
+            switch self {
+            case .closeTab(_, _, let s), .closeOtherTabs(_, let s), .closeTabsToTheRight(_, let s), .closePane(_, _, let s):
+                return s
+            }
+        }
+
+        var title: String {
+            switch self {
+            case .closeTab(_, let tabTitle, _): return "确认关闭标签页「\(tabTitle)」？"
+            case .closeOtherTabs: return "确认关闭其他标签页？"
+            case .closeTabsToTheRight: return "确认关闭右侧标签页？"
+            case .closePane: return "确认关闭当前分屏窗格？"
+            }
+        }
+    }
+
+    /// Selects at most one connected pane per tab so split panes never receive duplicate broadcast input.
+    public static func broadcastTargetPane(for tab: TerminalTabItem) -> TerminalPaneItem? {
+        if let active = tab.activePane, active.connectionState == .connected {
+            return active
+        }
+        for p in tab.panes where p.connectionState == .connected {
+            return p
+        }
+        return nil
+    }
+
+    public static func broadcastTargets(in tabs: [TerminalTabItem]) -> [(tab: TerminalTabItem, pane: TerminalPaneItem)] {
+        tabs.compactMap { tab in
+            guard let target = broadcastTargetPane(for: tab) else { return nil }
+            return (tab, target)
+        }
+    }
+
+    public static func broadcastTargetCount(in tabs: [TerminalTabItem]) -> Int {
+        broadcastTargets(in: tabs).count
+    }
+
+    public static func broadcastRemoteTargetCount(in tabs: [TerminalTabItem]) -> Int {
+        broadcastTargets(in: tabs).filter { !$0.tab.session.isLocal }.count
+    }
+
+    public static func dispatchInputPayload(
+        _ data: Data,
+        activePane: TerminalPaneItem,
+        activeTab: TerminalTabItem,
+        allTabs: [TerminalTabItem],
+        isBroadcastActive: Bool
+    ) {
+        let shouldRefreshLinkage = data.contains(13) || data.contains(10)
+        if isBroadcastActive {
+            for target in broadcastTargets(in: allTabs) {
+                target.pane.sshClient.sendInputSync(data)
+                if shouldRefreshLinkage && target.tab.isDirectoryLinkageEnabled {
+                    target.tab.scheduleDirectoryLinkageRefresh()
+                }
+            }
+        } else {
+            activePane.sshClient.sendInputSync(data)
+            if shouldRefreshLinkage && activeTab.isDirectoryLinkageEnabled {
+                activeTab.scheduleDirectoryLinkageRefresh()
+            }
+        }
+    }
+
+    public static func closeGuardSummary(
+        for tabs: [TerminalTabItem],
+        externalEditSessions: [ExternalEditSessionManager.ActiveEditSession]
+    ) -> TabCloseGuardSummary {
+        let tabIDs = Set(tabs.map(\.id))
+        let matchingEdits = externalEditSessions.filter { edit in
+            guard let tid = edit.tabID else { return false }
+            return tabIDs.contains(tid)
+        }
+        var liveTUIs = 0
+        var runningCommands = 0
+        for tab in tabs {
+            for pane in tab.panes where pane.connectionState == .connected {
+                if pane.ringBuffer.isInAlternateScreen {
+                    liveTUIs += 1
+                } else if pane.ringBuffer.shellIntegration.inFlightRecord != nil {
+                    runningCommands += 1
+                }
+            }
+        }
+        return TabCloseGuardSummary(
+            activeExternalEditsCount: matchingEdits.count,
+            activeExternalEditFiles: matchingEdits.map(\.fileName),
+            liveTUICount: liveTUIs,
+            runningCommandCount: runningCommands
+        )
+    }
+
+    public static func paneCloseGuardSummary(for pane: TerminalPaneItem) -> TabCloseGuardSummary {
+        let isLiveTUI = pane.connectionState == .connected && pane.ringBuffer.isInAlternateScreen
+        let isRunningCmd = pane.connectionState == .connected && !isLiveTUI && pane.ringBuffer.shellIntegration.inFlightRecord != nil
+        return TabCloseGuardSummary(
+            activeExternalEditsCount: 0,
+            activeExternalEditFiles: [],
+            liveTUICount: isLiveTUI ? 1 : 0,
+            runningCommandCount: isRunningCmd ? 1 : 0
+        )
+    }
     
     public init(
         store: SessionStore,
@@ -735,62 +890,71 @@ public struct WorkspaceView: View {
 
             if !activeTabs.isEmpty {
                 HStack(spacing: 8) {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 4) {
-                            ForEach(activeTabs) { tab in
-                                TabButton(
-                                    tab: tab,
-                                    isSelected: tab.id == currentTab?.id,
-                                    onSelect: { selectedTabId = tab.id },
-                                    onClose: { closeTab(tab) },
-                                    onDuplicate: { duplicateTab(tab) },
-                                    onRename: {
-                                        tabToRename = tab
-                                        tabRenameText = tab.customTitle ?? tab.session.name
-                                        isShowingTabRenameAlert = true
-                                    },
-                                    onReconnect: {
-                                        tab.reconnectAll()
-                                    },
-                                    onSplitVertical: { tab.split(mode: .vertical) },
-                                    onSplitHorizontal: { tab.split(mode: .horizontal) },
-                                    onCloseOthers: { closeOtherTabs(tab) },
-                                    onCloseRight: { closeTabsToTheRight(tab) }
-                                )
-                            }
-                            
-                            // + Button to duplicate current session or open new tab
-                            ApexIconButton(
-                                icon: "plus",
-                                label: "复制当前会话 / 新建标签页 (⌘T)",
-                                size: 26,
-                                iconSize: 11
-                            ) {
-                                if let cur = currentTab {
-                                    duplicateTab(cur)
-                                } else if let first = store.sessions.first {
-                                    let client = SSHClientFactory.makeClient(for: first)
-                                    let newTab = TerminalTabItem(session: first, sshClient: client)
-                                    activeTabs.append(newTab)
-                                    selectedTabId = newTab.id
-                                    newTab.connect()
-                                } else {
+                    ScrollViewReader { tabProxy in
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 4) {
+                                ForEach(activeTabs) { tab in
+                                    TabButton(
+                                        tab: tab,
+                                        isSelected: tab.id == currentTab?.id,
+                                        onSelect: { selectedTabId = tab.id },
+                                        onClose: { closeTab(tab) },
+                                        onDuplicate: { duplicateTab(tab) },
+                                        onRename: {
+                                            tabToRename = tab
+                                            tabRenameText = tab.customTitle ?? tab.session.name
+                                            isShowingTabRenameAlert = true
+                                        },
+                                        onReconnect: {
+                                            tab.reconnectAll()
+                                        },
+                                        onSplitVertical: { tab.split(mode: .vertical) },
+                                        onSplitHorizontal: { tab.split(mode: .horizontal) },
+                                        onCloseOthers: { closeOtherTabs(tab) },
+                                        onCloseRight: { closeTabsToTheRight(tab) }
+                                    )
+                                    .id(tab.id)
+                                }
+                                
+                                // + Button to duplicate current session or open new tab
+                                ApexIconButton(
+                                    icon: "plus",
+                                    label: "复制当前会话 / 新建标签页 (⌘T)",
+                                    size: 26,
+                                    iconSize: 11
+                                ) {
+                                    if let cur = currentTab {
+                                        duplicateTab(cur)
+                                    } else if let first = store.sessions.first {
+                                        let client = SSHClientFactory.makeClient(for: first)
+                                        let newTab = TerminalTabItem(session: first, sshClient: client)
+                                        activeTabs.append(newTab)
+                                        selectedTabId = newTab.id
+                                        newTab.connect()
+                                    } else {
+                                        openLocalTerminal()
+                                    }
+                                }
+                                
+                                // Dedicated Local Terminal button
+                                ApexIconButton(
+                                    icon: "laptopcomputer",
+                                    label: "新建本地终端 (⇧⌘T)",
+                                    size: 26,
+                                    iconSize: 11
+                                ) {
                                     openLocalTerminal()
                                 }
                             }
-                            
-                            // Dedicated Local Terminal button
-                            ApexIconButton(
-                                icon: "laptopcomputer",
-                                label: "新建本地终端 (⇧⌘T)",
-                                size: 26,
-                                iconSize: 11
-                            ) {
-                                openLocalTerminal()
+                            .padding(.horizontal, ApexStyle.s4)
+                            .padding(.vertical, 4)
+                        }
+                        .onChange(of: currentTab?.id) { _, newId in
+                            guard let newId else { return }
+                            withAnimation(ApexStyle.springSnappy) {
+                                tabProxy.scrollTo(newId, anchor: .center)
                             }
                         }
-                        .padding(.horizontal, ApexStyle.s4)
-                        .padding(.vertical, 4)
                     }
                 }
                 .frame(height: 38)
@@ -798,19 +962,25 @@ public struct WorkspaceView: View {
                 .overlay(alignment: .bottom) { Divider() }
 
                 if activeTabs.count > 1 {
+                    let broadcastTargetCount = Self.broadcastTargetCount(in: activeTabs)
+                    let broadcastRemoteCount = Self.broadcastRemoteTargetCount(in: activeTabs)
                     BroadcastBar(
                         isBroadcastActive: $isBroadcastActive,
-                        targetCount: activeTabs.count,
+                        targetCount: broadcastTargetCount,
+                        remoteTargetCount: broadcastRemoteCount,
                         onBroadcastSubmit: { cmd in
-                            guard let data = cmd.data(using: .utf8) else { return }
-                            for tab in activeTabs {
-                                for p in tab.panes where p.connectionState == .connected {
-                                    Task { try? await p.sshClient.sendInput(data) }
-                                }
-                                if tab.isDirectoryLinkageEnabled && (data.contains(13) || data.contains(10)) {
-                                    tab.scheduleDirectoryLinkageRefresh()
-                                }
+                            guard let data = cmd.data(using: .utf8),
+                                  let activeTab = currentTab,
+                                  let activePane = activeTab.activePane ?? activeTab.panes.first else {
+                                return
                             }
+                            Self.dispatchInputPayload(
+                                data,
+                                activePane: activePane,
+                                activeTab: activeTab,
+                                allTabs: activeTabs,
+                                isBroadcastActive: true
+                            )
                         }
                     )
                 }
@@ -855,6 +1025,12 @@ public struct WorkspaceView: View {
                     .keyboardShortcut("p", modifiers: .command)
                 Button("") { isQuickCommandBarVisible.toggle() }
                     .keyboardShortcut("b", modifiers: [.command, .shift])
+                Button("") {
+                    guard currentTab != nil else { return }
+                    isSFTPVisible.toggle()
+                }
+                    .keyboardShortcut("s", modifiers: [.command, .option])
+                    .disabled(currentTab == nil)
                 Button("") { isTunnelModalPresented.toggle() }
                     .keyboardShortcut("t", modifiers: [.command, .option])
                 Button("") {
@@ -894,11 +1070,9 @@ public struct WorkspaceView: View {
                     QuickCommandBarView(
                         store: store,
                         isVisible: $isQuickCommandBarVisible,
+                        sessionContext: QuickCommandBarView.context(for: resolvedSession(for: tab)),
                         onExecuteCommand: { cmd in
-                            if let pane = tab.activePane ?? tab.panes.first,
-                               let data = cmd.data(using: .utf8) {
-                                Task { try? await pane.sshClient.sendInput(data) }
-                            }
+                            sendRawCommandPayload(cmd, tab: tab)
                         }
                     )
                 }
@@ -1048,6 +1222,15 @@ public struct WorkspaceView: View {
         } message: {
             Text("自定义该标签页的显示名称，输入留空或恢复默认将恢复为服务器名称。")
         }
+        .onReceive(NotificationCenter.default.publisher(for: Self.requestCloseCurrentTabNotification)) { _ in
+            closeCurrentTabOrPane()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ApexTermOpenNewSessionModal"))) { _ in
+            isNewSessionSheetPresented = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ApexTermOpenSSHConfigImport"))) { _ in
+            isSSHConfigImportPresented = true
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("TriggerCommandPalette"))) { _ in
             isCommandPalettePresented = true
         }
@@ -1111,11 +1294,55 @@ public struct WorkspaceView: View {
                     sendSnippetCommand(resolved, autoExecute: true)
                     pendingSnippetForVariables = nil
                 },
+                onInsertCommand: { resolved in
+                    sendSnippetCommand(resolved, autoExecute: false)
+                    pendingSnippetForVariables = nil
+                },
                 onCancel: {
                     pendingSnippetForVariables = nil
                 }
             )
             .apexTheme()
+        }
+        .sheet(isPresented: $isNewSessionSheetPresented) {
+            SessionEditModal(session: nil) { newSession in
+                store.addSession(newSession)
+            }
+            .apexTheme()
+        }
+        .sheet(isPresented: $isSSHConfigImportPresented) {
+            SSHConfigImportSheet(store: store)
+                .apexTheme()
+        }
+        .confirmationDialog(
+            pendingCloseRequest?.title ?? "确认关闭？",
+            isPresented: Binding(
+                get: { pendingCloseRequest != nil },
+                set: { if !$0 { pendingCloseRequest = nil } }
+            )
+        ) {
+            Button("确认关闭", role: .destructive) {
+                if let req = pendingCloseRequest {
+                    pendingCloseRequest = nil
+                    executePendingClose(req)
+                }
+            }
+            Button("取消", role: .cancel) {
+                pendingCloseRequest = nil
+            }
+        } message: {
+            Text(pendingCloseRequest?.summary.confirmationMessage ?? "")
+        }
+        .confirmationDialog("开启多终端命令广播模式？", isPresented: $isConfirmingBroadcastEnable) {
+            let remoteCount = Self.broadcastRemoteTargetCount(in: activeTabs)
+            Button("确认开启广播（影响 \(remoteCount) 台远程主机）", role: .destructive) {
+                isBroadcastActive = true
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            let totalCount = Self.broadcastTargetCount(in: activeTabs)
+            let remoteCount = Self.broadcastRemoteTargetCount(in: activeTabs)
+            Text("开启后，您在终端中的按键输入以及通过快捷命令/命令面板执行的操作，将同时发送到全部 \(totalCount) 个已连接终端（含 \(remoteCount) 台远程主机）。请确认操作安全。")
         }
         .sheet(isPresented: $isTunnelModalPresented) {
             SSHTunnelModalView(store: store).apexTheme()
@@ -1244,7 +1471,7 @@ public struct WorkspaceView: View {
                 }
                 .toggleStyle(.button)
                 .controlSize(.small)
-                .help(isSFTPVisible ? "隐藏文件面板" : "显示文件面板")
+                .help(isSFTPVisible ? "隐藏文件面板 (⌘⌥S)" : "显示文件面板 (⌘⌥S)")
             }
         }
     }
@@ -1306,14 +1533,32 @@ public struct WorkspaceView: View {
                 openLocalTerminal()
             case .duplicateSession:
                 if let cur = currentTab { duplicateTab(cur) }
+            case .newSession:
+                isNewSessionSheetPresented = true
+            case .importSSHConfig:
+                isSSHConfigImportPresented = true
             case .splitVertical:
                 currentTab?.split(mode: .vertical)
             case .splitHorizontal:
                 currentTab?.split(mode: .horizontal)
             case .toggleMaximize:
                 currentTab?.toggleMaximizeActivePane()
+            case .reconnectSession:
+                if let cur = currentTab, let active = cur.activePane {
+                    cur.reconnect(pane: active)
+                }
+            case .toggleBroadcast:
+                requestToggleBroadcast()
             case .openTunnels:
                 isTunnelModalPresented = true
+            case .openProcessInspector:
+                if currentTab != nil {
+                    isProcessInspectorPresented = true
+                } else {
+                    showHUDToast("请先打开或连接一个终端会话", isWarning: true)
+                }
+            case .copyLastCommandOutput:
+                copyLastCommandOutput()
             case .toggleQuickCommandBar:
                 isQuickCommandBarVisible.toggle()
             case .toggleSFTP:
@@ -1321,7 +1566,9 @@ public struct WorkspaceView: View {
             case .openBatchOperations:
                 batchOperationsRequest = BatchOperationsRequest(sessionIDs: [], folderName: nil)
             case .clearScrollback:
-                currentTab?.ringBuffer.clear()
+                clearActiveTerminalScrollback()
+            case .lockApp:
+                AppLockManager.shared.lockNow()
             case .openSettings:
                 NotificationCenter.default.post(name: NSNotification.Name("OpenSettingsModal"), object: nil)
             case .checkForUpdates:
@@ -1334,16 +1581,54 @@ public struct WorkspaceView: View {
         }
     }
 
+    private func clearActiveTerminalScrollback() {
+        guard let tab = currentTab, let pane = tab.activePane ?? tab.panes.first else { return }
+        guard !pane.ringBuffer.isInAlternateScreen else {
+            showHUDToast("全屏应用模式 (Alternate Screen) 下已跳过清屏", isWarning: true)
+            return
+        }
+        let hadContent = pane.ringBuffer.totalCommittedCount > 0 || !pane.ringBuffer.currentActiveLine.isEmpty
+        NotificationCenter.default.post(
+            name: Self.clearTerminalScreenNotification,
+            object: pane.id,
+            userInfo: ["tabId": tab.id, "paneId": pane.id]
+        )
+        // Fallback when no active NativeTerminalView handled the notification synchronously
+        if hadContent && (pane.ringBuffer.totalCommittedCount > 0 || !pane.ringBuffer.currentActiveLine.isEmpty) {
+            pane.ringBuffer.clear()
+            Task { try? await pane.sshClient.sendInput(Data([0x0C])) }
+        }
+    }
+
+    private func requestToggleBroadcast() {
+        guard activeTabs.count > 1 else {
+            showHUDToast("至少打开 2 个终端标签页才可启用命令广播", isWarning: true)
+            return
+        }
+        if isBroadcastActive {
+            isBroadcastActive = false
+            return
+        }
+        let targetCount = Self.broadcastTargetCount(in: activeTabs)
+        guard targetCount > 0 else {
+            showHUDToast("当前没有已连接的终端会话可广播", isWarning: true)
+            return
+        }
+        let remoteCount = Self.broadcastRemoteTargetCount(in: activeTabs)
+        if BroadcastBar.requiresEnableConfirmation(remoteTargetCount: remoteCount) {
+            isConfirmingBroadcastEnable = true
+        } else {
+            isBroadcastActive = true
+        }
+    }
+
     public func executeSnippet(_ snippet: Snippet) {
         guard let tab = currentTab else { return }
-        let baseContext: [String: String] = [
-            "host": tab.session.host,
-            "user": tab.session.username
-        ]
+        let baseContext = QuickCommandBarView.context(for: resolvedSession(for: tab))
         let unresolved = snippet.unresolvedVariables(context: baseContext)
         if unresolved.isEmpty {
             let resolved = snippet.resolvedCommand(context: baseContext)
-            sendSnippetCommand(resolved, autoExecute: true)
+            sendSnippetCommand(resolved, autoExecute: snippet.autoExecute)
         } else {
             var initialValues = baseContext
             for v in unresolved {
@@ -1355,11 +1640,23 @@ public struct WorkspaceView: View {
     }
 
     private func sendSnippetCommand(_ command: String, autoExecute: Bool) {
-        guard let tab = currentTab, let pane = tab.activePane ?? tab.panes.first else { return }
         let payload = autoExecute ? (command + "\n") : command
-        if let data = payload.data(using: .utf8) {
-            Task { try? await pane.sshClient.sendInput(data) }
+        guard let tab = currentTab else { return }
+        sendRawCommandPayload(payload, tab: tab)
+    }
+
+    private func sendRawCommandPayload(_ payload: String, tab: TerminalTabItem) {
+        guard let pane = tab.activePane ?? tab.panes.first,
+              let data = payload.data(using: .utf8) else {
+            return
         }
+        Self.dispatchInputPayload(
+            data,
+            activePane: pane,
+            activeTab: tab,
+            allTabs: activeTabs,
+            isBroadcastActive: isBroadcastActive
+        )
     }
 
     public func duplicateTab(_ tab: TerminalTabItem) {
@@ -1388,15 +1685,85 @@ public struct WorkspaceView: View {
         newTab.connect()
     }
     
+    private func closeCurrentTabOrPane() {
+        guard let current = currentTab else { return }
+        if current.panes.count > 1, let activeId = current.activePaneId {
+            if let pane = current.panes.first(where: { $0.id == activeId }) {
+                let summary = Self.paneCloseGuardSummary(for: pane)
+                if summary.requiresConfirmation {
+                    pendingCloseRequest = .closePane(current, activeId, summary)
+                    return
+                }
+            }
+            current.closePane(id: activeId)
+        } else {
+            closeTab(current)
+        }
+    }
+
     private func closeTab(_ tab: TerminalTabItem) {
+        let summary = Self.closeGuardSummary(
+            for: [tab],
+            externalEditSessions: ExternalEditSessionManager.shared.activeSessions
+        )
+        if summary.requiresConfirmation {
+            pendingCloseRequest = .closeTab(tab, tab.displayTitle, summary)
+        } else {
+            performCloseTab(tab)
+        }
+    }
+    
+    private func closeOtherTabs(_ tab: TerminalTabItem) {
+        let toClose = activeTabs.filter { $0.id != tab.id }
+        guard !toClose.isEmpty else { return }
+        let summary = Self.closeGuardSummary(
+            for: toClose,
+            externalEditSessions: ExternalEditSessionManager.shared.activeSessions
+        )
+        if summary.requiresConfirmation {
+            pendingCloseRequest = .closeOtherTabs(tab, summary)
+        } else {
+            performCloseOtherTabs(tab)
+        }
+    }
+    
+    private func closeTabsToTheRight(_ tab: TerminalTabItem) {
+        guard let idx = activeTabs.firstIndex(where: { $0.id == tab.id }) else { return }
+        let toClose = Array(activeTabs.suffix(from: idx + 1))
+        guard !toClose.isEmpty else { return }
+        let summary = Self.closeGuardSummary(
+            for: toClose,
+            externalEditSessions: ExternalEditSessionManager.shared.activeSessions
+        )
+        if summary.requiresConfirmation {
+            pendingCloseRequest = .closeTabsToTheRight(tab, summary)
+        } else {
+            performCloseTabsToTheRight(tab)
+        }
+    }
+
+    private func executePendingClose(_ req: PendingCloseRequest) {
+        switch req {
+        case .closeTab(let tab, _, _):
+            performCloseTab(tab)
+        case .closeOtherTabs(let tab, _):
+            performCloseOtherTabs(tab)
+        case .closeTabsToTheRight(let tab, _):
+            performCloseTabsToTheRight(tab)
+        case .closePane(let tab, let paneID, _):
+            tab.closePane(id: paneID)
+        }
+    }
+
+    private func performCloseTab(_ tab: TerminalTabItem) {
         tab.tearDown()
         activeTabs.removeAll(where: { $0.id == tab.id })
         if selectedTabId == tab.id {
             selectedTabId = activeTabs.first?.id
         }
     }
-    
-    private func closeOtherTabs(_ tab: TerminalTabItem) {
+
+    private func performCloseOtherTabs(_ tab: TerminalTabItem) {
         let toClose = activeTabs.filter { $0.id != tab.id }
         for t in toClose {
             t.tearDown()
@@ -1404,8 +1771,8 @@ public struct WorkspaceView: View {
         activeTabs = [tab]
         selectedTabId = tab.id
     }
-    
-    private func closeTabsToTheRight(_ tab: TerminalTabItem) {
+
+    private func performCloseTabsToTheRight(_ tab: TerminalTabItem) {
         guard let idx = activeTabs.firstIndex(where: { $0.id == tab.id }) else { return }
         let toClose = Array(activeTabs.suffix(from: idx + 1))
         for t in toClose {
@@ -1893,103 +2260,100 @@ private struct WorkspaceActiveTabSplitView: View {
             let sftpHeight = max(0, geometry.size.height - terminalHeight - 8)
 
             VStack(spacing: 0) {
-                // Terminal Area with Split Panes
-                Group {
-                    if tab.splitMode == .single || tab.panes.count < 2 || tab.isPaneMaximized {
-                        if let pane = tab.activePane ?? tab.panes.first {
+                // Terminal Area with Split Panes (stable structural identity preserves Find, scroll & banner state)
+                GeometryReader { paneGeo in
+                    let totalW = max(0, paneGeo.size.width)
+                    let totalH = max(0, paneGeo.size.height)
+                    let isSplit = tab.splitMode != .single && tab.panes.count >= 2 && !tab.isPaneMaximized
+                    let visiblePaneId = (tab.activePane ?? tab.panes.first)?.id
+
+                    let usableW = max(0, totalW - 8)
+                    let minPaneW = min(80, usableW / 2)
+                    let leftW = min(max(minPaneW, usableW * tab.paneSplitRatio), max(minPaneW, usableW - minPaneW))
+                    let rightW = max(0, usableW - leftW)
+
+                    let usableH = max(0, totalH - 8)
+                    let minPaneH = min(60, usableH / 2)
+                    let topH = min(max(minPaneH, usableH * tab.paneSplitRatio), max(minPaneH, usableH - minPaneH))
+                    let bottomH = max(0, usableH - topH)
+
+                    ZStack(alignment: .topLeading) {
+                        ForEach(Array(tab.panes.enumerated()), id: \.element.id) { index, pane in
+                            let isVisible = isSplit || pane.id == visiblePaneId
+                            let frameSize: CGSize = {
+                                guard isSplit else { return CGSize(width: totalW, height: totalH) }
+                                if tab.splitMode == .vertical {
+                                    return CGSize(width: index == 0 ? leftW : rightW, height: totalH)
+                                } else {
+                                    return CGSize(width: totalW, height: index == 0 ? topH : bottomH)
+                                }
+                            }()
+                            let origin: CGPoint = {
+                                guard isSplit && index == 1 else { return .zero }
+                                if tab.splitMode == .vertical {
+                                    return CGPoint(x: leftW + 8, y: 0)
+                                } else {
+                                    return CGPoint(x: 0, y: topH + 8)
+                                }
+                            }()
+
                             PaneContainerView(store: store, pane: pane, tab: tab, activeTabs: activeTabs, isBroadcastActive: isBroadcastActive)
-                                .id(pane.id)
+                                .frame(width: frameSize.width, height: frameSize.height)
+                                .offset(x: origin.x, y: origin.y)
+                                .opacity(isVisible ? 1 : 0)
+                                .allowsHitTesting(isVisible)
+                                .accessibilityHidden(!isVisible)
                         }
-                    } else if tab.splitMode == .vertical {
-                        GeometryReader { paneGeo in
-                            let totalW = max(0, paneGeo.size.width)
-                            let usableW = max(0, totalW - 8)
-                            let minPaneW = min(80, usableW / 2)
-                            let leftW = min(max(minPaneW, usableW * tab.paneSplitRatio), max(minPaneW, usableW - minPaneW))
-                            let rightW = max(0, usableW - leftW)
-                            
-                            HStack(spacing: 0) {
-                                if let firstPane = tab.panes.first {
-                                    PaneContainerView(store: store, pane: firstPane, tab: tab, activeTabs: activeTabs, isBroadcastActive: isBroadcastActive)
-                                        .frame(width: leftW)
-                                        .id(firstPane.id)
-                                }
-                                
-                                // Vertical draggable divider between panes
+
+                        if isSplit {
+                            if tab.splitMode == .vertical {
                                 ApexSplitDividerHandle(isVertical: true, background: .clear)
-                                .accessibilityElement(children: .ignore)
-                                .accessibilityLabel("左右终端分屏比例")
-                                .accessibilityValue("\(Int(tab.paneSplitRatio * 100))%")
-                                .accessibilityAdjustableAction { direction in
-                                    switch direction {
-                                    case .increment: tab.paneSplitRatio = min(0.85, tab.paneSplitRatio + 0.05)
-                                    case .decrement: tab.paneSplitRatio = max(0.15, tab.paneSplitRatio - 0.05)
-                                    @unknown default: break
-                                    }
-                                }
-                                .gesture(
-                                    DragGesture()
-                                        .onChanged { val in
-                                            let start = paneDragStartRatio ?? tab.paneSplitRatio
-                                            if paneDragStartRatio == nil { paneDragStartRatio = start }
-                                            let newRatio = start + val.translation.width / max(usableW, 100)
-                                            tab.paneSplitRatio = min(max(newRatio, 0.15), 0.85)
+                                    .frame(width: 8, height: totalH)
+                                    .offset(x: leftW, y: 0)
+                                    .accessibilityElement(children: .ignore)
+                                    .accessibilityLabel("左右终端分屏比例")
+                                    .accessibilityValue("\(Int(tab.paneSplitRatio * 100))%")
+                                    .accessibilityAdjustableAction { direction in
+                                        switch direction {
+                                        case .increment: tab.paneSplitRatio = min(0.85, tab.paneSplitRatio + 0.05)
+                                        case .decrement: tab.paneSplitRatio = max(0.15, tab.paneSplitRatio - 0.05)
+                                        @unknown default: break
                                         }
-                                        .onEnded { _ in paneDragStartRatio = nil }
-                                )
-                                
-                                if tab.panes.count > 1 {
-                                    let secondPane = tab.panes[1]
-                                    PaneContainerView(store: store, pane: secondPane, tab: tab, activeTabs: activeTabs, isBroadcastActive: isBroadcastActive)
-                                        .frame(width: rightW)
-                                        .id(secondPane.id)
-                                }
-                            }
-                        }
-                    } else { // horizontal split
-                        GeometryReader { paneGeo in
-                            let totalH = max(0, paneGeo.size.height)
-                            let usableH = max(0, totalH - 8)
-                            let minPaneH = min(60, usableH / 2)
-                            let topH = min(max(minPaneH, usableH * tab.paneSplitRatio), max(minPaneH, usableH - minPaneH))
-                            let bottomH = max(0, usableH - topH)
-                            
-                            VStack(spacing: 0) {
-                                if let firstPane = tab.panes.first {
-                                    PaneContainerView(store: store, pane: firstPane, tab: tab, activeTabs: activeTabs, isBroadcastActive: isBroadcastActive)
-                                        .frame(height: topH)
-                                        .id(firstPane.id)
-                                }
-                                
-                                // Horizontal draggable divider between panes
+                                    }
+                                    .gesture(
+                                        DragGesture()
+                                            .onChanged { val in
+                                                let start = paneDragStartRatio ?? tab.paneSplitRatio
+                                                if paneDragStartRatio == nil { paneDragStartRatio = start }
+                                                let newRatio = start + val.translation.width / max(usableW, 100)
+                                                tab.paneSplitRatio = min(max(newRatio, 0.15), 0.85)
+                                            }
+                                            .onEnded { _ in paneDragStartRatio = nil }
+                                    )
+                            } else {
                                 ApexSplitDividerHandle(isVertical: false, background: .clear)
-                                .accessibilityElement(children: .ignore)
-                                .accessibilityLabel("上下终端分屏比例")
-                                .accessibilityValue("\(Int(tab.paneSplitRatio * 100))%")
-                                .accessibilityAdjustableAction { direction in
-                                    switch direction {
-                                    case .increment: tab.paneSplitRatio = min(0.85, tab.paneSplitRatio + 0.05)
-                                    case .decrement: tab.paneSplitRatio = max(0.15, tab.paneSplitRatio - 0.05)
-                                    @unknown default: break
-                                    }
-                                }
-                                .gesture(
-                                    DragGesture()
-                                        .onChanged { val in
-                                            let start = paneDragStartRatio ?? tab.paneSplitRatio
-                                            if paneDragStartRatio == nil { paneDragStartRatio = start }
-                                            let newRatio = start + val.translation.height / max(usableH, 80)
-                                            tab.paneSplitRatio = min(max(newRatio, 0.15), 0.85)
+                                    .frame(width: totalW, height: 8)
+                                    .offset(x: 0, y: topH)
+                                    .accessibilityElement(children: .ignore)
+                                    .accessibilityLabel("上下终端分屏比例")
+                                    .accessibilityValue("\(Int(tab.paneSplitRatio * 100))%")
+                                    .accessibilityAdjustableAction { direction in
+                                        switch direction {
+                                        case .increment: tab.paneSplitRatio = min(0.85, tab.paneSplitRatio + 0.05)
+                                        case .decrement: tab.paneSplitRatio = max(0.15, tab.paneSplitRatio - 0.05)
+                                        @unknown default: break
                                         }
-                                        .onEnded { _ in paneDragStartRatio = nil }
-                                )
-                                
-                                if tab.panes.count > 1 {
-                                    let secondPane = tab.panes[1]
-                                    PaneContainerView(store: store, pane: secondPane, tab: tab, activeTabs: activeTabs, isBroadcastActive: isBroadcastActive)
-                                        .frame(height: bottomH)
-                                        .id(secondPane.id)
-                                }
+                                    }
+                                    .gesture(
+                                        DragGesture()
+                                            .onChanged { val in
+                                                let start = paneDragStartRatio ?? tab.paneSplitRatio
+                                                if paneDragStartRatio == nil { paneDragStartRatio = start }
+                                                let newRatio = start + val.translation.height / max(usableH, 80)
+                                                tab.paneSplitRatio = min(max(newRatio, 0.15), 0.85)
+                                            }
+                                            .onEnded { _ in paneDragStartRatio = nil }
+                                    )
                             }
                         }
                     }
@@ -2047,12 +2411,13 @@ private struct PaneContainerView: View {
     @ObservedObject var tab: TerminalTabItem
     let activeTabs: [TerminalTabItem]
     let isBroadcastActive: Bool
-    @State private var dropTransferNotice: String? = nil
-    @State private var dropTransferIsError: Bool = false
-    @State private var isConnectionBannerDismissed: Bool = false
     
     var isFocused: Bool {
         tab.activePaneId == pane.id
+    }
+
+    private var isBroadcastTarget: Bool {
+        isBroadcastActive && WorkspaceView.broadcastTargetPane(for: tab)?.id == pane.id
     }
 
     private var hasMaximizedPill: Bool {
@@ -2064,39 +2429,46 @@ private struct PaneContainerView: View {
         borderColor: Color,
         @ViewBuilder content: () -> Content
     ) -> some View {
-        VStack {
-            content()
-                .padding(.horizontal, 14)
-                .padding(.vertical, 8)
-                .apexGlassCard(
-                    cornerRadius: 12,
-                    material: .regularMaterial,
-                    borderColor: borderColor,
-                    shadowRadius: 8
-                )
-                .padding(.horizontal, ApexStyle.s4)
-                .padding(.top, hasMaximizedPill ? 48 : 12)
-            Spacer()
-        }
-        .frame(maxWidth: .infinity)
-        .transition(.opacity)
+        content()
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .apexGlassCard(
+                cornerRadius: 12,
+                material: .regularMaterial,
+                borderColor: borderColor,
+                shadowRadius: 8
+            )
+            .transition(.opacity)
     }
     
     var body: some View {
         VStack(spacing: 0) {
             if tab.panes.count > 1 {
                 HStack(spacing: 6) {
-                    Circle()
-                        .fill(isFocused ? ApexStyle.accent : ApexStyle.secondary.opacity(0.5))
-                        .frame(width: 6, height: 6)
-                        .shadow(color: isFocused ? ApexStyle.accent.opacity(0.6) : .clear, radius: 3)
-                    Text(pane.title)
-                        .font(.system(size: 11, weight: isFocused ? .semibold : .regular, design: .monospaced))
-                        .foregroundColor(isFocused ? ApexStyle.primary : ApexStyle.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .help(pane.title)
-                    Spacer()
+                    Button {
+                        tab.activePaneId = pane.id
+                    } label: {
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(isFocused ? ApexStyle.accent : ApexStyle.secondary.opacity(0.5))
+                                .frame(width: 6, height: 6)
+                                .shadow(color: isFocused ? ApexStyle.accent.opacity(0.6) : .clear, radius: 3)
+                            Text(pane.title)
+                                .font(.system(size: 11, weight: isFocused ? .semibold : .regular, design: .monospaced))
+                                .foregroundColor(isFocused ? ApexStyle.primary : ApexStyle.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Spacer(minLength: 4)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(pane.title)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("分屏窗格 \(pane.title)")
+                    .accessibilityValue(isFocused ? "当前焦点" : "非活动")
+                    .accessibilityAddTraits(isFocused ? .isSelected : [])
+
                     ApexIconButton(
                         icon: "xmark",
                         label: "关闭此分屏",
@@ -2109,10 +2481,35 @@ private struct PaneContainerView: View {
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
                 .background(isFocused ? ApexStyle.accent.opacity(0.12) : ApexStyle.subtleSurface)
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    tab.activePaneId = pane.id
+            }
+
+            if isBroadcastTarget {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(ApexStyle.error)
+                        .accessibilityHidden(true)
+                    Text("广播模式已激活 — 输入与快捷命令将同步发送至多个终端")
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundColor(ApexStyle.error)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Spacer(minLength: 4)
+                    Text("危险操作保护")
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundColor(ApexStyle.warning)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(ApexStyle.warning.opacity(0.16), in: Capsule())
                 }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(ApexStyle.error.opacity(0.12))
+                .overlay(alignment: .bottom) {
+                    Rectangle().fill(ApexStyle.warning.opacity(0.45)).frame(height: 0.75)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("警告：当前窗格处于多终端广播模式，所有输入将同步发送")
             }
             
             ZStack(alignment: .topTrailing) {
@@ -2142,228 +2539,239 @@ private struct PaneContainerView: View {
                         let targetDir = tab.currentRemotePath
                         let fileName = localURL.lastPathComponent
                         let dest = targetDir.hasSuffix("/") ? "\(targetDir)\(fileName)" : "\(targetDir)/\(fileName)"
-                        dropTransferIsError = false
-                        dropTransferNotice = "正在上传 \(fileName) 至 \(targetDir)…"
+                        pane.dropTransferIsError = false
+                        pane.dropTransferNotice = "正在上传 \(fileName) 至 \(targetDir)…"
                         TransferManager.shared.enqueueUpload(session: pane.sshClient, localURL: localURL, remotePath: dest, onResult: { result in
                             Task { @MainActor in
                                 switch result {
                                 case .success:
-                                    dropTransferIsError = false
-                                    dropTransferNotice = "已上传 \(fileName) 至 \(targetDir)"
+                                    pane.dropTransferIsError = false
+                                    pane.dropTransferNotice = "已上传 \(fileName) 至 \(targetDir)"
                                     NotificationCenter.default.post(
                                         name: NSNotification.Name("SFTPDirectoryRefreshNeeded"),
                                         object: dest,
                                         userInfo: ["tabId": tab.id]
                                     )
                                     DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) {
-                                        if dropTransferNotice == "已上传 \(fileName) 至 \(targetDir)" {
-                                            dropTransferNotice = nil
+                                        if pane.dropTransferNotice == "已上传 \(fileName) 至 \(targetDir)" {
+                                            pane.dropTransferNotice = nil
                                         }
                                     }
                                 case .failure(let error):
-                                    dropTransferIsError = true
+                                    pane.dropTransferIsError = true
                                     if error is CancellationError {
-                                        dropTransferNotice = "已取消上传: \(fileName)"
+                                        pane.dropTransferNotice = "已取消上传: \(fileName)"
                                     } else {
-                                        dropTransferNotice = "上传失败: \(error.localizedDescription)"
+                                        pane.dropTransferNotice = "上传失败: \(error.localizedDescription)"
                                     }
                                 }
                             }
                         })
                     }
                 ) { inputData in
-                    if isBroadcastActive {
-                        for t in activeTabs {
-                            for p in t.panes where p.connectionState == .connected {
-                                p.sshClient.sendInputSync(inputData)
-                            }
-                        }
-                    } else {
-                        pane.sshClient.sendInputSync(inputData)
-                    }
-                    if tab.isDirectoryLinkageEnabled && (inputData.contains(13) || inputData.contains(10)) {
-                        tab.scheduleDirectoryLinkageRefresh()
-                    }
+                    WorkspaceView.dispatchInputPayload(
+                        inputData,
+                        activePane: pane,
+                        activeTab: tab,
+                        allTabs: activeTabs,
+                        isBroadcastActive: isBroadcastActive
+                    )
                 }
                 
-                // Connecting / Reconnect floating prompt
-                if case .connecting(let step) = pane.connectionState, !tab.session.isLocal {
-                    terminalTopBanner(borderColor: ApexStyle.warning.opacity(0.4)) {
-                        HStack(spacing: 8) {
-                            ProgressView()
-                                .controlSize(.small)
-                            Text(step.isEmpty || step == "正在连接" ? "正在连接 \(tab.session.username)@\(tab.session.host):\(tab.session.port)…" : step)
-                                .font(.system(size: 12, weight: .medium))
-                                .monospacedDigit()
-                                .foregroundColor(ApexStyle.primary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                            Button("取消") {
-                                pane.cancelCurrentConnection()
-                            }
-                            .buttonStyle(.borderless)
-                            .font(.system(size: 11))
-                            .foregroundColor(ApexStyle.secondary)
-                            .fixedSize()
-                        }
-                    }
-                } else if case .disconnected = pane.connectionState, !isConnectionBannerDismissed {
-                    terminalTopBanner(borderColor: (pane.isAutoReconnecting ? ApexStyle.warning : ApexStyle.secondary).opacity(0.35)) {
-                        HStack(spacing: 8) {
-                            Circle().fill(pane.isAutoReconnecting ? ApexStyle.warning : ApexStyle.secondary).frame(width: 8, height: 8)
-                                .shadow(color: (pane.isAutoReconnecting ? ApexStyle.warning : ApexStyle.secondary).opacity(0.5), radius: 3)
-                            Text(pane.isAutoReconnecting ? "连接中断，正在自动重连 (\(pane.autoReconnectAttempt)/5)..." : "会话已断开")
-                                .font(.system(size: 12, weight: .medium))
-                                .monospacedDigit()
-                                .foregroundColor(ApexStyle.primary)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                            Button(pane.isAutoReconnecting ? "立即重连" : "重新连接 (⌘R)") {
-                                tab.reconnect(pane: pane)
-                            }
-                            .apexProminentButton()
-                            .controlSize(.small)
-                            .fixedSize()
-                            if pane.isAutoReconnecting {
-                                Button("停止") {
-                                    pane.cancelAutoReconnect()
+                // Stacked top banners so security/transfer alerts never get hidden behind terminfoWarning
+                VStack(spacing: 8) {
+                    if case .connecting(let step) = pane.connectionState, !tab.session.isLocal {
+                        terminalTopBanner(borderColor: ApexStyle.warning.opacity(0.4)) {
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text(step.isEmpty || step == "正在连接" ? "正在连接 \(tab.session.username)@\(tab.session.host):\(tab.session.port)…" : step)
+                                    .font(.system(size: 12, weight: .medium))
+                                    .monospacedDigit()
+                                    .foregroundColor(ApexStyle.primary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                Button("取消") {
+                                    pane.cancelCurrentConnection()
                                 }
                                 .buttonStyle(.borderless)
                                 .font(.system(size: 11))
                                 .foregroundColor(ApexStyle.secondary)
                                 .fixedSize()
                             }
-                            ApexIconButton(icon: "xmark", label: "关闭提示", size: 20, iconSize: 9) {
-                                isConnectionBannerDismissed = true
-                            }
                         }
-                    }
-                } else if case .failed(let err) = pane.connectionState, !isConnectionBannerDismissed {
-                    terminalTopBanner(borderColor: ApexStyle.error.opacity(0.4)) {
-                        HStack(spacing: 8) {
-                            Circle().fill(ApexStyle.error).frame(width: 8, height: 8)
-                                .shadow(color: ApexStyle.error.opacity(0.6), radius: 4)
-                            Text("连接失败：\(err)")
-                                .font(.system(size: 12, weight: .medium))
-                                .monospacedDigit()
-                                .foregroundColor(ApexStyle.error)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                                .help(err)
-                            Button("重新连接 (⌘R)") {
-                                tab.reconnect(pane: pane)
-                            }
-                            .apexProminentButton()
-                            .controlSize(.small)
-                            .fixedSize()
-                            ApexIconButton(icon: "xmark", label: "关闭提示", size: 20, iconSize: 9) {
-                                isConnectionBannerDismissed = true
-                            }
-                        }
-                    }
-                } else if let missing = tab.terminfoWarning, pane.id == tab.panes.first?.id {
-                    let terminfoMessage = "远端缺少 \(missing.rawValue) 终端描述，长命令无法自动换行"
-                    terminalTopBanner(borderColor: ApexStyle.warning.opacity(0.4)) {
-                        HStack(spacing: 8) {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .foregroundColor(ApexStyle.warning)
-                                .accessibilityHidden(true)
-                            Text(terminfoMessage)
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundColor(ApexStyle.primary)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                                .help(terminfoMessage)
-                            Button("切换为 \(missing.fallback.rawValue) 并重连") {
-                                tab.applyTerminfoFallback(store: store)
-                            }
-                            .apexProminentButton()
-                            .controlSize(.small)
-                            .fixedSize()
-                            .accessibilityIdentifier("terminal.terminfoFallbackButton")
-                            ApexIconButton(icon: "xmark", label: "关闭提示", size: 20, iconSize: 9) {
-                                tab.terminfoWarning = nil
-                            }
-                        }
-                    }
-                } else if let osc52 = pane.pendingOSC52Request {
-                    let preview = osc52.text
-                        .replacingOccurrences(of: "\r", with: " ")
-                        .replacingOccurrences(of: "\n", with: " ")
-                    let truncated = preview.count > 80 ? String(preview.prefix(80)) + "…" : preview
-                    let osc52Header = HStack(spacing: 8) {
-                        Image(systemName: "doc.on.clipboard")
-                            .foregroundColor(ApexStyle.accent)
-                            .accessibilityHidden(true)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("\(pane.session.name) 请求写入剪贴板 (\(osc52.byteCount) B)")
-                                .font(.system(size: 12, weight: .medium))
-                                .monospacedDigit()
-                                .foregroundColor(ApexStyle.primary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                            Text(truncated)
-                                .font(.system(size: 11, design: .monospaced))
-                                .foregroundColor(ApexStyle.secondary)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                                .help(truncated)
-                        }
-                    }
-                    let osc52Buttons = HStack(spacing: 8) {
-                        Button("允许一次") {
-                            pane.allowPendingOSC52Once()
-                        }
-                        .apexProminentButton()
-                        .controlSize(.small)
-                        .fixedSize()
-                        Button("本次会话允许") {
-                            pane.allowPendingOSC52ForSession()
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        .fixedSize()
-                        Button("拒绝") {
-                            pane.denyPendingOSC52()
-                        }
-                        .buttonStyle(.borderless)
-                        .font(.system(size: 11))
-                        .foregroundColor(ApexStyle.secondary)
-                        .fixedSize()
-                    }
-                    terminalTopBanner(borderColor: ApexStyle.accent.opacity(0.4)) {
-                        ViewThatFits(in: .horizontal) {
+                    } else if case .disconnected = pane.connectionState, !pane.isConnectionBannerDismissed {
+                        terminalTopBanner(borderColor: (pane.isAutoReconnecting ? ApexStyle.warning : ApexStyle.secondary).opacity(0.35)) {
                             HStack(spacing: 8) {
-                                osc52Header
-                                Spacer(minLength: 8)
-                                osc52Buttons
+                                Circle().fill(pane.isAutoReconnecting ? ApexStyle.warning : ApexStyle.secondary).frame(width: 8, height: 8)
+                                    .shadow(color: (pane.isAutoReconnecting ? ApexStyle.warning : ApexStyle.secondary).opacity(0.5), radius: 3)
+                                Text(pane.isAutoReconnecting ? "连接中断，正在自动重连 (\(pane.autoReconnectAttempt)/5)..." : "会话已断开")
+                                    .font(.system(size: 12, weight: .medium))
+                                    .monospacedDigit()
+                                    .foregroundColor(ApexStyle.primary)
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                                ApexActionButton(
+                                    pane.isAutoReconnecting ? "立即重连" : "重新连接 (⌘R)",
+                                    tint: ApexStyle.accent,
+                                    size: .small,
+                                    isProminent: true
+                                ) {
+                                    tab.reconnect(pane: pane)
+                                }
+                                .fixedSize()
+                                if pane.isAutoReconnecting {
+                                    Button("停止") {
+                                        pane.cancelAutoReconnect()
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .font(.system(size: 11))
+                                    .foregroundColor(ApexStyle.secondary)
+                                    .fixedSize()
+                                }
+                                ApexIconButton(icon: "xmark", label: "关闭提示", size: 20, iconSize: 9) {
+                                    pane.isConnectionBannerDismissed = true
+                                }
                             }
-                            VStack(alignment: .leading, spacing: 8) {
-                                osc52Header
-                                HStack {
-                                    Spacer(minLength: 0)
-                                    osc52Buttons
+                        }
+                    } else if case .failed(let err) = pane.connectionState, !pane.isConnectionBannerDismissed {
+                        terminalTopBanner(borderColor: ApexStyle.error.opacity(0.4)) {
+                            HStack(spacing: 8) {
+                                Circle().fill(ApexStyle.error).frame(width: 8, height: 8)
+                                    .shadow(color: ApexStyle.error.opacity(0.6), radius: 4)
+                                Text("连接失败：\(err)")
+                                    .font(.system(size: 12, weight: .medium))
+                                    .monospacedDigit()
+                                    .foregroundColor(ApexStyle.error)
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                                    .help(err)
+                                ApexActionButton(
+                                    "重新连接 (⌘R)",
+                                    tint: ApexStyle.accent,
+                                    size: .small,
+                                    isProminent: true
+                                ) {
+                                    tab.reconnect(pane: pane)
+                                }
+                                .fixedSize()
+                                ApexIconButton(icon: "xmark", label: "关闭提示", size: 20, iconSize: 9) {
+                                    pane.isConnectionBannerDismissed = true
                                 }
                             }
                         }
                     }
-                } else if let notice = dropTransferNotice {
-                    terminalTopBanner(borderColor: (dropTransferIsError ? ApexStyle.error : ApexStyle.accent).opacity(0.4)) {
-                        HStack(spacing: 8) {
-                            Image(systemName: dropTransferIsError ? "exclamationmark.triangle.fill" : (notice.hasPrefix("正在上传") ? "arrow.up.circle.fill" : "checkmark.circle.fill"))
-                                .foregroundColor(dropTransferIsError ? ApexStyle.error : (notice.hasPrefix("正在上传") ? ApexStyle.accent : ApexStyle.success))
-                            Text(notice)
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundColor(dropTransferIsError ? ApexStyle.error : ApexStyle.primary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                                .help(notice)
-                            ApexIconButton(icon: "xmark", label: "关闭提示", size: 20, iconSize: 9) {
-                                dropTransferNotice = nil
+
+                    if let missing = tab.terminfoWarning, pane.id == tab.panes.first?.id {
+                        let terminfoMessage = "远端缺少 \(missing.rawValue) 终端描述，长命令无法自动换行"
+                        terminalTopBanner(borderColor: ApexStyle.warning.opacity(0.4)) {
+                            HStack(spacing: 8) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundColor(ApexStyle.warning)
+                                    .accessibilityHidden(true)
+                                Text(terminfoMessage)
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundColor(ApexStyle.primary)
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                                    .help(terminfoMessage)
+                                ApexActionButton(
+                                    "切换为 \(missing.fallback.rawValue) 并重连",
+                                    tint: ApexStyle.accent,
+                                    size: .small,
+                                    isProminent: true
+                                ) {
+                                    tab.applyTerminfoFallback(store: store)
+                                }
+                                .fixedSize()
+                                .accessibilityIdentifier("terminal.terminfoFallbackButton")
+                                ApexIconButton(icon: "xmark", label: "关闭提示", size: 20, iconSize: 9) {
+                                    tab.terminfoWarning = nil
+                                }
+                            }
+                        }
+                    }
+
+                    if let osc52 = pane.pendingOSC52Request {
+                        let preview = osc52.text
+                            .replacingOccurrences(of: "\r", with: " ")
+                            .replacingOccurrences(of: "\n", with: " ")
+                        let truncated = preview.count > 80 ? String(preview.prefix(80)) + "…" : preview
+                        let osc52Header = HStack(spacing: 8) {
+                            Image(systemName: "doc.on.clipboard")
+                                .foregroundColor(ApexStyle.accent)
+                                .accessibilityHidden(true)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("\(pane.session.name) 请求写入剪贴板 (\(osc52.byteCount) B)")
+                                    .font(.system(size: 12, weight: .medium))
+                                    .monospacedDigit()
+                                    .foregroundColor(ApexStyle.primary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                Text(truncated)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundColor(ApexStyle.secondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                                    .help(truncated)
+                            }
+                        }
+                        let osc52Buttons = HStack(spacing: 8) {
+                            ApexActionButton("允许一次", tint: ApexStyle.accent, size: .small, isProminent: true) {
+                                pane.allowPendingOSC52Once()
+                            }
+                            .fixedSize()
+                            ApexActionButton("本次会话允许", tint: ApexStyle.secondary, size: .small) {
+                                pane.allowPendingOSC52ForSession()
+                            }
+                            .fixedSize()
+                            Button("拒绝") {
+                                pane.denyPendingOSC52()
+                            }
+                            .buttonStyle(.borderless)
+                            .font(.system(size: 11))
+                            .foregroundColor(ApexStyle.secondary)
+                            .fixedSize()
+                        }
+                        terminalTopBanner(borderColor: ApexStyle.accent.opacity(0.4)) {
+                            ViewThatFits(in: .horizontal) {
+                                HStack(spacing: 8) {
+                                    osc52Header
+                                    Spacer(minLength: 8)
+                                    osc52Buttons
+                                }
+                                VStack(alignment: .leading, spacing: 8) {
+                                    osc52Header
+                                    HStack {
+                                        Spacer(minLength: 0)
+                                        osc52Buttons
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if let notice = pane.dropTransferNotice {
+                        terminalTopBanner(borderColor: (pane.dropTransferIsError ? ApexStyle.error : ApexStyle.accent).opacity(0.4)) {
+                            HStack(spacing: 8) {
+                                Image(systemName: pane.dropTransferIsError ? "exclamationmark.triangle.fill" : (notice.hasPrefix("正在上传") ? "arrow.up.circle.fill" : "checkmark.circle.fill"))
+                                    .foregroundColor(pane.dropTransferIsError ? ApexStyle.error : (notice.hasPrefix("正在上传") ? ApexStyle.accent : ApexStyle.success))
+                                Text(notice)
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundColor(pane.dropTransferIsError ? ApexStyle.error : ApexStyle.primary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                    .help(notice)
+                                ApexIconButton(icon: "xmark", label: "关闭提示", size: 20, iconSize: 9) {
+                                    pane.dropTransferNotice = nil
+                                }
                             }
                         }
                     }
                 }
+                .padding(.horizontal, ApexStyle.s4)
+                .padding(.top, hasMaximizedPill ? 48 : 12)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
                 if hasMaximizedPill {
                     Button {
@@ -2377,7 +2785,7 @@ private struct PaneContainerView: View {
                                 .font(.system(size: 11, weight: .medium))
                                 .foregroundColor(ApexStyle.primary)
                                 .lineLimit(1)
-                            Text("⌘⇧Enter")
+                            Text("⌘⇧↵")
                                 .apexKeycap()
                         }
                         .padding(.horizontal, 10)
@@ -2386,22 +2794,20 @@ private struct PaneContainerView: View {
                     .buttonStyle(.plain)
                     .apexGlassCard(cornerRadius: 16, material: .regularMaterial, borderColor: ApexStyle.accent.opacity(0.4), shadowRadius: 6)
                     .padding(10)
-                    .help("还原分屏布局 (⌘⇧Enter)")
+                    .help("还原分屏布局 (⌘⇧↵)")
+                    .accessibilityLabel("还原分屏布局")
                 }
-            }
-        }
-        .onChange(of: pane.connectionState) { _, _ in
-            isConnectionBannerDismissed = false
-        }
-        .onChange(of: pane.isAutoReconnecting) { _, isReconnecting in
-            if isReconnecting {
-                isConnectionBannerDismissed = false
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: 6))
         .overlay(
             RoundedRectangle(cornerRadius: 6)
-                .stroke(isFocused && tab.panes.count > 1 ? ApexStyle.accent.opacity(0.85) : Color.clear, lineWidth: 1.5)
+                .strokeBorder(
+                    isBroadcastTarget
+                        ? AnyShapeStyle(LinearGradient(colors: [ApexStyle.error, ApexStyle.warning], startPoint: .leading, endPoint: .trailing))
+                        : AnyShapeStyle(isFocused && tab.panes.count > 1 ? ApexStyle.accent.opacity(0.85) : Color.clear),
+                    lineWidth: isBroadcastTarget ? 2.0 : 1.5
+                )
         )
     }
 }
@@ -2865,25 +3271,40 @@ struct TabButton: View {
         }
     }
     
+    private var connectionStatusAccessibilityLabel: String {
+        switch tab.connectionState {
+        case .connected: return "已连接"
+        case .connecting: return "正在连接"
+        case .disconnected: return "已断开"
+        case .failed: return "连接失败"
+        }
+    }
+
     var body: some View {
         HStack(spacing: 7) {
-            if case .connecting = tab.connectionState {
-                ProgressView()
-                    .controlSize(.mini)
-                    .scaleEffect(0.65)
-                    .frame(width: 8, height: 8)
-            } else {
-                Circle()
-                    .fill(dotColor)
-                    .frame(width: 7, height: 7)
-                    .shadow(color: dotColor.opacity(isSelected ? 0.6 : 0.2), radius: isSelected ? 3 : 1)
+            HStack(spacing: 7) {
+                if case .connecting = tab.connectionState {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .scaleEffect(0.65)
+                        .frame(width: 8, height: 8)
+                } else {
+                    Circle()
+                        .fill(dotColor)
+                        .frame(width: 7, height: 7)
+                        .shadow(color: dotColor.opacity(isSelected ? 0.6 : 0.2), radius: isSelected ? 3 : 1)
+                }
+                
+                Text(tab.displayTitle)
+                    .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
+                    .foregroundColor(isSelected ? ApexStyle.primary : (isHovered ? ApexStyle.primary.opacity(0.85) : ApexStyle.secondary))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
             }
-            
-            Text(tab.displayTitle)
-                .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
-                .foregroundColor(isSelected ? ApexStyle.primary : (isHovered ? ApexStyle.primary.opacity(0.85) : ApexStyle.secondary))
-                .lineLimit(1)
-                .truncationMode(.tail)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("标签页 \(tab.displayTitle)，\(connectionStatusAccessibilityLabel)")
+            .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : [.isButton])
+            .accessibilityAction { onSelect() }
             
             Button(action: onClose) {
                 ZStack {
@@ -2898,14 +3319,17 @@ struct TabButton: View {
             }
             .buttonStyle(.plain)
             .opacity(isSelected || isHovered ? 1.0 : 0.0)
+            .allowsHitTesting(isSelected || isHovered)
+            .accessibilityHidden(!(isSelected || isHovered))
             .animation(ApexStyle.hoverTransition, value: isHovered)
             .animation(ApexStyle.hoverTransition, value: isSelected)
             .onHover { closeHovering in
                 isCloseHovered = closeHovering
             }
             .help("关闭标签页 (⌘W)")
-            .accessibilityLabel("关闭标签页")
+            .accessibilityLabel("关闭标签页 \(tab.displayTitle)")
         }
+        .accessibilityElement(children: .contain)
         .padding(.horizontal, 10)
         .frame(height: 26)
         .frame(maxWidth: 200)

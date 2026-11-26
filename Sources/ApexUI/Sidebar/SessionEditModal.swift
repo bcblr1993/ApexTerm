@@ -803,11 +803,33 @@ public struct SessionEditModal: View {
                         .accessibilityLabel("登录后自动执行命令")
                         .accessibilityIdentifier("session.startupCommand")
                         .font(.system(.body, design: .monospaced))
-                    TextField("自定义环境变量 (每行 KEY=VALUE，如 APP_ENV=production)", text: $environmentVariablesText, axis: .vertical)
-                        .lineLimit(2...4)
-                        .accessibilityLabel("自定义环境变量")
-                        .accessibilityIdentifier("session.environmentVariables")
-                        .font(.system(.body, design: .monospaced))
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("自定义环境变量 (每行 KEY=VALUE，如 APP_ENV=production)")
+                            .font(.caption)
+                            .foregroundStyle(ApexStyle.secondary)
+                        ZStack(alignment: .topLeading) {
+                            TextEditor(text: $environmentVariablesText)
+                                .font(.system(.body, design: .monospaced))
+                                .scrollContentBackground(.hidden)
+                                .padding(4)
+                                .frame(minHeight: 56, maxHeight: 96)
+                                .accessibilityLabel("自定义环境变量")
+                                .accessibilityIdentifier("session.environmentVariables")
+                            if environmentVariablesText.isEmpty {
+                                Text("APP_ENV=production")
+                                    .font(.system(.body, design: .monospaced))
+                                    .foregroundStyle(ApexStyle.secondary.opacity(0.6))
+                                    .padding(.horizontal, 9)
+                                    .padding(.vertical, 6)
+                                    .allowsHitTesting(false)
+                            }
+                        }
+                        .background(ApexStyle.subtleSurface, in: RoundedRectangle(cornerRadius: ApexStyle.controlRadius))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
+                                .stroke(ApexStyle.border, lineWidth: 1)
+                        )
+                    }
                     Text("敏感变量名（含 SECRET / TOKEN / PASSWORD 等）仅在本地生效，iCloud 云同步时将自动脱敏剔除。")
                         .font(.caption2)
                         .foregroundStyle(ApexStyle.secondary)
@@ -890,8 +912,18 @@ public struct SessionEditModal: View {
             .padding(ApexStyle.s4)
             .background(ApexStyle.surface)
         }
-        .frame(width: 580, height: 600)
+        .frame(minWidth: 460, idealWidth: 580, maxWidth: 680, minHeight: 340, idealHeight: 580, maxHeight: 720)
         .background(ApexStyle.surface)
+        .onExitCommand {
+            dismiss()
+        }
+        .background(
+            Button("") { dismiss() }
+                .keyboardShortcut("w", modifiers: .command)
+                .opacity(0)
+                .frame(width: 0, height: 0)
+                .accessibilityHidden(true)
+        )
         .onAppear {
             // Populating the form flips the save button from disabled to enabled during the
             // sheet's first layout; suppress implicit animations so nothing visibly jumps.

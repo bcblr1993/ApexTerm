@@ -1,108 +1,36 @@
 import SwiftUI
 import ApexCore
 
-/// Keyboard Shortcuts Cheat Sheet modal
+/// Keyboard Shortcuts Cheat Sheet modal driven by `ApexShortcutRegistry`
 public struct ShortcutsSheetView: View {
     @ObservedObject private var themeSettings = AppSettings.shared
     @Environment(\.dismiss) private var dismiss
     
-    public init() {}
-    
     private struct ShortcutItem: Identifiable {
-        let id = UUID()
+        let id: String
         let keys: [String]
         let description: String
     }
     
     private struct ShortcutGroup: Identifiable {
-        let id = UUID()
+        let id: String
         let title: String
         let icon: String
         let items: [ShortcutItem]
     }
     
-    private let groups: [ShortcutGroup] = [
-        ShortcutGroup(
-            title: "全局与调色板导航",
-            icon: "sparkle.magnifyingglass",
-            items: [
-                ShortcutItem(keys: ["⌘", "P"], description: "全局快速搜索与命令面板 (Command Palette)"),
-                ShortcutItem(keys: ["⌘", "⌥", "K"], description: "远程进程与服务可视化监视控制中心 (Process Inspector)"),
-                ShortcutItem(keys: ["⌘", "⌥", "C"], description: "精准提取并复制上一条命令输出 (Copy Last Command Output)"),
-                ShortcutItem(keys: ["⌘", "⌥", "T"], description: "SSH 端口转发与隧道管理 (Port Forwarding)"),
-                ShortcutItem(keys: ["⌘", "⇧", "B"], description: "显示 / 隐藏底部快捷命令栏 (Quick Command Bar)")
-            ]
-        ),
-        ShortcutGroup(
-            title: "会话与标签管理",
-            icon: "macwindow.on.rectangle",
-            items: [
-                ShortcutItem(keys: ["⌘", "T"], description: "复制当前会话 / 新建标签页"),
-                ShortcutItem(keys: ["⌘", "⇧", "T"], description: "新建本地终端 (Local Terminal)"),
-                ShortcutItem(keys: ["⌘", "⇧", "]"], description: "切换至下一个标签页 (Next Tab)"),
-                ShortcutItem(keys: ["⌘", "⇧", "["], description: "切换至上一个标签页 (Previous Tab)"),
-                ShortcutItem(keys: ["⌘", "W"], description: "关闭当前终端标签或当前活动分屏"),
-                ShortcutItem(keys: ["⌘", "1...9"], description: "快速切换至指定编号的标签页"),
-                ShortcutItem(keys: ["标签右键"], description: "重命名会话、复制会话、分屏、关闭其他/右侧标签")
-            ]
-        ),
-        ShortcutGroup(
-            title: "终端多分屏 (Split Panes)",
-            icon: "rectangle.split.2x1",
-            items: [
-                ShortcutItem(keys: ["⌘", "D"], description: "垂直分屏 (左右并排)"),
-                ShortcutItem(keys: ["⌘", "⇧", "D"], description: "水平分屏 (上下并列)"),
-                ShortcutItem(keys: ["⌘", "⇧", "↵"], description: "全屏放大 / 恢复当前分屏 (Zoom Split Pane)"),
-                ShortcutItem(keys: ["⌘", "⌥", "← / → / ↑ / ↓"], description: "在分屏窗格间循环切换焦点")
-            ]
-        ),
-        ShortcutGroup(
-            title: "终端流与按键操作",
-            icon: "terminal",
-            items: [
-                ShortcutItem(keys: ["⌘", "R"], description: "重新连接当前会话"),
-                ShortcutItem(keys: ["⌘", "F"], description: "在终端与文件列表中快速搜索"),
-                ShortcutItem(keys: ["⌘", "↑ / ↓"], description: "跳转上一条 / 下一条命令提示符 (OSC 133)"),
-                ShortcutItem(keys: ["⌘", "K"], description: "彻底清屏并重置回滚历史"),
-                ShortcutItem(keys: ["⌃", "C"], description: "发送中断信号 (SIGINT)"),
-                ShortcutItem(keys: ["⌃", "D"], description: "发送 EOF / 登出当前 Shell"),
-                ShortcutItem(keys: ["⌃", "Z"], description: "挂起后台任务 (SIGTSTP)"),
-                ShortcutItem(keys: ["⌃", "L"], description: "清空终端屏幕"),
-                ShortcutItem(keys: ["⌘", "C"], description: "复制选中文本"),
-                ShortcutItem(keys: ["⌘", "V"], description: "粘贴剪切板内容"),
-                ShortcutItem(keys: ["⌘", "+ / − / 0"], description: "放大、缩小或重置终端字号")
-            ]
-        ),
-        ShortcutGroup(
-            title: "SFTP 文件传输与书签",
-            icon: "folder",
-            items: [
-                ShortcutItem(keys: ["⌘", "L"], description: "快速聚焦远程路径输入框"),
-                ShortcutItem(keys: ["⌘", "⇧", "F"], description: "在远端目录按文件名或内容搜索 (SFTP)"),
-                ShortcutItem(keys: ["⌘", "⇧", "."], description: "切换显示 / 隐藏点开头的隐藏文件 (.dotfile)"),
-                ShortcutItem(keys: ["书签图标"], description: "快速跳转 ~、/var/log、/etc、/tmp 或收藏当前目录"),
-                ShortcutItem(keys: ["文件拖拽"], description: "直接将本地文件拖拽至终端或 SFTP 面板上传")
-            ]
-        ),
-        ShortcutGroup(
-            title: "鼠标高效交互 (PuTTY / Xshell 风格)",
-            icon: "cursorarrow.rays",
-            items: [
-                ShortcutItem(keys: ["鼠标划选"], description: "自动复制到系统剪切板"),
-                ShortcutItem(keys: ["鼠标右键"], description: "直接粘贴系统剪切板内容"),
-                ShortcutItem(keys: ["⇧ + 右键"], description: "弹出完整右键上下文菜单")
-            ]
-        ),
-        ShortcutGroup(
-            title: "应用与偏好",
-            icon: "gearshape",
-            items: [
-                ShortcutItem(keys: ["⌘", ","], description: "打开偏好设置 (外观/字体/SFTP/备份)"),
-                ShortcutItem(keys: ["⌘", "/"], description: "打开此快捷键速查表"),
-                ShortcutItem(keys: ["⌘", "Q"], description: "退出 AetherTerm")
-            ]
-        )
-    ]
+    private let groups: [ShortcutGroup]
+    
+    public init() {
+        self.groups = ApexShortcutCategory.allCases.compactMap { category in
+            let defs = ApexShortcutRegistry.entries(in: category)
+            guard !defs.isEmpty else { return nil }
+            let items = defs.map { def in
+                ShortcutItem(id: def.id, keys: def.keys, description: def.description)
+            }
+            return ShortcutGroup(id: category.rawValue, title: category.title, icon: category.iconName, items: items)
+        }
+    }
     
     public var body: some View {
         VStack(spacing: 0) {
@@ -111,6 +39,7 @@ public struct ShortcutsSheetView: View {
                 Image(systemName: "command")
                     .font(.system(size: 20, weight: .bold))
                     .foregroundColor(ApexStyle.accent)
+                    .accessibilityHidden(true)
                 
                 Text(L10n.menuShortcuts)
                     .font(.title2.bold())
@@ -140,9 +69,11 @@ public struct ShortcutsSheetView: View {
                             HStack(spacing: 6) {
                                 Image(systemName: group.icon)
                                     .foregroundColor(ApexStyle.accent)
+                                    .accessibilityHidden(true)
                                 Text(group.title)
                                     .font(.headline)
                             }
+                            .accessibilityAddTraits(.isHeader)
                             
                             VStack(spacing: 6) {
                                 ForEach(group.items) { item in
@@ -166,6 +97,8 @@ public struct ShortcutsSheetView: View {
                                     .padding(.horizontal, ApexStyle.s2)
                                     .background(ApexStyle.primary.opacity(0.02))
                                     .cornerRadius(6)
+                                    .accessibilityElement(children: .combine)
+                                    .accessibilityLabel("\(item.description)，快捷键 \(item.keys.joined(separator: " "))")
                                 }
                             }
                         }
@@ -173,7 +106,7 @@ public struct ShortcutsSheetView: View {
                 }
                 .padding(ApexStyle.s4)
             }
-            .frame(width: 580, height: 480)
+            .frame(minWidth: 420, idealWidth: 580, maxWidth: 680, minHeight: 240, idealHeight: 460, maxHeight: 620)
             
             Divider()
             

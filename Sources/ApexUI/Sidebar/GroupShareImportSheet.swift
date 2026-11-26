@@ -98,8 +98,18 @@ public struct GroupShareImportSheet: View {
             Divider()
             footerBar
         }
-        .frame(width: 600, height: 600)
+        .frame(minWidth: 460, idealWidth: 600, maxWidth: 720, minHeight: 340, idealHeight: 580, maxHeight: 720)
         .background(ApexStyle.surface)
+        .onExitCommand {
+            dismiss()
+        }
+        .background(
+            Button("") { dismiss() }
+                .keyboardShortcut("w", modifiers: .command)
+                .opacity(0)
+                .frame(width: 0, height: 0)
+                .accessibilityHidden(true)
+        )
         .onAppear {
             if loadedURL == nil, let url = initialFileURL {
                 loadShareFile(from: url)
@@ -590,6 +600,15 @@ public struct GroupShareImportSheet: View {
         loadError = nil
         decryptError = nil
         passphraseInput = ""
+        targetFolderChoice = .preserveOriginal
+        selectedExistingFolder = existingFolders.first ?? L10n.generalFolder
+        customNewFolder = ""
+        conflictStrategy = .skipExisting
+        importCredentials = true
+        includeTunnels = true
+        includeSnippets = true
+        includeTriggers = true
+        includeBookmarks = true
 
         let scoped = url.startAccessingSecurityScopedResource()
         defer {

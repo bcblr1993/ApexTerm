@@ -23,14 +23,21 @@ public enum CommandPaletteCategory: String, CaseIterable, Codable, Sendable, Ide
 public enum CommandPaletteAppAction: String, CaseIterable, Codable, Sendable {
     case newLocalTerminal = "new_local_terminal"
     case duplicateSession = "duplicate_session"
+    case newSession = "new_session"
+    case importSSHConfig = "import_ssh_config"
     case splitVertical = "split_vertical"
     case splitHorizontal = "split_horizontal"
     case toggleMaximize = "toggle_maximize"
+    case reconnectSession = "reconnect_session"
+    case toggleBroadcast = "toggle_broadcast"
     case openTunnels = "open_tunnels"
+    case openProcessInspector = "open_process_inspector"
+    case copyLastCommandOutput = "copy_last_command_output"
     case toggleQuickCommandBar = "toggle_quick_command_bar"
     case toggleSFTP = "toggle_sftp"
     case openBatchOperations = "open_batch_operations"
     case clearScrollback = "clear_scrollback"
+    case lockApp = "lock_app"
     case openSettings = "open_settings"
     case checkForUpdates = "check_for_updates"
     case openAbout = "open_about"
@@ -40,14 +47,21 @@ public enum CommandPaletteAppAction: String, CaseIterable, Codable, Sendable {
         switch self {
         case .newLocalTerminal: return "新建本地终端"
         case .duplicateSession: return "复制当前会话 / 新建标签页"
+        case .newSession: return "新建 SSH 会话..."
+        case .importSSHConfig: return "从 ~/.ssh/config 导入主机..."
         case .splitVertical: return "垂直分屏 (左/右)"
         case .splitHorizontal: return "水平分屏 (上/下)"
         case .toggleMaximize: return "全屏放大 / 恢复分屏"
+        case .reconnectSession: return "重新连接当前会话"
+        case .toggleBroadcast: return "开启 / 关闭多终端命令广播模式"
         case .openTunnels: return "SSH 端口转发与隧道管理"
+        case .openProcessInspector: return "远程进程与服务监视控制中心"
+        case .copyLastCommandOutput: return "复制上一条命令输出"
         case .toggleQuickCommandBar: return "显示 / 隐藏底部快捷命令栏"
         case .toggleSFTP: return "显示 / 隐藏 SFTP 文件管理面板"
         case .openBatchOperations: return CommandPaletteItem.batchOperationsTitle
         case .clearScrollback: return "清除当前终端屏幕与回滚缓冲区"
+        case .lockApp: return "立即锁定应用"
         case .openSettings: return "打开偏好设置"
         case .checkForUpdates: return "检查软件更新"
         case .openAbout: return "关于 AetherTerm"
@@ -59,14 +73,21 @@ public enum CommandPaletteAppAction: String, CaseIterable, Codable, Sendable {
         switch self {
         case .newLocalTerminal: return "laptopcomputer"
         case .duplicateSession: return "plus.square.on.square"
+        case .newSession: return "plus.circle"
+        case .importSSHConfig: return "doc.text"
         case .splitVertical: return "rectangle.split.2x1"
         case .splitHorizontal: return "rectangle.split.1x2"
         case .toggleMaximize: return "arrow.up.left.and.arrow.down.right"
+        case .reconnectSession: return "arrow.clockwise"
+        case .toggleBroadcast: return "antenna.radiowaves.left.and.right"
         case .openTunnels: return "arrow.triangle.swap"
+        case .openProcessInspector: return "list.bullet.rectangle.portrait"
+        case .copyLastCommandOutput: return "doc.on.clipboard"
         case .toggleQuickCommandBar: return "terminal"
         case .toggleSFTP: return "folder"
         case .openBatchOperations: return CommandPaletteItem.batchOperationsIconName
         case .clearScrollback: return "trash"
+        case .lockApp: return "lock.fill"
         case .openSettings: return "gearshape"
         case .checkForUpdates: return "arrow.clockwise.circle"
         case .openAbout: return "info.circle"
@@ -76,20 +97,27 @@ public enum CommandPaletteAppAction: String, CaseIterable, Codable, Sendable {
     
     public var shortcutHint: String? {
         switch self {
-        case .newLocalTerminal: return "⌘⇧T"
-        case .duplicateSession: return "⌘T"
-        case .splitVertical: return "⌘D"
-        case .splitHorizontal: return "⌘⇧D"
-        case .toggleMaximize: return "⌘⇧↵"
-        case .openTunnels: return "⌘⌥T"
-        case .toggleQuickCommandBar: return "⌘⇧B"
-        case .toggleSFTP: return "⌘⇧F"
+        case .newLocalTerminal: return ApexShortcutRegistry.shortcutHint(for: .newLocalTerminal)
+        case .duplicateSession: return ApexShortcutRegistry.shortcutHint(for: .duplicateSession)
+        case .newSession: return nil
+        case .importSSHConfig: return nil
+        case .splitVertical: return ApexShortcutRegistry.shortcutHint(for: .splitVertical)
+        case .splitHorizontal: return ApexShortcutRegistry.shortcutHint(for: .splitHorizontal)
+        case .toggleMaximize: return ApexShortcutRegistry.shortcutHint(for: .toggleMaximize)
+        case .reconnectSession: return ApexShortcutRegistry.shortcutHint(for: .reconnectSession)
+        case .toggleBroadcast: return nil
+        case .openTunnels: return ApexShortcutRegistry.shortcutHint(for: .openTunnels)
+        case .openProcessInspector: return ApexShortcutRegistry.shortcutHint(for: .openProcessInspector)
+        case .copyLastCommandOutput: return ApexShortcutRegistry.shortcutHint(for: .copyLastCommandOutput)
+        case .toggleQuickCommandBar: return ApexShortcutRegistry.shortcutHint(for: .toggleQuickCommandBar)
+        case .toggleSFTP: return ApexShortcutRegistry.shortcutHint(for: .toggleSFTP)
         case .openBatchOperations: return CommandPaletteItem.batchOperationsShortcutHint
-        case .clearScrollback: return "⌘K"
-        case .openSettings: return "⌘,"
+        case .clearScrollback: return ApexShortcutRegistry.shortcutHint(for: .clearScrollback)
+        case .lockApp: return ApexShortcutRegistry.shortcutHint(for: .lockApp)
+        case .openSettings: return ApexShortcutRegistry.shortcutHint(for: .openSettings)
         case .checkForUpdates: return nil
         case .openAbout: return nil
-        case .openShortcuts: return "⌘/"
+        case .openShortcuts: return ApexShortcutRegistry.shortcutHint(for: .openShortcuts)
         }
     }
 }
@@ -109,7 +137,7 @@ public struct CommandPaletteItem: Identifiable, Codable, Sendable, Equatable {
     public static let batchOperationsTitle = "批量执行命令 / 分发文件"
     public static let batchOperationsSubtitle = "向多台主机并发执行命令或分发本地文件"
     public static let batchOperationsIconName = "square.stack.3d.up"
-    public static let batchOperationsShortcutHint = "⌘⌥B"
+    public static let batchOperationsShortcutHint = ApexShortcutRegistry.shortcutHint(for: .openBatchOperations) ?? "⌘⌥B"
 
     public static func batchOperationsUserInfo(sessionIDs: [UUID], folder: String? = nil) -> [AnyHashable: Any] {
         var info: [AnyHashable: Any] = ["sessionIDs": sessionIDs]

@@ -194,10 +194,12 @@ public struct SidebarView: View {
                                 onConnect: { onConnect(Session.local()) }
                             )
                             .tag(local.id)
-                            .onTapGesture {
-                                selectedSession = local
-                                onConnect(Session.local())
-                            }
+                            .simultaneousGesture(
+                                TapGesture(count: 2).onEnded {
+                                    selectedSession = local
+                                    onConnect(Session.local())
+                                }
+                            )
                         }
                     }
                     
@@ -221,6 +223,12 @@ public struct SidebarView: View {
                                         )
                                         .fontWeight(rowSelected ? .semibold : .regular)
                                         .tag(session.id)
+                                        .simultaneousGesture(
+                                            TapGesture(count: 2).onEnded {
+                                                selectedSession = session
+                                                onConnect(session)
+                                            }
+                                        )
                                         .contextMenu {
                                             Button(L10n.connectAction) {
                                                 onConnect(session)
@@ -463,6 +471,17 @@ public struct SidebarView: View {
     private func copySessionInfo(_ session: Session) {
         Task {
             let secret = await SessionCopyHelper.resolveSecret(for: session)
+            if let secret, !secret.isEmpty, AppLockManager.shared.requireAuthForSensitiveActions {
+                let authorized = await AppLockManager.shared.authorizeSensitiveAction(
+                    reason: "验证身份以复制包含密码或私钥口令的会话信息"
+                )
+                guard authorized else {
+                    await MainActor.run {
+                        showToast(AppLockManager.shared.lastErrorMessage ?? "未通过身份验证，已取消复制会话信息", isSuccess: false)
+                    }
+                    return
+                }
+            }
             let formatted = SessionCopyHelper.formatSessionInfo(session: session, password: secret)
             await MainActor.run {
                 NSPasteboard.general.clearContents()

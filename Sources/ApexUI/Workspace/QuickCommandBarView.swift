@@ -3,7 +3,9 @@ import ApexCore
 
 /// Horizontal collapsible quick command action bar docked at the bottom of the terminal workspace
 public struct QuickCommandBarView: View {
+    @ObservedObject private var themeSettings = AppSettings.shared
     @ObservedObject public var store: SessionStore
+    public let sessionContext: [String: String]
     public let onExecuteCommand: (String) -> Void
     @Binding public var isVisible: Bool
     
@@ -11,20 +13,44 @@ public struct QuickCommandBarView: View {
     @State private var snippetWithVariables: Snippet? = nil
     @State private var variableValues: [String: String] = [:]
     @State private var isAddSheetPresented: Bool = false
+    @State private var editingSnippet: Snippet? = nil
     
-    // New snippet form state
-    @State private var newTitle: String = ""
-    @State private var newCommand: String = ""
-    @State private var newCategory: String = "自定义"
+    // Snippet form state
+    @State private var draftTitle: String = ""
+    @State private var draftCommand: String = ""
+    @State private var draftCategory: String = "自定义"
+    @State private var draftAutoExecute: Bool = false
     
     public init(
         store: SessionStore,
         isVisible: Binding<Bool>,
+        sessionContext: [String: String] = [:],
         onExecuteCommand: @escaping (String) -> Void
     ) {
         self.store = store
         self._isVisible = isVisible
+        self.sessionContext = sessionContext
         self.onExecuteCommand = onExecuteCommand
+    }
+
+    public static func context(for session: Session?) -> [String: String] {
+        guard let session else { return [:] }
+        var ctx: [String: String] = [:]
+        let host = session.host.trimmingCharacters(in: .whitespacesAndNewlines)
+        let user = session.username.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !host.isEmpty { ctx["host"] = host }
+        if !user.isEmpty { ctx["user"] = user }
+        return ctx
+    }
+
+    public static func executionPayload(
+        for snippet: Snippet,
+        context: [String: String],
+        executeImmediately: Bool? = nil
+    ) -> String {
+        let resolved = snippet.resolvedCommand(context: context)
+        let shouldExecute = executeImmediately ?? snippet.autoExecute
+        return shouldExecute ? (resolved + "\n") : resolved
     }
     
     private var allCategories: [String] {
@@ -70,6 +96,7 @@ public struct QuickCommandBarView: View {
                                 .fixedSize()
                         }
                         .padding(.trailing, 4)
+                        .accessibilityElement(children: .combine)
                         
                         ForEach(allCategories, id: \.self) { cat in
                             ApexPillButton(
@@ -77,15 +104,33 @@ public struct QuickCommandBarView: View {
                                 isSelected: selectedCategory == cat,
                                 action: { selectedCategory = cat }
                             )
+                            .accessibilityLabel("分类 \(cat)")
                         }
                         
                         Divider().frame(height: 14)
                         
                         // Snippet Action Pills
                         ForEach(filteredSnippets) { snippet in
-                            QuickSnippetPill(snippet: snippet) {
-                                triggerSnippet(snippet)
-                            }
+                            QuickSnippetPill(
+                                snippet: snippet,
+                                onTrigger: {
+                                    triggerSnippet(snippet)
+                                },
+                                onAlternateRun: {
+                                    triggerSnippet(snippet, overrideAutoExecute: !snippet.autoExecute)
+                                },
+                                onEdit: {
+                                    editingSnippet = snippet
+                                    draftTitle = snippet.title
+                                    draftCommand = snippet.command
+                                    draftCategory = snippet.category
+                                    draftAutoExecute = snippet.autoExecute
+                                    isAddSheetPresented = true
+                                },
+                                onDelete: {
+                                    store.deleteSnippet(id: snippet.id)
+                                }
+                            )
                         }
                         
                         // + Add Custom Snippet Button
@@ -93,12 +138,15 @@ public struct QuickCommandBarView: View {
                             title: "添加",
                             icon: "plus"
                         ) {
-                            newTitle = ""
-                            newCommand = ""
-                            newCategory = selectedCategory == "全部" ? "自定义" : selectedCategory
+                            editingSnippet = nil
+                            draftTitle = ""
+                            draftCommand = ""
+                            draftCategory = selectedCategory == "全部" ? "自定义" : selectedCategory
+                            draftAutoExecute = false
                             isAddSheetPresented = true
                         }
                         .help("添加新的常用快捷命令")
+                        .accessibilityLabel("添加快捷命令")
                     }
                     .padding(.leading, ApexStyle.s4)
                     .padding(.trailing, ApexStyle.s1)
@@ -129,6 +177,10 @@ public struct QuickCommandBarView: View {
                     onExecuteCommand(resolved + "\n")
                     snippetWithVariables = nil
                 },
+                onInsertCommand: { resolved in
+                    onExecuteCommand(resolved)
+                    snippetWithVariables = nil
+                },
                 onCancel: {
                     snippetWithVariables = nil
                 }
@@ -137,20 +189,36 @@ public struct QuickCommandBarView: View {
         }
         .sheet(isPresented: $isAddSheetPresented) {
             AddSnippetSheet(
-                title: $newTitle,
-                command: $newCommand,
-                category: $newCategory,
+                isEditing: editingSnippet != nil,
+                title: $draftTitle,
+                command: $draftCommand,
+                category: $draftCategory,
+                autoExecute: $draftAutoExecute,
                 onSave: {
-                    let trimmedCategory = newCategory.trimmingCharacters(in: .whitespacesAndNewlines)
-                    let s = Snippet(
-                        title: newTitle.trimmingCharacters(in: .whitespacesAndNewlines),
-                        command: newCommand.trimmingCharacters(in: .whitespacesAndNewlines),
-                        category: trimmedCategory.isEmpty ? "自定义" : trimmedCategory
-                    )
-                    store.addSnippet(s)
+                    let trimmedCategory = draftCategory.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let trimmedTitle = draftTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let trimmedCommand = draftCommand.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let resolvedCat = trimmedCategory.isEmpty ? "自定义" : trimmedCategory
+                    if var existing = editingSnippet {
+                        existing.title = trimmedTitle
+                        existing.command = trimmedCommand
+                        existing.category = resolvedCat
+                        existing.autoExecute = draftAutoExecute
+                        store.updateSnippet(existing)
+                    } else {
+                        let s = Snippet(
+                            title: trimmedTitle,
+                            command: trimmedCommand,
+                            category: resolvedCat,
+                            autoExecute: draftAutoExecute
+                        )
+                        store.addSnippet(s)
+                    }
+                    editingSnippet = nil
                     isAddSheetPresented = false
                 },
                 onCancel: {
+                    editingSnippet = nil
                     isAddSheetPresented = false
                 }
             )
@@ -158,15 +226,18 @@ public struct QuickCommandBarView: View {
         }
     }
     
-    private func triggerSnippet(_ snippet: Snippet) {
-        let vars = snippet.extractVariables()
-        if vars.isEmpty {
-            let resolved = snippet.resolvedCommand(context: [:])
-            onExecuteCommand(resolved + "\n")
+    private func triggerSnippet(_ snippet: Snippet, overrideAutoExecute: Bool? = nil) {
+        let unresolved = snippet.unresolvedVariables(context: sessionContext)
+        if unresolved.isEmpty {
+            let payload = Self.executionPayload(
+                for: snippet,
+                context: sessionContext,
+                executeImmediately: overrideAutoExecute
+            )
+            onExecuteCommand(payload)
         } else {
-            // Preset known variables or clear
-            var initialDict: [String: String] = [:]
-            for v in vars {
+            var initialDict = sessionContext
+            for v in unresolved {
                 initialDict[v] = ""
             }
             variableValues = initialDict
@@ -180,6 +251,7 @@ public struct VariableInputSheet: View {
     public let snippet: Snippet
     @Binding public var variableValues: [String: String]
     public let onConfirm: (String) -> Void
+    public let onInsertCommand: ((String) -> Void)?
     public let onCancel: () -> Void
     @State private var formContentHeight: CGFloat = 0
     
@@ -187,11 +259,13 @@ public struct VariableInputSheet: View {
         snippet: Snippet,
         variableValues: Binding<[String: String]>,
         onConfirm: @escaping (String) -> Void,
+        onInsertCommand: ((String) -> Void)? = nil,
         onCancel: @escaping () -> Void
     ) {
         self.snippet = snippet
         self._variableValues = variableValues
         self.onConfirm = onConfirm
+        self.onInsertCommand = onInsertCommand
         self.onCancel = onCancel
     }
     
@@ -199,7 +273,7 @@ public struct VariableInputSheet: View {
         snippet.extractVariables()
     }
 
-    private var maxScrollableHeight: CGFloat { 340 }
+    private var maxScrollableHeight: CGFloat { 260 }
     
     public var body: some View {
         VStack(alignment: .leading, spacing: ApexStyle.s4) {
@@ -207,6 +281,7 @@ public struct VariableInputSheet: View {
                 Image(systemName: "slider.horizontal.3")
                     .font(.system(size: 16, weight: .bold))
                     .foregroundColor(ApexStyle.accent)
+                    .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(snippet.title)
                         .font(.headline)
@@ -216,15 +291,18 @@ public struct VariableInputSheet: View {
                         .foregroundColor(ApexStyle.secondary)
                 }
                 Spacer()
+                ApexIconButton(icon: "xmark", label: "关闭", size: 22, iconSize: 10) {
+                    onCancel()
+                }
             }
             
             ScrollView(.vertical, showsIndicators: formContentHeight > maxScrollableHeight) {
                 VStack(alignment: .leading, spacing: ApexStyle.s3) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("原始命令模板：")
+                        Text("命令预览：")
                             .font(.caption.weight(.semibold))
                             .foregroundColor(ApexStyle.secondary)
-                        Text(snippet.command)
+                        Text(snippet.resolvedCommand(context: variableValues))
                             .font(.system(size: 11, design: .monospaced))
                             .padding(8)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -248,8 +326,9 @@ public struct VariableInputSheet: View {
                                     set: { variableValues[v] = $0 }
                                 ))
                                 .textFieldStyle(.roundedBorder)
+                                .accessibilityLabel("变量 \(v)")
                                 .onSubmit {
-                                    submitIfValid()
+                                    submitDefault()
                                 }
                             }
                         }
@@ -261,97 +340,144 @@ public struct VariableInputSheet: View {
             .frame(height: formContentHeight > 0 ? min(formContentHeight, maxScrollableHeight) : nil)
             .frame(maxHeight: maxScrollableHeight)
             
-            HStack {
+            HStack(spacing: ApexStyle.s2) {
                 Spacer()
-                Button("取消") {
+                ApexActionButton("取消", tint: ApexStyle.secondary, size: .regular) {
                     onCancel()
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.regular)
                 .keyboardShortcut(.cancelAction)
                 
-                Button("执行 (↵)") {
-                    submitIfValid()
+                if snippet.autoExecute {
+                    if let onInsertCommand {
+                        ApexActionButton("仅填入", tint: ApexStyle.secondary, size: .regular) {
+                            onInsertCommand(snippet.resolvedCommand(context: variableValues))
+                        }
+                    }
+                    ApexActionButton("执行 (↵)", icon: "play.fill", tint: ApexStyle.accent, size: .regular, isProminent: true) {
+                        onConfirm(snippet.resolvedCommand(context: variableValues))
+                    }
+                    .keyboardShortcut(.defaultAction)
+                } else {
+                    ApexActionButton("立即执行", icon: "play.fill", tint: ApexStyle.warning, size: .regular) {
+                        onConfirm(snippet.resolvedCommand(context: variableValues))
+                    }
+                    ApexActionButton("填入命令行 (↵)", icon: "text.insert", tint: ApexStyle.accent, size: .regular, isProminent: true) {
+                        (onInsertCommand ?? onConfirm)(snippet.resolvedCommand(context: variableValues))
+                    }
+                    .keyboardShortcut(.defaultAction)
                 }
-                .apexProminentButton()
-                .controlSize(.regular)
-                .keyboardShortcut(.defaultAction)
             }
         }
         .padding(ApexStyle.s4)
-        .frame(width: 480)
+        .frame(minWidth: 380, idealWidth: 480, maxWidth: 560)
+        .onExitCommand { onCancel() }
+        .background(
+            Button("") { onCancel() }
+                .keyboardShortcut("w", modifiers: .command)
+                .opacity(0)
+                .frame(width: 0, height: 0)
+                .accessibilityHidden(true)
+        )
     }
     
-    private func submitIfValid() {
+    private func submitDefault() {
         let resolved = snippet.resolvedCommand(context: variableValues)
-        onConfirm(resolved)
+        if snippet.autoExecute {
+            onConfirm(resolved)
+        } else {
+            (onInsertCommand ?? onConfirm)(resolved)
+        }
     }
 }
 
-/// Sheet to add a new command snippet
+/// Sheet to add or edit a command snippet
 private struct AddSnippetSheet: View {
+    let isEditing: Bool
     @Binding var title: String
     @Binding var command: String
     @Binding var category: String
+    @Binding var autoExecute: Bool
     let onSave: () -> Void
     let onCancel: () -> Void
     
     var body: some View {
         VStack(alignment: .leading, spacing: ApexStyle.s4) {
             HStack {
-                Image(systemName: "plus.square.fill")
+                Image(systemName: isEditing ? "pencil.circle.fill" : "plus.square.fill")
                     .font(.system(size: 16, weight: .bold))
                     .foregroundColor(ApexStyle.accent)
-                Text("新建快捷命令")
+                    .accessibilityHidden(true)
+                Text(isEditing ? "编辑快捷命令" : "新建快捷命令")
                     .font(.headline)
                 Spacer()
+                ApexIconButton(icon: "xmark", label: "关闭", size: 22, iconSize: 10) {
+                    onCancel()
+                }
             }
             
-            VStack(alignment: .leading, spacing: 6) {
-                Text("标题")
-                    .font(.caption.weight(.semibold))
-                    .foregroundColor(ApexStyle.secondary)
-                TextField("例如：查看 Docker 容器日志", text: $title)
-                    .textFieldStyle(.roundedBorder)
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: ApexStyle.s3) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("标题")
+                            .font(.caption.weight(.semibold))
+                            .foregroundColor(ApexStyle.secondary)
+                        TextField("例如：查看 Docker 容器日志", text: $title)
+                            .textFieldStyle(.roundedBorder)
+                            .accessibilityLabel("快捷命令标题")
+                    }
+                    
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Shell 命令 (支持 {{var}}、{{host}}、{{user}}、{{date}})")
+                            .font(.caption.weight(.semibold))
+                            .foregroundColor(ApexStyle.secondary)
+                        TextField("例如：docker logs -f --tail 100 {{container}}", text: $command)
+                            .textFieldStyle(.roundedBorder)
+                            .accessibilityLabel("Shell 命令内容")
+                    }
+                    
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("分类")
+                            .font(.caption.weight(.semibold))
+                            .foregroundColor(ApexStyle.secondary)
+                        TextField("例如：Docker、系统、运维", text: $category)
+                            .textFieldStyle(.roundedBorder)
+                            .accessibilityLabel("快捷命令分类")
+                    }
+
+                    Toggle("发送后自动回车执行 (Auto-Execute)", isOn: $autoExecute)
+                        .font(.caption)
+                        .foregroundColor(ApexStyle.primary)
+                }
             }
             
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Shell 命令 (支持 {{var}} 动态占位符)")
-                    .font(.caption.weight(.semibold))
-                    .foregroundColor(ApexStyle.secondary)
-                TextField("例如：docker logs -f --tail 100 {{container}}", text: $command)
-                    .textFieldStyle(.roundedBorder)
-            }
-            
-            VStack(alignment: .leading, spacing: 6) {
-                Text("分类")
-                    .font(.caption.weight(.semibold))
-                    .foregroundColor(ApexStyle.secondary)
-                TextField("例如：Docker、系统、运维", text: $category)
-                    .textFieldStyle(.roundedBorder)
-            }
-            
-            HStack {
+            HStack(spacing: ApexStyle.s2) {
                 Spacer()
-                Button("取消") { onCancel() }
-                    .buttonStyle(.bordered)
-                    .controlSize(.regular)
+                ApexActionButton("取消", tint: ApexStyle.secondary, size: .regular) { onCancel() }
                     .keyboardShortcut(.cancelAction)
-                Button("保存") { onSave() }
-                    .apexProminentButton()
-                    .controlSize(.regular)
+                ApexActionButton("保存", icon: "checkmark", tint: ApexStyle.accent, size: .regular, isProminent: true) { onSave() }
                     .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     .keyboardShortcut(.defaultAction)
             }
         }
         .padding(ApexStyle.s4)
-        .frame(width: 460)
+        .frame(minWidth: 380, idealWidth: 460, maxWidth: 560, minHeight: 280, idealHeight: 350, maxHeight: 480)
+        .onExitCommand { onCancel() }
+        .background(
+            Button("") { onCancel() }
+                .keyboardShortcut("w", modifiers: .command)
+                .opacity(0)
+                .frame(width: 0, height: 0)
+                .accessibilityHidden(true)
+        )
     }
 }
 
 private struct QuickSnippetPill: View {
     let snippet: Snippet
     let onTrigger: () -> Void
+    let onAlternateRun: () -> Void
+    let onEdit: () -> Void
+    let onDelete: () -> Void
     @State private var isHovered = false
     
     var body: some View {
@@ -385,7 +511,21 @@ private struct QuickSnippetPill: View {
         .onHover { hovering in
             isHovered = hovering
         }
-        .help("\(snippet.title)\n命令：\(snippet.command)")
+        .help("\(snippet.title)\n命令：\(snippet.command)\n\(snippet.autoExecute ? "点击立即执行" : "点击填入命令行（需确认回车）")")
+        .accessibilityLabel("\(snippet.title)，\(snippet.autoExecute ? "点击立即执行" : "点击填入命令行")")
+        .accessibilityHint(snippet.extractVariables().isEmpty ? "执行命令 \(snippet.command)" : "将弹出变量填写窗口")
+        .contextMenu {
+            Button(snippet.autoExecute ? "仅填入命令行 (不自动回车)" : "立即执行 (附带回车)") {
+                onAlternateRun()
+            }
+            Button("编辑快捷命令...") {
+                onEdit()
+            }
+            Divider()
+            Button("删除快捷命令", role: .destructive) {
+                onDelete()
+            }
+        }
     }
 }
 

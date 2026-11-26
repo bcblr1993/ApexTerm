@@ -216,8 +216,18 @@ public struct SSHConfigImportSheet: View {
             .padding(ApexStyle.s4)
             .background(ApexStyle.surface)
         }
-        .frame(minWidth: 540, minHeight: 440)
+        .frame(minWidth: 460, idealWidth: 560, maxWidth: 700, minHeight: 340, idealHeight: 440, maxHeight: 660)
         .background(ApexStyle.surface)
+        .onExitCommand {
+            dismiss()
+        }
+        .background(
+            Button("") { dismiss() }
+                .keyboardShortcut("w", modifiers: .command)
+                .opacity(0)
+                .frame(width: 0, height: 0)
+                .accessibilityHidden(true)
+        )
         .onAppear {
             if DistributionChannel.current == .direct || UserDefaults.standard.string(forKey: Self.selectedConfigKey) != nil {
                 scanHosts()
@@ -273,13 +283,17 @@ public struct SSHConfigImportSheet: View {
         }
     }
     
+    public static func findMatchingSession(for incoming: Session, in existingSessions: [Session]) -> Session? {
+        existingSessions.first(where: { $0.name == incoming.name && $0.host == incoming.host })
+    }
+
     private func performImport() {
         let toImport = discoveredHosts.filter { selectedHostIds.contains($0.id) }
         var importedCount = 0
         
         for host in toImport {
             let session = host.toSession(folder: resolvedFolder)
-            if let existing = store.sessions.first(where: { $0.name == session.name || ($0.name == session.name && $0.host == session.host) }) {
+            if let existing = Self.findMatchingSession(for: session, in: store.sessions) {
                 let updated = host.mergedSession(updating: existing, folder: resolvedFolder)
                 store.updateSession(updated)
             } else {

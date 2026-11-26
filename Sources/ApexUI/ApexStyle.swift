@@ -133,6 +133,7 @@ public struct ApexGlassCardModifier: ViewModifier {
 
 /// Standardized tactile icon button conforming to macOS Liquid Class HIG
 public struct ApexIconButton: View {
+    @ObservedObject private var themeSettings = AppSettings.shared
     let icon: String
     let label: String?
     let size: CGFloat
@@ -207,6 +208,7 @@ public struct ApexIconButton: View {
 
 /// Tactile pill button with smooth spring selection indicator and hover lift
 public struct ApexPillButton: View {
+    @ObservedObject private var themeSettings = AppSettings.shared
     let title: String
     let icon: String?
     let isSelected: Bool
@@ -274,6 +276,7 @@ public struct ApexPillButton: View {
 
 /// Standardized tactile action button for list rows, card views, modals, and toolbars conforming to macOS Liquid Class HIG
 public struct ApexActionButton: View {
+    @ObservedObject private var themeSettings = AppSettings.shared
     let title: String
     let icon: String?
     let tint: Color
@@ -387,6 +390,7 @@ public struct ApexActionButton: View {
 
 /// Standardized trigger view for native SwiftUI Menus adhering to macOS Liquid Class HIG
 public struct ApexMenuTrigger: View {
+    @ObservedObject private var themeSettings = AppSettings.shared
     let icon: String
     let label: String?
     let size: CGFloat

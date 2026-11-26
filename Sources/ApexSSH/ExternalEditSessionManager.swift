@@ -182,6 +182,13 @@ public final class ExternalEditSessionManager: ObservableObject {
     private let defaultDownloadHandler: DownloadHandler?
     private let defaultUploadHandler: UploadHandler?
     private let openHandler: OpenHandler
+    nonisolated(unsafe) private var resetObserver: NSObjectProtocol?
+
+    deinit {
+        if let resetObserver {
+            NotificationCenter.default.removeObserver(resetObserver)
+        }
+    }
 
     public init(
         defaults: UserDefaults = .standard,
@@ -215,6 +222,24 @@ public final class ExternalEditSessionManager: ObservableObject {
             self.autoUploadOnSave = true
         }
         self.suppressPreferenceSave = false
+
+        if defaults === UserDefaults.standard {
+            self.resetObserver = NotificationCenter.default.addObserver(
+                forName: AppSettings.didResetToDefaultsNotification,
+                object: nil,
+                queue: nil
+            ) { [weak self] _ in
+                if Thread.isMainThread {
+                    MainActor.assumeIsolated {
+                        self?.resetPreferences()
+                    }
+                } else {
+                    Task { @MainActor [weak self] in
+                        self?.resetPreferences()
+                    }
+                }
+            }
+        }
     }
 
     // MARK: - Queries

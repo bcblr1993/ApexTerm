@@ -29,6 +29,7 @@ public enum CommandPaletteAppAction: String, CaseIterable, Codable, Sendable {
     case openTunnels = "open_tunnels"
     case toggleQuickCommandBar = "toggle_quick_command_bar"
     case toggleSFTP = "toggle_sftp"
+    case openBatchOperations = "open_batch_operations"
     case clearScrollback = "clear_scrollback"
     case openSettings = "open_settings"
     case checkForUpdates = "check_for_updates"
@@ -45,6 +46,7 @@ public enum CommandPaletteAppAction: String, CaseIterable, Codable, Sendable {
         case .openTunnels: return "SSH 端口转发与隧道管理"
         case .toggleQuickCommandBar: return "显示 / 隐藏底部快捷命令栏"
         case .toggleSFTP: return "显示 / 隐藏 SFTP 文件管理面板"
+        case .openBatchOperations: return CommandPaletteItem.batchOperationsTitle
         case .clearScrollback: return "清除当前终端屏幕与回滚缓冲区"
         case .openSettings: return "打开偏好设置"
         case .checkForUpdates: return "检查软件更新"
@@ -63,6 +65,7 @@ public enum CommandPaletteAppAction: String, CaseIterable, Codable, Sendable {
         case .openTunnels: return "arrow.triangle.swap"
         case .toggleQuickCommandBar: return "terminal"
         case .toggleSFTP: return "folder"
+        case .openBatchOperations: return CommandPaletteItem.batchOperationsIconName
         case .clearScrollback: return "trash"
         case .openSettings: return "gearshape"
         case .checkForUpdates: return "arrow.clockwise.circle"
@@ -81,6 +84,7 @@ public enum CommandPaletteAppAction: String, CaseIterable, Codable, Sendable {
         case .openTunnels: return "⌘⌥T"
         case .toggleQuickCommandBar: return "⌘⇧B"
         case .toggleSFTP: return "⌘⇧F"
+        case .openBatchOperations: return CommandPaletteItem.batchOperationsShortcutHint
         case .clearScrollback: return "⌘K"
         case .openSettings: return "⌘,"
         case .checkForUpdates: return nil

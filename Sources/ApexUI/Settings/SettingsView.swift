@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import ApexCore
+import ApexSSH
 import ApexTerminal
 
 /// Standard macOS Preferences / Settings View
@@ -66,9 +67,20 @@ private struct GeneralSettingsTab: View {
     @ObservedObject var settings: AppSettings
     @ObservedObject private var updateManager = UpdateManager.shared
     @ObservedObject private var lockManager = AppLockManager.shared
+    @ObservedObject private var notificationManager = DesktopNotificationManager.shared
+    @ObservedObject private var externalEditManager = ExternalEditSessionManager.shared
     @State private var isShowingResetConfirm = false
     @State private var isEnablingAppLock = false
     @State private var appLockToggleError: String?
+
+    private static let notificationDurationPresets: [(label: String, seconds: Double)] = [
+        ("立即 (0 秒)", 0),
+        ("5 秒", 5),
+        ("10 秒", 10),
+        ("30 秒", 30),
+        ("1 分钟", 60),
+        ("5 分钟", 300)
+    ]
     
     var body: some View {
         Form {
@@ -114,6 +126,33 @@ private struct GeneralSettingsTab: View {
                         Text(mode.displayName).tag(mode)
                     }
                 }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle("启用桌面通知 (长命令完成 / OSC 通知)", isOn: $notificationManager.notificationsEnabled)
+                    Text("当后台标签页或非激活窗口中的命令完成（或收到 OSC 9 / OSC 777 序列）时发送 macOS 系统通知。")
+                        .font(.caption)
+                        .foregroundColor(ApexStyle.secondary)
+                }
+
+                Toggle("仅在后台标签页或应用非激活时通知", isOn: $notificationManager.onlyWhenInactiveOrBackgroundTab)
+                    .disabled(!notificationManager.notificationsEnabled)
+
+                Picker("长命令通知阈值", selection: $notificationManager.minimumCommandDurationSeconds) {
+                    ForEach(Self.notificationDurationPresets, id: \.seconds) { preset in
+                        Text(preset.label).tag(preset.seconds)
+                    }
+                    if !Self.notificationDurationPresets.contains(where: { $0.seconds == notificationManager.minimumCommandDurationSeconds }) {
+                        Text("\(Int(notificationManager.minimumCommandDurationSeconds)) 秒")
+                            .tag(notificationManager.minimumCommandDurationSeconds)
+                    }
+                }
+                .disabled(!notificationManager.notificationsEnabled)
+
+                Toggle("接收终端 OSC 9 / OSC 777 通知序列", isOn: $notificationManager.notifyOnOSCSequences)
+                    .disabled(!notificationManager.notificationsEnabled)
+
+                Toggle("桌面通知附带提示音", isOn: $notificationManager.playSound)
+                    .disabled(!notificationManager.notificationsEnabled)
             } header: {
                 Text("系统通知与提示音")
             }
@@ -207,6 +246,8 @@ private struct GeneralSettingsTab: View {
             Button("取消", role: .cancel) {}
             Button("恢复默认", role: .destructive) {
                 settings.resetToDefaults()
+                externalEditManager.resetPreferences()
+                notificationManager.resetPreferences()
                 lockManager.resetPreferences()
                 appLockToggleError = nil
             }
@@ -437,6 +478,8 @@ private struct BehaviorSettingsTab: View {
 // MARK: - Tab 4: SFTP
 private struct SFTPSettingsTab: View {
     @ObservedObject var settings: AppSettings
+    @ObservedObject private var externalEditManager = ExternalEditSessionManager.shared
+    @State private var installedEditors: [ExternalEditorApp] = []
     
     var body: some View {
         Form {
@@ -478,8 +521,34 @@ private struct SFTPSettingsTab: View {
             } header: {
                 Text("传输设置")
             }
+
+            Section {
+                Picker("首选外部编辑器", selection: $externalEditManager.preferredEditorBundleID) {
+                    Text("系统默认应用").tag("")
+                    ForEach(installedEditors) { editor in
+                        Text(editor.name).tag(editor.bundleID)
+                    }
+                    if !externalEditManager.preferredEditorBundleID.isEmpty,
+                       !installedEditors.contains(where: { $0.bundleID == externalEditManager.preferredEditorBundleID }) {
+                        Text(ExternalEditSessionManager.displayName(forBundleID: externalEditManager.preferredEditorBundleID))
+                            .tag(externalEditManager.preferredEditorBundleID)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle("保存时自动上传回远端", isOn: $externalEditManager.autoUploadOnSave)
+                    Text("使用外部编辑器打开远端文件后，监听本地保存（含原子重命名保存）并自动比对 SHA-256 同步回服务器；关闭标签页时自动清理临时目录。")
+                        .font(.caption)
+                        .foregroundColor(ApexStyle.secondary)
+                }
+            } header: {
+                Text("外部编辑器")
+            }
         }
         .formStyle(.grouped)
+        .onAppear {
+            installedEditors = ExternalEditSessionManager.installedEditors()
+        }
     }
     
     private func selectDownloadDirectory() {

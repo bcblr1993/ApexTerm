@@ -30,7 +30,7 @@ public struct CommandPaletteModalView: View {
                 CommandPaletteItem(
                     id: CommandPaletteItem.stableID(for: "action.\(action.rawValue)"),
                     title: action.title,
-                    subtitle: "功能操作",
+                    subtitle: action == .openBatchOperations ? CommandPaletteItem.batchOperationsSubtitle : "功能操作",
                     category: .action,
                     iconName: action.iconName,
                     shortcutHint: action.shortcutHint,

@@ -306,6 +306,7 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
         for pane in panes {
             pane.tearDown()
         }
+        ExternalEditSessionManager.shared.stopAll(forTabID: id)
     }
     public var ringBuffer: TerminalRingBuffer {
         activePane?.ringBuffer ?? panes.first?.ringBuffer ?? fallbackRingBuffer
@@ -635,6 +636,12 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
     }
 }
 
+private struct BatchOperationsRequest: Identifiable {
+    let id = UUID()
+    let sessionIDs: Set<UUID>
+    let folderName: String?
+}
+
 /// Central workspace view with tabs, terminal, SFTP split, and FinalShell live dashboard
 public struct WorkspaceView: View {
     @ObservedObject private var themeSettings = AppSettings.shared
@@ -654,6 +661,7 @@ public struct WorkspaceView: View {
     @State private var isCommandPalettePresented: Bool = false
     @State private var isTunnelModalPresented: Bool = false
     @State private var isProcessInspectorPresented: Bool = false
+    @State private var batchOperationsRequest: BatchOperationsRequest?
     /// Owned here, not by the toolbar-hosted capsule, so the popover survives toolbar rebuilds.
     /// Held without observation: toggling it must not re-evaluate the toolbar, which would tear
     /// down the popover's anchor and re-present it as a non-key window that ignores Escape.
@@ -694,6 +702,17 @@ public struct WorkspaceView: View {
     
     private var currentTab: TerminalTabItem? {
         activeTabs.first(where: { $0.id == selectedTabId }) ?? activeTabs.first
+    }
+
+    private var batchConnectionStates: [UUID: SSHConnectionState] {
+        var states: [UUID: SSHConnectionState] = [:]
+        for tab in activeTabs where !tab.session.isLocal {
+            let state = tab.activePane?.connectionState ?? tab.connectionState
+            if states[tab.session.id] == nil || state == .connected {
+                states[tab.session.id] = state
+            }
+        }
+        return states
     }
 
     private func resolvedSession(for tab: TerminalTabItem) -> Session {
@@ -838,6 +857,10 @@ public struct WorkspaceView: View {
                     .keyboardShortcut("b", modifiers: [.command, .shift])
                 Button("") { isTunnelModalPresented.toggle() }
                     .keyboardShortcut("t", modifiers: [.command, .option])
+                Button("") {
+                    batchOperationsRequest = BatchOperationsRequest(sessionIDs: [], folderName: nil)
+                }
+                    .keyboardShortcut("b", modifiers: [.command, .option])
                 Button("") {
                     guard currentTab != nil else { return }
                     isProcessInspectorPresented.toggle()
@@ -1068,6 +1091,18 @@ public struct WorkspaceView: View {
                 window.makeKeyAndOrderFront(nil)
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: CommandPaletteItem.openBatchOperationsNotification)) { notif in
+            let ids: [UUID] = (notif.userInfo?["sessionIDs"] as? [UUID])
+                ?? (notif.userInfo?["sessionIDs"] as? Set<UUID>).map(Array.init)
+                ?? (notif.userInfo?["sessionIDs"] as? [String])?.compactMap(UUID.init(uuidString:))
+                ?? []
+            let folderName = (notif.userInfo?["folderName"] as? String)
+                ?? (notif.userInfo?["folder"] as? String)
+            batchOperationsRequest = BatchOperationsRequest(
+                sessionIDs: Set(ids),
+                folderName: folderName
+            )
+        }
         .sheet(item: $pendingSnippetForVariables) { snippet in
             VariableInputSheet(
                 snippet: snippet,
@@ -1084,6 +1119,16 @@ public struct WorkspaceView: View {
         }
         .sheet(isPresented: $isTunnelModalPresented) {
             SSHTunnelModalView(store: store).apexTheme()
+        }
+        .sheet(item: $batchOperationsRequest) { req in
+            BatchOperationsSheet(
+                availableSessions: store.sessions,
+                initialSelectedIDs: req.sessionIDs,
+                initialFolder: req.folderName,
+                activeConnectionStates: batchConnectionStates
+            )
+            .id(req.id)
+            .apexTheme()
         }
         .sheet(isPresented: $isProcessInspectorPresented) {
             if let tab = currentTab {
@@ -1273,6 +1318,8 @@ public struct WorkspaceView: View {
                 isQuickCommandBarVisible.toggle()
             case .toggleSFTP:
                 isSFTPVisible.toggle()
+            case .openBatchOperations:
+                batchOperationsRequest = BatchOperationsRequest(sessionIDs: [], folderName: nil)
             case .clearScrollback:
                 currentTab?.ringBuffer.clear()
             case .openSettings:

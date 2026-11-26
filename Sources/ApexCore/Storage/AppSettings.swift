@@ -118,6 +118,7 @@ public final class AppSettings: ObservableObject {
     
     // MARK: - Notification
     public static let didChangeNotification = Notification.Name("ApexSettingsDidChange")
+    public static let didResetToDefaultsNotification = Notification.Name("ApexSettingsDidResetToDefaults")
     
     // MARK: - Published Properties
     
@@ -343,5 +344,11 @@ public final class AppSettings: ObservableObject {
         sessionLogMaxFileSizeMB = 50
         isAutoReconnectEnabled = true
         isKeepAliveEnhanced = true
+
+        defaults.removeObject(forKey: "externalEdit.preferredEditorBundleID")
+        defaults.removeObject(forKey: "externalEdit.autoUploadOnSave")
+        DesktopNotificationManager.shared.resetPreferences()
+        AppLockManager.shared.resetPreferences()
+        NotificationCenter.default.post(name: Self.didResetToDefaultsNotification, object: self)
     }
 }

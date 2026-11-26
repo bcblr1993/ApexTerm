@@ -18,6 +18,7 @@ private struct GroupShareImportRequest: Identifiable {
 public struct SidebarView: View {
     @ObservedObject private var themeSettings = AppSettings.shared
     @ObservedObject private var shareCoordinator = IncomingShareCoordinator.shared
+    @ObservedObject private var lockManager = AppLockManager.shared
     @ObservedObject var store: SessionStore
     @Binding var selectedSession: Session?
     let onConnect: (Session) -> Void
@@ -410,15 +411,30 @@ public struct SidebarView: View {
             handleSidebarDrop(providers: providers)
         }
         .task {
-            if let pendingURL = shareCoordinator.consumePendingImportURL() {
+            if !lockManager.isLocked, let pendingURL = shareCoordinator.consumePendingImportURL() {
+                shareImportRequest = GroupShareImportRequest(fileURL: pendingURL)
+            }
+        }
+        .onChange(of: lockManager.isLocked) { _, isLocked in
+            if isLocked {
+                showingAddSheet = false
+                showingImportSheet = false
+                exportRequest = nil
+                shareImportRequest = nil
+                editingSession = nil
+                cloningSession = nil
+                sessionToDelete = nil
+            } else if let pendingURL = shareCoordinator.consumePendingImportURL() {
                 shareImportRequest = GroupShareImportRequest(fileURL: pendingURL)
             }
         }
         .onChange(of: shareCoordinator.openImportTrigger) { _, _ in
+            guard !lockManager.isLocked else { return }
             let url = shareCoordinator.consumePendingImportURL()
             shareImportRequest = GroupShareImportRequest(fileURL: url)
         }
         .onChange(of: shareCoordinator.openExportTrigger) { _, _ in
+            guard !lockManager.isLocked else { return }
             exportRequest = GroupShareExportRequest(folder: nil, sessionIDs: nil)
         }
     }
@@ -484,8 +500,12 @@ public struct SidebarView: View {
             }
             let formatted = SessionCopyHelper.formatSessionInfo(session: session, password: secret)
             await MainActor.run {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(formatted, forType: .string)
+                if let secret, !secret.isEmpty {
+                    SensitivePasteboardHelper.shared.copySecret(formatted)
+                } else {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(formatted, forType: .string)
+                }
                 showToast(L10n.copiedSessionInfoToast, isSuccess: true)
             }
         }

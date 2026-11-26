@@ -27,6 +27,7 @@ private struct SettingsOpenerBridge: View {
             .allowsHitTesting(false)
             .accessibilityHidden(true)
             .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("OpenSettingsModal"))) { _ in
+                guard !AppLockManager.shared.isLocked else { return }
                 openSettings()
             }
     }
@@ -35,7 +36,15 @@ private struct SettingsOpenerBridge: View {
 @MainActor
 private final class ApexTermAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     var reopenMainWindow: (() -> Void)?
+    var onBeforeTerminate: (() -> Void)?
     private var activityEventMonitor: Any?
+    private var idleLockTimer: Timer?
+    private var resignActiveObserver: NSObjectProtocol?
+    private var distributedActivateObserver: NSObjectProtocol?
+    private var lockStateCancellable: AnyCancellable?
+    private var deferredNotificationFocusUserInfo: [String: String]?
+    private var deferredShareImportURL: URL?
+    private var hasDeferredShareImportPicker: Bool = false
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         guard UpdateManager.shouldEnforceSingleInstance() else { return }
@@ -80,6 +89,11 @@ private final class ApexTermAppDelegate: NSObject, NSApplicationDelegate, UNUser
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        SSHKeyVaultManager.cleanupStaleMaterializedKeys()
+        UpdateManager.shared.onBeforeTerminateForUpdate = { [weak self] in
+            self?.performTerminationCleanup()
+        }
+
         if Bundle.main.bundleIdentifier != nil {
             UNUserNotificationCenter.current().delegate = self
         }
@@ -93,7 +107,33 @@ private final class ApexTermAppDelegate: NSObject, NSApplicationDelegate, UNUser
             return event
         }
 
-        DistributedNotificationCenter.default().addObserver(
+        let timer = Timer(timeInterval: 15, repeats: true) { _ in
+            Task { @MainActor in
+                AppLockManager.shared.checkIdleLock()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        idleLockTimer = timer
+
+        resignActiveObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.willResignActiveNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            Task { @MainActor in
+                AppLockManager.shared.handleAppDidResignActive()
+            }
+        }
+
+        lockStateCancellable = AppLockManager.shared.$isLocked
+            .dropFirst()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] isLocked in
+                guard let self, !isLocked else { return }
+                self.flushDeferredRequestsAfterUnlock()
+            }
+
+        distributedActivateObserver = DistributedNotificationCenter.default().addObserver(
             forName: NSNotification.Name(UpdateManager.activateMainWindowNotificationName),
             object: nil,
             queue: .main
@@ -106,9 +146,80 @@ private final class ApexTermAppDelegate: NSObject, NSApplicationDelegate, UNUser
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        idleLockTimer?.invalidate()
+        idleLockTimer = nil
+        lockStateCancellable?.cancel()
+        lockStateCancellable = nil
+        if let resignActiveObserver {
+            NotificationCenter.default.removeObserver(resignActiveObserver)
+            self.resignActiveObserver = nil
+        }
+        if let distributedActivateObserver {
+            DistributedNotificationCenter.default().removeObserver(distributedActivateObserver)
+            self.distributedActivateObserver = nil
+        }
         if let monitor = activityEventMonitor {
             NSEvent.removeMonitor(monitor)
             activityEventMonitor = nil
+        }
+        performTerminationCleanup()
+    }
+
+    func performTerminationCleanup() {
+        if let onBeforeTerminate {
+            onBeforeTerminate()
+        } else {
+            SSHTunnelManager.shared.stopAll()
+            TransferManager.shared.cancelAllTasks()
+            ExternalEditSessionManager.shared.stopAllSessions()
+            SSHKeyVaultManager.cleanupMaterializedKeys()
+        }
+    }
+
+    func enqueueOrDispatchShareImport(url: URL?) {
+        if AppLockManager.shared.isLocked {
+            if let url {
+                deferredShareImportURL = url
+                hasDeferredShareImportPicker = false
+            } else if deferredShareImportURL == nil {
+                hasDeferredShareImportPicker = true
+            }
+            return
+        }
+        IncomingShareCoordinator.shared.requestImport(url: url)
+    }
+
+    func enqueueOrDispatchNotificationFocus(userInfo: [String: String]) {
+        if AppLockManager.shared.isLocked {
+            deferredNotificationFocusUserInfo = userInfo
+            return
+        }
+        let postedInfo: [AnyHashable: Any] = userInfo
+        NotificationCenter.default.post(
+            name: DesktopNotificationManager.focusTabNotification,
+            object: nil,
+            userInfo: postedInfo
+        )
+    }
+
+    private func flushDeferredRequestsAfterUnlock() {
+        guard !AppLockManager.shared.isLocked else { return }
+        if let userInfo = deferredNotificationFocusUserInfo {
+            deferredNotificationFocusUserInfo = nil
+            let postedInfo: [AnyHashable: Any] = userInfo
+            NotificationCenter.default.post(
+                name: DesktopNotificationManager.focusTabNotification,
+                object: nil,
+                userInfo: postedInfo
+            )
+        }
+        if let url = deferredShareImportURL {
+            deferredShareImportURL = nil
+            hasDeferredShareImportPicker = false
+            IncomingShareCoordinator.shared.requestImport(url: url)
+        } else if hasDeferredShareImportPicker {
+            hasDeferredShareImportPicker = false
+            IncomingShareCoordinator.shared.requestImport(url: nil)
         }
     }
 
@@ -127,12 +238,7 @@ private final class ApexTermAppDelegate: NSObject, NSApplicationDelegate, UNUser
     ) {
         let userInfo = Self.sendableUserInfo(from: response.notification.request.content.userInfo)
         Task { @MainActor in
-            let postedInfo: [AnyHashable: Any] = userInfo
-            NotificationCenter.default.post(
-                name: Notification.Name("ApexTermFocusTabFromNotification"),
-                object: nil,
-                userInfo: postedInfo
-            )
+            self.enqueueOrDispatchNotificationFocus(userInfo: userInfo)
             self.reopenMainWindow?()
             NSApp.activate(ignoringOtherApps: true)
         }
@@ -160,7 +266,7 @@ private final class ApexTermAppDelegate: NSObject, NSApplicationDelegate, UNUser
         guard let targetURL = urls.first(where: { SessionBundleExporter.isSupportedShareFileURL($0) }) else {
             return
         }
-        IncomingShareCoordinator.shared.requestImport(url: targetURL)
+        enqueueOrDispatchShareImport(url: targetURL)
         reopenMainWindow?()
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -184,8 +290,6 @@ struct ApexTermApp: App {
     @State private var isAboutPresented = false
     @State private var isShortcutsPresented = false
     @State private var isNewSessionPresented = false
-
-    private let idleLockTimer = Timer.publish(every: 15, on: .main, in: .common).autoconnect()
     
     var body: some Scene {
         WindowGroup(id: "main") {
@@ -218,22 +322,16 @@ struct ApexTermApp: App {
                 }
             }
             .focusedSceneValue(\.isWorkspaceWindow, true)
-            .onReceive(idleLockTimer) { _ in
-                lockManager.checkIdleLock()
+            .onReceive(NotificationCenter.default.publisher(for: AppLockManager.appDidLockNotification)) { _ in
+                dismissAppLevelSheetsForLock()
             }
-            .onReceive(NotificationCenter.default.publisher(for: NSApplication.willResignActiveNotification)) { _ in
-                lockManager.handleAppDidResignActive()
+            .onChange(of: lockManager.isLocked) { _, isLocked in
+                if isLocked {
+                    dismissAppLevelSheetsForLock()
+                }
             }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
-                SSHTunnelManager.shared.stopAll()
-                TransferManager.shared.cancelAllTasks()
-                SSHKeyVaultManager.cleanupMaterializedKeys()
-                for tab in activeTabs {
-                    for pane in tab.panes {
-                        (pane.sshClient as? NativeSSHSession)?.terminatePTYProcess()
-                        (pane.sshClient as? LocalTerminalSession)?.terminatePTYProcess()
-                    }
-                }
+                performBeforeTerminateCleanup()
             }
             .navigationSplitViewStyle(.balanced)
             .background {
@@ -260,9 +358,11 @@ struct ApexTermApp: App {
                 UpdateSheetView().apexTheme()
             }
             .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("OpenAboutModal"))) { _ in
+                guard !lockManager.isLocked else { return }
                 isAboutPresented = true
             }
             .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("OpenShortcutsModal"))) { _ in
+                guard !lockManager.isLocked else { return }
                 isShortcutsPresented = true
             }
             .onChange(of: updateManager.isUpdateSheetPresented) { _, isPresented in
@@ -282,11 +382,14 @@ struct ApexTermApp: App {
             }
             .onOpenURL { url in
                 guard SessionBundleExporter.isSupportedShareFileURL(url) else { return }
-                IncomingShareCoordinator.shared.requestImport(url: url)
+                appDelegate.enqueueOrDispatchShareImport(url: url)
                 showMainWindow()
             }
+            .onAppear {
+                wireLifecycleHandlers()
+            }
             .task {
-                appDelegate.reopenMainWindow = { showMainWindow() }
+                wireLifecycleHandlers()
                 if updateManager.distributionChannel == .direct && settings.checkForUpdatesOnLaunch && ProcessInfo.processInfo.environment["APEX_UI_TEST_REOPEN"] != "1" {
                     await updateManager.checkForUpdates(manual: false)
                 }
@@ -296,12 +399,12 @@ struct ApexTermApp: App {
         .defaultSize(width: ApexStyle.defaultWindowWidth, height: ApexStyle.defaultWindowHeight)
         .commands {
             CommandGroup(after: .windowArrangement) {
-                Button("显示主窗口") {
+                Button(L10n.menuShowMainWindow) {
                     showMainWindow()
                 }
                 .keyboardShortcut("0", modifiers: [.command, .shift])
 
-                Button("锁定应用") {
+                Button(L10n.menuLockAppAction) {
                     lockManager.lockNow()
                 }
                 .keyboardShortcut("l", modifiers: [.command, .shift])
@@ -309,10 +412,13 @@ struct ApexTermApp: App {
 
             CommandGroup(replacing: .appInfo) {
                 Button(L10n.menuAbout) {
+                    guard !lockManager.isLocked else { return }
                     isAboutPresented = true
                 }
+                .disabled(lockManager.isLocked)
                 
                 Button(L10n.menuCheckUpdates) {
+                    guard !lockManager.isLocked else { return }
                     if updateManager.distributionChannel == .appStore {
                         NSWorkspace.shared.open(DistributionChannel.appStoreURL)
                     } else {
@@ -321,15 +427,19 @@ struct ApexTermApp: App {
                         }
                     }
                 }
+                .disabled(lockManager.isLocked)
             }
             
             CommandGroup(replacing: .newItem) {
-                Button("新建本地终端") {
+                Button(L10n.menuNewLocalTerminal) {
+                    guard !lockManager.isLocked else { return }
                     openLocalTerminal()
                 }
                 .keyboardShortcut("t", modifiers: [.command, .shift])
+                .disabled(lockManager.isLocked)
                 
-                Button("复制当前会话 / 新建标签页") {
+                Button(L10n.menuDuplicateOrNewTab) {
+                    guard !lockManager.isLocked else { return }
                     if activeTabs.contains(where: { $0.id == selectedTabId }) {
                         duplicateCurrentSession()
                     } else if let selected = selectedSidebarSession ?? sessionStore.sessions.first {
@@ -339,20 +449,26 @@ struct ApexTermApp: App {
                     }
                 }
                 .keyboardShortcut("t", modifiers: .command)
+                .disabled(lockManager.isLocked)
                 
                 Divider()
                 
                 Button(L10n.menuExportSessions) {
+                    guard !lockManager.isLocked else { return }
                     exportSessions()
                 }
+                .disabled(lockManager.isLocked)
                 
                 Button(L10n.menuImportSessions) {
+                    guard !lockManager.isLocked else { return }
                     importSessions()
                 }
+                .disabled(lockManager.isLocked)
             }
             
             CommandGroup(after: .pasteboard) {
-                Button("查找...") {
+                Button(L10n.menuFind) {
+                    guard !lockManager.isLocked else { return }
                     if let editor = NSApp.keyWindow?.firstResponder as? NSTextView, editor.isEditable, !editor.isFieldEditor {
                         let action = NSMenuItem()
                         action.tag = NSTextFinder.Action.showFindInterface.rawValue
@@ -363,143 +479,237 @@ struct ApexTermApp: App {
                     }
                 }
                 .keyboardShortcut("f", modifiers: .command)
+                .disabled(lockManager.isLocked)
             }
             
             CommandGroup(replacing: .saveItem) {
-                Button("关闭当前窗格 / 标签页") {
+                Button(L10n.menuCloseCurrentPaneOrTab) {
+                    guard !lockManager.isLocked else { return }
                     if isWorkspaceWindow == true, NSApp.keyWindow?.sheetParent == nil,
                        NSApp.keyWindow?.attachedSheet == nil,
                        activeTabs.contains(where: { $0.id == selectedTabId }) {
-                        closeCurrentConnection()
+                        NotificationCenter.default.post(name: WorkspaceView.requestCloseCurrentTabNotification, object: nil)
                     } else {
                         NSApplication.shared.keyWindow?.performClose(nil)
                     }
                 }
                 .keyboardShortcut("w", modifiers: .command)
+                .disabled(lockManager.isLocked)
             }
 
             CommandMenu(L10n.menuSession) {
-                Button("复制此会话到新标签页") {
+                Button(L10n.menuDuplicateToNewTab) {
+                    guard !lockManager.isLocked else { return }
                     duplicateCurrentSession()
                 }
-                .disabled(activeTabs.isEmpty)
+                .disabled(lockManager.isLocked || activeTabs.isEmpty)
+
+                Button(L10n.menuReconnectSession) {
+                    guard !lockManager.isLocked else { return }
+                    if let current = activeTabs.first(where: { $0.id == selectedTabId }),
+                       let active = current.activePane {
+                        current.reconnect(pane: active)
+                    }
+                }
+                .keyboardShortcut("r", modifiers: .command)
+                .disabled(lockManager.isLocked || !activeTabs.contains(where: { $0.id == selectedTabId }))
                 
                 Divider()
                 
                 Button(L10n.menuDisconnect) {
-                    closeCurrentConnection()
+                    guard !lockManager.isLocked else { return }
+                    NotificationCenter.default.post(name: WorkspaceView.requestCloseCurrentTabNotification, object: nil)
                 }
-                .disabled(!activeTabs.contains(where: { $0.id == selectedTabId }))
+                .disabled(lockManager.isLocked || !activeTabs.contains(where: { $0.id == selectedTabId }))
                 
                 Divider()
                 
-                Button("垂直分屏") {
+                Button(L10n.menuSplitVertical) {
+                    guard !lockManager.isLocked else { return }
                     if let current = activeTabs.first(where: { $0.id == selectedTabId }) {
                         current.split(mode: .vertical)
                     }
                 }
                 .keyboardShortcut("d", modifiers: .command)
-                .disabled(!activeTabs.contains(where: { $0.id == selectedTabId }))
+                .disabled(lockManager.isLocked || !activeTabs.contains(where: { $0.id == selectedTabId }))
                 
-                Button("水平分屏") {
+                Button(L10n.menuSplitHorizontal) {
+                    guard !lockManager.isLocked else { return }
                     if let current = activeTabs.first(where: { $0.id == selectedTabId }) {
                         current.split(mode: .horizontal)
                     }
                 }
                 .keyboardShortcut("d", modifiers: [.command, .shift])
-                .disabled(!activeTabs.contains(where: { $0.id == selectedTabId }))
+                .disabled(lockManager.isLocked || !activeTabs.contains(where: { $0.id == selectedTabId }))
                 
-                Button("全屏放大 / 恢复分屏") {
+                Button(L10n.menuToggleMaximizePane) {
+                    guard !lockManager.isLocked else { return }
                     if let current = activeTabs.first(where: { $0.id == selectedTabId }) {
                         current.toggleMaximizeActivePane()
                     }
                 }
                 .keyboardShortcut(.return, modifiers: [.command, .shift])
-                .disabled((activeTabs.first(where: { $0.id == selectedTabId })?.panes.count ?? 0) < 2)
+                .disabled(lockManager.isLocked || (activeTabs.first(where: { $0.id == selectedTabId })?.panes.count ?? 0) < 2)
 
-                Button("切换到下一个分屏窗格") {
+                Button(L10n.menuNextPane) {
+                    guard !lockManager.isLocked else { return }
                     if let current = activeTabs.first(where: { $0.id == selectedTabId }) {
                         current.focusNextPane()
                     }
                 }
                 .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
-                .disabled((activeTabs.first(where: { $0.id == selectedTabId })?.panes.count ?? 0) < 2)
+                .disabled(lockManager.isLocked || (activeTabs.first(where: { $0.id == selectedTabId })?.panes.count ?? 0) < 2)
 
-                Button("切换到上一个分屏窗格") {
+                Button(L10n.menuPreviousPane) {
+                    guard !lockManager.isLocked else { return }
                     if let current = activeTabs.first(where: { $0.id == selectedTabId }) {
                         current.focusPreviousPane()
                     }
                 }
                 .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
-                .disabled((activeTabs.first(where: { $0.id == selectedTabId })?.panes.count ?? 0) < 2)
+                .disabled(lockManager.isLocked || (activeTabs.first(where: { $0.id == selectedTabId })?.panes.count ?? 0) < 2)
+
+                Button(L10n.menuNextPaneVertical) {
+                    guard !lockManager.isLocked else { return }
+                    if let current = activeTabs.first(where: { $0.id == selectedTabId }) {
+                        current.focusNextPane()
+                    }
+                }
+                .keyboardShortcut(.downArrow, modifiers: [.command, .option])
+                .disabled(lockManager.isLocked || (activeTabs.first(where: { $0.id == selectedTabId })?.panes.count ?? 0) < 2)
+
+                Button(L10n.menuPreviousPaneVertical) {
+                    guard !lockManager.isLocked else { return }
+                    if let current = activeTabs.first(where: { $0.id == selectedTabId }) {
+                        current.focusPreviousPane()
+                    }
+                }
+                .keyboardShortcut(.upArrow, modifiers: [.command, .option])
+                .disabled(lockManager.isLocked || (activeTabs.first(where: { $0.id == selectedTabId })?.panes.count ?? 0) < 2)
 
                 Divider()
 
-                Button("下一个标签页") {
+                Button(L10n.menuNextTab) {
+                    guard !lockManager.isLocked else { return }
                     selectNextTab()
                 }
                 .keyboardShortcut("]", modifiers: [.command, .shift])
-                .disabled(activeTabs.count < 2)
+                .disabled(lockManager.isLocked || activeTabs.count < 2)
 
-                Button("上一个标签页") {
+                Button(L10n.menuPreviousTab) {
+                    guard !lockManager.isLocked else { return }
                     selectPreviousTab()
                 }
                 .keyboardShortcut("[", modifiers: [.command, .shift])
-                .disabled(activeTabs.count < 2)
+                .disabled(lockManager.isLocked || activeTabs.count < 2)
+
+                Menu(L10n.menuSwitchTabSubmenu) {
+                    ForEach(1...9, id: \.self) { number in
+                        Button(L10n.menuSwitchToTab(number)) {
+                            guard !lockManager.isLocked else { return }
+                            guard activeTabs.indices.contains(number - 1) else { return }
+                            selectedTabId = activeTabs[number - 1].id
+                        }
+                        .keyboardShortcut(KeyEquivalent(Character(String(number))), modifiers: .command)
+                        .disabled(lockManager.isLocked || !activeTabs.indices.contains(number - 1))
+                    }
+                }
+                .disabled(lockManager.isLocked || activeTabs.isEmpty)
                 
                 Divider()
                 
                 Button(L10n.menuClearScrollback) {
-                    if let current = activeTabs.first(where: { $0.id == selectedTabId }) {
-                        current.ringBuffer.clear()
-                    }
+                    guard !lockManager.isLocked else { return }
+                    clearActiveTerminalScreen()
                 }
                 .keyboardShortcut("k", modifiers: .command)
-                .disabled(!activeTabs.contains(where: { $0.id == selectedTabId }))
+                .disabled(lockManager.isLocked || !activeTabs.contains(where: { $0.id == selectedTabId }))
                 
                 Divider()
                 
-                Button("全局快速搜索与命令面板...") {
+                Button(L10n.menuCommandPalette) {
+                    guard !lockManager.isLocked else { return }
                     NotificationCenter.default.post(name: NSNotification.Name("TriggerCommandPalette"), object: nil)
                 }
                 .keyboardShortcut("p", modifiers: .command)
+                .disabled(lockManager.isLocked)
                 
-                Button("SSH 端口转发与隧道管理...") {
+                Button(L10n.menuSSHTunnels) {
+                    guard !lockManager.isLocked else { return }
                     NotificationCenter.default.post(name: NSNotification.Name("TriggerSSHTunnels"), object: nil)
                 }
                 .keyboardShortcut("t", modifiers: [.command, .option])
+                .disabled(lockManager.isLocked)
+
+                Button(L10n.menuBatchOperations) {
+                    guard !lockManager.isLocked else { return }
+                    CommandPaletteItem.postOpenBatchOperations(sessionIDs: [], folder: nil)
+                }
+                .keyboardShortcut("b", modifiers: [.command, .option])
+                .disabled(lockManager.isLocked)
+
+                Button(L10n.menuProcessInspector) {
+                    guard !lockManager.isLocked else { return }
+                    NotificationCenter.default.post(name: NSNotification.Name("TriggerProcessInspector"), object: nil)
+                }
+                .keyboardShortcut("k", modifiers: [.command, .option])
+                .disabled(lockManager.isLocked || !activeTabs.contains(where: { $0.id == selectedTabId }))
+
+                Button(L10n.menuToggleSFTP) {
+                    guard !lockManager.isLocked else { return }
+                    NotificationCenter.default.post(name: WorkspaceView.toggleSFTPNotification, object: nil)
+                }
+                .keyboardShortcut("s", modifiers: [.command, .option])
+                .disabled(lockManager.isLocked || !activeTabs.contains(where: { $0.id == selectedTabId }))
                 
-                Button("显示 / 隐藏底部快捷命令栏") {
+                Button(L10n.menuToggleQuickCommandBar) {
+                    guard !lockManager.isLocked else { return }
                     NotificationCenter.default.post(name: NSNotification.Name("TriggerQuickCommandBar"), object: nil)
                 }
                 .keyboardShortcut("b", modifiers: [.command, .shift])
+                .disabled(lockManager.isLocked)
+
+                Button(L10n.menuCopyLastCommandOutput) {
+                    guard !lockManager.isLocked else { return }
+                    NotificationCenter.default.post(name: NSNotification.Name("TriggerCopyLastCommandOutput"), object: nil)
+                }
+                .keyboardShortcut("c", modifiers: [.command, .option])
+                .disabled(lockManager.isLocked || !activeTabs.contains(where: { $0.id == selectedTabId }))
             }
             
             CommandGroup(replacing: .help) {
                 Button(L10n.menuShortcuts) {
+                    guard !lockManager.isLocked else { return }
                     isShortcutsPresented = true
                 }
                 .keyboardShortcut("/", modifiers: .command)
+                .disabled(lockManager.isLocked)
                 
                 Divider()
                 
                 Button(L10n.menuDocumentation) {
+                    guard !lockManager.isLocked else { return }
                     if let url = URL(string: "https://github.com/bcblr1993/ApexTerm#readme") {
                         NSWorkspace.shared.open(url)
                     }
                 }
+                .disabled(lockManager.isLocked)
                 
                 Button(L10n.menuGitHubRepo) {
+                    guard !lockManager.isLocked else { return }
                     if let url = URL(string: "https://github.com/bcblr1993/ApexTerm") {
                         NSWorkspace.shared.open(url)
                     }
                 }
+                .disabled(lockManager.isLocked)
                 
                 Button(L10n.menuReportIssue) {
+                    guard !lockManager.isLocked else { return }
                     if let url = URL(string: "https://github.com/bcblr1993/ApexTerm/issues/new") {
                         NSWorkspace.shared.open(url)
                     }
                 }
+                .disabled(lockManager.isLocked)
             }
         }
         
@@ -518,6 +728,51 @@ struct ApexTermApp: App {
         }
     }
 
+    private func wireLifecycleHandlers() {
+        appDelegate.reopenMainWindow = { showMainWindow() }
+        appDelegate.onBeforeTerminate = { performBeforeTerminateCleanup() }
+        UpdateManager.shared.onBeforeTerminateForUpdate = { performBeforeTerminateCleanup() }
+        lockManager.onDidLock = { dismissAppLevelSheetsForLock() }
+    }
+
+    private func dismissAppLevelSheetsForLock() {
+        isAboutPresented = false
+        isShortcutsPresented = false
+        isNewSessionPresented = false
+        updateManager.isUpdateSheetPresented = false
+    }
+
+    private func performBeforeTerminateCleanup() {
+        SSHTunnelManager.shared.stopAll()
+        TransferManager.shared.cancelAllTasks()
+        ExternalEditSessionManager.shared.stopAllSessions()
+        SSHKeyVaultManager.cleanupMaterializedKeys()
+        for tab in activeTabs {
+            for pane in tab.panes {
+                (pane.sshClient as? NativeSSHSession)?.terminatePTYProcess()
+                (pane.sshClient as? LocalTerminalSession)?.terminatePTYProcess()
+            }
+        }
+    }
+
+    private func clearActiveTerminalScreen() {
+        guard let current = activeTabs.first(where: { $0.id == selectedTabId }),
+              let pane = current.activePane ?? current.panes.first else {
+            return
+        }
+        guard !pane.ringBuffer.isInAlternateScreen else { return }
+        let hadContent = pane.ringBuffer.totalCommittedCount > 0 || !pane.ringBuffer.currentActiveLine.isEmpty
+        NotificationCenter.default.post(
+            name: WorkspaceView.clearTerminalScreenNotification,
+            object: pane.id,
+            userInfo: ["tabId": current.id, "paneId": pane.id]
+        )
+        if hadContent && (pane.ringBuffer.totalCommittedCount > 0 || !pane.ringBuffer.currentActiveLine.isEmpty) {
+            pane.ringBuffer.clear()
+            Task { try? await pane.sshClient.sendInput(Data([0x0C])) }
+        }
+    }
+
     private func showMainWindow() {
         let workspace = NSApp.windows.first(where: {
             $0.isVisible && ($0.frameAutosaveName == "ApexTerm.MainWorkspace"
@@ -533,13 +788,14 @@ struct ApexTermApp: App {
     }
     
     private func exportSessions() {
+        guard !lockManager.isLocked else { return }
         showMainWindow()
         IncomingShareCoordinator.shared.requestExport()
     }
     
     private func importSessions() {
         showMainWindow()
-        IncomingShareCoordinator.shared.requestImport(url: nil)
+        appDelegate.enqueueOrDispatchShareImport(url: nil)
     }
     
     private func closeCurrentConnection() {

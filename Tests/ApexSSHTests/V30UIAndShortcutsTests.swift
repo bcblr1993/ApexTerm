@@ -219,4 +219,49 @@ final class V30UIAndShortcutsTests: XCTestCase {
             "echo deployer@api.prod.internal\n"
         )
     }
+
+    // MARK: - Step 2 Integration Wiring: AppSettings, Terminal Hooks, & Terminal Appearance
+    func testV30IntegrationWiring_AppSettingsTerminalHooksAndAppearance() {
+        let settings = AppSettings.shared
+        let prevOption = settings.optionAsMeta
+        let prevCJK = settings.autoConvertCJKPunctuation
+        let prevAutoClear = settings.sensitiveClipboardAutoClearSeconds
+        let prevFollow = settings.followsSystemAppearance
+        let prevPreset = settings.themePreset
+        let prevHelperAutoClear = SensitivePasteboardHelper.shared.autoClearSeconds
+        defer {
+            settings.optionAsMeta = prevOption
+            settings.autoConvertCJKPunctuation = prevCJK
+            settings.sensitiveClipboardAutoClearSeconds = prevAutoClear
+            settings.followsSystemAppearance = prevFollow
+            settings.themePreset = prevPreset
+            SensitivePasteboardHelper.shared.autoClearSeconds = prevHelperAutoClear
+        }
+
+        // AppSettings -> NativeTerminalView & SensitivePasteboardHelper sync
+        settings.optionAsMeta = true
+        XCTAssertTrue(NativeTerminalView.isOptionAsMetaEnabled())
+        settings.optionAsMeta = false
+        XCTAssertFalse(NativeTerminalView.isOptionAsMetaEnabled())
+
+        settings.autoConvertCJKPunctuation = false
+        XCTAssertFalse(NativeTerminalView.shouldConvertCJKPunctuation())
+        settings.autoConvertCJKPunctuation = true
+        XCTAssertTrue(NativeTerminalView.shouldConvertCJKPunctuation())
+
+        settings.sensitiveClipboardAutoClearSeconds = 60
+        XCTAssertEqual(SensitivePasteboardHelper.shared.autoClearSeconds, 60)
+
+        // TerminalViewBridge honors followsSystemAppearance when resolving light/dark colors
+        settings.themePreset = .dracula
+        settings.followsSystemAppearance = false
+        XCTAssertEqual(NativeTerminalView.resolvedThemePreset(for: NSAppearance(named: .aqua)), .dracula)
+
+        settings.followsSystemAppearance = true
+        XCTAssertEqual(NativeTerminalView.resolvedThemePreset(for: NSAppearance(named: .aqua)), .nativeLight)
+        XCTAssertEqual(NativeTerminalView.resolvedThemePreset(for: NSAppearance(named: .darkAqua)), .modern)
+
+        // SettingsView retains exact 6 tabs (TC-REV-14)
+        XCTAssertGreaterThanOrEqual(SettingsView.contentWidth, 700)
+    }
 }

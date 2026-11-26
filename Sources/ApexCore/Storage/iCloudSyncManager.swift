@@ -376,4 +376,10 @@ public final class iCloudSyncManager: ObservableObject {
         autoSyncTimer?.invalidate()
         autoSyncTimer = nil
     }
+
+    /// Resets non-security sync preferences to factory defaults.
+    public func resetPreferences() {
+        conflictStrategy = .smartMerge
+        isAutoSyncEnabled = false
+    }
 }

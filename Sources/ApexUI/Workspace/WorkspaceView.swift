@@ -701,6 +701,7 @@ public struct WorkspaceView: View {
     public static let executeSnippetNotification = NSNotification.Name("ExecuteSnippetInWorkspace")
     public static let clearTerminalScreenNotification = Notification.Name("ApexTermClearTerminalScreen")
     public static let requestCloseCurrentTabNotification = Notification.Name("ApexTermRequestCloseCurrentTab")
+    public static let toggleSFTPNotification = Notification.Name("TriggerToggleSFTP")
     
     // Tab Rename
     @State private var tabToRename: TerminalTabItem?
@@ -1063,7 +1064,8 @@ public struct WorkspaceView: View {
                     metricsPresentation: metricsDetail,
                     metricsDockWidth: metricsDockWidthBinding,
                     metricsDockDragStartWidth: $metricsDockDragStartWidth,
-                    transferPresentation: transferDrawer
+                    transferPresentation: transferDrawer,
+                    isTabActive: tab.id == selectedTabId
                 )
                 
                 if isQuickCommandBarVisible {
@@ -1222,29 +1224,43 @@ public struct WorkspaceView: View {
         } message: {
             Text("自定义该标签页的显示名称，输入留空或恢复默认将恢复为服务器名称。")
         }
+        .onReceive(NotificationCenter.default.publisher(for: AppLockManager.appDidLockNotification)) { _ in
+            dismissModalsOnLock()
+        }
         .onReceive(NotificationCenter.default.publisher(for: Self.requestCloseCurrentTabNotification)) { _ in
+            guard !AppLockManager.shared.isLocked else { return }
             closeCurrentTabOrPane()
         }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ApexTermOpenNewSessionModal"))) { _ in
+            guard !AppLockManager.shared.isLocked else { return }
             isNewSessionSheetPresented = true
         }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ApexTermOpenSSHConfigImport"))) { _ in
+            guard !AppLockManager.shared.isLocked else { return }
             isSSHConfigImportPresented = true
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("TriggerCommandPalette"))) { _ in
+            guard !AppLockManager.shared.isLocked else { return }
             isCommandPalettePresented = true
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("TriggerSSHTunnels"))) { _ in
+            guard !AppLockManager.shared.isLocked else { return }
             isTunnelModalPresented = true
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("TriggerQuickCommandBar"))) { _ in
+            guard !AppLockManager.shared.isLocked else { return }
             isQuickCommandBarVisible.toggle()
         }
+        .onReceive(NotificationCenter.default.publisher(for: Self.toggleSFTPNotification)) { _ in
+            guard !AppLockManager.shared.isLocked, currentTab != nil else { return }
+            isSFTPVisible.toggle()
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("TriggerProcessInspector"))) { _ in
-            guard currentTab != nil else { return }
+            guard !AppLockManager.shared.isLocked, currentTab != nil else { return }
             isProcessInspectorPresented = true
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("TriggerCopyLastCommandOutput"))) { _ in
+            guard !AppLockManager.shared.isLocked else { return }
             copyLastCommandOutput()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ShowStatusToast"))) { notif in
@@ -1253,38 +1269,16 @@ public struct WorkspaceView: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: Self.executeSnippetNotification)) { notif in
+            guard !AppLockManager.shared.isLocked else { return }
             if let snippet = notif.object as? Snippet {
                 executeSnippet(snippet)
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: DesktopNotificationManager.focusTabNotification)) { notif in
-            let targetTabID: UUID? = (notif.object as? UUID)
-                ?? (notif.userInfo?["tabID"] as? UUID)
-                ?? (notif.userInfo?["tabID"] as? String).flatMap(UUID.init(uuidString:))
-            guard let targetTabID,
-                  activeTabs.contains(where: { $0.id == targetTabID }) else {
-                return
-            }
-            selectedTabId = targetTabID
-            NSApp?.activate(ignoringOtherApps: true)
-            if let window = NSApp?.windows.first(where: { $0.isVisible || $0.isMiniaturized }) ?? NSApp?.mainWindow {
-                if window.isMiniaturized {
-                    window.deminiaturize(nil)
-                }
-                window.makeKeyAndOrderFront(nil)
-            }
+            handleFocusTabNotification(notif)
         }
         .onReceive(NotificationCenter.default.publisher(for: CommandPaletteItem.openBatchOperationsNotification)) { notif in
-            let ids: [UUID] = (notif.userInfo?["sessionIDs"] as? [UUID])
-                ?? (notif.userInfo?["sessionIDs"] as? Set<UUID>).map(Array.init)
-                ?? (notif.userInfo?["sessionIDs"] as? [String])?.compactMap(UUID.init(uuidString:))
-                ?? []
-            let folderName = (notif.userInfo?["folderName"] as? String)
-                ?? (notif.userInfo?["folder"] as? String)
-            batchOperationsRequest = BatchOperationsRequest(
-                sessionIDs: Set(ids),
-                folderName: folderName
-            )
+            handleOpenBatchOperationsNotification(notif)
         }
         .sheet(item: $pendingSnippetForVariables) { snippet in
             VariableInputSheet(
@@ -1474,6 +1468,65 @@ public struct WorkspaceView: View {
                 .help(isSFTPVisible ? "隐藏文件面板 (⌘⌥S)" : "显示文件面板 (⌘⌥S)")
             }
         }
+    }
+
+    private func dismissModalsOnLock() {
+        isCommandPalettePresented = false
+        isTunnelModalPresented = false
+        batchOperationsRequest = nil
+        isProcessInspectorPresented = false
+        isNewSessionSheetPresented = false
+        isSSHConfigImportPresented = false
+        pendingSnippetForVariables = nil
+        pendingCloseRequest = nil
+        isConfirmingBroadcastEnable = false
+        isShowingTabRenameAlert = false
+    }
+
+    private func handleFocusTabNotification(_ notif: Notification) {
+        guard !AppLockManager.shared.isLocked else { return }
+        let targetTabID: UUID?
+        if let direct = notif.object as? UUID {
+            targetTabID = direct
+        } else if let infoID = notif.userInfo?["tabID"] as? UUID {
+            targetTabID = infoID
+        } else if let str = notif.userInfo?["tabID"] as? String {
+            targetTabID = UUID(uuidString: str)
+        } else {
+            targetTabID = nil
+        }
+        guard let targetTabID,
+              activeTabs.contains(where: { $0.id == targetTabID }) else {
+            return
+        }
+        selectedTabId = targetTabID
+        NSApp?.activate(ignoringOtherApps: true)
+        if let window = NSApp?.windows.first(where: { $0.isVisible || $0.isMiniaturized }) ?? NSApp?.mainWindow {
+            if window.isMiniaturized {
+                window.deminiaturize(nil)
+            }
+            window.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    private func handleOpenBatchOperationsNotification(_ notif: Notification) {
+        guard !AppLockManager.shared.isLocked else { return }
+        let ids: [UUID]
+        if let direct = notif.userInfo?["sessionIDs"] as? [UUID] {
+            ids = direct
+        } else if let setIDs = notif.userInfo?["sessionIDs"] as? Set<UUID> {
+            ids = Array(setIDs)
+        } else if let strings = notif.userInfo?["sessionIDs"] as? [String] {
+            ids = strings.compactMap(UUID.init(uuidString:))
+        } else {
+            ids = []
+        }
+        let folderName = (notif.userInfo?["folderName"] as? String)
+            ?? (notif.userInfo?["folder"] as? String)
+        batchOperationsRequest = BatchOperationsRequest(
+            sessionIDs: Set(ids),
+            folderName: folderName
+        )
     }
 
     private func copyLastCommandOutput() {
@@ -2042,6 +2095,7 @@ public struct WorkspaceMainAreaWithMetricsDock: View {
     @Binding var metricsDockWidth: CGFloat
     @Binding var metricsDockDragStartWidth: CGFloat?
     let transferPresentation: TransferDrawerPresentation
+    var isTabActive: Bool = true
 
     nonisolated public static func clampedDockedWidth(preferred: CGFloat, availableTotalWidth: CGFloat) -> CGFloat {
         let dividerWidth: CGFloat = 8
@@ -2068,7 +2122,8 @@ public struct WorkspaceMainAreaWithMetricsDock: View {
                     isSFTPVisible: $isSFTPVisible,
                     splitRatio: $splitRatio,
                     splitDragStartRatio: $splitDragStartRatio,
-                    transferPresentation: transferPresentation
+                    transferPresentation: transferPresentation,
+                    isTabActive: isTabActive
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
@@ -2237,6 +2292,7 @@ private struct WorkspaceActiveTabSplitView: View {
     @Binding var splitRatio: CGFloat
     @Binding var splitDragStartRatio: CGFloat?
     let transferPresentation: TransferDrawerPresentation
+    let isTabActive: Bool
     @State private var paneDragStartRatio: CGFloat?
 
     private static func clampedSplitRatio(_ preferred: CGFloat, availableHeight: CGFloat) -> CGFloat {
@@ -2394,7 +2450,9 @@ private struct WorkspaceActiveTabSplitView: View {
                         isLinkageEnabled: $tab.isDirectoryLinkageEnabled,
                         session: activeTargetPane?.sshClient ?? tab.sshClient,
                         connectionState: activeTargetPane?.connectionState ?? tab.connectionState,
-                        tabID: tab.id
+                        tabID: tab.id,
+                        paneID: activeTargetPane?.id,
+                        isTabActive: isTabActive
                     )
                     .id(tab.id)
                     .frame(height: sftpHeight)
@@ -2819,6 +2877,8 @@ private struct SFTPTransferBoundView: View {
     let session: SSHSessionProtocol?
     let connectionState: SSHConnectionState
     let tabID: UUID?
+    let paneID: UUID?
+    let isTabActive: Bool
 
     var body: some View {
         SFTPView(
@@ -2827,6 +2887,8 @@ private struct SFTPTransferBoundView: View {
             session: session,
             connectionState: connectionState,
             tabID: tabID,
+            paneID: paneID,
+            isTabActive: isTabActive,
             isTransferDrawerExpanded: $presentation.isPresented
         )
     }

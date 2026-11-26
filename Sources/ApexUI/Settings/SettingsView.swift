@@ -70,8 +70,18 @@ private struct GeneralSettingsTab: View {
     @ObservedObject private var notificationManager = DesktopNotificationManager.shared
     @ObservedObject private var externalEditManager = ExternalEditSessionManager.shared
     @State private var isShowingResetConfirm = false
-    @State private var isEnablingAppLock = false
+    @State private var isUpdatingSecuritySetting = false
+    @State private var isResettingDefaults = false
     @State private var appLockToggleError: String?
+
+    private static let pasteboardAutoClearPresets: [(label: String, seconds: Int)] = [
+        ("从不自动清除", 0),
+        ("15 秒", 15),
+        ("30 秒 (默认)", 30),
+        ("1 分钟", 60),
+        ("3 分钟", 180),
+        ("5 分钟", 300)
+    ]
 
     private static let notificationDurationPresets: [(label: String, seconds: Double)] = [
         ("立即 (0 秒)", 0),
@@ -162,23 +172,19 @@ private struct GeneralSettingsTab: View {
                     Toggle("启用应用锁 (Touch ID / 系统密码)", isOn: Binding(
                         get: { lockManager.appLockEnabled },
                         set: { newValue in
-                            if !newValue {
-                                lockManager.appLockEnabled = false
-                                appLockToggleError = nil
-                            } else if !isEnablingAppLock {
-                                isEnablingAppLock = true
-                                appLockToggleError = nil
-                                Task {
-                                    let ok = await lockManager.setAppLockEnabled(true)
-                                    isEnablingAppLock = false
-                                    if !ok {
-                                        appLockToggleError = lockManager.lastErrorMessage ?? "身份验证未通过，未启用应用锁"
-                                    }
+                            guard newValue != lockManager.appLockEnabled, !isUpdatingSecuritySetting else { return }
+                            isUpdatingSecuritySetting = true
+                            appLockToggleError = nil
+                            Task {
+                                let ok = await lockManager.setAppLockEnabled(newValue)
+                                isUpdatingSecuritySetting = false
+                                if !ok {
+                                    appLockToggleError = lockManager.lastErrorMessage ?? (newValue ? "身份验证未通过，未启用应用锁" : "身份验证未通过，无法关闭应用锁")
                                 }
                             }
                         }
                     ))
-                    .disabled(isEnablingAppLock)
+                    .disabled(isUpdatingSecuritySetting)
 
                     if let appLockToggleError {
                         Text(appLockToggleError)
@@ -191,21 +197,79 @@ private struct GeneralSettingsTab: View {
                     }
                 }
 
-                Picker("闲置自动锁定", selection: $lockManager.idleTimeoutSeconds) {
+                Picker("闲置自动锁定", selection: Binding(
+                    get: { lockManager.idleTimeoutSeconds },
+                    set: { newValue in
+                        guard newValue != lockManager.idleTimeoutSeconds, !isUpdatingSecuritySetting else { return }
+                        isUpdatingSecuritySetting = true
+                        appLockToggleError = nil
+                        Task {
+                            let ok = await lockManager.updateIdleTimeout(newValue)
+                            isUpdatingSecuritySetting = false
+                            if !ok {
+                                appLockToggleError = lockManager.lastErrorMessage ?? "身份验证未通过，未修改闲置自动锁定时间"
+                            }
+                        }
+                    }
+                )) {
                     Text("从不").tag(TimeInterval(0))
                     Text("1 分钟").tag(TimeInterval(60))
                     Text("5 分钟").tag(TimeInterval(300))
                     Text("15 分钟").tag(TimeInterval(900))
                     Text("30 分钟").tag(TimeInterval(1800))
                 }
-                .disabled(!lockManager.appLockEnabled)
+                .disabled(!lockManager.appLockEnabled || isUpdatingSecuritySetting)
 
-                Toggle("应用切至后台时自动锁定", isOn: $lockManager.lockOnAppBackground)
-                    .disabled(!lockManager.appLockEnabled)
+                Toggle("应用切至后台时自动锁定", isOn: Binding(
+                    get: { lockManager.lockOnAppBackground },
+                    set: { newValue in
+                        guard newValue != lockManager.lockOnAppBackground, !isUpdatingSecuritySetting else { return }
+                        isUpdatingSecuritySetting = true
+                        appLockToggleError = nil
+                        Task {
+                            let ok = await lockManager.setLockOnAppBackground(newValue)
+                            isUpdatingSecuritySetting = false
+                            if !ok {
+                                appLockToggleError = lockManager.lastErrorMessage ?? "身份验证未通过，无法关闭后台自动锁定"
+                            }
+                        }
+                    }
+                ))
+                .disabled(!lockManager.appLockEnabled || isUpdatingSecuritySetting)
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Toggle("敏感操作二次验证 (查看密码 / 导出凭据 / 读取私钥)", isOn: $lockManager.requireAuthForSensitiveActions)
+                    Toggle("敏感操作二次验证 (查看密码 / 导出凭据 / 读取私钥)", isOn: Binding(
+                        get: { lockManager.requireAuthForSensitiveActions },
+                        set: { newValue in
+                            guard newValue != lockManager.requireAuthForSensitiveActions, !isUpdatingSecuritySetting else { return }
+                            isUpdatingSecuritySetting = true
+                            appLockToggleError = nil
+                            Task {
+                                let ok = await lockManager.setRequireAuthForSensitiveActions(newValue)
+                                isUpdatingSecuritySetting = false
+                                if !ok {
+                                    appLockToggleError = lockManager.lastErrorMessage ?? "身份验证未通过，无法关闭敏感操作二次验证"
+                                }
+                            }
+                        }
+                    ))
+                    .disabled(isUpdatingSecuritySetting)
                     Text("查看已保存密码或口令、导出含凭据分享包、查看或导出保险库私钥前需验证 Touch ID 或系统密码。")
+                        .font(.caption)
+                        .foregroundColor(ApexStyle.secondary)
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Picker(L10n.pasteboardAutoClearLabel, selection: $settings.sensitiveClipboardAutoClearSeconds) {
+                        ForEach(Self.pasteboardAutoClearPresets, id: \.seconds) { preset in
+                            Text(preset.label).tag(preset.seconds)
+                        }
+                        if !Self.pasteboardAutoClearPresets.contains(where: { $0.seconds == settings.sensitiveClipboardAutoClearSeconds }) {
+                            Text("\(settings.sensitiveClipboardAutoClearSeconds) 秒")
+                                .tag(settings.sensitiveClipboardAutoClearSeconds)
+                        }
+                    }
+                    Text("复制密码、口令或私钥时自动写入 Concealed/Transient 隐私标记，并在剪贴板未被新内容覆盖时到期自动清空。")
                         .font(.caption)
                         .foregroundColor(ApexStyle.secondary)
                 }
@@ -235,21 +299,31 @@ private struct GeneralSettingsTab: View {
                     "恢复所有默认设置",
                     icon: "arrow.counterclockwise",
                     tint: ApexStyle.error,
-                    size: .small
+                    size: .small,
+                    isLoading: isResettingDefaults
                 ) {
                     isShowingResetConfirm = true
                 }
+                .disabled(isResettingDefaults)
             }
         }
         .formStyle(.grouped)
         .alert("恢复默认设置", isPresented: $isShowingResetConfirm) {
             Button("取消", role: .cancel) {}
             Button("恢复默认", role: .destructive) {
-                settings.resetToDefaults()
-                externalEditManager.resetPreferences()
-                notificationManager.resetPreferences()
-                lockManager.resetPreferences()
+                guard !isResettingDefaults else { return }
+                isResettingDefaults = true
                 appLockToggleError = nil
+                Task {
+                    let authorized = await lockManager.resetAllPreferencesWithAuthentication()
+                    isResettingDefaults = false
+                    guard authorized else {
+                        appLockToggleError = lockManager.lastErrorMessage ?? "未通过身份验证，已保留当前安全锁配置"
+                        return
+                    }
+                    settings.resetToDefaults()
+                    externalEditManager.resetPreferences()
+                }
             }
         } message: {
             Text("确定要将字体、主题、操作习惯、SFTP 与安全锁偏好恢复为初始默认值吗？已保存的 SSH 会话与密钥不受影响。")
@@ -399,6 +473,24 @@ private struct BehaviorSettingsTab: View {
                 }
             } header: {
                 Text(L10n.settingsTabBehavior)
+            }
+
+            Section {
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle("将 Option 键作为 Meta (Esc) 键", isOn: $settings.optionAsMeta)
+                    Text("开启后，Option + 按键将发送 ESC 前缀序列（如 Option+B / Option+F 词级跳转）；关闭时保留 macOS 原生符号输入。")
+                        .font(.caption)
+                        .foregroundColor(ApexStyle.secondary)
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle("中文输入法自动转换全角标点", isOn: $settings.autoConvertCJKPunctuation)
+                    Text("开启后，在终端中输入中文全角标点（如 ：；，。）将自动转换为半角 ASCII 标点，便于命令行与 Vim 操作。")
+                        .font(.caption)
+                        .foregroundColor(ApexStyle.secondary)
+                }
+            } header: {
+                Text("键盘与输入法")
             }
             
             Section {

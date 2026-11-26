@@ -94,7 +94,7 @@ final class ApexSSHTests: XCTestCase {
         XCTAssertEqual(snapshot.loadAvg1m, 1.16)
         XCTAssertEqual(snapshot.loadAvg5m, 1.13)
         XCTAssertEqual(snapshot.loadAvg15m, 1.15)
-        XCTAssertEqual(snapshot.uptimeSeconds, 6 * 86400)
+        XCTAssertEqual(snapshot.uptimeSeconds, 6 * 86400 + 22 * 3600 + 50 * 60)
     }
 
     func testSwapAndSmoothRemoteUptimeNetworkRateParsing() {

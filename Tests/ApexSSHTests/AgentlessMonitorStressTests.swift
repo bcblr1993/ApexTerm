@@ -107,6 +107,6 @@ final class AgentlessMonitorStressTests: XCTestCase {
         XCTAssertGreaterThan(snapshot.memoryTotalBytes, 0)
         XCTAssertEqual(snapshot.diskTotalBytes, 494384128 * 1024)
         XCTAssertEqual(snapshot.diskUsedBytes, 35000000 * 1024)
-        XCTAssertEqual(snapshot.uptimeSeconds, 14 * 86400)
+        XCTAssertEqual(snapshot.uptimeSeconds, 14 * 86400 + 3 * 3600 + 15 * 60)
     }
 }

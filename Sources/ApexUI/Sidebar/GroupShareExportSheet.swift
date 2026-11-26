@@ -363,8 +363,7 @@ public struct GroupShareExportSheet: View {
                             passphrase = generated
                             confirmPassphrase = generated
                             showPassphrase = true
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(generated, forType: .string)
+                            SensitivePasteboardHelper.shared.copySecret(generated)
                             generatedPassphraseHint = "已生成并复制口令：\(generated)"
                         }
                     }

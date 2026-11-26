@@ -143,9 +143,17 @@ public final class TerminalFindBarView: NSView, NSTextFieldDelegate {
         fatalError("init(coder:) has not been implemented", file: #fileID)
     }
     
+    override public func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        if AppSettings.shared.followsSystemAppearance {
+            applyTheme()
+        }
+    }
+
     public func applyTheme() {
-        let p = AppSettings.shared.themePreset.palette
-        appearance = NSAppearance(named: AppSettings.shared.themePreset.isDark ? .darkAqua : .aqua)
+        let followsSystem = AppSettings.shared.followsSystemAppearance
+        appearance = followsSystem ? nil : NSAppearance(named: AppSettings.shared.themePreset.isDark ? .darkAqua : .aqua)
+        let p = NativeTerminalView.resolvedThemePreset(for: effectiveAppearance).palette
         layer?.backgroundColor = NSColor(hex: p.surface)?.cgColor
         layer?.borderColor = NSColor(hex: p.border)?.cgColor
         searchField.backgroundColor = NSColor(hex: p.sidebar) ?? .controlBackgroundColor
@@ -157,17 +165,18 @@ public final class TerminalFindBarView: NSView, NSTextFieldDelegate {
     }
 
     private func setupUI() {
+        let initialPalette = NativeTerminalView.resolvedThemePreset(for: effectiveAppearance).palette
         wantsLayer = true
         layer?.cornerRadius = 8
         layer?.masksToBounds = true
         layer?.borderWidth = 1
         layer?.borderColor = NSColor.separatorColor.cgColor
-        layer?.backgroundColor = NSColor(hex: AppSettings.shared.themePreset.palette.surface)?.cgColor
+        layer?.backgroundColor = NSColor(hex: initialPalette.surface)?.cgColor
         
         searchField.placeholderString = "查找 (⌘F)..."
         searchField.isBezeled = false
         searchField.drawsBackground = true
-        searchField.backgroundColor = NSColor(hex: AppSettings.shared.themePreset.palette.sidebar) ?? .controlBackgroundColor
+        searchField.backgroundColor = NSColor(hex: initialPalette.sidebar) ?? .controlBackgroundColor
         searchField.wantsLayer = true
         searchField.layer?.cornerRadius = 5
         searchField.font = NSFont.systemFont(ofSize: 12)
@@ -443,7 +452,8 @@ public final class NativeTerminalScrollView: NSScrollView {
         self.hasHorizontalScroller = false
         self.autohidesScrollers = true
         self.drawsBackground = true
-        let bg = NSColor(hex: AppSettings.shared.themePreset.backgroundColorHex) ?? NSColor(red: 0.08, green: 0.09, blue: 0.11, alpha: 1.0)
+        let theme = NativeTerminalView.resolvedThemePreset(for: effectiveAppearance)
+        let bg = NSColor(hex: theme.backgroundColorHex) ?? NSColor(red: 0.08, green: 0.09, blue: 0.11, alpha: 1.0)
         self.backgroundColor = bg
         
         terminalView.minSize = NSSize(width: 0, height: 0)
@@ -598,8 +608,19 @@ public final class NativeTerminalScrollView: NSScrollView {
 @MainActor
 public final class NativeTerminalView: NSTextView {
     /// Configurable hooks wired by the app layer (`AppSettings`) without adding a direct dependency cycle.
-    public static var isOptionAsMetaEnabled: () -> Bool = { false }
-    public static var shouldConvertCJKPunctuation: () -> Bool = { true }
+    public static var isOptionAsMetaEnabled: () -> Bool = { AppSettings.shared.optionAsMeta }
+    public static var shouldConvertCJKPunctuation: () -> Bool = { AppSettings.shared.autoConvertCJKPunctuation }
+
+    @MainActor
+    internal static func resolvedThemePreset(for appearance: NSAppearance? = nil) -> TerminalThemePreset {
+        let settings = AppSettings.shared
+        guard settings.followsSystemAppearance else {
+            return settings.themePreset
+        }
+        let effective = appearance ?? NSApp?.effectiveAppearance
+        let isDark = effective?.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        return isDark ? .modern : .nativeLight
+    }
 
     public var ringBuffer: TerminalRingBuffer? {
         didSet {
@@ -1123,6 +1144,13 @@ public final class NativeTerminalView: NSTextView {
         needsDisplay = true
     }
 
+    override public func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        if AppSettings.shared.followsSystemAppearance {
+            applyAppSettings()
+        }
+    }
+
     public func applyAppSettings() {
         let settings = AppSettings.shared
         let wasPinned = isPinnedToBottom
@@ -1148,13 +1176,13 @@ public final class NativeTerminalView: NSTextView {
         glyphAdvanceCache.removeAll(keepingCapacity: true)
         
         // 2. Theme & Colors
-        let theme = settings.themePreset
+        let theme = Self.resolvedThemePreset(for: window?.effectiveAppearance ?? effectiveAppearance)
         let bg = NSColor(hex: theme.backgroundColorHex) ?? NSColor(red: 0.08, green: 0.09, blue: 0.11, alpha: 1.0)
         let fg = NSColor(hex: theme.foregroundColorHex) ?? NSColor(red: 0.92, green: 0.93, blue: 0.95, alpha: 1.0)
         self.backgroundColor = bg
         self.enclosingScrollView?.backgroundColor = bg
         self.typingAttributes[.foregroundColor] = fg
-        self.appearance = NSAppearance(named: theme.isDark ? .darkAqua : .aqua)
+        self.appearance = settings.followsSystemAppearance ? nil : NSAppearance(named: theme.isDark ? .darkAqua : .aqua)
         self.insertionPointColor = NSColor(hex: theme.cursorColorHex) ?? fg
         self.selectedTextAttributes = [.backgroundColor: NSColor(hex: theme.palette.selection) ?? bg, .foregroundColor: fg]
         if let scroll = enclosingScrollView as? NativeTerminalScrollView { scroll.searchBarOverlay.applyTheme() }
@@ -1398,7 +1426,8 @@ public final class NativeTerminalView: NSTextView {
             guard isCursorVisible else { return }
         }
         lastRenderedCursorRect = rect
-        let themeCursor = NSColor(hex: AppSettings.shared.themePreset.cursorColorHex)
+        let theme = Self.resolvedThemePreset(for: window?.effectiveAppearance ?? effectiveAppearance)
+        let themeCursor = NSColor(hex: theme.cursorColorHex)
         let shape = AppSettings.shared.cursorShape
         if focused {
             let baseColor = themeCursor ?? NSColor(red: 0.20, green: 0.78, blue: 0.95, alpha: 0.95)
@@ -1578,7 +1607,7 @@ public final class NativeTerminalView: NSTextView {
         layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: fullRange)
         
         layoutManager.removeTemporaryAttribute(.foregroundColor, forCharacterRange: fullRange)
-        let palette = AppSettings.shared.themePreset.palette
+        let palette = Self.resolvedThemePreset(for: window?.effectiveAppearance ?? effectiveAppearance).palette
         let matchBg = NSColor(hex: palette.selection) ?? .selectedTextBackgroundColor
         let currentBg = NSColor(hex: palette.accent) ?? .selectedTextBackgroundColor
         let currentForeground = NSColor(hex: ThemePalette.contrast("#FFFFFF", palette.accent) >= 4.5 ? "#FFFFFF" : "#000000") ?? .labelColor
@@ -2503,7 +2532,8 @@ public final class NativeTerminalView: NSTextView {
         let italicFont = self.cachedItalicFont
         let boldItalicFont = self.cachedBoldItalicFont
         let paragraphStyle = self.cachedParagraphStyle
-        let palette = AppSettings.shared.themePreset.palette
+        let theme = Self.resolvedThemePreset(for: window?.effectiveAppearance ?? effectiveAppearance)
+        let palette = theme.palette
         let defaultColor = NSColor(hex: palette.foreground) ?? .labelColor
         
         for span in spans {
@@ -2540,7 +2570,7 @@ public final class NativeTerminalView: NSTextView {
             if let index = span.backgroundANSIColorIndex { background = NSColor(hex: palette.terminalColor(at: index)) }
             if span.isInverse {
                 let originalForeground = textColor
-                textColor = background ?? NSColor(hex: AppSettings.shared.themePreset.backgroundColorHex) ?? self.backgroundColor
+                textColor = background ?? NSColor(hex: theme.backgroundColorHex) ?? self.backgroundColor
                 background = originalForeground
             }
             var attrs: [NSAttributedString.Key: Any] = [
@@ -2639,7 +2669,7 @@ public final class NativeTerminalView: NSTextView {
             return layer
         }()
         flashLayer.frame = bounds
-        let fg = NSColor(hex: AppSettings.shared.themePreset.palette.foreground) ?? .white
+        let fg = NSColor(hex: Self.resolvedThemePreset(for: window?.effectiveAppearance ?? effectiveAppearance).palette.foreground) ?? .white
         flashLayer.backgroundColor = fg.withAlphaComponent(0.16).cgColor
         if flashLayer.superlayer == nil {
             hostLayer.addSublayer(flashLayer)

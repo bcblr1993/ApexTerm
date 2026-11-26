@@ -100,9 +100,12 @@ public final class AppSettings: ObservableObject {
         static let themePreset = "settings.appearance.themePreset"
         static let isCopyOnSelectEnabled = "settings.terminal.copyOnSelect"
         static let isRightClickPasteEnabled = "settings.terminal.rightClickPaste"
+        static let optionAsMeta = "settings.terminal.optionAsMeta"
+        static let autoConvertCJKPunctuation = "settings.terminal.autoConvertCJKPunctuation"
         static let scrollbackMaxLines = "settings.terminal.scrollbackLines"
         static let bellMode = "settings.terminal.bellMode"
         static let osc52ClipboardPolicy = "settings.terminal.osc52Policy"
+        static let sensitiveClipboardAutoClearSeconds = "settings.security.sensitiveClipboardAutoClearSeconds"
         static let showHiddenFiles = "settings.sftp.showHiddenFiles"
         static let sftpAutoSyncEnabled = "settings.sftp.autoSync"
         static let defaultDownloadDirectory = "settings.sftp.downloadDir"
@@ -174,6 +177,18 @@ public final class AppSettings: ObservableObject {
             NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
         }
     }
+    @Published public var optionAsMeta: Bool {
+        didSet {
+            defaults.set(optionAsMeta, forKey: Keys.optionAsMeta)
+            NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
+        }
+    }
+    @Published public var autoConvertCJKPunctuation: Bool {
+        didSet {
+            defaults.set(autoConvertCJKPunctuation, forKey: Keys.autoConvertCJKPunctuation)
+            NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
+        }
+    }
     @Published public var scrollbackMaxLines: Int {
         didSet {
             defaults.set(scrollbackMaxLines, forKey: Keys.scrollbackMaxLines)
@@ -185,6 +200,17 @@ public final class AppSettings: ObservableObject {
     }
     @Published public var osc52ClipboardPolicy: OSC52ClipboardPolicy {
         didSet { defaults.set(osc52ClipboardPolicy.rawValue, forKey: Keys.osc52ClipboardPolicy) }
+    }
+    @Published public var sensitiveClipboardAutoClearSeconds: Int {
+        didSet {
+            let clamped = max(0, sensitiveClipboardAutoClearSeconds)
+            if clamped != sensitiveClipboardAutoClearSeconds {
+                sensitiveClipboardAutoClearSeconds = clamped
+                return
+            }
+            defaults.set(clamped, forKey: Keys.sensitiveClipboardAutoClearSeconds)
+            SensitivePasteboardHelper.shared.autoClearSeconds = TimeInterval(clamped)
+        }
     }
     
     // SFTP & Files
@@ -261,6 +287,14 @@ public final class AppSettings: ObservableObject {
         self.isRightClickPasteEnabled = defaults.object(forKey: Keys.isRightClickPasteEnabled) != nil
             ? defaults.bool(forKey: Keys.isRightClickPasteEnabled)
             : true
+
+        self.optionAsMeta = defaults.object(forKey: Keys.optionAsMeta) != nil
+            ? defaults.bool(forKey: Keys.optionAsMeta)
+            : false
+
+        self.autoConvertCJKPunctuation = defaults.object(forKey: Keys.autoConvertCJKPunctuation) != nil
+            ? defaults.bool(forKey: Keys.autoConvertCJKPunctuation)
+            : true
             
         let persistedScrollback = defaults.object(forKey: Keys.scrollbackMaxLines) != nil
             ? defaults.integer(forKey: Keys.scrollbackMaxLines)
@@ -278,6 +312,15 @@ public final class AppSettings: ObservableObject {
         } else {
             self.osc52ClipboardPolicy = .ask
         }
+
+        let persistedAutoClear: Int
+        if defaults.object(forKey: Keys.sensitiveClipboardAutoClearSeconds) != nil {
+            persistedAutoClear = max(0, defaults.integer(forKey: Keys.sensitiveClipboardAutoClearSeconds))
+        } else {
+            persistedAutoClear = max(0, Int(SensitivePasteboardHelper.shared.autoClearSeconds))
+        }
+        self.sensitiveClipboardAutoClearSeconds = persistedAutoClear
+        SensitivePasteboardHelper.shared.autoClearSeconds = TimeInterval(persistedAutoClear)
         
         self.showHiddenFiles = defaults.object(forKey: Keys.showHiddenFiles) != nil
             ? defaults.bool(forKey: Keys.showHiddenFiles)
@@ -330,9 +373,12 @@ public final class AppSettings: ObservableObject {
         followsSystemAppearance = false
         isCopyOnSelectEnabled = true
         isRightClickPasteEnabled = true
+        optionAsMeta = false
+        autoConvertCJKPunctuation = true
         scrollbackMaxLines = 10_000
         bellMode = .audible
         osc52ClipboardPolicy = .ask
+        sensitiveClipboardAutoClearSeconds = Int(SensitivePasteboardHelper.defaultAutoClearSeconds)
         showHiddenFiles = true
         sftpAutoSyncEnabled = true
         defaultDownloadDirectory = defaultDownloadPath
@@ -347,8 +393,10 @@ public final class AppSettings: ObservableObject {
 
         defaults.removeObject(forKey: "externalEdit.preferredEditorBundleID")
         defaults.removeObject(forKey: "externalEdit.autoUploadOnSave")
+        SensitivePasteboardHelper.shared.resetPreferences()
         DesktopNotificationManager.shared.resetPreferences()
-        AppLockManager.shared.resetPreferences()
+        iCloudSyncManager.shared.resetPreferences()
+        AppLockManager.shared.resetNonSecurityPreferences()
         NotificationCenter.default.post(name: Self.didResetToDefaultsNotification, object: self)
     }
 }

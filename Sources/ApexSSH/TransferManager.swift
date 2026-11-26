@@ -216,6 +216,10 @@ public final class TransferManager: ObservableObject {
         )
 
         let runner = Task { [weak self] in
+            defer {
+                self?.retryContexts[taskId]?.closeAccessLease()
+                accessLease?.close()
+            }
             guard let self = self else { return }
             do {
                 _ = try accessResult.get()
@@ -321,6 +325,10 @@ public final class TransferManager: ObservableObject {
         )
 
         let runner = Task { [weak self] in
+            defer {
+                self?.retryContexts[taskId]?.closeAccessLease()
+                accessLease?.close()
+            }
             guard let self = self else { return }
             do {
                 _ = try accessResult.get()
@@ -626,9 +634,9 @@ public final class TransferManager: ObservableObject {
                 tasks[finalIdx].status = .completed
                 tasks[finalIdx].completedAt = Date()
             }
-            retryContexts.removeValue(forKey: taskId)?.closeAccessLease()
             onResult?(.success(remotePath))
             onCompleted?()
+            retryContexts.removeValue(forKey: taskId)?.closeAccessLease()
             let refreshUserInfo: [AnyHashable: Any]? = tabID.map { ["tabId": $0] }
             DispatchQueue.main.async {
                 NotificationCenter.default.post(
@@ -746,9 +754,9 @@ public final class TransferManager: ObservableObject {
                 tasks[finalIdx].status = .completed
                 tasks[finalIdx].completedAt = Date()
             }
-            retryContexts.removeValue(forKey: taskId)?.closeAccessLease()
             onResult?(.success(localURL))
             onCompleted?()
+            retryContexts.removeValue(forKey: taskId)?.closeAccessLease()
         } catch {
             progressMonitor.cancel()
             try? FileManager.default.removeItem(at: stagingURL)

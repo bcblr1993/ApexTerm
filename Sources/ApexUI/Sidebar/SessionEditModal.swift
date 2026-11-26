@@ -36,6 +36,7 @@ public struct SessionEditModal: View {
     @State private var folder: String = "常用会话"
     @State private var tags: String = ""
     @State private var colorHex: String = "#0A84FF"
+    @State private var environmentTier: EnvironmentTier? = nil
     @State private var agentlessMonitor: Bool = true
     @State private var sftpAutoSync: Bool = true
     @State private var keepAliveInterval: Int = 15
@@ -711,6 +712,13 @@ public struct SessionEditModal: View {
                     }
                     TextField(L10n.tagsLabel, text: $tags, prompt: Text(L10n.tagsPlaceholder))
                     .accessibilityLabel(L10n.tagsLabel)
+                    Picker("环境分级 (Environment Tier)", selection: $environmentTier) {
+                        Text("未指定").tag(EnvironmentTier?.none)
+                        ForEach(EnvironmentTier.allCases) { tier in
+                            Text(tier.displayName).tag(EnvironmentTier?.some(tier))
+                        }
+                    }
+                    .accessibilityIdentifier("session.environmentTierPicker")
                     HStack(spacing: 9) {
                         Text("标识颜色")
                         Spacer()
@@ -1162,6 +1170,7 @@ public struct SessionEditModal: View {
             port: portInt,
             username: effectiveUsername,
             authMethod: candidateAuthMethod,
+            environmentTier: environmentTier,
             jumpServerId: jumpServerChain.first,
             jumpServerChain: jumpServerChain,
             forwardAgent: forwardAgent,
@@ -1204,6 +1213,7 @@ public struct SessionEditModal: View {
         folder = SidebarView.normalizedFolder(of: s)
         tags = s.tags.joined(separator: ", ")
         colorHex = s.colorHex ?? "#0A84FF"
+        environmentTier = s.environmentTier
         agentlessMonitor = s.agentlessMonitorEnabled
         terminalType = s.terminalType
         sftpAutoSync = s.sftpAutoSyncEnabled
@@ -1381,6 +1391,7 @@ public struct SessionEditModal: View {
             folder: Self.canonicalFolder(folder, existing: Self.existingFolders(sessions: SessionStore.shared.sessions, extraFolders: SessionStore.shared.folders)),
             tags: Self.parseTags(tags),
             colorHex: colorHex,
+            environmentTier: environmentTier,
             jumpServerId: jumpServerChain.first,
             jumpServerChain: jumpServerChain,
             forwardAgent: forwardAgent,
@@ -1394,7 +1405,8 @@ public struct SessionEditModal: View {
             startupCommand: trimmedStartupCmd.isEmpty ? nil : trimmedStartupCmd,
             environmentVariables: parsedEnv.variables,
             createdAt: isCloning ? Date() : (initialSession?.createdAt ?? Date()),
-            lastConnectedAt: isCloning ? nil : initialSession?.lastConnectedAt
+            lastConnectedAt: isCloning ? nil : initialSession?.lastConnectedAt,
+            updatedAt: Date()
         )
         onSave(newSession)
         dismiss()

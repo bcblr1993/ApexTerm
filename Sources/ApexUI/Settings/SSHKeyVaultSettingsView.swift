@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 import ApexCore
 
 /// Centralized SSH Key Vault Manager view for Settings
@@ -57,6 +58,19 @@ public struct SSHKeyVaultSettingsView: View {
     @State private var deployUser: String = "root"
     @State private var deployPort: String = "22"
     @State private var generatedDeployCommand: String = ""
+
+    // Encrypted Vault Backup (.aetherkeyvault) State
+    @State private var showingBackupExportSheet: Bool = false
+    @State private var backupExportPassphrase: String = ""
+    @State private var backupExportConfirm: String = ""
+    @State private var backupExportError: String?
+    @State private var isAuthorizingBackupAction: Bool = false
+
+    @State private var showingBackupRestoreSheet: Bool = false
+    @State private var pendingRestoreData: Data?
+    @State private var pendingRestoreHeader: AetherKeyVaultBackupEnvelope?
+    @State private var backupRestorePassphrase: String = ""
+    @State private var backupRestoreError: String?
     
     public init() {}
     
@@ -88,13 +102,44 @@ public struct SSHKeyVaultSettingsView: View {
                 .fixedSize()
                 
                 // Reserve trailing slot width so switching to known_hosts does not shift the segmented Picker.
-                ApexActionButton("导入密钥", icon: "plus", tint: ApexStyle.accent, size: .small, isProminent: true) {
-                    importName = ""
-                    importPrivateKey = ""
-                    importPublicKey = ""
-                    importPassphrase = ""
-                    importError = nil
-                    showingImportSheet = true
+                HStack(spacing: ApexStyle.sCompact) {
+                    Menu {
+                        Button {
+                            beginEncryptedBackupExport()
+                        } label: {
+                            Label("导出加密备份 (.aetherkeyvault)", systemImage: "lock.doc")
+                        }
+                        .disabled(vaultManager.keys.isEmpty || isAuthorizingBackupAction)
+
+                        Button {
+                            beginEncryptedBackupRestore()
+                        } label: {
+                            Label("恢复密钥库备份...", systemImage: "arrow.down.doc")
+                        }
+                        .disabled(isAuthorizingBackupAction)
+                    } label: {
+                        ApexMenuTrigger(
+                            icon: "externaldrive.badge.checkmark",
+                            label: "密钥库加密备份与恢复",
+                            size: 26,
+                            iconSize: 12,
+                            tint: ApexStyle.secondary
+                        )
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .help("导出或恢复口令加密的 .aetherkeyvault 密钥库备份")
+                    .accessibilityLabel("密钥库加密备份与恢复")
+
+                    ApexActionButton("导入密钥", icon: "plus", tint: ApexStyle.accent, size: .small, isProminent: true) {
+                        importName = ""
+                        importPrivateKey = ""
+                        importPublicKey = ""
+                        importPassphrase = ""
+                        importError = nil
+                        showingImportSheet = true
+                    }
                 }
                 .opacity(selectedSubTab == .keyVault ? 1 : 0)
                 .allowsHitTesting(selectedSubTab == .keyVault)
@@ -148,11 +193,26 @@ public struct SSHKeyVaultSettingsView: View {
             privateKeyRevealSheet(payload)
                 .apexTheme()
         }
+        .sheet(isPresented: $showingBackupExportSheet) {
+            vaultBackupExportSheet
+                .apexTheme()
+        }
+        .sheet(isPresented: $showingBackupRestoreSheet) {
+            vaultBackupRestoreSheet
+                .apexTheme()
+        }
         .onChange(of: lockManager.isLocked) { _, isLocked in
             if isLocked {
                 revealedPrivateKey = nil
                 showingImportSheet = false
                 showingDeploySheet = false
+                showingBackupExportSheet = false
+                showingBackupRestoreSheet = false
+                backupExportPassphrase = ""
+                backupExportConfirm = ""
+                backupRestorePassphrase = ""
+                pendingRestoreData = nil
+                pendingRestoreHeader = nil
             }
         }
         .alert("确认删除密钥", isPresented: $showingDeleteAlert, presenting: keyToDelete) { key in
@@ -560,6 +620,197 @@ public struct SSHKeyVaultSettingsView: View {
             if self.toastToken == token {
                 self.toastMessage = nil
             }
+        }
+    }
+
+    // MARK: - Encrypted Backup (.aetherkeyvault)
+
+    private var vaultBackupExportSheet: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: ApexStyle.s2) {
+                Image(systemName: "lock.doc.fill")
+                    .font(.system(size: 17))
+                    .foregroundStyle(ApexStyle.accent)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("导出加密备份 (.aetherkeyvault)")
+                        .font(.system(size: 15, weight: .bold))
+                    Text("将全部 \(vaultManager.keys.count) 把密钥及私钥/口令通过 PBKDF2 + AES-256-GCM 加密打包")
+                        .font(.caption)
+                        .foregroundStyle(ApexStyle.secondary)
+                }
+                Spacer()
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    SecureField("设置备份加密口令", text: $backupExportPassphrase)
+                        .textFieldStyle(.roundedBorder)
+                    ApexActionButton("随机口令", icon: "wand.and.stars", tint: ApexStyle.secondary, size: .small) {
+                        let generated = SharePackCrypto.generateReadablePassphrase()
+                        backupExportPassphrase = generated
+                        backupExportConfirm = generated
+                    }
+                }
+                SecureField("再次确认备份口令", text: $backupExportConfirm)
+                    .textFieldStyle(.roundedBorder)
+            }
+
+            if let backupExportError {
+                Text(backupExportError)
+                    .font(.caption)
+                    .foregroundStyle(ApexStyle.error)
+            }
+
+            HStack(spacing: ApexStyle.s2) {
+                Spacer()
+                ApexActionButton("取消", tint: ApexStyle.secondary, size: .regular) {
+                    showingBackupExportSheet = false
+                }
+                .keyboardShortcut(.cancelAction)
+
+                ApexActionButton("导出加密备份 (.aetherkeyvault)", icon: "square.and.arrow.up", tint: ApexStyle.accent, size: .regular, isProminent: true) {
+                    performBackupExport()
+                }
+                .disabled(backupExportPassphrase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                          backupExportPassphrase != backupExportConfirm)
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(ApexStyle.s5)
+        .frame(width: 480)
+        .onExitCommand { showingBackupExportSheet = false }
+    }
+
+    private var vaultBackupRestoreSheet: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: ApexStyle.s2) {
+                Image(systemName: "arrow.down.doc.fill")
+                    .font(.system(size: 17))
+                    .foregroundStyle(ApexStyle.accent)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("恢复密钥库备份")
+                        .font(.system(size: 15, weight: .bold))
+                    if let header = pendingRestoreHeader {
+                        Text("包含 \(header.keyCount) 把密钥（\(header.keyNames.prefix(3).joined(separator: "、"))\(header.keyNames.count > 3 ? " 等" : "")）")
+                            .font(.caption)
+                            .foregroundStyle(ApexStyle.secondary)
+                    }
+                }
+                Spacer()
+            }
+
+            SecureField("输入备份加密口令以解密恢复", text: $backupRestorePassphrase)
+                .textFieldStyle(.roundedBorder)
+
+            if let backupRestoreError {
+                Text(backupRestoreError)
+                    .font(.caption)
+                    .foregroundStyle(ApexStyle.error)
+            }
+
+            HStack(spacing: ApexStyle.s2) {
+                Spacer()
+                ApexActionButton("取消", tint: ApexStyle.secondary, size: .regular) {
+                    showingBackupRestoreSheet = false
+                }
+                .keyboardShortcut(.cancelAction)
+
+                ApexActionButton("恢复密钥库备份", icon: "checkmark.shield", tint: ApexStyle.accent, size: .regular, isProminent: true) {
+                    performBackupRestore()
+                }
+                .disabled(backupRestorePassphrase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(ApexStyle.s5)
+        .frame(width: 460)
+        .onExitCommand { showingBackupRestoreSheet = false }
+    }
+
+    private func beginEncryptedBackupExport() {
+        guard !isAuthorizingBackupAction else { return }
+        isAuthorizingBackupAction = true
+        Task { @MainActor in
+            defer { isAuthorizingBackupAction = false }
+            let authorized = await AppLockManager.shared.authorizeSensitiveAction(
+                reason: "验证身份以导出包含私钥的加密密钥库备份"
+            )
+            guard authorized else {
+                showToast(AppLockManager.shared.lastErrorMessage ?? "未通过身份验证，已取消导出加密备份")
+                return
+            }
+            backupExportPassphrase = ""
+            backupExportConfirm = ""
+            backupExportError = nil
+            showingBackupExportSheet = true
+        }
+    }
+
+    private func performBackupExport() {
+        guard backupExportPassphrase == backupExportConfirm else {
+            backupExportError = "两次输入的加密口令不一致"
+            return
+        }
+        do {
+            let bundleData = try vaultManager.exportEncryptedVaultBackup(passphrase: backupExportPassphrase)
+            let savePanel = NSSavePanel()
+            savePanel.nameFieldStringValue = "AetherTerm-KeyVault.aetherkeyvault"
+            savePanel.allowedContentTypes = [UTType(filenameExtension: "aetherkeyvault") ?? .data]
+            savePanel.prompt = "保存加密备份"
+            guard savePanel.runModal() == .OK, let url = savePanel.url else { return }
+            try SSHKeyVaultManager.writePrivateKeyFileAtomically(bundleData, to: url)
+            showingBackupExportSheet = false
+            backupExportPassphrase = ""
+            backupExportConfirm = ""
+            showToast("已导出加密密钥库备份：\(url.lastPathComponent)")
+        } catch {
+            backupExportError = error.localizedDescription
+        }
+    }
+
+    private func beginEncryptedBackupRestore() {
+        guard !isAuthorizingBackupAction else { return }
+        isAuthorizingBackupAction = true
+        Task { @MainActor in
+            defer { isAuthorizingBackupAction = false }
+            let authorized = await AppLockManager.shared.authorizeSensitiveAction(
+                reason: "验证身份以从加密备份恢复 SSH 密钥库"
+            )
+            guard authorized else {
+                showToast(AppLockManager.shared.lastErrorMessage ?? "未通过身份验证，已取消恢复密钥库备份")
+                return
+            }
+            let openPanel = NSOpenPanel()
+            openPanel.canChooseFiles = true
+            openPanel.canChooseDirectories = false
+            openPanel.allowsMultipleSelection = false
+            openPanel.prompt = "选择备份文件"
+            guard openPanel.runModal() == .OK, let url = openPanel.url else { return }
+            do {
+                let data = try Data(contentsOf: url)
+                let header = try SSHKeyVaultManager.inspectEncryptedVaultBackup(data)
+                pendingRestoreData = data
+                pendingRestoreHeader = header
+                backupRestorePassphrase = ""
+                backupRestoreError = nil
+                showingBackupRestoreSheet = true
+            } catch {
+                showToast("无法读取备份文件：\(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func performBackupRestore() {
+        guard let data = pendingRestoreData else { return }
+        do {
+            let report = try vaultManager.importEncryptedVaultBackup(data, passphrase: backupRestorePassphrase)
+            showingBackupRestoreSheet = false
+            backupRestorePassphrase = ""
+            pendingRestoreData = nil
+            pendingRestoreHeader = nil
+            showToast(report.summaryText)
+        } catch {
+            backupRestoreError = error.localizedDescription
         }
     }
 }

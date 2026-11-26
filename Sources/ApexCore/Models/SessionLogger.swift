@@ -13,12 +13,18 @@ public struct SessionLogConfig: Codable, Sendable, Equatable {
     public var logDirectoryPath: String
     public var format: SessionLogFormat
     public var maxFileSizeMB: Int
+    public var redactSecrets: Bool
+
+    public enum CodingKeys: String, CodingKey {
+        case autoLoggingEnabled, logDirectoryPath, format, maxFileSizeMB, redactSecrets
+    }
     
     public init(
         autoLoggingEnabled: Bool = false,
         logDirectoryPath: String? = nil,
         format: SessionLogFormat = .plainText,
-        maxFileSizeMB: Int = 50
+        maxFileSizeMB: Int = 50,
+        redactSecrets: Bool = true
     ) {
         self.autoLoggingEnabled = autoLoggingEnabled
         if let path = logDirectoryPath {
@@ -29,6 +35,131 @@ public struct SessionLogConfig: Codable, Sendable, Equatable {
         }
         self.format = format
         self.maxFileSizeMB = maxFileSizeMB
+        self.redactSecrets = redactSecrets
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.autoLoggingEnabled = try container.decodeIfPresent(Bool.self, forKey: .autoLoggingEnabled) ?? false
+        if let path = try container.decodeIfPresent(String.self, forKey: .logDirectoryPath) {
+            self.logDirectoryPath = path
+        } else {
+            let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+            self.logDirectoryPath = docs.appendingPathComponent("AetherTerm/Logs", isDirectory: true).path
+        }
+        self.format = try container.decodeIfPresent(SessionLogFormat.self, forKey: .format) ?? .plainText
+        self.maxFileSizeMB = try container.decodeIfPresent(Int.self, forKey: .maxFileSizeMB) ?? 50
+        self.redactSecrets = try container.decodeIfPresent(Bool.self, forKey: .redactSecrets) ?? true
+    }
+}
+
+/// Stateful secret redactor scrubbing PEM blocks, Bearer/Authorization headers, and password prompts
+/// before audit log data is flushed to `0o600` disk files.
+public struct SessionLogRedactor: Sendable {
+    private var insidePEMBlock = false
+
+    public init() {}
+
+    private static let pemBeginRegex = try? NSRegularExpression(
+        pattern: "-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----",
+        options: []
+    )
+    private static let pemEndRegex = try? NSRegularExpression(
+        pattern: "-----END [A-Z0-9 ]*PRIVATE KEY-----",
+        options: []
+    )
+    private static let bearerRegex = try? NSRegularExpression(
+        pattern: "(?i)\\bBearer\\s+(?!\\[REDACTED\\])([^\\s\"'\\r\\n]+)",
+        options: []
+    )
+    private static let authHeaderRegex = try? NSRegularExpression(
+        pattern: "(?i)(Authorization\\s*:\\s*)(?!\\[REDACTED\\]|Bearer\\s+\\[REDACTED\\])(?:(Basic|Token|Digest)\\s+[^\\r\\n\"']+|([^\\r\\n\"']+))",
+        options: []
+    )
+    private static let passwordPromptRegex = try? NSRegularExpression(
+        pattern: "(?im)^([^\\r\\n]*(?:password|passwd|passphrase|enter\\s+pin)[^\\r\\n:：]*[:：])([ \\t]*(?!\\[REDACTED\\])\\S[^\\r\\n]*)$",
+        options: []
+    )
+    private static let inlineSecretAssignmentRegex = try? NSRegularExpression(
+        pattern: "(?i)\\b(password|passwd|secret|token|api[-_]?key|access[-_]?key)\\s*=\\s*(?!\\[REDACTED\\])(\"[^\"]*\"|'[^']*'|[^\\s\\r\\n]+)",
+        options: []
+    )
+    private static let inlineURLCredentialRegex = try? NSRegularExpression(
+        pattern: "(https?|socks5h?)://([^:\\s/@]+):([^@\\s]+)@",
+        options: []
+    )
+
+    /// Single-shot convenience redactor for complete log strings.
+    public static func redact(_ text: String) -> String {
+        var redactor = SessionLogRedactor()
+        return redactor.redactChunk(text)
+    }
+
+    /// Incrementally redacts a PTY text chunk while preserving PEM block state across chunks.
+    public mutating func redactChunk(_ chunk: String) -> String {
+        guard !chunk.isEmpty else { return chunk }
+
+        var output = ""
+        var remaining = chunk
+
+        while !remaining.isEmpty {
+            if insidePEMBlock {
+                if let endRegex = Self.pemEndRegex,
+                   let endMatch = endRegex.firstMatch(in: remaining, options: [], range: NSRange(remaining.startIndex..<remaining.endIndex, in: remaining)),
+                   let endRange = Range(endMatch.range, in: remaining) {
+                    insidePEMBlock = false
+                    var resumeIdx = endRange.upperBound
+                    if resumeIdx < remaining.endIndex, remaining[resumeIdx] == "\r" {
+                        resumeIdx = remaining.index(after: resumeIdx)
+                    }
+                    if resumeIdx < remaining.endIndex, remaining[resumeIdx] == "\n" {
+                        resumeIdx = remaining.index(after: resumeIdx)
+                    }
+                    remaining = String(remaining[resumeIdx...])
+                    continue
+                } else {
+                    // Entire remainder is still inside the private key PEM block
+                    remaining = ""
+                    break
+                }
+            }
+
+            if let beginRegex = Self.pemBeginRegex,
+               let beginMatch = beginRegex.firstMatch(in: remaining, options: [], range: NSRange(remaining.startIndex..<remaining.endIndex, in: remaining)),
+               let beginRange = Range(beginMatch.range, in: remaining) {
+                let prefix = String(remaining[..<beginRange.lowerBound])
+                output += redactLineSecrets(prefix)
+                output += "[REDACTED PRIVATE KEY BLOCK]\n"
+                insidePEMBlock = true
+                remaining = String(remaining[beginRange.upperBound...])
+            } else {
+                output += redactLineSecrets(remaining)
+                remaining = ""
+            }
+        }
+
+        return output
+    }
+
+    private func redactLineSecrets(_ text: String) -> String {
+        guard !text.isEmpty else { return text }
+        var result = text
+
+        let replacements: [(NSRegularExpression?, String)] = [
+            (Self.bearerRegex, "Bearer [REDACTED]"),
+            (Self.authHeaderRegex, "$1[REDACTED]"),
+            (Self.passwordPromptRegex, "$1 [REDACTED]"),
+            (Self.inlineSecretAssignmentRegex, "$1=[REDACTED]"),
+            (Self.inlineURLCredentialRegex, "$1://$2:[REDACTED]@")
+        ]
+
+        for (regex, template) in replacements {
+            guard let regex else { continue }
+            let nsRange = NSRange(result.startIndex..<result.endIndex, in: result)
+            result = regex.stringByReplacingMatches(in: result, options: [], range: nsRange, withTemplate: template)
+        }
+
+        return result
     }
 }
 
@@ -47,6 +178,7 @@ public final class SessionLogger: @unchecked Sendable {
     private var isClosed = false
     private var _lastWriteError: String?
     private var utf8Decoder = UTF8StreamDecoder()
+    private var redactor = SessionLogRedactor()
     private static let ansiRegex = try? NSRegularExpression(
         pattern: "\\x1B(?:\\[[0-?]*[ -/]*[@-~]|\\].*?(?:\\x07|\\x1B\\\\)|[()\\*+][0-9A-Za-z]|[78DEHMNOPVWXYZ=<>c~}|])",
         options: []
@@ -173,7 +305,12 @@ public final class SessionLogger: @unchecked Sendable {
             if self.config.format == .plainText {
                 let decoded = self.utf8Decoder.decode(rawData)
                 let cleaned = Self.stripANSI(from: decoded)
-                dataToWrite = Data(cleaned.utf8)
+                let finalString = self.config.redactSecrets ? self.redactor.redactChunk(cleaned) : cleaned
+                dataToWrite = Data(finalString.utf8)
+            } else if self.config.redactSecrets {
+                let decoded = self.utf8Decoder.decode(rawData)
+                let finalString = self.redactor.redactChunk(decoded)
+                dataToWrite = Data(finalString.utf8)
             } else {
                 dataToWrite = rawData
             }
@@ -220,7 +357,14 @@ public final class SessionLogger: @unchecked Sendable {
             isClosed = true
             if let handle = fileHandle {
                 if config.format == .plainText {
-                    let trailing = Self.stripANSI(from: utf8Decoder.finish())
+                    let trailingRaw = Self.stripANSI(from: utf8Decoder.finish())
+                    let trailing = config.redactSecrets ? redactor.redactChunk(trailingRaw) : trailingRaw
+                    if !trailing.isEmpty, let trailingData = trailing.data(using: .utf8) {
+                        _ = writeLocked(trailingData, to: handle)
+                    }
+                } else if config.redactSecrets {
+                    let trailingRaw = utf8Decoder.finish()
+                    let trailing = redactor.redactChunk(trailingRaw)
                     if !trailing.isEmpty, let trailingData = trailing.data(using: .utf8) {
                         _ = writeLocked(trailingData, to: handle)
                     }

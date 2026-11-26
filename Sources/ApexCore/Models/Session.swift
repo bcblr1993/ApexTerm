@@ -41,6 +41,39 @@ public enum SessionType: String, Codable, Sendable, Equatable, Hashable {
     case local = "local"
 }
 
+/// Optional deployment environment tier badge for visual safety and broadcast awareness.
+public enum EnvironmentTier: String, CaseIterable, Codable, Sendable, Equatable, Hashable, Identifiable {
+    case prod = "prod"
+    case staging = "staging"
+    case dev = "dev"
+
+    public var id: String { rawValue }
+
+    public var badgeText: String {
+        switch self {
+        case .prod: return "PROD"
+        case .staging: return "STAGING"
+        case .dev: return "DEV"
+        }
+    }
+
+    public var displayName: String {
+        switch self {
+        case .prod: return "生产环境 [PROD]"
+        case .staging: return "预发环境 [STAGING]"
+        case .dev: return "开发环境 [DEV]"
+        }
+    }
+
+    public var colorHex: String {
+        switch self {
+        case .prod: return "#FF453A"
+        case .staging: return "#FF9F0A"
+        case .dev: return "#30D158"
+        }
+    }
+}
+
 /// TERM value advertised to the remote PTY. Minimal distros may lack the
 /// `xterm-256color` terminfo entry, which makes readline fall back to
 /// horizontal scrolling, so sessions can pick a more widely available type.
@@ -75,6 +108,7 @@ public struct Session: Identifiable, Codable, Sendable, Equatable, Hashable {
     public var folder: String?
     public var tags: [String]
     public var colorHex: String?
+    public var environmentTier: EnvironmentTier?
     
     // Jump Server / ProxyJump & Advanced SSH Options
     public var jumpServerId: UUID?
@@ -106,6 +140,7 @@ public struct Session: Identifiable, Codable, Sendable, Equatable, Hashable {
     // Timestamps
     public var createdAt: Date
     public var lastConnectedAt: Date?
+    public var updatedAt: Date?
     
     public var isLocal: Bool { sessionType == .local }
     public var certificatePath: String? { authMethod.certificatePath }
@@ -114,11 +149,11 @@ public struct Session: Identifiable, Codable, Sendable, Equatable, Hashable {
     
     public enum CodingKeys: String, CodingKey {
         case id, name, host, port, username, authMethod, sessionType
-        case folder, tags, colorHex, jumpServerId, jumpServerChain
+        case folder, tags, colorHex, environmentTier, jumpServerId, jumpServerChain
         case forwardAgent, compression, proxyCommand
         case agentlessMonitorEnabled, sftpAutoSyncEnabled, keepAliveIntervalSeconds, terminalType
         case initialWorkingDirectory, startupCommand, environmentVariables
-        case createdAt, lastConnectedAt
+        case createdAt, lastConnectedAt, updatedAt
     }
     
     public init(
@@ -132,6 +167,7 @@ public struct Session: Identifiable, Codable, Sendable, Equatable, Hashable {
         folder: String? = nil,
         tags: [String] = [],
         colorHex: String? = nil,
+        environmentTier: EnvironmentTier? = nil,
         jumpServerId: UUID? = nil,
         jumpServerChain: [UUID] = [],
         forwardAgent: Bool = false,
@@ -145,7 +181,8 @@ public struct Session: Identifiable, Codable, Sendable, Equatable, Hashable {
         startupCommand: String? = nil,
         environmentVariables: [String: String] = [:],
         createdAt: Date = Date(),
-        lastConnectedAt: Date? = nil
+        lastConnectedAt: Date? = nil,
+        updatedAt: Date? = nil
     ) {
         self.id = id
         self.name = name
@@ -157,6 +194,7 @@ public struct Session: Identifiable, Codable, Sendable, Equatable, Hashable {
         self.folder = folder
         self.tags = tags
         self.colorHex = colorHex
+        self.environmentTier = environmentTier
         let normalizedChain: [UUID]
         if !jumpServerChain.isEmpty {
             var seen: Set<UUID> = []
@@ -181,6 +219,7 @@ public struct Session: Identifiable, Codable, Sendable, Equatable, Hashable {
         self.environmentVariables = environmentVariables
         self.createdAt = createdAt
         self.lastConnectedAt = lastConnectedAt
+        self.updatedAt = updatedAt
     }
     
     public init(from decoder: Decoder) throws {
@@ -196,6 +235,8 @@ public struct Session: Identifiable, Codable, Sendable, Equatable, Hashable {
         self.folder = try container.decodeIfPresent(String.self, forKey: .folder)
         self.tags = try container.decodeIfPresent([String].self, forKey: .tags) ?? []
         self.colorHex = try container.decodeIfPresent(String.self, forKey: .colorHex)
+        let rawTier = try? container.decodeIfPresent(String.self, forKey: .environmentTier)
+        self.environmentTier = rawTier.flatMap { EnvironmentTier(rawValue: $0) }
         let decodedLegacyJump = try container.decodeIfPresent(UUID.self, forKey: .jumpServerId)
         let decodedChain = try container.decodeIfPresent([UUID].self, forKey: .jumpServerChain) ?? []
         if !decodedChain.isEmpty {
@@ -225,6 +266,7 @@ public struct Session: Identifiable, Codable, Sendable, Equatable, Hashable {
         self.environmentVariables = try container.decodeIfPresent([String: String].self, forKey: .environmentVariables) ?? [:]
         self.createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
         self.lastConnectedAt = try container.decodeIfPresent(Date.self, forKey: .lastConnectedAt)
+        self.updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt)
     }
     
     public func encode(to encoder: Encoder) throws {
@@ -239,6 +281,7 @@ public struct Session: Identifiable, Codable, Sendable, Equatable, Hashable {
         try container.encodeIfPresent(folder, forKey: .folder)
         try container.encode(tags, forKey: .tags)
         try container.encodeIfPresent(colorHex, forKey: .colorHex)
+        try container.encodeIfPresent(environmentTier, forKey: .environmentTier)
         try container.encodeIfPresent(jumpServerId ?? jumpServerChain.first, forKey: .jumpServerId)
         if !jumpServerChain.isEmpty {
             try container.encode(jumpServerChain, forKey: .jumpServerChain)
@@ -261,6 +304,7 @@ public struct Session: Identifiable, Codable, Sendable, Equatable, Hashable {
         }
         try container.encode(createdAt, forKey: .createdAt)
         try container.encodeIfPresent(lastConnectedAt, forKey: .lastConnectedAt)
+        try container.encodeIfPresent(updatedAt, forKey: .updatedAt)
     }
     
     public static func local(

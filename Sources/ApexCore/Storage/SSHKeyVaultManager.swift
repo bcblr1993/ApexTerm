@@ -6,6 +6,9 @@ public enum SSHKeyVaultError: LocalizedError, Equatable {
     case invalidPublicKey(String)
     case keyNotFound
     case privateKeyEmpty
+    case backupEmptyVault
+    case invalidBackupEnvelope(String)
+    case missingPrivateKeyMaterial(String)
     
     public var errorDescription: String? {
         switch self {
@@ -17,7 +20,62 @@ public enum SSHKeyVaultError: LocalizedError, Equatable {
             return "未在密钥保险库中找到指定密钥"
         case .privateKeyEmpty:
             return "私钥内容不能为空"
+        case .backupEmptyVault:
+            return "当前密钥保险库为空，没有可导出的密钥"
+        case .invalidBackupEnvelope(let reason):
+            return reason
+        case .missingPrivateKeyMaterial(let name):
+            return "无法从钥匙串读取密钥「\(name)」的私钥内容"
         }
+    }
+}
+
+/// Encrypted `.aetherkeyvault` backup envelope wrapping PBKDF2 + AES-GCM `AetherShareEnvelope`.
+public struct AetherKeyVaultBackupEnvelope: Codable, Sendable, Equatable {
+    public static let magic = "AETHERKEYVAULT"
+    public static let currentFormatVersion = 1
+
+    public var magic: String
+    public var formatVersion: Int
+    public var exportedAt: Date
+    public var exportedByAppVersion: String
+    public var keyCount: Int
+    public var keyNames: [String]
+    public var encryptedEnvelope: AetherShareEnvelope
+
+    public init(
+        magic: String = AetherKeyVaultBackupEnvelope.magic,
+        formatVersion: Int = AetherKeyVaultBackupEnvelope.currentFormatVersion,
+        exportedAt: Date = Date(),
+        exportedByAppVersion: String = Bundle.apexResolvedAppVersion,
+        keyCount: Int,
+        keyNames: [String],
+        encryptedEnvelope: AetherShareEnvelope
+    ) {
+        self.magic = magic
+        self.formatVersion = formatVersion
+        self.exportedAt = exportedAt
+        self.exportedByAppVersion = exportedByAppVersion
+        self.keyCount = keyCount
+        self.keyNames = keyNames
+        self.encryptedEnvelope = encryptedEnvelope
+    }
+}
+
+/// Result returned when restoring keys from an encrypted `.aetherkeyvault` backup.
+public struct KeyVaultBackupImportReport: Sendable, Equatable {
+    public let importedCount: Int
+    public let skippedDuplicateCount: Int
+    public let importedKeyNames: [String]
+
+    public init(importedCount: Int, skippedDuplicateCount: Int, importedKeyNames: [String]) {
+        self.importedCount = importedCount
+        self.skippedDuplicateCount = skippedDuplicateCount
+        self.importedKeyNames = importedKeyNames
+    }
+
+    public var summaryText: String {
+        "已恢复 \(importedCount) 把密钥（跳过重复 \(skippedDuplicateCount) 把）"
     }
 }
 
@@ -239,5 +297,143 @@ public final class SSHKeyVaultManager: ObservableObject {
             }
             throw error
         }
+    }
+
+    // MARK: - Passphrase-Encrypted Vault Backup (.aetherkeyvault)
+
+    /// Exports all vault keys (including private key PEM and optional passphrase from Keychain)
+    /// into a passphrase-encrypted `.aetherkeyvault` bundle powered by `SharePackCrypto` (PBKDF2 + AES-GCM).
+    public func exportEncryptedVaultBackup(
+        passphrase: String,
+        secretReader: (String) throws -> String = { try KeychainStore.shared.getSync(key: $0) }
+    ) throws -> Data {
+        guard !keys.isEmpty else {
+            throw SSHKeyVaultError.backupEmptyVault
+        }
+        let cleanPassphrase = passphrase.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanPassphrase.isEmpty else {
+            throw SharePackCryptoError.emptyPassphraseNotAllowed
+        }
+
+        var records: [SharePackVaultKeyRecord] = []
+        records.reserveCapacity(keys.count)
+
+        for key in keys {
+            let privatePEM: String
+            do {
+                privatePEM = try secretReader(key.keychainPrivateKeyRef)
+            } catch {
+                throw SSHKeyVaultError.missingPrivateKeyMaterial(key.name)
+            }
+            guard !privatePEM.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw SSHKeyVaultError.missingPrivateKeyMaterial(key.name)
+            }
+
+            var keyPassphrase: String? = nil
+            if let passRef = key.keychainPassphraseRef, !passRef.isEmpty {
+                keyPassphrase = try? secretReader(passRef)
+            }
+
+            records.append(SharePackVaultKeyRecord(
+                originalPrivateKeyRef: key.keychainPrivateKeyRef,
+                name: key.name,
+                publicKeyOpenSSH: key.publicKeyOpenSSH,
+                privateKeyPEM: privatePEM,
+                passphrase: keyPassphrase
+            ))
+        }
+
+        let bundle = SharePackSecretBundle(
+            pack: AetherSharePack(),
+            credentials: SharePackCredentialPayload(embeddedVaultKeys: records)
+        )
+        let header = AetherShareEnvelopeHeader(
+            groupNames: ["SSH Key Vault"],
+            sessionCount: 0,
+            tunnelCount: 0,
+            includesCredentials: true
+        )
+        let encryptedEnvelope = try SharePackCrypto.encryptBundle(
+            bundle,
+            mode: .passphrase,
+            passphrase: passphrase,
+            header: header
+        )
+
+        let backupEnvelope = AetherKeyVaultBackupEnvelope(
+            keyCount: records.count,
+            keyNames: records.map(\.name),
+            encryptedEnvelope: encryptedEnvelope
+        )
+
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try encoder.encode(backupEnvelope)
+    }
+
+    /// Inspects an unencrypted backup header to show key count/names before asking for the passphrase.
+    public static func inspectEncryptedVaultBackup(_ data: Data) throws -> AetherKeyVaultBackupEnvelope {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let envelope: AetherKeyVaultBackupEnvelope
+        do {
+            envelope = try decoder.decode(AetherKeyVaultBackupEnvelope.self, from: data)
+        } catch {
+            throw SSHKeyVaultError.invalidBackupEnvelope("备份文件格式损坏或不是有效的 .aetherkeyvault 文件：\(error.localizedDescription)")
+        }
+        guard envelope.magic == AetherKeyVaultBackupEnvelope.magic else {
+            throw SSHKeyVaultError.invalidBackupEnvelope("文件标识无效，不是有效的 AetherTerm 密钥库备份 (.aetherkeyvault)。")
+        }
+        guard envelope.formatVersion > 0 && envelope.formatVersion <= AetherKeyVaultBackupEnvelope.currentFormatVersion else {
+            throw SharePackCryptoError.unsupportedFormatVersion(envelope.formatVersion)
+        }
+        return envelope
+    }
+
+    /// Decrypts a `.aetherkeyvault` backup with the supplied passphrase and imports non-duplicate keys into the vault.
+    @discardableResult
+    public func importEncryptedVaultBackup(
+        _ data: Data,
+        passphrase: String,
+        secretSaver: (String, String) throws -> String = { try KeychainStore.shared.save(key: $0, secret: $1) },
+        secretDeleter: (String) -> Void = { try? KeychainStore.shared.delete(key: $0) }
+    ) throws -> KeyVaultBackupImportReport {
+        let backupEnvelope = try Self.inspectEncryptedVaultBackup(data)
+        guard backupEnvelope.encryptedEnvelope.protectionMode == .passphrase else {
+            throw SSHKeyVaultError.invalidBackupEnvelope("密钥库备份必须使用口令加密保护。")
+        }
+
+        let decryptedBundle = try SharePackCrypto.decryptEnvelope(
+            backupEnvelope.encryptedEnvelope,
+            passphrase: passphrase
+        )
+
+        var importedCount = 0
+        var skippedDuplicateCount = 0
+        var importedNames: [String] = []
+
+        for record in decryptedBundle.credentials.embeddedVaultKeys {
+            do {
+                let imported = try importKey(
+                    name: record.name,
+                    privateKeyPEM: record.privateKeyPEM,
+                    publicKeyOpenSSH: record.publicKeyOpenSSH,
+                    passphrase: record.passphrase,
+                    secretSaver: secretSaver,
+                    secretDeleter: secretDeleter
+                )
+                importedCount += 1
+                importedNames.append(imported.name)
+            } catch SSHKeyVaultError.duplicateKey {
+                skippedDuplicateCount += 1
+            }
+        }
+
+        return KeyVaultBackupImportReport(
+            importedCount: importedCount,
+            skippedDuplicateCount: skippedDuplicateCount,
+            importedKeyNames: importedNames
+        )
     }
 }

@@ -557,7 +557,8 @@ public struct SidebarView: View {
         guard !query.isEmpty else { return true }
         return session.name.localizedCaseInsensitiveContains(query) ||
             session.host.localizedCaseInsensitiveContains(query) ||
-            session.tags.contains(where: { $0.localizedCaseInsensitiveContains(query) })
+            session.tags.contains(where: { $0.localizedCaseInsensitiveContains(query) }) ||
+            (session.environmentTier?.badgeText.localizedCaseInsensitiveContains(query) == true)
     }
 
     /// While searching, folders without a matching session are hidden instead of rendering empty groups.
@@ -633,10 +634,28 @@ struct SessionRow: View {
                 .scaleEffect(isHovered ? 1.15 : 1.0)
             
             VStack(alignment: .leading, spacing: ApexStyle.sMicro) {
-                Text(session.name)
-                    .font(.subheadline)
-                    .foregroundColor(isSelected ? .primary : ApexStyle.primary)
-                    .lineLimit(1)
+                HStack(spacing: 5) {
+                    Text(session.name)
+                        .font(.subheadline)
+                        .foregroundColor(isSelected ? .primary : ApexStyle.primary)
+                        .lineLimit(1)
+
+                    if let tier = session.environmentTier,
+                       let tierColor = Color(hex: tier.colorHex) {
+                        Text(tier.badgeText)
+                            .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                            .foregroundColor(tierColor)
+                            .lineLimit(1)
+                            .fixedSize()
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(tierColor.opacity(0.14), in: RoundedRectangle(cornerRadius: 3))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 3)
+                                    .stroke(tierColor.opacity(0.35), lineWidth: 0.5)
+                            )
+                    }
+                }
                 
                 Text(session.isLocal ? "\(L10n.localTerminalSubtitle) (\(session.username))" : "\(session.username)@\(session.host)")
                     .font(.caption.monospaced())

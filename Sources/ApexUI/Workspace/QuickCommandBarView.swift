@@ -52,6 +52,21 @@ public struct QuickCommandBarView: View {
         let shouldExecute = executeImmediately ?? snippet.autoExecute
         return shouldExecute ? (resolved + "\n") : resolved
     }
+
+    /// Computes live pre-flight interpolated command text for display inside `VariableInputSheet`.
+    public static func livePreviewText(for snippet: Snippet, variableValues: [String: String]) -> String {
+        snippet.resolvedCommand(context: variableValues)
+    }
+
+    /// Creates a duplicated `Snippet` ready to be inserted into `SessionStore`.
+    public static func duplicatedSnippet(from snippet: Snippet) -> Snippet {
+        Snippet(
+            title: "\(snippet.title) (副本)",
+            command: snippet.command,
+            category: snippet.category,
+            autoExecute: snippet.autoExecute
+        )
+    }
     
     private var allCategories: [String] {
         var set = Set<String>()
@@ -126,6 +141,9 @@ public struct QuickCommandBarView: View {
                                     draftCategory = snippet.category
                                     draftAutoExecute = snippet.autoExecute
                                     isAddSheetPresented = true
+                                },
+                                onDuplicate: {
+                                    store.addSnippet(Self.duplicatedSnippet(from: snippet))
                                 },
                                 onDelete: {
                                     store.deleteSnippet(id: snippet.id)
@@ -299,11 +317,27 @@ public struct VariableInputSheet: View {
             ScrollView(.vertical, showsIndicators: formContentHeight > maxScrollableHeight) {
                 VStack(alignment: .leading, spacing: ApexStyle.s3) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("命令预览：")
-                            .font(.caption.weight(.semibold))
-                            .foregroundColor(ApexStyle.secondary)
-                        Text(snippet.resolvedCommand(context: variableValues))
-                            .font(.system(size: 11, design: .monospaced))
+                        let previewText = QuickCommandBarView.livePreviewText(for: snippet, variableValues: variableValues)
+                        let remaining = snippet.unresolvedVariables(context: variableValues)
+                        HStack {
+                            Text("实时命令预览：")
+                                .font(.caption.weight(.semibold))
+                                .foregroundColor(ApexStyle.secondary)
+                            Spacer()
+                            if !remaining.isEmpty {
+                                Text("待填写 \(remaining.count) 项")
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .foregroundColor(ApexStyle.warning)
+                            } else {
+                                Text("已就绪")
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .foregroundColor(ApexStyle.success)
+                            }
+                        }
+                        Text(previewText)
+                            .font(.system(size: 11.5, design: .monospaced))
+                            .foregroundColor(ApexStyle.primary)
+                            .textSelection(.enabled)
                             .padding(8)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .background(ApexStyle.subtleSurface, in: RoundedRectangle(cornerRadius: ApexStyle.controlRadius))
@@ -348,21 +382,19 @@ public struct VariableInputSheet: View {
                 .keyboardShortcut(.cancelAction)
                 
                 if snippet.autoExecute {
-                    if let onInsertCommand {
-                        ApexActionButton("仅填入", tint: ApexStyle.secondary, size: .regular) {
-                            onInsertCommand(snippet.resolvedCommand(context: variableValues))
-                        }
+                    ApexActionButton("发送至命令行", icon: "text.insert", tint: ApexStyle.secondary, size: .regular) {
+                        (onInsertCommand ?? onConfirm)(QuickCommandBarView.livePreviewText(for: snippet, variableValues: variableValues))
                     }
-                    ApexActionButton("执行 (↵)", icon: "play.fill", tint: ApexStyle.accent, size: .regular, isProminent: true) {
-                        onConfirm(snippet.resolvedCommand(context: variableValues))
+                    ApexActionButton("立即执行 ↵", icon: "play.fill", tint: ApexStyle.accent, size: .regular, isProminent: true) {
+                        onConfirm(QuickCommandBarView.livePreviewText(for: snippet, variableValues: variableValues))
                     }
                     .keyboardShortcut(.defaultAction)
                 } else {
-                    ApexActionButton("立即执行", icon: "play.fill", tint: ApexStyle.warning, size: .regular) {
-                        onConfirm(snippet.resolvedCommand(context: variableValues))
+                    ApexActionButton("立即执行 ↵", icon: "play.fill", tint: ApexStyle.warning, size: .regular) {
+                        onConfirm(QuickCommandBarView.livePreviewText(for: snippet, variableValues: variableValues))
                     }
-                    ApexActionButton("填入命令行 (↵)", icon: "text.insert", tint: ApexStyle.accent, size: .regular, isProminent: true) {
-                        (onInsertCommand ?? onConfirm)(snippet.resolvedCommand(context: variableValues))
+                    ApexActionButton("发送至命令行", icon: "text.insert", tint: ApexStyle.accent, size: .regular, isProminent: true) {
+                        (onInsertCommand ?? onConfirm)(QuickCommandBarView.livePreviewText(for: snippet, variableValues: variableValues))
                     }
                     .keyboardShortcut(.defaultAction)
                 }
@@ -477,6 +509,7 @@ private struct QuickSnippetPill: View {
     let onTrigger: () -> Void
     let onAlternateRun: () -> Void
     let onEdit: () -> Void
+    let onDuplicate: () -> Void
     let onDelete: () -> Void
     @State private var isHovered = false
     
@@ -520,6 +553,9 @@ private struct QuickSnippetPill: View {
             }
             Button("编辑快捷命令...") {
                 onEdit()
+            }
+            Button("复制快捷命令 (副本)") {
+                onDuplicate()
             }
             Divider()
             Button("删除快捷命令", role: .destructive) {

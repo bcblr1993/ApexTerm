@@ -158,12 +158,19 @@ public struct SSHTunnelModalView: View {
                 sessions: store.sessions.filter { !$0.isLocal },
                 onSave: { newOrUpdated in
                     if editingTunnel != nil {
+                        let wasRunning = tunnelManager.state(for: newOrUpdated.id).canStop
                         try tunnelManager.updateTunnel(newOrUpdated)
+                        isAddSheetPresented = false
+                        errorMessage = nil
+                        if wasRunning {
+                            tunnelManager.stopTunnel(id: newOrUpdated.id)
+                            startTunnelAsync(newOrUpdated)
+                        }
                     } else {
                         try tunnelManager.addTunnel(newOrUpdated)
+                        isAddSheetPresented = false
+                        errorMessage = nil
                     }
-                    isAddSheetPresented = false
-                    errorMessage = nil
                 },
                 onCancel: {
                     isAddSheetPresented = false
@@ -175,30 +182,36 @@ public struct SSHTunnelModalView: View {
     
     private func toggleTunnel(_ tunnel: SSHTunnel) {
         let state = tunnelManager.state(for: tunnel.id)
-        if state.isRunning {
+        if state.canStop {
             tunnelManager.stopTunnel(id: tunnel.id)
         } else {
-            guard let session = store.sessions.first(where: { $0.id == tunnel.sessionId }) else {
-                errorMessage = "未找到关联的主机会话"
-                return
-            }
-            Task { @MainActor in
-                let pw = await SSHTunnelManager.resolveSecret(for: session)
-                let keyPath = session.privateKeyPath
-                let sshpassPath = (SSHClientFactory.makeClient(for: session) as? NativeSSHSession)?.sshpassExecutablePath
-                
-                do {
-                    try tunnelManager.startTunnel(
-                        id: tunnel.id,
-                        session: session,
-                        password: pw,
-                        privateKeyPath: keyPath,
-                        sshpassPath: sshpassPath
-                    )
-                    errorMessage = nil
-                } catch {
-                    errorMessage = error.localizedDescription
-                }
+            startTunnelAsync(tunnel)
+        }
+    }
+
+    private func startTunnelAsync(_ tunnel: SSHTunnel) {
+        guard let session = store.sessions.first(where: { $0.id == tunnel.sessionId }) else {
+            errorMessage = "未找到关联的主机会话"
+            return
+        }
+        Task { @MainActor in
+            let pw = await SSHTunnelManager.resolveSecret(for: session)
+            let keyPath = session.privateKeyPath
+            let sshpassPath = (SSHClientFactory.makeClient(for: session) as? NativeSSHSession)?.sshpassExecutablePath
+            let jumpChain = SSHArgumentBuilder.resolveJumpChain(for: session, availableSessions: store.sessions).hops
+
+            do {
+                try tunnelManager.startTunnel(
+                    id: tunnel.id,
+                    session: session,
+                    password: pw,
+                    privateKeyPath: keyPath,
+                    sshpassPath: sshpassPath,
+                    jumpChain: jumpChain
+                )
+                errorMessage = nil
+            } catch {
+                errorMessage = error.localizedDescription
             }
         }
     }
@@ -218,7 +231,7 @@ private struct TunnelRowView: View {
             Circle()
                 .fill(statusColor)
                 .frame(width: 8, height: 8)
-                .shadow(color: statusColor.opacity(state.isRunning ? 0.7 : 0.2), radius: state.isRunning ? 3 : 1)
+                .shadow(color: statusColor.opacity(state.canStop ? 0.7 : 0.2), radius: state.canStop ? 3 : 1)
                 .help(statusText)
                 .accessibilityLabel(statusText)
             
@@ -279,9 +292,9 @@ private struct TunnelRowView: View {
             
             // Toggle Start / Stop Button
             ApexActionButton(
-                state.isRunning ? "停止" : "启动",
-                icon: state.isRunning ? "stop.fill" : "play.fill",
-                tint: state.isRunning ? ApexStyle.error : ApexStyle.success
+                state.canStop ? "停止" : "启动",
+                icon: state.canStop ? "stop.fill" : "play.fill",
+                tint: state.canStop ? ApexStyle.error : ApexStyle.success
             ) {
                 onToggle()
             }

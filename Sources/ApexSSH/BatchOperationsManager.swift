@@ -93,11 +93,22 @@ public final class BatchOperationsManager: ObservableObject {
         case fileUpload(localURLs: [URL], remoteDirectory: String)
     }
 
+    private struct HostTimeoutError: Error {}
+
     @Published public var maxConcurrency: Int {
         didSet {
             let clamped = Self.clampConcurrency(maxConcurrency)
             if maxConcurrency != clamped {
                 maxConcurrency = clamped
+            }
+        }
+    }
+
+    @Published public var commandTimeoutSeconds: TimeInterval {
+        didSet {
+            let clamped = Self.clampTimeout(commandTimeoutSeconds)
+            if commandTimeoutSeconds != clamped {
+                commandTimeoutSeconds = clamped
             }
         }
     }
@@ -111,7 +122,7 @@ public final class BatchOperationsManager: ObservableObject {
     @Published public private(set) var startedAt: Date?
     @Published public private(set) var finishedAt: Date?
 
-    private let defaultClientProvider: SessionClientProvider
+    private let customDefaultClientProvider: SessionClientProvider?
     private var activeBatchTask: Task<Void, Never>?
     private var currentRunID: UUID?
     private var cancelledRunIDs: Set<UUID> = []
@@ -121,16 +132,21 @@ public final class BatchOperationsManager: ObservableObject {
 
     public init(
         maxConcurrency: Int = 4,
+        commandTimeoutSeconds: TimeInterval = 60,
         clientProvider: SessionClientProvider? = nil
     ) {
         self.maxConcurrency = Self.clampConcurrency(maxConcurrency)
-        self.defaultClientProvider = clientProvider ?? { session in
-            SSHClientFactory.makeClient(for: session)
-        }
+        self.commandTimeoutSeconds = Self.clampTimeout(commandTimeoutSeconds)
+        self.customDefaultClientProvider = clientProvider
     }
 
     public nonisolated static func clampConcurrency(_ value: Int) -> Int {
         max(1, min(16, value))
+    }
+
+    public nonisolated static func clampTimeout(_ value: TimeInterval) -> TimeInterval {
+        guard value.isFinite else { return 60 }
+        return max(0.05, min(3600, value))
     }
 
     public nonisolated static func resolvedRemoteFilePath(localURL: URL, remoteDirectory: String) -> String {
@@ -294,14 +310,28 @@ public final class BatchOperationsManager: ObservableObject {
         clientProvider: SessionClientProvider?,
         resetAllResults: Bool
     ) -> Task<Void, Never> {
-        activeBatchTask?.cancel()
+        let previousTask = activeBatchTask
+        previousTask?.cancel()
         if let previousRunID = currentRunID {
             cancelledRunIDs.insert(previousRunID)
         }
 
         let runID = UUID()
         currentRunID = runID
-        let provider = clientProvider ?? defaultClientProvider
+        let sessionsSnapshot = SessionStore.shared.sessions
+        let resolvedProvider: SessionClientProvider = clientProvider ?? customDefaultClientProvider ?? { session in
+            if session.isLocal {
+                return LocalTerminalSession(session: session)
+            } else if session.host == "192.0.2.10" {
+                return MockSSHSession(session: session)
+            } else {
+                return NativeSSHSession(
+                    session: session,
+                    availableSessions: sessionsSnapshot,
+                    disableControlPersist: true
+                )
+            }
+        }
         lastJobPayload = payload
         lastRunClientProvider = clientProvider
 
@@ -331,7 +361,9 @@ public final class BatchOperationsManager: ObservableObject {
             isRunning = false
             startedAt = Date()
             finishedAt = startedAt
-            let emptyTask = Task {}
+            let emptyTask = Task<Void, Never> {
+                _ = await previousTask?.value
+            }
             activeBatchTask = emptyTask
             return emptyTask
         }
@@ -341,15 +373,32 @@ public final class BatchOperationsManager: ObservableObject {
         finishedAt = nil
 
         let concurrencyLimit = Self.clampConcurrency(maxConcurrency)
+        let timeoutSec = Self.clampTimeout(commandTimeoutSeconds)
 
         let task = Task { [weak self] in
+            await previousTask?.value
             guard let self else { return }
+            let stillActive = await MainActor.run { self.isRunActive(runID) }
+            guard !Task.isCancelled, stillActive else {
+                await MainActor.run {
+                    guard self.currentRunID == runID else { return }
+                    for idx in self.results.indices where !self.results[idx].status.isTerminal {
+                        self.results[idx].status = .cancelled
+                    }
+                    self.isRunning = false
+                    if self.finishedAt == nil {
+                        self.finishedAt = Date()
+                    }
+                }
+                return
+            }
             await self.runBoundedTaskGroup(
                 runID: runID,
                 sessions: deduplicatedSessions,
                 payload: payload,
                 limit: concurrencyLimit,
-                provider: provider
+                timeoutSeconds: timeoutSec,
+                provider: resolvedProvider
             )
             await MainActor.run {
                 guard self.currentRunID == runID else { return }
@@ -373,6 +422,7 @@ public final class BatchOperationsManager: ObservableObject {
         sessions: [Session],
         payload: BatchJobPayload,
         limit: Int,
+        timeoutSeconds: TimeInterval,
         provider: @escaping SessionClientProvider
     ) async {
         var iterator = sessions.makeIterator()
@@ -386,6 +436,7 @@ public final class BatchOperationsManager: ObservableObject {
                         runID: runID,
                         session: session,
                         payload: payload,
+                        timeoutSeconds: timeoutSeconds,
                         provider: provider
                     )
                 }
@@ -402,6 +453,7 @@ public final class BatchOperationsManager: ObservableObject {
                             runID: runID,
                             session: nextSession,
                             payload: payload,
+                            timeoutSeconds: timeoutSeconds,
                             provider: provider
                         )
                     }
@@ -410,11 +462,34 @@ public final class BatchOperationsManager: ObservableObject {
         }
     }
 
+    private nonisolated static func runWithTimeout<T: Sendable>(
+        seconds: TimeInterval,
+        operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        let clamped = clampTimeout(seconds)
+        let nanos = UInt64(clamped * 1_000_000_000)
+        return try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask {
+                try await operation()
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: nanos)
+                throw HostTimeoutError()
+            }
+            guard let first = try await group.next() else {
+                throw CancellationError()
+            }
+            group.cancelAll()
+            return first
+        }
+    }
+
     private nonisolated static func processHost(
         manager: BatchOperationsManager?,
         runID: UUID,
         session: Session,
         payload: BatchJobPayload,
+        timeoutSeconds: TimeInterval,
         provider: @escaping SessionClientProvider
     ) async {
         if Task.isCancelled {
@@ -426,10 +501,12 @@ public final class BatchOperationsManager: ObservableObject {
         guard shouldContinue else { return }
 
         let startNs = DispatchTime.now().uptimeNanoseconds
+        var createdClient: (any SSHSessionProtocol)?
 
         do {
             try Task.checkCancellation()
             let client = try await provider(session)
+            createdClient = client
             try Task.checkCancellation()
 
             switch payload {
@@ -441,12 +518,14 @@ public final class BatchOperationsManager: ObservableObject {
                         userInfo: [NSLocalizedDescriptionKey: "执行命令不能为空"]
                     )
                 }
-                let result = try await client.executeCommandWithResult(command)
+                let result = try await runWithTimeout(seconds: timeoutSeconds) {
+                    try await client.executeCommandWithResult(command)
+                }
                 if Task.isCancelled {
                     await manager?.applyCancelled(runID: runID, sessionID: session.id)
-                    return
+                } else {
+                    await manager?.applyCommandResult(runID: runID, sessionID: session.id, result: result)
                 }
-                await manager?.applyCommandResult(runID: runID, sessionID: session.id, result: result)
 
             case .fileUpload(let localURLs, let remoteDirectory):
                 guard !localURLs.isEmpty else {
@@ -456,38 +535,52 @@ public final class BatchOperationsManager: ObservableObject {
                         userInfo: [NSLocalizedDescriptionKey: "未选择任何待分发的本地文件"]
                     )
                 }
-                let totalFiles = localURLs.count
-                var uploadedPaths: [String] = []
-
-                for (index, localURL) in localURLs.enumerated() {
-                    try Task.checkCancellation()
-                    let targetPath = resolvedRemoteFilePath(localURL: localURL, remoteDirectory: remoteDirectory)
-                    try await client.uploadFile(localURL: localURL, remotePath: targetPath) { [weak manager] fraction in
-                        let clamped = max(0.0, min(1.0, fraction))
-                        let combined = (Double(index) + clamped) / Double(totalFiles)
-                        Task { @MainActor [weak manager] in
-                            manager?.updateHostProgress(runID: runID, sessionID: session.id, progress: combined)
+                let uploadedPaths = try await runWithTimeout(seconds: timeoutSeconds) { [weak manager] in
+                    let totalFiles = localURLs.count
+                    var paths: [String] = []
+                    for (index, localURL) in localURLs.enumerated() {
+                        try Task.checkCancellation()
+                        let targetPath = resolvedRemoteFilePath(localURL: localURL, remoteDirectory: remoteDirectory)
+                        try await client.uploadFile(localURL: localURL, remotePath: targetPath) { [weak manager] fraction in
+                            let clamped = max(0.0, min(1.0, fraction))
+                            let combined = (Double(index) + clamped) / Double(totalFiles)
+                            Task { @MainActor [weak manager] in
+                                manager?.updateHostProgress(runID: runID, sessionID: session.id, progress: combined)
+                            }
                         }
+                        paths.append(targetPath)
                     }
-                    uploadedPaths.append(targetPath)
+                    return paths
                 }
 
                 if Task.isCancelled {
                     await manager?.applyCancelled(runID: runID, sessionID: session.id)
-                    return
+                } else {
+                    let elapsedMs = Double(DispatchTime.now().uptimeNanoseconds - startNs) / 1_000_000.0
+                    let summary = uploadedPaths.joined(separator: "\n")
+                    await manager?.applyUploadSuccess(
+                        runID: runID,
+                        sessionID: session.id,
+                        summary: summary,
+                        targetPath: uploadedPaths.last,
+                        durationMs: elapsedMs
+                    )
                 }
-                let elapsedMs = Double(DispatchTime.now().uptimeNanoseconds - startNs) / 1_000_000.0
-                let summary = uploadedPaths.joined(separator: "\n")
-                await manager?.applyUploadSuccess(
-                    runID: runID,
-                    sessionID: session.id,
-                    summary: summary,
-                    targetPath: uploadedPaths.last,
-                    durationMs: elapsedMs
-                )
             }
         } catch is CancellationError {
             await manager?.applyCancelled(runID: runID, sessionID: session.id)
+        } catch is HostTimeoutError {
+            if Task.isCancelled {
+                await manager?.applyCancelled(runID: runID, sessionID: session.id)
+            } else {
+                let elapsedMs = Double(DispatchTime.now().uptimeNanoseconds - startNs) / 1_000_000.0
+                await manager?.applyFailure(
+                    runID: runID,
+                    sessionID: session.id,
+                    message: "执行超时",
+                    durationMs: elapsedMs
+                )
+            }
         } catch {
             if Task.isCancelled {
                 await manager?.applyCancelled(runID: runID, sessionID: session.id)
@@ -500,6 +593,10 @@ public final class BatchOperationsManager: ObservableObject {
                     durationMs: elapsedMs
                 )
             }
+        }
+
+        if let createdClient {
+            await createdClient.disconnect()
         }
     }
 

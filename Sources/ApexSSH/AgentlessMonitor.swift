@@ -7,16 +7,17 @@ public final class AgentlessMonitor: Sendable {
     
     /// Script payload sent to remote Linux host over lightweight SSH channel
     public static let linuxProbeCommand = """
-    cat /proc/stat /proc/meminfo /proc/net/dev 2>/dev/null; echo "---DF---"; df -kP / 2>/dev/null | tail -1; echo "---UPTIME---"; cat /proc/uptime 2>/dev/null; echo "---LOAD---"; cat /proc/loadavg 2>/dev/null; echo "---TOP---"; ps -eo pid,user,%cpu,%mem,comm --sort=-%cpu 2>/dev/null | head -6; echo "---CPUMODEL---"; (grep -m1 "model name" /proc/cpuinfo 2>/dev/null || grep -m1 "Hardware" /proc/cpuinfo 2>/dev/null || uname -m) | cut -d: -f2 | sed 's/^[ \t]*//'; echo "---DISKTYPE---"; ROOT_DEV=$(df -P / 2>/dev/null | tail -1 | awk '{print $1}' | sed 's|/dev/||'); PARENT_DEV=$(echo "$ROOT_DEV" | sed -E 's/p?[0-9]+$//'); if [ -f "/sys/block/$PARENT_DEV/queue/rotational" ]; then if [ "$(cat /sys/block/$PARENT_DEV/queue/rotational 2>/dev/null)" = "0" ]; then if echo "$ROOT_DEV" | grep -q "nvme"; then echo "NVMe SSD"; else echo "SSD"; fi; else echo "HDD"; fi; elif echo "$ROOT_DEV" | grep -q "nvme"; then echo "NVMe SSD"; elif lsblk -d -n -o rota "/dev/$PARENT_DEV" 2>/dev/null | grep -q "0"; then echo "SSD"; elif lsblk -d -n -o rota "/dev/$PARENT_DEV" 2>/dev/null | grep -q "1"; then echo "HDD"; else echo "SSD"; fi
+    LC_ALL=C; export LC_ALL; cat /proc/stat /proc/meminfo /proc/net/dev 2>/dev/null; echo "---DF---"; df -kP / 2>/dev/null | tail -1; echo "---UPTIME---"; cat /proc/uptime 2>/dev/null; echo "---LOAD---"; cat /proc/loadavg 2>/dev/null; echo "---TOP---"; (ps -eo pid,user,%cpu,%mem,comm --sort=-%cpu 2>/dev/null || ps -eo pid,user,%cpu,%mem,comm 2>/dev/null || ps -o pid,user,rss,comm 2>/dev/null) | head -6; echo "---CPUMODEL---"; (grep -m1 "model name" /proc/cpuinfo 2>/dev/null || grep -m1 "Hardware" /proc/cpuinfo 2>/dev/null || uname -m) | cut -d: -f2 | sed 's/^[ \t]*//'; echo "---DISKTYPE---"; ROOT_DEV=$(df -P / 2>/dev/null | tail -1 | awk '{print $1}' | sed 's|/dev/||'); PARENT_DEV=$(echo "$ROOT_DEV" | sed -E 's/p?[0-9]+$//'); if [ -f "/sys/block/$PARENT_DEV/queue/rotational" ]; then if [ "$(cat /sys/block/$PARENT_DEV/queue/rotational 2>/dev/null)" = "0" ]; then if echo "$ROOT_DEV" | grep -q "nvme"; then echo "NVMe SSD"; else echo "SSD"; fi; else echo "HDD"; fi; elif echo "$ROOT_DEV" | grep -q "nvme"; then echo "NVMe SSD"; elif lsblk -d -n -o rota "/dev/$PARENT_DEV" 2>/dev/null | grep -q "0"; then echo "SSD"; elif lsblk -d -n -o rota "/dev/$PARENT_DEV" 2>/dev/null | grep -q "1"; then echo "HDD"; else echo "SSD"; fi
     """
     
     /// Script payload sent to remote macOS host
     public static let macosProbeCommand = """
-    top -l 1 -n 0 -s 0 | grep -E "CPU usage|PhysMem"; echo "---SWAP---"; sysctl -n vm.swapusage 2>/dev/null; echo "---CORES---"; sysctl -n hw.ncpu 2>/dev/null || echo "8"; echo "---DF---"; df -kP / | tail -1; echo "---UPTIME---"; uptime; echo "---NET---"; netstat -ib -n 2>/dev/null | awk '$1 ~ /^en[0-9]+$/ && $3 ~ /^<Link#/ { rx += $(NF-4); tx += $(NF-1) } END { printf "en0 1500 <Link#1> 00:00:00:00:00:00 0 0 %.0f 0 0 %.0f 0\\n", rx, tx }'; echo "---TOP---"; ps -eo pid,user,%cpu,%mem,comm -r 2>/dev/null | head -6; echo "---CPUMODEL---"; sysctl -n machdep.cpu.brand_string 2>/dev/null || sysctl -n hw.model; echo "---DISKTYPE---"; if diskutil info / 2>/dev/null | grep -q "Solid State: *Yes"; then if diskutil info / 2>/dev/null | grep -E -q "Apple Fabric|PCI-Express|NVMe"; then echo "NVMe SSD"; else echo "SSD"; fi; else echo "HDD"; fi
+    LC_ALL=C; export LC_ALL; top -l 1 -n 0 -s 0 | grep -E "CPU usage|PhysMem"; echo "---SWAP---"; sysctl -n vm.swapusage 2>/dev/null; echo "---CORES---"; sysctl -n hw.ncpu 2>/dev/null || echo "8"; echo "---DF---"; df -kP / | tail -1; echo "---UPTIME---"; uptime; echo "---NET---"; netstat -ib -n 2>/dev/null | awk '$1 ~ /^en[0-9]+$/ && $3 ~ /^<Link#/ { rx += $(NF-4); tx += $(NF-1) } END { printf "en0 1500 <Link#1> 00:00:00:00:00:00 0 0 %.0f 0 0 %.0f 0\\n", rx, tx }'; echo "---TOP---"; ps -eo pid,user,%cpu,%mem,comm -r 2>/dev/null | head -6; echo "---CPUMODEL---"; sysctl -n machdep.cpu.brand_string 2>/dev/null || sysctl -n hw.model; echo "---DISKTYPE---"; if diskutil info / 2>/dev/null | grep -q "Solid State: *Yes"; then if diskutil info / 2>/dev/null | grep -E -q "Apple Fabric|PCI-Express|NVMe"; then echo "NVMe SSD"; else echo "SSD"; fi; else echo "HDD"; fi
     """
     
     /// Auto-detecting multi-OS probe command
     public static let autoProbeCommand = """
+    LC_ALL=C; export LC_ALL
     if [ "$(uname)" = "Darwin" ]; then
         \(macosProbeCommand)
     else
@@ -24,17 +25,19 @@ public final class AgentlessMonitor: Sendable {
     fi
     """
     
-    /// Full process inspection command returning Top 45 processes with complete attributes
+    /// Full process inspection command returning Top 45 processes with complete attributes (including BusyBox/POSIX fallbacks)
     public static let processInspectorProbeCommand = """
+    LC_ALL=C; export LC_ALL
     if [ "$(uname)" = "Darwin" ]; then
         ps -eo pid,user,%cpu,%mem,rss,vsz,stat,comm,command -r 2>/dev/null | head -46
     else
-        (ps -eo pid,user,%cpu,%mem,rss,vsz,stat,comm,args --sort=-%cpu 2>/dev/null || ps -eo pid,user,%cpu,%mem,rss,vsz,stat,comm,args 2>/dev/null) | head -46
+        (ps -eo pid,user,%cpu,%mem,rss,vsz,stat,comm,args --sort=-%cpu 2>/dev/null || ps -eo pid,user,%cpu,%mem,rss,vsz,stat,comm,args 2>/dev/null || ps -o pid,user,rss,vsz,stat,comm,args 2>/dev/null || ps -o pid,user,vsz,stat,comm,args 2>/dev/null) | head -46
     fi
     """
 
     /// Listening TCP/UDP sockets probe command with automatic multi-OS fallback (`lsof` on Darwin, `ss` or `netstat` on Linux)
     public static let listeningPortsProbeCommand = """
+    LC_ALL=C; export LC_ALL
     if [ "$(uname)" = "Darwin" ]; then
         lsof -iTCP -sTCP:LISTEN -P -n 2>/dev/null | head -80
     elif command -v ss >/dev/null 2>&1; then
@@ -53,6 +56,7 @@ public final class AgentlessMonitor: Sendable {
         guard !safeServices.isEmpty else { return "" }
         let joined = safeServices.joined(separator: " ")
         return """
+        LC_ALL=C; export LC_ALL
         if command -v systemctl >/dev/null 2>&1; then
             for s in \(joined); do
                 systemctl is-active "$s" 2>/dev/null || echo "inactive"
@@ -103,11 +107,29 @@ public final class AgentlessMonitor: Sendable {
 
     public static let noContainerRuntimeSentinel = "---NO-CONTAINER-RUNTIME---"
 
-    /// Auto-detects Docker or Podman on remote hosts and outputs tab-separated container rows.
+    /// Auto-detects Docker or Podman on remote hosts (falling back to Podman if Docker fails) and outputs tab-separated container rows.
     public static let containerListProbeCommand = """
+    LC_ALL=C; export LC_ALL
     if command -v docker >/dev/null 2>&1; then
-        echo "---RUNTIME:docker---"
-        docker ps -a --format '{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.State}}\t{{.Status}}\t{{.Ports}}' 2>&1
+        DOCKER_OUT=$(docker ps -a --format '{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.State}}\t{{.Status}}\t{{.Ports}}' 2>&1)
+        DOCKER_RC=$?
+        if [ $DOCKER_RC -eq 0 ]; then
+            echo "---RUNTIME:docker---"
+            printf '%s\\n' "$DOCKER_OUT"
+        elif command -v podman >/dev/null 2>&1; then
+            PODMAN_OUT=$(podman ps -a --format '{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.State}}\t{{.Status}}\t{{.Ports}}' 2>&1)
+            PODMAN_RC=$?
+            if [ $PODMAN_RC -eq 0 ]; then
+                echo "---RUNTIME:podman---"
+                printf '%s\\n' "$PODMAN_OUT"
+            else
+                echo "---RUNTIME:docker---"
+                printf '%s\\n' "$DOCKER_OUT"
+            fi
+        else
+            echo "---RUNTIME:docker---"
+            printf '%s\\n' "$DOCKER_OUT"
+        fi
     elif command -v podman >/dev/null 2>&1; then
         echo "---RUNTIME:podman---"
         podman ps -a --format '{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.State}}\t{{.Status}}\t{{.Ports}}' 2>&1
@@ -185,6 +207,7 @@ public final class AgentlessMonitor: Sendable {
 
     /// Dynamically lists loaded systemd services on Linux hosts.
     public static let systemdDynamicProbeCommand = """
+    LC_ALL=C; export LC_ALL
     if command -v systemctl >/dev/null 2>&1; then
         systemctl list-units --type=service --all --no-pager --no-legend --plain 2>/dev/null | head -120
     fi
@@ -503,8 +526,7 @@ public final class AgentlessMonitor: Sendable {
     }
     
     private func parseMacOSUptime(_ text: String) -> UInt64 {
-        var totalSec: UInt64 = 0
-        guard let upRange = text.range(of: "up ") else { return 3600 }
+        guard let upRange = text.range(of: "up ") else { return 0 }
         let afterUp = text[upRange.upperBound...]
         let uptimeBody: Substring
         if let usersRange = afterUp.range(of: " user") {
@@ -526,9 +548,15 @@ public final class AgentlessMonitor: Sendable {
             if part.contains("day") {
                 let d = part.split(whereSeparator: { !$0.isNumber }).compactMap { UInt64($0) }.first ?? 0
                 daysSec += d * 86400
+            } else if part.contains("hr") {
+                let h = part.split(whereSeparator: { !$0.isNumber }).compactMap { UInt64($0) }.first ?? 0
+                subDaySec += h * 3600
             } else if part.contains("min") {
                 let m = part.split(whereSeparator: { !$0.isNumber }).compactMap { UInt64($0) }.first ?? 0
                 subDaySec += m * 60
+            } else if part.contains("sec") {
+                let s = part.split(whereSeparator: { !$0.isNumber }).compactMap { UInt64($0) }.first ?? 0
+                subDaySec += s
             } else if part.contains(":") {
                 let hm = part.split(separator: ":").compactMap { UInt64($0.trimmingCharacters(in: .whitespaces)) }
                 if hm.count == 2 {
@@ -536,8 +564,7 @@ public final class AgentlessMonitor: Sendable {
                 }
             }
         }
-        totalSec = daysSec > 0 ? daysSec : subDaySec
-        return totalSec > 0 ? totalSec : 3600
+        return daysSec + subDaySec
     }
     
     /// Parse Linux probe stdout into ServerMetricsSnapshot
@@ -609,6 +636,14 @@ public final class AgentlessMonitor: Sendable {
                         let cmd = parts.dropFirst(4).joined(separator: " ")
                         topProcesses.append(ProcessMetricItem(pid: pid, user: user, cpuPercent: cpu, memPercent: mem, command: cmd))
                     }
+                } else if parts.count == 4,
+                          parts[0] != "PID", parts[0] != "pid",
+                          let pid = Int(parts[0]),
+                          Double(parts[2]) != nil {
+                    // BusyBox fallback: pid,user,rss,comm
+                    let user = String(parts[1])
+                    let cmd = String(parts[3])
+                    topProcesses.append(ProcessMetricItem(pid: pid, user: user, cpuPercent: 0.0, memPercent: 0.0, command: cmd))
                 }
                 continue
             }
@@ -823,11 +858,13 @@ public final class AgentlessMonitor: Sendable {
         guard let colon = trimmed.firstIndex(of: ":") else { return false }
         let iface = trimmed[..<colon].trimmingCharacters(in: .whitespaces)
         guard !iface.isEmpty else { return false }
+        let isIndexedEn = iface.hasPrefix("en") && iface.dropFirst(2).first?.isASCII == true && iface.dropFirst(2).first?.isNumber == true
         return iface.hasPrefix("eth")
             || iface.hasPrefix("ens")
             || iface.hasPrefix("enp")
             || iface.hasPrefix("eno")
             || iface.hasPrefix("enx")
+            || isIndexedEn
             || iface.hasPrefix("em")
             || iface.hasPrefix("bond")
             || iface.hasPrefix("wlan")
@@ -835,5 +872,11 @@ public final class AgentlessMonitor: Sendable {
             || iface.hasPrefix("venet")
             || iface.hasPrefix("vmbr")
             || iface.hasPrefix("ib")
+            || iface.hasPrefix("br")
+            || iface.hasPrefix("wg")
+            || iface.hasPrefix("tun")
+            || iface.hasPrefix("tap")
+            || iface.hasPrefix("tailscale")
+            || iface.hasPrefix("ppp")
     }
 }

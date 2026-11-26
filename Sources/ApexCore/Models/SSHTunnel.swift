@@ -46,6 +46,16 @@ public enum SSHTunnelState: Codable, Sendable, Equatable {
         if case .active = self { return true }
         return false
     }
+
+    /// True while the tunnel process exists and can be cancelled/stopped by the user.
+    public var canStop: Bool {
+        switch self {
+        case .starting, .active:
+            return true
+        case .stopped, .failed:
+            return false
+        }
+    }
 }
 
 /// Represents an SSH Port Forwarding configuration

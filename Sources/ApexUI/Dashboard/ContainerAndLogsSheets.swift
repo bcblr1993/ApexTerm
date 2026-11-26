@@ -197,6 +197,7 @@ struct RemoteLogViewerSheet: View {
     @State private var actionFeedback: String? = nil
     @State private var pendingSystemdAction: SystemdServiceAction? = nil
     @State private var showSystemdActionConfirm: Bool = false
+    @State private var logTask: Task<Void, Never>? = nil
 
     private var filteredLogLines: String {
         let query = filterText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -364,6 +365,10 @@ struct RemoteLogViewerSheet: View {
         .frame(width: 720, height: 500)
         .background(ApexStyle.surface)
         .onAppear { fetchLogs() }
+        .onDisappear {
+            logTask?.cancel()
+            logTask = nil
+        }
         .confirmationDialog(
             "Systemd 服务操作确认",
             isPresented: $showSystemdActionConfirm,
@@ -381,7 +386,7 @@ struct RemoteLogViewerSheet: View {
     }
 
     private func fetchLogs() {
-        guard !isLoading else { return }
+        logTask?.cancel()
         guard let client = sshClient, client.isConnected else {
             rawLogs = "当前处于离线预览状态或会话未连接。"
             return
@@ -398,13 +403,27 @@ struct RemoteLogViewerSheet: View {
             return
         }
         isLoading = true
-        Task {
+        logTask = Task {
             do {
-                let out = try await client.executeCommand(cmd)
+                let result = try await client.executeCommandWithResult(cmd)
+                guard !Task.isCancelled else { return }
+                let combined = [result.stdout, result.stderr]
+                    .map { $0.trimmingCharacters(in: .newlines) }
+                    .filter { !$0.isEmpty }
+                    .joined(separator: "\n")
                 await MainActor.run {
-                    self.rawLogs = out.trimmingCharacters(in: .newlines)
+                    guard !Task.isCancelled else { return }
+                    if result.exitCode == 0 {
+                        self.rawLogs = combined
+                    } else {
+                        self.rawLogs = combined.isEmpty
+                            ? "拉取日志失败 (退出码 \(result.exitCode))"
+                            : "拉取日志失败 (退出码 \(result.exitCode)):\n\(combined)"
+                    }
                     self.isLoading = false
                 }
+            } catch is CancellationError {
+                await MainActor.run { self.isLoading = false }
             } catch {
                 await MainActor.run {
                     self.rawLogs = "拉取日志失败: \(error.localizedDescription)"
@@ -427,12 +446,21 @@ struct RemoteLogViewerSheet: View {
         isLoading = true
         Task {
             do {
-                let out = try await client.executeCommand(cmd).trimmingCharacters(in: .whitespacesAndNewlines)
+                let result = try await client.executeCommandWithResult(cmd)
+                let combined = [result.stdout, result.stderr]
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                    .joined(separator: "\n")
                 await MainActor.run {
                     self.isLoading = false
-                    self.actionFeedback = out.isEmpty ? "已执行 systemctl \(action.rawValue) \(svc.name)" : out
-                    onServiceMutated()
-                    fetchLogs()
+                    if result.exitCode == 0 {
+                        self.actionFeedback = combined.isEmpty ? "已执行 systemctl \(action.rawValue) \(svc.name)" : combined
+                        onServiceMutated()
+                        fetchLogs()
+                    } else {
+                        let reason = combined.isEmpty ? "退出码 \(result.exitCode)" : combined
+                        self.actionFeedback = "执行失败: \(reason)"
+                    }
                 }
             } catch {
                 await MainActor.run {

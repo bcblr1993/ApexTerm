@@ -36,18 +36,49 @@ public final class SSHTunnelManager: ObservableObject {
     @Published public private(set) var tunnels: [SSHTunnel] = []
     @Published public private(set) var activeStates: [UUID: SSHTunnelState] = [:]
     
+    private struct TunnelRuntimeResources {
+        var leases: [FileAccessLease] = []
+        var grants: ChildProcessFileGrants?
+        var logSource: DispatchSourceFileSystemObject?
+        var logPath: String?
+        var logBuffer = Data()
+    }
+
+    struct PreparedStoreTunnelCommand {
+        let binaryPath: String
+        let arguments: [String]
+        let environment: [String: String]
+        let grants: ChildProcessFileGrants
+        let leases: [FileAccessLease]
+    }
+
     private let fileManager = FileManager.default
     private let baseDirectory: URL
+    private let distributionChannel: DistributionChannel
+    private let fileAccessStore: FileAccessStore
+    private let bridgeExecutableURL: URL
+    private let sandboxHomeURL: URL
     private var processes: [UUID: Process] = [:]
     private var stderrPipes: [UUID: Pipe] = [:]
+    private var runtimeResources: [UUID: TunnelRuntimeResources] = [:]
     
-    public init(baseDirectory: URL? = nil) {
+    public init(
+        baseDirectory: URL? = nil,
+        distributionChannel: DistributionChannel = .current,
+        fileAccessStore: FileAccessStore = .shared,
+        bridgeExecutableURL: URL? = nil,
+        sandboxHomeURL: URL? = nil
+    ) {
         if let baseDirectory = baseDirectory {
             self.baseDirectory = baseDirectory
         } else {
             let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
             self.baseDirectory = SessionStore.defaultDirectory(appSupport: appSupport, bundleIdentifier: Bundle.main.bundleIdentifier)
         }
+        self.distributionChannel = distributionChannel
+        self.fileAccessStore = fileAccessStore
+        self.bridgeExecutableURL = bridgeExecutableURL ?? URL(fileURLWithPath: Bundle.main.bundlePath + "/Contents/MacOS/ApexSSHBridge")
+        self.sandboxHomeURL = sandboxHomeURL ?? URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
         
         try? fileManager.createDirectory(at: self.baseDirectory, withIntermediateDirectories: true)
         loadTunnels()
@@ -178,6 +209,7 @@ public final class SSHTunnelManager: ObservableObject {
         tunnel: SSHTunnel,
         session: Session,
         privateKeyPath: String? = nil,
+        certificatePath: String? = nil,
         jumpSession: Session? = nil,
         jumpChain: [Session] = []
     ) -> [String] {
@@ -186,6 +218,7 @@ public final class SSHTunnelManager: ObservableObject {
             "-N", // Do not execute remote command
             "-T", // Disable pseudo-terminal allocation
             "-o", "ExitOnForwardFailure=yes",
+            "-o", "ConnectTimeout=10",
             "-o", "TCPKeepAlive=yes",
             "-o", "ServerAliveInterval=\(interval)",
             "-o", "ServerAliveCountMax=10",
@@ -205,8 +238,12 @@ public final class SSHTunnelManager: ObservableObject {
         }
         
         // Certificate and/or private key
-        if let certPath = session.certificatePath, !certPath.isEmpty {
-            args.append(contentsOf: ["-o", "CertificateFile=\(expandPath(certPath))"])
+        if let certPath = certificatePath ?? session.certificatePath, !certPath.isEmpty {
+            let expandedCert = expandPath(certPath)
+            let formattedCert = expandedCert.contains(where: { $0.isWhitespace || $0 == "\"" || $0 == "\\" })
+                ? SandboxSSHEnvironment.quotedPath(expandedCert)
+                : expandedCert
+            args.append(contentsOf: ["-o", "CertificateFile=\(formattedCert)"])
         }
         if let keyPath = privateKeyPath ?? session.privateKeyPath, !keyPath.isEmpty {
             args.append(contentsOf: ["-i", expandPath(keyPath)])
@@ -222,6 +259,105 @@ public final class SSHTunnelManager: ObservableObject {
         let destHost = SSHTunnel.formatForwardingHost(session.host)
         args.append(contentsOf: ["-p", "\(session.port)", "\(session.username)@\(destHost)"])
         return args
+    }
+
+    nonisolated static func isTunnelLogLineReady(_ rawLine: String) -> Bool {
+        let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !line.isEmpty else { return false }
+        return line.contains("Entering interactive session.")
+            || line.contains("Local forwarding listening on")
+            || line.contains("All remote forwarding requests processed")
+            || line.contains("pledge: network")
+            || line.contains("mux_client_request_session: master session id:")
+            || line.contains("mux_client_forward:")
+    }
+
+    nonisolated static func prepareStoreTunnelCommand(
+        tunnel: SSHTunnel,
+        session: Session,
+        password: String?,
+        privateKeyPath: String?,
+        jumpChain: [Session],
+        extraSSHOptions: [String] = [],
+        fileAccessStore: FileAccessStore,
+        bridgeExecutableURL: URL,
+        sandboxHomeURL: URL
+    ) throws -> PreparedStoreTunnelCommand {
+        guard FileManager.default.isExecutableFile(atPath: bridgeExecutableURL.path) else {
+            throw SSHTunnelError.processStartFailed("商店版 SSH 文件授权组件缺失，请重新安装应用")
+        }
+
+        var leases: [FileAccessLease] = []
+        do {
+            var resolvedKeyPath = privateKeyPath
+            if let keyPath = privateKeyPath ?? session.privateKeyPath,
+               !keyPath.isEmpty,
+               !KeychainStore.isVaultPrivateKeyReference(keyPath) {
+                let lease = try fileAccessStore.acquire(URL(fileURLWithPath: expandPath(keyPath)))
+                guard FileManager.default.isReadableFile(atPath: lease.url.path) else {
+                    lease.close()
+                    throw SSHTunnelError.processStartFailed("无法读取私钥，请在会话设置中通过「浏览」重新授权私钥文件")
+                }
+                leases.append(lease)
+                resolvedKeyPath = lease.url.path
+            }
+
+            var resolvedCertPath: String? = nil
+            if let certPath = session.certificatePath, !certPath.isEmpty {
+                let lease = try fileAccessStore.acquire(URL(fileURLWithPath: expandPath(certPath)))
+                guard FileManager.default.isReadableFile(atPath: lease.url.path) else {
+                    lease.close()
+                    throw SSHTunnelError.processStartFailed("无法读取 SSH 证书，请在会话设置中通过「浏览」重新授权证书文件")
+                }
+                leases.append(lease)
+                resolvedCertPath = lease.url.path
+            }
+
+            let knownHosts = try SandboxSSHEnvironment.prepareKnownHosts(home: sandboxHomeURL)
+            let baseArgs = extraSSHOptions + buildSSHArguments(
+                tunnel: tunnel,
+                session: session,
+                privateKeyPath: resolvedKeyPath,
+                certificatePath: resolvedCertPath,
+                jumpChain: jumpChain
+            )
+            let sandboxArgs = try SandboxSSHEnvironment.arguments(
+                prependingTo: baseArgs,
+                tool: "ssh",
+                knownHosts: knownHosts
+            )
+
+            let authentication: ChildProcessAuthentication?
+            if let password, !password.isEmpty {
+                let kind: ChildProcessAuthentication.Kind
+                switch session.authMethod {
+                case .privateKey, .certificate:
+                    kind = .passphrase
+                default:
+                    kind = .password
+                }
+                authentication = ChildProcessAuthentication(kind: kind, secret: password)
+            } else {
+                authentication = nil
+            }
+
+            let grants = try ChildProcessFileGrants(
+                files: try leases.map { try $0.childProcessGrant() },
+                authentication: authentication
+            )
+            var env = ProcessInfo.processInfo.environment
+            env[ChildProcessFileGrants.environmentKey] = grants.fileURL.path
+            return PreparedStoreTunnelCommand(
+                binaryPath: bridgeExecutableURL.path,
+                arguments: ["--tool", "ssh"] + sandboxArgs,
+                environment: env,
+                grants: grants,
+                leases: leases
+            )
+        } catch {
+            leases.forEach { $0.close() }
+            throw error
+        }
     }
     
     // MARK: - Credential Resolution
@@ -268,7 +404,8 @@ public final class SSHTunnelManager: ObservableObject {
         password: String? = nil,
         privateKeyPath: String? = nil,
         sshpassPath: String? = nil,
-        jumpSession: Session? = nil
+        jumpSession: Session? = nil,
+        jumpChain: [Session]? = nil
     ) throws {
         guard let tunnel = tunnels.first(where: { $0.id == id }) else {
             throw SSHTunnelError.tunnelNotFound
@@ -285,24 +422,73 @@ public final class SSHTunnelManager: ObservableObject {
         activeStates[id] = .starting
         
         let resolvedChain: [Session]
-        if let jumpSession {
+        if let jumpChain {
+            resolvedChain = jumpChain
+        } else if let jumpSession {
             resolvedChain = [jumpSession]
         } else {
             resolvedChain = SSHArgumentBuilder.resolveJumpChain(for: session, availableSessions: SessionStore.shared.sessions).hops
         }
+
+        let logPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("apx-tun-\(UUID().uuidString).log")
+            .path
+        let logFd = open(logPath, O_RDONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC, 0o600)
+        let extraOptions = logFd >= 0 ? ["-o", "LogLevel=DEBUG1", "-E", logPath] : []
+
         var binaryPath = "/usr/bin/ssh"
-        var sshArgs = Self.buildSSHArguments(tunnel: tunnel, session: session, privateKeyPath: privateKeyPath, jumpChain: resolvedChain)
-        
-        if let pw = password, !pw.isEmpty, let sshpass = sshpassPath, FileManager.default.isExecutableFile(atPath: sshpass) {
-            binaryPath = sshpass
-            sshArgs = Self.sshpassArguments(secret: pw, session: session) + sshArgs
+        var sshArgs: [String]
+        var processEnvironment: [String: String]? = nil
+        var resources = TunnelRuntimeResources(logPath: logFd >= 0 ? logPath : nil)
+
+        do {
+            if distributionChannel == .appStore {
+                let prepared = try Self.prepareStoreTunnelCommand(
+                    tunnel: tunnel,
+                    session: session,
+                    password: password,
+                    privateKeyPath: privateKeyPath,
+                    jumpChain: resolvedChain,
+                    extraSSHOptions: extraOptions,
+                    fileAccessStore: fileAccessStore,
+                    bridgeExecutableURL: bridgeExecutableURL,
+                    sandboxHomeURL: sandboxHomeURL
+                )
+                binaryPath = prepared.binaryPath
+                sshArgs = prepared.arguments
+                processEnvironment = prepared.environment
+                resources.grants = prepared.grants
+                resources.leases = prepared.leases
+            } else {
+                sshArgs = extraOptions + Self.buildSSHArguments(
+                    tunnel: tunnel,
+                    session: session,
+                    privateKeyPath: privateKeyPath,
+                    jumpChain: resolvedChain
+                )
+                if let pw = password, !pw.isEmpty, let sshpass = sshpassPath, FileManager.default.isExecutableFile(atPath: sshpass) {
+                    binaryPath = sshpass
+                    sshArgs = Self.sshpassArguments(secret: pw, session: session) + sshArgs
+                }
+            }
+        } catch {
+            if logFd >= 0 {
+                Darwin.close(logFd)
+                unlink(logPath)
+            }
+            activeStates[id] = .failed(error.localizedDescription)
+            throw error
         }
         
         let process = Process()
         process.executableURL = URL(fileURLWithPath: binaryPath)
         process.arguments = sshArgs
+        if let processEnvironment {
+            process.environment = processEnvironment
+        }
         
         let pipe = Pipe()
+        process.standardInput = FileHandle.nullDevice
         process.standardError = pipe
         process.standardOutput = FileHandle.nullDevice
         
@@ -320,9 +506,30 @@ public final class SSHTunnelManager: ObservableObject {
                 }
             }
         }
+
+        if logFd >= 0 {
+            let expectedProcessID = ObjectIdentifier(process)
+            let logSource = DispatchSource.makeFileSystemObjectSource(
+                fileDescriptor: logFd,
+                eventMask: [.write, .extend, .attrib],
+                queue: DispatchQueue.global(qos: .utility)
+            )
+            logSource.setEventHandler { [weak self] in
+                Task { @MainActor [weak self] in
+                    self?.drainTunnelLog(id: id, fd: logFd, expectedProcessID: expectedProcessID)
+                }
+            }
+            logSource.setCancelHandler {
+                Darwin.close(logFd)
+                unlink(logPath)
+            }
+            resources.logSource = logSource
+            logSource.resume()
+        }
         
         stderrPipes[id] = pipe
         processes[id] = process
+        runtimeResources[id] = resources
         
         process.terminationHandler = { [weak self] proc in
             pipe.fileHandleForReading.readabilityHandler = nil
@@ -334,14 +541,21 @@ public final class SSHTunnelManager: ObservableObject {
                 }
                 return buf
             }
+            let procID = ObjectIdentifier(proc)
             Task { @MainActor [weak self] in
-                guard let self = self, self.processes[id] === proc else { return }
+                guard let self = self, self.processes[id].map(ObjectIdentifier.init) == procID else { return }
+                if logFd >= 0 {
+                    self.drainTunnelLog(id: id, fd: logFd, expectedProcessID: procID)
+                }
+                let logDiagnostics = self.consumeTunnelLogDiagnostics(id: id)
+                self.cleanupTunnelResources(for: id)
                 self.processes.removeValue(forKey: id)
                 self.stderrPipes.removeValue(forKey: id)
                 
                 let errString = String(data: stderrData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                 if proc.terminationStatus != 0 {
-                    let reason = errString.isEmpty ? "进程异常退出 (状态码 \(proc.terminationStatus))" : errString
+                    let detail = !errString.isEmpty ? errString : logDiagnostics
+                    let reason = detail.isEmpty ? "进程异常退出 (状态码 \(proc.terminationStatus))" : detail
                     self.activeStates[id] = .failed(reason)
                 } else {
                     self.activeStates[id] = .stopped
@@ -351,15 +565,72 @@ public final class SSHTunnelManager: ObservableObject {
         
         do {
             try process.run()
-            // Mark active once launched
-            self.activeStates[id] = .active
+            if logFd < 0 {
+                self.activeStates[id] = .active
+            } else {
+                drainTunnelLog(id: id, fd: logFd, expectedProcessID: ObjectIdentifier(process))
+            }
         } catch {
             pipe.fileHandleForReading.readabilityHandler = nil
+            cleanupTunnelResources(for: id)
             self.processes.removeValue(forKey: id)
             self.stderrPipes.removeValue(forKey: id)
             self.activeStates[id] = .failed(error.localizedDescription)
             throw SSHTunnelError.processStartFailed(error.localizedDescription)
         }
+    }
+
+    private func drainTunnelLog(id: UUID, fd: Int32, expectedProcessID: ObjectIdentifier) {
+        guard processes[id].map(ObjectIdentifier.init) == expectedProcessID,
+              var res = runtimeResources[id] else { return }
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        while true {
+            let bytesRead = read(fd, &buffer, buffer.count)
+            if bytesRead > 0 {
+                res.logBuffer.append(contentsOf: buffer.prefix(bytesRead))
+                if res.logBuffer.count > 16_384 {
+                    res.logBuffer = Data(res.logBuffer.suffix(16_384))
+                }
+            } else if bytesRead < 0 && errno == EINTR {
+                continue
+            } else {
+                break
+            }
+        }
+        let text = String(decoding: res.logBuffer, as: UTF8.self)
+        runtimeResources[id] = res
+        if activeStates[id] == .starting {
+            for line in text.components(separatedBy: .newlines) where Self.isTunnelLogLineReady(line) {
+                activeStates[id] = .active
+                break
+            }
+        }
+    }
+
+    private func consumeTunnelLogDiagnostics(id: UUID) -> String {
+        guard let res = runtimeResources[id] else { return "" }
+        let text = String(decoding: res.logBuffer, as: UTF8.self)
+        let lines = text.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { line in
+                !line.isEmpty
+                    && !line.hasPrefix("debug1:")
+                    && !line.hasPrefix("debug2:")
+                    && !line.hasPrefix("debug3:")
+                    && !line.hasPrefix("OpenSSH_")
+                    && !line.hasPrefix("Warning: Permanently added ")
+            }
+        return lines.joined(separator: "\n")
+    }
+
+    private func cleanupTunnelResources(for id: UUID) {
+        guard let res = runtimeResources.removeValue(forKey: id) else { return }
+        res.logSource?.cancel()
+        if res.logSource == nil, let logPath = res.logPath {
+            unlink(logPath)
+        }
+        res.grants?.close()
+        res.leases.forEach { $0.close() }
     }
     
     public func stopTunnel(id: UUID) {
@@ -370,6 +641,7 @@ public final class SSHTunnelManager: ObservableObject {
             proc.terminationHandler = nil
             Self.terminateTunnelProcessTree(proc)
         }
+        cleanupTunnelResources(for: id)
         activeStates[id] = .stopped
     }
     
@@ -380,6 +652,7 @@ public final class SSHTunnelManager: ObservableObject {
         for (id, proc) in processes {
             proc.terminationHandler = nil
             Self.terminateTunnelProcessTree(proc)
+            cleanupTunnelResources(for: id)
             activeStates[id] = .stopped
         }
         processes.removeAll()
@@ -393,10 +666,22 @@ public final class SSHTunnelManager: ObservableObject {
             proc.terminate()
             return
         }
-        for child in childPIDs(of: pid).reversed() {
+        let children = childPIDs(of: pid)
+        for child in children.reversed() {
             kill(child, SIGTERM)
         }
         proc.terminate()
+
+        for _ in 0..<15 {
+            if !proc.isRunning {
+                return
+            }
+            usleep(10_000)
+        }
+        for child in children.reversed() {
+            kill(child, SIGKILL)
+        }
+        kill(pid, SIGKILL)
     }
 
     nonisolated private static func childPIDs(of parent: pid_t) -> [pid_t] {

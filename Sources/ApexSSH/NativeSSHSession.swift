@@ -74,10 +74,36 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         var terminalResult: Result<Void, Error>?
         var continuation: CheckedContinuation<Void, Error>?
         var ptyCloseFallbackTimer: DispatchSourceTimer?
+        var ptyPromptDecoder = UTF8StreamDecoder()
+        var ptyPromptTail = ""
 
         init(id: UUID) {
             self.id = id
         }
+    }
+
+    enum PTYPromptKind: Equatable {
+        case none
+        case password
+        case passphrase
+        case twoFactor
+        case hostConfirm
+    }
+
+    static func classifyPTYPrompt(_ text: String) -> PTYPromptKind {
+        if ChildProcessAuthentication.isTwoFactorPrompt(text) {
+            return .twoFactor
+        }
+        if text.localizedCaseInsensitiveContains("continue connecting") {
+            return .hostConfirm
+        }
+        if text.range(of: #"[pP]assphrase.*:"#, options: .regularExpression) != nil {
+            return .passphrase
+        }
+        if text.range(of: #"[pP]assword\s*:"#, options: .regularExpression) != nil {
+            return .password
+        }
+        return .none
     }
     
     private var outputHandler: (@Sendable (Data) -> Void)?
@@ -95,7 +121,8 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     private var isActiveAttemptEstablished = false
     private var isPTYClosed = false
     private var storedConnectTimeoutSeconds: Int = 15
-    private let controlSocketIdentifier = UUID().uuidString
+    private let controlSocketIdentifier: String
+    private let disableControlPersist: Bool
     private let controlSocketGate = ControlSocketGate()
     private let inputQueue = DispatchQueue(label: "com.apexterm.pty-input", qos: .userInteractive)
     private var childPid: pid_t = -1
@@ -278,17 +305,25 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     
     public init(session: Session, distributionChannel: DistributionChannel = .current,
                 fileAccessStore: FileAccessStore = .shared, bridgeExecutableURL: URL? = nil,
-                sandboxHomeURL: URL? = nil, sandboxTemporaryURL: URL? = nil) {
+                sandboxHomeURL: URL? = nil, sandboxTemporaryURL: URL? = nil,
+                availableSessions: [Session]? = nil, disableControlPersist: Bool = false) {
         self.session = session
         self.storedTerminalType = session.terminalType
         self.distributionChannel = distributionChannel
         self.fileAccessStore = fileAccessStore
+        self.disableControlPersist = disableControlPersist
         self.bridgeExecutableURL = bridgeExecutableURL ?? URL(fileURLWithPath: Bundle.main.bundlePath + "/Contents/MacOS/ApexSSHBridge")
         let tempDir = sandboxTemporaryURL ?? FileManager.default.temporaryDirectory
         self.connectionLogDirectory = tempDir
+        let socketID = String(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(8))
+        self.controlSocketIdentifier = socketID
         self.sandboxPaths = SandboxSSHPaths(home: sandboxHomeURL ?? URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true),
-            temporary: tempDir)
-        if !session.effectiveJumpServerChain.isEmpty, Thread.isMainThread {
+            temporary: tempDir, identifier: socketID)
+        if let availableSessions {
+            let resolved = SSHArgumentBuilder.resolveJumpChain(for: session, availableSessions: availableSessions)
+            self.resolvedJumpChain = resolved.hops
+            self.didResolveJumpServer = true
+        } else if !session.effectiveJumpServerChain.isEmpty, Thread.isMainThread {
             let resolved = MainActor.assumeIsolated {
                 SSHArgumentBuilder.resolveJumpChain(for: session, availableSessions: SessionStore.shared.sessions)
             }
@@ -826,55 +861,48 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
                     outHandler?(data)
                     self.parseOSC7DirectoryChange(data: data)
 
-                    if let str = String(data: data, encoding: .utf8) {
-                        var didAutoFeed = false
-                        let isPrompt = str.range(of: #"[pP]assword\s*:"#, options: .regularExpression) != nil ||
-                                       str.range(of: #"[pP]assphrase.*:"#, options: .regularExpression) != nil
-                        // Fallback auto-feed password only when no external secret helper (sshpass / SSH_ASKPASS) is active.
-                        if isPrompt && !usesExternalAuthHelper {
-                            let secretToSend: String? = self.stateLock.withLock {
-                                guard self.activeAttemptId == attemptId,
-                                      !self.isActiveAttemptEstablished,
-                                      !self.passwordFeedSent,
-                                      let pw = self.resolvedPassword, !pw.isEmpty else {
-                                    return nil
-                                }
-                                self.passwordFeedSent = true
-                                return pw
-                            }
-                            if let pw = secretToSend {
-                                didAutoFeed = true
-                                let toSend = pw + "\n"
-                                if let d = toSend.data(using: .utf8) {
-                                    Self.writePTYInput(d, to: master)
-                                }
-                            }
+                    let promptAction: (kind: PTYPromptKind, secret: String?) = self.stateLock.withLock {
+                        guard self.activeAttemptId == attemptId,
+                              !self.isActiveAttemptEstablished,
+                              let currentTracker = self.handshakeState,
+                              currentTracker.id == attemptId else {
+                            return (.none, nil)
                         }
+                        let decoded = currentTracker.ptyPromptDecoder.decode(data)
+                        guard !decoded.isEmpty else { return (.none, nil) }
+                        currentTracker.ptyPromptTail.append(decoded)
+                        if currentTracker.ptyPromptTail.count > 1024 {
+                            currentTracker.ptyPromptTail = String(currentTracker.ptyPromptTail.suffix(512))
+                        }
+                        let kind = Self.classifyPTYPrompt(currentTracker.ptyPromptTail)
+                        guard kind != .none else { return (.none, nil) }
+                        currentTracker.ptyPromptTail = ""
+                        if (kind == .password || kind == .passphrase),
+                           !usesExternalAuthHelper,
+                           !self.passwordFeedSent,
+                           let pw = self.resolvedPassword, !pw.isEmpty {
+                            self.passwordFeedSent = true
+                            return (kind, pw)
+                        }
+                        return (kind, nil)
+                    }
 
-                        if !didAutoFeed && !usesExternalAuthHelper {
-                            let needsInteractiveInput =
-                                str.localizedCaseInsensitiveContains("continue connecting") ||
-                                str.localizedCaseInsensitiveContains("verification code") ||
-                                isPrompt
-                            if needsInteractiveInput {
-                                self.transitionConnectionState(
-                                    for: attemptId,
-                                    to: .connecting(step: "等待终端交互输入确认..."),
-                                    requirePending: true
-                                )
-                            }
-                        } else if !didAutoFeed {
-                            let needsInteractiveInput =
-                                str.localizedCaseInsensitiveContains("continue connecting") ||
-                                str.localizedCaseInsensitiveContains("verification code")
-                            if needsInteractiveInput {
-                                self.transitionConnectionState(
-                                    for: attemptId,
-                                    to: .connecting(step: "等待终端交互输入确认..."),
-                                    requirePending: true
-                                )
-                            }
-                        }
+                    if let pw = promptAction.secret,
+                       let d = (pw + "\n").data(using: .utf8) {
+                        Self.writePTYInput(d, to: master)
+                    } else if promptAction.kind == .twoFactor {
+                        self.transitionConnectionState(
+                            for: attemptId,
+                            to: .connecting(step: "等待动态口令 / 2FA 验证码输入..."),
+                            requirePending: true
+                        )
+                    } else if promptAction.kind == .hostConfirm ||
+                                (!usesExternalAuthHelper && (promptAction.kind == .password || promptAction.kind == .passphrase)) {
+                        self.transitionConnectionState(
+                            for: attemptId,
+                            to: .connecting(step: "等待终端交互输入确认..."),
+                            requirePending: true
+                        )
                     }
                 } else {
                     let err = errno
@@ -1629,6 +1657,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     }
 
     private func cleanupControlSocketAsync() async {
+        guard !disableControlPersist else { return }
         let socket = controlSocketPath
         let controlOpt = controlSocketOption
         guard controlOpt != "ControlPath=none",
@@ -1678,24 +1707,26 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         pr?.cancel()
         source?.cancel()
         if source == nil, master >= 0 { close(master) }
-        let socket = controlSocketPath
-        let controlOpt = controlSocketOption
-        if controlOpt != "ControlPath=none", FileManager.default.fileExists(atPath: socket) {
-            let destination = "\(session.username)@\(sshDestinationHost)"
-            let port = session.port
-            let channel = distributionChannel
-            let bridgeURL = bridgeExecutableURL
-            let paths = sandboxPaths
-            DispatchQueue.global(qos: .utility).async {
-                Self.performControlSocketExit(
-                    socket: socket,
-                    controlOpt: controlOpt,
-                    destination: destination,
-                    port: port,
-                    distributionChannel: channel,
-                    bridgeExecutableURL: bridgeURL,
-                    sandboxPaths: paths
-                )
+        if !disableControlPersist {
+            let socket = controlSocketPath
+            let controlOpt = controlSocketOption
+            if controlOpt != "ControlPath=none", FileManager.default.fileExists(atPath: socket) {
+                let destination = "\(session.username)@\(sshDestinationHost)"
+                let port = session.port
+                let channel = distributionChannel
+                let bridgeURL = bridgeExecutableURL
+                let paths = sandboxPaths
+                DispatchQueue.global(qos: .utility).async {
+                    Self.performControlSocketExit(
+                        socket: socket,
+                        controlOpt: controlOpt,
+                        destination: destination,
+                        port: port,
+                        distributionChannel: channel,
+                        bridgeExecutableURL: bridgeURL,
+                        sandboxPaths: paths
+                    )
+                }
             }
         }
         defer { grants?.close(); keyAccess?.close(); certAccess?.close() }
@@ -1789,7 +1820,16 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     }
 
     public var controlMasterArguments: [String] {
-        [
+        if disableControlPersist {
+            return [
+                "-o", "TCPKeepAlive=yes",
+                "-o", "ServerAliveInterval=15",
+                "-o", "ServerAliveCountMax=6",
+                "-o", "ControlMaster=no",
+                "-o", "ControlPersist=no"
+            ]
+        }
+        return [
             "-o", "TCPKeepAlive=yes",
             "-o", "ServerAliveInterval=15",
             "-o", "ServerAliveCountMax=6",
@@ -1799,61 +1839,75 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         ]
     }
 
+    private func withControlSocketGate<T>(_ operation: () async throws -> T) async rethrows -> T {
+        let needsGate = !disableControlPersist
+            && controlSocketOption != "ControlPath=none"
+            && !FileManager.default.fileExists(atPath: controlSocketPath)
+        if needsGate { await controlSocketGate.acquire() }
+        do {
+            let value = try await operation()
+            if needsGate { await controlSocketGate.release() }
+            return value
+        } catch {
+            if needsGate { await controlSocketGate.release() }
+            throw error
+        }
+    }
+
     public func probeRemoteHome() async -> String? {
         await resolvePasswordIfNeeded()
-        let needsGate = !FileManager.default.fileExists(atPath: controlSocketPath)
-        if needsGate { await controlSocketGate.acquire() }
-        defer { if needsGate { Task { await controlSocketGate.release() } } }
-        let keyAccess: FileAccessLease?
-        do { keyAccess = try acquirePrivateKeyAccess() }
-        catch { return nil }
-        defer { keyAccess?.close() }
-        let certAccess: FileAccessLease?
-        do { certAccess = try acquireCertificateAccess() }
-        catch { return nil }
-        defer { certAccess?.close() }
-        let process = Process()
-        let cmd = "printf '%s\\n' \"$HOME\""
-        let ctrlArgs = controlMasterArguments
-        let authArgs = sshAuthArgs(privateKeyURL: keyAccess?.url, certificateURL: certAccess?.url)
-        let jumpArgs = advancedConnectionArgs(channel: .nonInteractiveSSH)
-        let pw = currentResolvedPassword
-        let hasStoreAuth = distributionChannel == .appStore && !(pw?.isEmpty ?? true)
-        if let pw = pw, !pw.isEmpty, let sshpass = sshpassExecutablePath {
-            process.executableURL = URL(fileURLWithPath: sshpass)
-            process.arguments = sshpassArguments(secret: pw, tool: "/usr/bin/ssh") + [
-                "-o", "StrictHostKeyChecking=accept-new",
-                "-o", "ConnectTimeout=5",
-            ] + authArgs + jumpArgs + ctrlArgs + [
-                "-p", "\(session.port)",
-                "\(session.username)@\(sshDestinationHost)",
-                cmd
-            ]
-        } else {
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-            process.arguments = (hasStoreAuth ? [] : ["-o", "BatchMode=yes"]) + [
-                "-o", "StrictHostKeyChecking=accept-new",
-                "-o", "ConnectTimeout=5",
-            ] + authArgs + jumpArgs + ctrlArgs + [
-                "-p", "\(session.port)",
-                "\(session.username)@\(sshDestinationHost)",
-                cmd
-            ]
-        }
-        process.standardInput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        do {
-            let grants = try configureStoreProcess(process, accesses: [keyAccess, certAccess])
-            defer { grants?.close() }
-            let data = try await Self.runProbeProcess(process)
-            guard process.terminationStatus == 0 else { return nil }
-            if let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines), output.hasPrefix("/") {
-                return output
+        return await withControlSocketGate {
+            let keyAccess: FileAccessLease?
+            do { keyAccess = try acquirePrivateKeyAccess() }
+            catch { return nil }
+            defer { keyAccess?.close() }
+            let certAccess: FileAccessLease?
+            do { certAccess = try acquireCertificateAccess() }
+            catch { return nil }
+            defer { certAccess?.close() }
+            let process = Process()
+            let cmd = "printf '%s\\n' \"$HOME\""
+            let ctrlArgs = controlMasterArguments
+            let authArgs = sshAuthArgs(privateKeyURL: keyAccess?.url, certificateURL: certAccess?.url)
+            let jumpArgs = advancedConnectionArgs(channel: .nonInteractiveSSH)
+            let pw = currentResolvedPassword
+            let hasStoreAuth = distributionChannel == .appStore && !(pw?.isEmpty ?? true)
+            if let pw = pw, !pw.isEmpty, let sshpass = sshpassExecutablePath {
+                process.executableURL = URL(fileURLWithPath: sshpass)
+                process.arguments = sshpassArguments(secret: pw, tool: "/usr/bin/ssh") + [
+                    "-o", "StrictHostKeyChecking=accept-new",
+                    "-o", "ConnectTimeout=5",
+                ] + authArgs + jumpArgs + ctrlArgs + [
+                    "-p", "\(session.port)",
+                    "\(session.username)@\(sshDestinationHost)",
+                    cmd
+                ]
+            } else {
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+                process.arguments = (hasStoreAuth ? [] : ["-o", "BatchMode=yes"]) + [
+                    "-o", "StrictHostKeyChecking=accept-new",
+                    "-o", "ConnectTimeout=5",
+                ] + authArgs + jumpArgs + ctrlArgs + [
+                    "-p", "\(session.port)",
+                    "\(session.username)@\(sshDestinationHost)",
+                    cmd
+                ]
             }
-        } catch {
+            process.standardInput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            do {
+                let grants = try configureStoreProcess(process, accesses: [keyAccess, certAccess])
+                defer { grants?.close() }
+                let data = try await Self.runProbeProcess(process)
+                guard process.terminationStatus == 0 else { return nil }
+                if let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines), output.hasPrefix("/") {
+                    return output
+                }
+            } catch {
+                return nil
+            }
             return nil
         }
-        return nil
     }
     
     private func resolveAndDispatchDirectory(_ raw: String) {
@@ -1999,84 +2053,90 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         stateLock.withLock { keepAliveTask = task }
     }
 
+    private func runSingleAgentlessProbeCycle() async -> Bool {
+        await withControlSocketGate {
+            let process = Process()
+            let sshpass = self.sshpassExecutablePath
+            let ctrlArgs = self.controlMasterArguments
+
+            let keyAccess: FileAccessLease?
+            do { keyAccess = try self.acquirePrivateKeyAccess() }
+            catch { return true }
+            defer { keyAccess?.close() }
+
+            let certAccess: FileAccessLease?
+            do { certAccess = try self.acquireCertificateAccess() }
+            catch { return true }
+            defer { certAccess?.close() }
+
+            let authArgs = self.sshAuthArgs(privateKeyURL: keyAccess?.url, certificateURL: certAccess?.url)
+            let jumpArgs = self.advancedConnectionArgs(channel: .nonInteractiveSSH)
+            let pw = self.currentResolvedPassword
+            let hasStoreAuth = self.distributionChannel == .appStore && !(pw?.isEmpty ?? true)
+            if let pw = pw, !pw.isEmpty, let passBin = sshpass {
+                process.executableURL = URL(fileURLWithPath: passBin)
+                process.arguments = sshpassArguments(secret: pw, tool: "/usr/bin/ssh") + [
+                    "-o", "StrictHostKeyChecking=accept-new",
+                    "-o", "ConnectTimeout=3",
+                ] + authArgs + jumpArgs + ctrlArgs + [
+                    "-p", "\(self.session.port)",
+                    "\(self.session.username)@\(self.sshDestinationHost)",
+                    AgentlessMonitor.autoProbeCommand
+                ]
+            } else {
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+                process.arguments = (hasStoreAuth ? [] : ["-o", "BatchMode=yes"]) + [
+                    "-o", "StrictHostKeyChecking=accept-new",
+                    "-o", "ConnectTimeout=3",
+                ] + authArgs + jumpArgs + ctrlArgs + [
+                    "-p", "\(self.session.port)",
+                    "\(self.session.username)@\(self.sshDestinationHost)",
+                    AgentlessMonitor.autoProbeCommand
+                ]
+            }
+
+            process.standardError = FileHandle.nullDevice
+
+            do {
+                let grants = try self.configureStoreProcess(process, accesses: [keyAccess, certAccess])
+                defer { grants?.close() }
+                let outData = try await Self.runProbeProcess(process)
+
+                if process.terminationStatus == 0, !Task.isCancelled,
+                   self.connectionState == .connected {
+                    if let output = String(data: outData, encoding: .utf8) {
+                        let snapshot = self.monitor.parseOutput(
+                            output,
+                            prevCpu: &self.prevCpu,
+                            prevNet: &self.prevNet
+                        )
+                        let mHandler = self.stateLock.withLock { self.metricsHandler }
+                        mHandler?(snapshot)
+                    }
+                }
+            } catch {
+                // Silently wait for next interval
+            }
+            return false
+        }
+    }
+
     private func startAgentlessProbeLoop() {
         let task = Task.detached(priority: .background) { [weak self] in
             try? await Task.sleep(nanoseconds: 600_000_000)
             while !Task.isCancelled {
                 guard let self = self, self.connectionState == .connected else { break }
-                
-                let needsGate = !FileManager.default.fileExists(atPath: self.controlSocketPath)
-                if needsGate { await self.controlSocketGate.acquire() }
-                defer { if needsGate { Task { await self.controlSocketGate.release() } } }
-                
-                let process = Process()
-                let sshpass = self.sshpassExecutablePath
-                let ctrlArgs = self.controlMasterArguments
-                
-                let keyAccess: FileAccessLease?
-                do { keyAccess = try self.acquirePrivateKeyAccess() }
-                catch {
+                // Release controlSocketGate before sleeping so one-shot commands / SFTP are never blocked.
+                let hadAccessError = await self.runSingleAgentlessProbeCycle()
+                guard !Task.isCancelled else { break }
+                if hadAccessError {
                     try? await Task.sleep(nanoseconds: 2_000_000_000)
                     continue
                 }
-                defer { keyAccess?.close() }
-                let certAccess: FileAccessLease?
-                do { certAccess = try self.acquireCertificateAccess() }
-                catch {
-                    try? await Task.sleep(nanoseconds: 2_000_000_000)
-                    continue
-                }
-                defer { certAccess?.close() }
-                let authArgs = self.sshAuthArgs(privateKeyURL: keyAccess?.url, certificateURL: certAccess?.url)
-                let jumpArgs = self.advancedConnectionArgs(channel: .nonInteractiveSSH)
-                let pw = self.currentResolvedPassword
-                let hasStoreAuth = self.distributionChannel == .appStore && !(pw?.isEmpty ?? true)
-                if let pw = pw, !pw.isEmpty, let passBin = sshpass {
-                    process.executableURL = URL(fileURLWithPath: passBin)
-                    process.arguments = sshpassArguments(secret: pw, tool: "/usr/bin/ssh") + [
-                        "-o", "StrictHostKeyChecking=accept-new",
-                        "-o", "ConnectTimeout=3",
-                    ] + authArgs + jumpArgs + ctrlArgs + [
-                        "-p", "\(self.session.port)",
-                        "\(self.session.username)@\(self.sshDestinationHost)",
-                        AgentlessMonitor.autoProbeCommand
-                    ]
-                } else {
-                    process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-                    process.arguments = (hasStoreAuth ? [] : ["-o", "BatchMode=yes"]) + [
-                        "-o", "StrictHostKeyChecking=accept-new",
-                        "-o", "ConnectTimeout=3",
-                    ] + authArgs + jumpArgs + ctrlArgs + [
-                        "-p", "\(self.session.port)",
-                        "\(self.session.username)@\(self.sshDestinationHost)",
-                        AgentlessMonitor.autoProbeCommand
-                    ]
-                }
-                
-                process.standardError = FileHandle.nullDevice
-                
-                do {
-                    let grants = try self.configureStoreProcess(process, accesses: [keyAccess, certAccess])
-                    defer { grants?.close() }
-                    let outData = try await Self.runProbeProcess(process)
-                    
-                    if process.terminationStatus == 0, !Task.isCancelled,
-                       self.connectionState == .connected {
-                        if let output = String(data: outData, encoding: .utf8) {
-                            let snapshot = self.monitor.parseOutput(
-                                output,
-                                prevCpu: &self.prevCpu,
-                                prevNet: &self.prevNet
-                            )
-                            let mHandler = self.stateLock.withLock { self.metricsHandler }
-                            mHandler?(snapshot)
-                        }
-                    }
-                } catch {
-                    // Silently wait for next interval
-                }
-                
-                try? await Task.sleep(nanoseconds: 1_500_000_000) // 1.5s smooth sampling interval
+                let intervalNs: UInt64 = (self.distributionChannel == .appStore && !self.sandboxPaths.canUseControlSocket)
+                    ? 8_000_000_000
+                    : 1_500_000_000
+                try? await Task.sleep(nanoseconds: intervalNs)
             }
         }
         stateLock.withLock { probeTask = task }
@@ -2144,56 +2204,54 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     /// Executes a one-shot remote command over multiplexed SSH socket
     public func executeCommand(_ command: String) async throws -> String {
         await resolvePasswordIfNeeded()
-        let needsGate = !FileManager.default.fileExists(atPath: controlSocketPath)
-        if needsGate { await controlSocketGate.acquire() }
-        defer { if needsGate { Task { await controlSocketGate.release() } } }
-        let process = Process()
+        return try await withControlSocketGate {
+            let process = Process()
 
-        let keyAccess = try self.acquirePrivateKeyAccess()
-        defer { keyAccess?.close() }
-        let certAccess = try self.acquireCertificateAccess()
-        defer { certAccess?.close() }
-        configureOneShotCommandProcess(process, command: command, keyAccess: keyAccess, certAccess: certAccess)
+            let keyAccess = try self.acquirePrivateKeyAccess()
+            defer { keyAccess?.close() }
+            let certAccess = try self.acquireCertificateAccess()
+            defer { certAccess?.close() }
+            configureOneShotCommandProcess(process, command: command, keyAccess: keyAccess, certAccess: certAccess)
 
-        process.standardError = FileHandle.nullDevice
-        let grants = try self.configureStoreProcess(process, accesses: [keyAccess, certAccess])
-        defer { grants?.close() }
-        let outData = try await Self.runProbeProcess(process)
-        return String(data: outData, encoding: .utf8) ?? ""
+            process.standardError = FileHandle.nullDevice
+            let grants = try self.configureStoreProcess(process, accesses: [keyAccess, certAccess])
+            defer { grants?.close() }
+            let outData = try await Self.runProbeProcess(process)
+            return String(data: outData, encoding: .utf8) ?? ""
+        }
     }
 
     /// Executes a one-shot remote command and captures stdout, stderr, exit code, and duration in milliseconds.
     public func executeCommandWithResult(_ command: String) async throws -> SSHCommandResult {
         await resolvePasswordIfNeeded()
-        let needsGate = !FileManager.default.fileExists(atPath: controlSocketPath)
-        if needsGate { await controlSocketGate.acquire() }
-        defer { if needsGate { Task { await controlSocketGate.release() } } }
-        let process = Process()
+        return try await withControlSocketGate {
+            let process = Process()
 
-        let keyAccess = try self.acquirePrivateKeyAccess()
-        defer { keyAccess?.close() }
-        let certAccess = try self.acquireCertificateAccess()
-        defer { certAccess?.close() }
-        configureOneShotCommandProcess(process, command: command, keyAccess: keyAccess, certAccess: certAccess, connectTimeout: 10)
+            let keyAccess = try self.acquirePrivateKeyAccess()
+            defer { keyAccess?.close() }
+            let certAccess = try self.acquireCertificateAccess()
+            defer { certAccess?.close() }
+            configureOneShotCommandProcess(process, command: command, keyAccess: keyAccess, certAccess: certAccess, connectTimeout: 10)
 
-        let outPipe = Pipe()
-        let errPipe = Pipe()
-        process.standardInput = FileHandle.nullDevice
-        process.standardOutput = outPipe
-        process.standardError = errPipe
+            let outPipe = Pipe()
+            let errPipe = Pipe()
+            process.standardInput = FileHandle.nullDevice
+            process.standardOutput = outPipe
+            process.standardError = errPipe
 
-        let grants = try self.configureStoreProcess(process, accesses: [keyAccess, certAccess])
-        defer { grants?.close() }
+            let grants = try self.configureStoreProcess(process, accesses: [keyAccess, certAccess])
+            defer { grants?.close() }
 
-        let startNs = DispatchTime.now().uptimeNanoseconds
-        let (outData, errData) = try await Self.runProcessWithOutput(process, outPipe: outPipe, errPipe: errPipe)
-        let durationMs = Double(DispatchTime.now().uptimeNanoseconds - startNs) / 1_000_000.0
-        return SSHCommandResult(
-            stdout: String(decoding: outData, as: UTF8.self),
-            stderr: String(decoding: errData, as: UTF8.self),
-            exitCode: process.terminationStatus,
-            durationMs: durationMs
-        )
+            let startNs = DispatchTime.now().uptimeNanoseconds
+            let (outData, errData) = try await Self.runProcessWithOutput(process, outPipe: outPipe, errPipe: errPipe)
+            let durationMs = Double(DispatchTime.now().uptimeNanoseconds - startNs) / 1_000_000.0
+            return SSHCommandResult(
+                stdout: String(decoding: outData, as: UTF8.self),
+                stderr: String(decoding: errData, as: UTF8.self),
+                exitCode: process.terminationStatus,
+                durationMs: durationMs
+            )
+        }
     }
     
     public func setExplicitPassword(_ password: String?) {
@@ -2334,14 +2392,19 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
     public static func parseSSHErrorMessage(exitCode: Int32, stderr: String) -> String {
         let cleanErr = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
         
+        if cleanErr.contains("Two-factor verification code required") ||
+           cleanErr.localizedCaseInsensitiveContains("verification code") ||
+           cleanErr.localizedCaseInsensitiveContains("one-time password") {
+            return "双因素认证 (2FA/TOTP) 需要动态验证码，请在终端交互中输入验证码"
+        }
         if cleanErr.contains("Bad passphrase") || cleanErr.contains("passphrase") {
             return "私钥口令 (Passphrase) 错误"
         }
         if cleanErr.contains("No such file or directory") || cleanErr.contains("not accessible") {
             return "指定的私钥或证书文件不存在"
         }
-        if cleanErr.contains("Host key verification failed") {
-            return "主机密钥校验冲突 (Host key verification failed)"
+        if cleanErr.contains("Host key verification failed") || cleanErr.contains("REMOTE HOST IDENTIFICATION HAS CHANGED") {
+            return "主机密钥校验冲突 (Host key verification failed)：远端服务器公钥已变更。若确认变更安全，请在「设置 → 密钥保险库 → 主机指纹」中移除旧指纹后重试。"
         }
         if exitCode == 5 {
             return "认证失败：用户名或密码错误 (Invalid password)"
@@ -2376,13 +2439,44 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
         return "连接失败 (退出码 \(exitCode))"
     }
 
+    static let defaultMaxOutputBytesPerStream = 512 * 1024
+
+    static func readCappedStream(from handle: FileHandle, maxBytes: Int) -> Data {
+        let cap = max(64, maxBytes)
+        var collected = Data()
+        var wasTruncated = false
+        while let chunk = try? handle.read(upToCount: 32_768), !chunk.isEmpty {
+            if collected.count < cap {
+                let remaining = cap - collected.count
+                if chunk.count <= remaining {
+                    collected.append(chunk)
+                } else {
+                    collected.append(chunk.prefix(remaining))
+                    wasTruncated = true
+                }
+            } else {
+                wasTruncated = true
+            }
+        }
+        if wasTruncated {
+            let notice = "\n... [输出已截断：超过 \(cap) 字节上限]"
+            collected.append(Data(notice.utf8))
+        }
+        return collected
+    }
+
     /// Drain stdout and stderr while process runs without deadlocking on full pipe buffers
-    static func runProcessWithOutput(_ process: Process, outPipe: Pipe, errPipe: Pipe) async throws -> (Data, Data) {
+    static func runProcessWithOutput(
+        _ process: Process,
+        outPipe: Pipe,
+        errPipe: Pipe,
+        maxBytesPerStream: Int = defaultMaxOutputBytesPerStream
+    ) async throws -> (Data, Data) {
         let outReader = Task.detached(priority: .utility) { () -> Data in
-            (try? outPipe.fileHandleForReading.readToEnd()) ?? Data()
+            Self.readCappedStream(from: outPipe.fileHandleForReading, maxBytes: maxBytesPerStream)
         }
         let errReader = Task.detached(priority: .utility) { () -> Data in
-            (try? errPipe.fileHandleForReading.readToEnd()) ?? Data()
+            Self.readCappedStream(from: errPipe.fileHandleForReading, maxBytes: maxBytesPerStream)
         }
         do {
             try await runTransferProcess(process)
@@ -2425,78 +2519,140 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
             path = path == "~" ? home : home + "/" + String(path.dropFirst(2))
             dirHandler?(path)
         }
-        let needsGate = !FileManager.default.fileExists(atPath: controlSocketPath)
-        if needsGate { await controlSocketGate.acquire() }
-        defer { if needsGate { Task { await controlSocketGate.release() } } }
-        let process = Process()
-        let sshpass = self.sshpassExecutablePath
-        // Ensure trailing slash so that symbolic links pointing to directories are properly traversed by ls
-        let targetPath = path.hasSuffix("/") ? path : "\(path)/"
-        let quotedPath = Self.quoteRemotePath(targetPath)
-        let cmd = "LC_ALL=C ls -la --time-style=+%s \(quotedPath) 2>/dev/null || LC_ALL=C ls -la -D '%s' \(quotedPath) 2>/dev/null || LC_ALL=C ls -la \(quotedPath)"
-        let ctrlArgs = [
-            "-o", "ConnectTimeout=10"
-        ] + controlMasterArguments
-        
-        let authArgs = sshAuthArgs(privateKeyURL: keyAccess?.url, certificateURL: certAccess?.url)
-        let jumpArgs = advancedConnectionArgs(channel: .nonInteractiveSSH)
-        let pw = currentResolvedPassword
-        let hasStoreAuth = distributionChannel == .appStore && !(pw?.isEmpty ?? true)
-        if let pw = pw, !pw.isEmpty, let passBin = sshpass {
-            process.executableURL = URL(fileURLWithPath: passBin)
-            process.arguments = sshpassArguments(secret: pw, tool: "/usr/bin/ssh") + [
-                "-o", "StrictHostKeyChecking=accept-new",
-            ] + authArgs + jumpArgs + ctrlArgs + [
-                "-p", "\(session.port)",
-                "\(session.username)@\(sshDestinationHost)",
-                cmd
-            ]
-        } else {
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-            process.arguments = (hasStoreAuth ? [] : ["-o", "BatchMode=yes"]) + [
-                "-o", "StrictHostKeyChecking=accept-new",
-            ] + authArgs + jumpArgs + ctrlArgs + [
-                "-p", "\(session.port)",
-                "\(session.username)@\(sshDestinationHost)",
-                cmd
-            ]
-        }
-        
-        let pipe = Pipe()
-        let errPipe = Pipe()
-        process.standardInput = FileHandle.nullDevice
-        process.standardOutput = pipe
-        process.standardError = errPipe
-        let grants = try configureStoreProcess(process, accesses: [keyAccess, certAccess])
-        defer { grants?.close() }
-        let outReader = Task.detached(priority: .utility) { (try? pipe.fileHandleForReading.readToEnd()) ?? Data() }
-        let errReader = Task.detached(priority: .utility) { (try? errPipe.fileHandleForReading.readToEnd()) ?? Data() }
-        do {
-            try await Self.runTransferProcess(process)
-        } catch {
+        let (data, errorData, status): (Data, Data, Int32) = try await withControlSocketGate {
+            let process = Process()
+            let sshpass = self.sshpassExecutablePath
+            // Ensure trailing slash so that symbolic links pointing to directories are properly traversed by ls
+            let targetPath = path.hasSuffix("/") ? path : "\(path)/"
+            let quotedPath = Self.quoteRemotePath(targetPath)
+            let cmd = "LC_ALL=C ls -la --time-style=+%s \(quotedPath) 2>/dev/null || LC_ALL=C ls -la -D '%s' \(quotedPath) 2>/dev/null || LC_ALL=C ls -la \(quotedPath)"
+            let ctrlArgs = [
+                "-o", "ConnectTimeout=10"
+            ] + controlMasterArguments
+            
+            let authArgs = sshAuthArgs(privateKeyURL: keyAccess?.url, certificateURL: certAccess?.url)
+            let jumpArgs = advancedConnectionArgs(channel: .nonInteractiveSSH)
+            let pw = currentResolvedPassword
+            let hasStoreAuth = distributionChannel == .appStore && !(pw?.isEmpty ?? true)
+            if let pw = pw, !pw.isEmpty, let passBin = sshpass {
+                process.executableURL = URL(fileURLWithPath: passBin)
+                process.arguments = sshpassArguments(secret: pw, tool: "/usr/bin/ssh") + [
+                    "-o", "StrictHostKeyChecking=accept-new",
+                ] + authArgs + jumpArgs + ctrlArgs + [
+                    "-p", "\(session.port)",
+                    "\(session.username)@\(sshDestinationHost)",
+                    cmd
+                ]
+            } else {
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+                process.arguments = (hasStoreAuth ? [] : ["-o", "BatchMode=yes"]) + [
+                    "-o", "StrictHostKeyChecking=accept-new",
+                ] + authArgs + jumpArgs + ctrlArgs + [
+                    "-p", "\(session.port)",
+                    "\(session.username)@\(sshDestinationHost)",
+                    cmd
+                ]
+            }
+            
+            let pipe = Pipe()
+            let errPipe = Pipe()
+            process.standardInput = FileHandle.nullDevice
+            process.standardOutput = pipe
+            process.standardError = errPipe
+            let grants = try configureStoreProcess(process, accesses: [keyAccess, certAccess])
+            defer { grants?.close() }
+            let outReader = Task.detached(priority: .utility) { (try? pipe.fileHandleForReading.readToEnd()) ?? Data() }
+            let errReader = Task.detached(priority: .utility) { (try? errPipe.fileHandleForReading.readToEnd()) ?? Data() }
+            do {
+                try await Self.runTransferProcess(process)
+            } catch {
+                try? pipe.fileHandleForWriting.close()
+                try? errPipe.fileHandleForWriting.close()
+                _ = await outReader.value
+                _ = await errReader.value
+                try? pipe.fileHandleForReading.close()
+                try? errPipe.fileHandleForReading.close()
+                throw error
+            }
             try? pipe.fileHandleForWriting.close()
             try? errPipe.fileHandleForWriting.close()
-            _ = await outReader.value
-            _ = await errReader.value
+            let out = await outReader.value
+            let err = await errReader.value
             try? pipe.fileHandleForReading.close()
             try? errPipe.fileHandleForReading.close()
-            throw error
+            return (out, err, process.terminationStatus)
         }
-        try? pipe.fileHandleForWriting.close()
-        try? errPipe.fileHandleForWriting.close()
-        let data = await outReader.value
-        let errorData = await errReader.value
-        try? pipe.fileHandleForReading.close()
-        try? errPipe.fileHandleForReading.close()
         
-        guard process.terminationStatus == 0 else {
+        guard status == 0 else {
             let message = String(decoding: errorData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-            throw NSError(domain: "ApexSSH", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey:
-                message.isEmpty ? "无法读取远程目录（退出码 \(process.terminationStatus)）" : String(message.prefix(512))])
+            throw NSError(domain: "ApexSSH", code: Int(status), userInfo: [NSLocalizedDescriptionKey:
+                message.isEmpty ? "无法读取远程目录（退出码 \(status)）" : String(message.prefix(512))])
         }
         guard let output = String(data: data, encoding: .utf8) else { return [] }
 
         return Self.parseDirectoryListing(output, path: path)
+    }
+
+    private static let lsMonthTokens: Set<String> = [
+        "jan", "feb", "mar", "apr", "may", "jun",
+        "jul", "aug", "sep", "oct", "nov", "dec"
+    ]
+
+    private static func parseLSDirectoryDate(
+        isEpoch: Bool,
+        isISO: Bool,
+        parts: [Substring],
+        now: Date = Date()
+    ) -> Date {
+        if isEpoch, let epoch = Double(parts[5]) {
+            return Date(timeIntervalSince1970: epoch)
+        }
+
+        let posixLocale = Locale(identifier: "en_US_POSIX")
+        if isISO {
+            let candidate = "\(parts[5]) \(parts[6])"
+            let formatter = DateFormatter()
+            formatter.locale = posixLocale
+            formatter.timeZone = .current
+            formatter.dateFormat = parts[6].count >= 8 ? "yyyy-MM-dd HH:mm:ss" : "yyyy-MM-dd HH:mm"
+            if let parsed = formatter.date(from: candidate) {
+                return parsed
+            }
+        }
+
+        if parts.count >= 8 {
+            let p5 = String(parts[5])
+            let p6 = String(parts[6])
+            let p7 = String(parts[7])
+            let monthFirst = lsMonthTokens.contains(p5.lowercased())
+            let dayFirst = lsMonthTokens.contains(p6.lowercased())
+            if monthFirst || dayFirst {
+                let month = monthFirst ? p5 : p6
+                let day = monthFirst ? p6 : p5
+                let formatter = DateFormatter()
+                formatter.locale = posixLocale
+                formatter.timeZone = .current
+                if p7.count == 4, p7.allSatisfy(\.isNumber) {
+                    formatter.dateFormat = "MMM d yyyy"
+                    if let parsed = formatter.date(from: "\(month) \(day) \(p7)") {
+                        return parsed
+                    }
+                } else if p7.contains(":") {
+                    let calendar = Calendar.current
+                    let currentYear = calendar.component(.year, from: now)
+                    formatter.dateFormat = p7.count >= 8 ? "MMM d HH:mm:ss yyyy" : "MMM d HH:mm yyyy"
+                    if var parsed = formatter.date(from: "\(month) \(day) \(p7) \(currentYear)") {
+                        if parsed.timeIntervalSince(now) > 180 * 86_400,
+                           let adjusted = calendar.date(byAdding: .year, value: -1, to: parsed) {
+                            parsed = adjusted
+                        }
+                        return parsed
+                    }
+                }
+            }
+        }
+
+        return now
     }
 
     static func parseDirectoryListing(_ output: String, path: String) -> [SFTPItem] {
@@ -2520,11 +2676,18 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
                 && parts[5].count == 10
                 && parts[5].filter({ $0 == "-" }).count == 2
                 && parts[6].contains(":")
-            let nameIndex = isEpoch ? 6 : (isISO ? 7 : (parts.count >= 9 ? 8 : 7))
-            guard parts.count > nameIndex else { continue }
-            
-            // Keep the original filename suffix; joining tokens destroys repeated spaces.
-            let rawName = String(line[parts[nameIndex].startIndex...])
+            let isStandardThreeTokenDate = !isEpoch && !isISO && parts.count >= 8 && (
+                lsMonthTokens.contains(parts[5].lowercased()) || lsMonthTokens.contains(parts[6].lowercased())
+            )
+            let lastDateIndex = isEpoch ? 5 : (isISO ? 6 : ((isStandardThreeTokenDate || parts.count >= 9) ? 7 : 6))
+            guard parts.count > lastDateIndex else { continue }
+
+            // Scan immediately after the timestamp token and consume exactly ONE column-separator
+            // whitespace so filenames starting with spaces (e.g. " foo.txt") are preserved intact.
+            let afterDate = parts[lastDateIndex].endIndex
+            guard afterDate < line.endIndex else { continue }
+            let nameStart = line[afterDate].isWhitespace ? line.index(after: afterDate) : afterDate
+            let rawName = String(line[nameStart...])
             if rawName == "." || rawName == ".." || rawName.isEmpty { continue }
             
             var name = rawName
@@ -2532,12 +2695,7 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
                 name = String(rawName[..<arrow.lowerBound])
             }
             
-            let modDate: Date
-            if isEpoch, let epoch = Double(parts[5]) {
-                modDate = Date(timeIntervalSince1970: epoch)
-            } else {
-                modDate = Date()
-            }
+            let modDate = parseLSDirectoryDate(isEpoch: isEpoch, isISO: isISO, parts: parts)
             
             let normalizedPath = path == "/" ? "" : (path.hasSuffix("/") ? String(path.dropLast()) : path)
             let fullPath = "\(normalizedPath)/\(name)"
@@ -2844,54 +3002,53 @@ public final class NativeSSHSession: SSHSessionProtocol, @unchecked Sendable {
 
     private func executeRemoteCommand(_ cmd: String) async throws {
         await resolvePasswordIfNeeded()
-        let needsGate = !FileManager.default.fileExists(atPath: controlSocketPath)
-        if needsGate { await controlSocketGate.acquire() }
-        defer { if needsGate { Task { await controlSocketGate.release() } } }
-        let keyAccess = try acquirePrivateKeyAccess()
-        defer { keyAccess?.close() }
-        let certAccess = try acquireCertificateAccess()
-        defer { certAccess?.close() }
-        let process = Process()
-        let sshpass = self.sshpassExecutablePath
-        let ctrlArgs = [
-            "-o", "ConnectTimeout=10"
-        ] + controlMasterArguments
-        
-        let authArgs = sshAuthArgs(privateKeyURL: keyAccess?.url, certificateURL: certAccess?.url)
-        let jumpArgs = advancedConnectionArgs(channel: .nonInteractiveSSH)
-        let pw = currentResolvedPassword
-        let hasStoreAuth = distributionChannel == .appStore && !(pw?.isEmpty ?? true)
-        if let pw = pw, !pw.isEmpty, let passBin = sshpass {
-            process.executableURL = URL(fileURLWithPath: passBin)
-            process.arguments = sshpassArguments(secret: pw, tool: "/usr/bin/ssh") + [
-                "-o", "StrictHostKeyChecking=accept-new",
-            ] + authArgs + jumpArgs + ctrlArgs + [
-                "-p", "\(session.port)",
-                "\(session.username)@\(sshDestinationHost)",
-                cmd
-            ]
-        } else {
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-            process.arguments = (hasStoreAuth ? [] : ["-o", "BatchMode=yes"]) + [
-                "-o", "StrictHostKeyChecking=accept-new",
-            ] + authArgs + jumpArgs + ctrlArgs + [
-                "-p", "\(session.port)",
-                "\(session.username)@\(sshDestinationHost)",
-                cmd
-            ]
-        }
-        
-        let errPipe = Pipe()
-        process.standardInput = FileHandle.nullDevice
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = errPipe
-        let grants = try configureStoreProcess(process, accesses: [keyAccess, certAccess])
-        defer { grants?.close() }
-        let errData = try await Self.runSCPProcess(process, standardError: errPipe)
-        
-        guard process.terminationStatus == 0 else {
-            let errMsg = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "Remote command execution failed"
-            throw NSError(domain: "ApexSSH", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: errMsg.isEmpty ? "Operation failed with exit code \(process.terminationStatus)" : errMsg])
+        try await withControlSocketGate {
+            let keyAccess = try acquirePrivateKeyAccess()
+            defer { keyAccess?.close() }
+            let certAccess = try acquireCertificateAccess()
+            defer { certAccess?.close() }
+            let process = Process()
+            let sshpass = self.sshpassExecutablePath
+            let ctrlArgs = [
+                "-o", "ConnectTimeout=10"
+            ] + controlMasterArguments
+            
+            let authArgs = sshAuthArgs(privateKeyURL: keyAccess?.url, certificateURL: certAccess?.url)
+            let jumpArgs = advancedConnectionArgs(channel: .nonInteractiveSSH)
+            let pw = currentResolvedPassword
+            let hasStoreAuth = distributionChannel == .appStore && !(pw?.isEmpty ?? true)
+            if let pw = pw, !pw.isEmpty, let passBin = sshpass {
+                process.executableURL = URL(fileURLWithPath: passBin)
+                process.arguments = sshpassArguments(secret: pw, tool: "/usr/bin/ssh") + [
+                    "-o", "StrictHostKeyChecking=accept-new",
+                ] + authArgs + jumpArgs + ctrlArgs + [
+                    "-p", "\(session.port)",
+                    "\(session.username)@\(sshDestinationHost)",
+                    cmd
+                ]
+            } else {
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+                process.arguments = (hasStoreAuth ? [] : ["-o", "BatchMode=yes"]) + [
+                    "-o", "StrictHostKeyChecking=accept-new",
+                ] + authArgs + jumpArgs + ctrlArgs + [
+                    "-p", "\(session.port)",
+                    "\(session.username)@\(sshDestinationHost)",
+                    cmd
+                ]
+            }
+            
+            let errPipe = Pipe()
+            process.standardInput = FileHandle.nullDevice
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = errPipe
+            let grants = try configureStoreProcess(process, accesses: [keyAccess, certAccess])
+            defer { grants?.close() }
+            let errData = try await Self.runSCPProcess(process, standardError: errPipe)
+            
+            guard process.terminationStatus == 0 else {
+                let errMsg = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "Remote command execution failed"
+                throw NSError(domain: "ApexSSH", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: errMsg.isEmpty ? "Operation failed with exit code \(process.terminationStatus)" : errMsg])
+            }
         }
     }
     

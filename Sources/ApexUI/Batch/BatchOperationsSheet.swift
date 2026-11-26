@@ -15,15 +15,26 @@ public struct BatchOperationsSheet: View {
     public let initialFolder: String?
     public let activeConnectionStates: [UUID: SSHConnectionState]
 
+    private enum ResultFilter: String, CaseIterable, Identifiable {
+        case all = "全部"
+        case failed = "失败"
+        case succeeded = "成功"
+
+        var id: String { rawValue }
+    }
+
     @State private var selectedSessionIDs: Set<UUID>
     @State private var folderFilter: String = "全部"
     @State private var hostSearchText: String = ""
-    @State private var mode: BatchOperationMode = .command
-    @State private var commandText: String = "uname -a && uptime"
-    @State private var selectedLocalURLs: [URL] = []
-    @State private var remoteDirectory: String = "/tmp"
+    @State private var mode: BatchOperationMode
+    @State private var commandText: String
+    @State private var selectedLocalURLs: [URL]
+    @State private var remoteDirectory: String
     @State private var expandedResultIDs: Set<UUID> = []
+    @State private var resultFilter: ResultFilter = .all
     @State private var toastMessage: String?
+    @State private var toastIsError: Bool = false
+    @State private var showCloseConfirmation: Bool = false
 
     public init(
         availableSessions: [Session],
@@ -49,15 +60,31 @@ public struct BatchOperationsSheet: View {
                 SidebarView.normalizedFolder(of: $0).caseInsensitiveCompare(targetFolder) == .orderedSame
             }
             initialSelection = Set(matched.map(\.id))
+        } else if manager.isRunning || !manager.results.isEmpty {
+            initialSelection = Set(manager.results.map(\.sessionID)).intersection(validIDs)
         } else {
             initialSelection = []
         }
 
         self._selectedSessionIDs = State(initialValue: initialSelection)
         if let targetFolder = initialFolder?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !targetFolder.isEmpty,
-           remotes.contains(where: { SidebarView.normalizedFolder(of: $0) == targetFolder }) {
-            self._folderFilter = State(initialValue: targetFolder)
+           !targetFolder.isEmpty {
+            let folders = SidebarView.folderNames(sessions: remotes, extraFolders: [], searchFilter: "")
+            if let canonical = folders.first(where: { $0.caseInsensitiveCompare(targetFolder) == .orderedSame }) {
+                self._folderFilter = State(initialValue: canonical)
+            }
+        }
+
+        if manager.isRunning || !manager.results.isEmpty {
+            self._mode = State(initialValue: manager.currentMode)
+            self._commandText = State(initialValue: manager.lastCommand.isEmpty ? "uname -a && uptime" : manager.lastCommand)
+            self._selectedLocalURLs = State(initialValue: manager.lastUploadURLs)
+            self._remoteDirectory = State(initialValue: manager.lastRemoteDirectory.isEmpty ? "/tmp" : manager.lastRemoteDirectory)
+        } else {
+            self._mode = State(initialValue: .command)
+            self._commandText = State(initialValue: "uname -a && uptime")
+            self._selectedLocalURLs = State(initialValue: [])
+            self._remoteDirectory = State(initialValue: "/tmp")
         }
     }
 
@@ -83,10 +110,22 @@ public struct BatchOperationsSheet: View {
 
     private var filteredSessions: [Session] {
         availableSessions.filter { session in
-            let matchesFolder = folderFilter == "全部" || SidebarView.normalizedFolder(of: session) == folderFilter
+            let matchesFolder = folderFilter == "全部"
+                || SidebarView.normalizedFolder(of: session).caseInsensitiveCompare(folderFilter) == .orderedSame
             let matchesQuery = hostSearchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 || SidebarView.matchesSearch(session, filter: hostSearchText)
             return matchesFolder && matchesQuery
+        }
+    }
+
+    private var filteredResults: [BatchHostResult] {
+        switch resultFilter {
+        case .all:
+            return manager.results
+        case .failed:
+            return manager.results.filter { $0.status.isFailed }
+        case .succeeded:
+            return manager.results.filter { $0.status == .succeeded }
         }
     }
 
@@ -124,6 +163,21 @@ public struct BatchOperationsSheet: View {
         .frame(width: 860, height: 640)
         .background(ApexStyle.surface)
         .apexTheme()
+        .confirmationDialog(
+            "批量任务仍在执行中",
+            isPresented: $showCloseConfirmation
+        ) {
+            Button("停止任务并关闭", role: .destructive) {
+                manager.cancelCurrentBatch()
+                dismiss()
+            }
+            Button("后台继续并关闭", role: .none) {
+                dismiss()
+            }
+            Button("继续等待", role: .cancel) {}
+        } message: {
+            Text("当前仍有 \(manager.runningCount + manager.pendingCount) 台主机尚未完成，确定要关闭窗口吗？")
+        }
     }
 
     // MARK: - Header
@@ -162,7 +216,7 @@ public struct BatchOperationsSheet: View {
             .disabled(manager.isRunning)
 
             ApexIconButton(icon: "xmark", label: "关闭 (Esc)", size: 26, iconSize: 11) {
-                dismiss()
+                requestClose()
             }
             .keyboardShortcut(.cancelAction)
         }
@@ -473,9 +527,17 @@ public struct BatchOperationsSheet: View {
                 Spacer()
 
                 if let toast = toastMessage {
-                    Text(toast)
-                        .font(.caption)
-                        .foregroundColor(ApexStyle.success)
+                    HStack(spacing: 4) {
+                        Image(systemName: toastIsError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                            .font(.caption)
+                        Text(toast)
+                            .font(.caption)
+                            .lineLimit(1)
+                    }
+                    .foregroundColor(toastIsError ? ApexStyle.error : ApexStyle.success)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background((toastIsError ? ApexStyle.error : ApexStyle.success).opacity(0.12), in: Capsule())
                 }
             }
         }
@@ -499,9 +561,18 @@ public struct BatchOperationsSheet: View {
                 Spacer()
 
                 if !manager.results.isEmpty {
+                    Picker("筛选", selection: $resultFilter) {
+                        ForEach(ResultFilter.allCases) { item in
+                            Text(item.rawValue).tag(item)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 170)
+
                     ProgressView(value: manager.overallProgress)
                         .progressViewStyle(.linear)
-                        .frame(width: 120)
+                        .frame(width: 100)
                 }
             }
 
@@ -519,10 +590,20 @@ public struct BatchOperationsSheet: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .apexPanel()
+            } else if filteredResults.isEmpty {
+                VStack(spacing: ApexStyle.s2) {
+                    Spacer()
+                    Text("当前筛选条件下暂无主机结果")
+                        .font(.caption)
+                        .foregroundColor(ApexStyle.secondary)
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .apexPanel()
             } else {
                 ScrollView {
                     LazyVStack(spacing: 8) {
-                        ForEach(manager.results) { item in
+                        ForEach(filteredResults) { item in
                             resultRowCard(item)
                         }
                     }
@@ -579,6 +660,15 @@ public struct BatchOperationsSheet: View {
 
                 if hasOutput {
                     ApexIconButton(
+                        icon: "doc.on.doc",
+                        label: "复制主机输出",
+                        size: 22,
+                        iconSize: 10
+                    ) {
+                        copyHostOutput(item)
+                    }
+
+                    ApexIconButton(
                         icon: isExpanded ? "chevron.up" : "chevron.down",
                         label: isExpanded ? "收起输出" : "展开输出",
                         size: 22,
@@ -613,13 +703,22 @@ public struct BatchOperationsSheet: View {
         )
     }
 
+    private static let previewCharacterLimit = 16_384
+
     private func outputBlock(title: String, text: String, tint: Color) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
+        let previewText: String = {
+            if text.count > Self.previewCharacterLimit {
+                return String(text.prefix(Self.previewCharacterLimit)) + "\n... [预览已截断，完整内容可通过复制或导出获取]"
+            }
+            return text
+        }()
+
+        return VStack(alignment: .leading, spacing: 2) {
             Text(title)
                 .font(.system(size: 9.5, weight: .bold))
                 .foregroundColor(ApexStyle.secondary)
             ScrollView(.horizontal, showsIndicators: true) {
-                Text(text)
+                Text(previewText)
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundColor(tint)
                     .textSelection(.enabled)
@@ -678,7 +777,7 @@ public struct BatchOperationsSheet: View {
             Spacer()
 
             ApexActionButton("关闭", tint: ApexStyle.secondary, size: .regular) {
-                dismiss()
+                requestClose()
             }
         }
         .padding(.horizontal, ApexStyle.s4)
@@ -687,6 +786,14 @@ public struct BatchOperationsSheet: View {
     }
 
     // MARK: - Helpers
+
+    private func requestClose() {
+        if manager.isRunning {
+            showCloseConfirmation = true
+        } else {
+            dismiss()
+        }
+    }
 
     private func startBatch() {
         expandedResultIDs.removeAll()
@@ -705,8 +812,26 @@ public struct BatchOperationsSheet: View {
         panel.allowsMultipleSelection = true
         panel.prompt = "选择分发文件"
         if panel.runModal() == .OK {
+            for url in panel.urls {
+                try? FileAccessStore.shared.remember(url, readOnly: true)
+            }
             selectedLocalURLs = panel.urls
         }
+    }
+
+    private func copyHostOutput(_ item: BatchHostResult) {
+        var sections: [String] = []
+        if !item.stdout.isEmpty {
+            sections.append(item.stdout)
+        }
+        if !item.stderr.isEmpty {
+            sections.append("[STDERR]\n\(item.stderr)")
+        }
+        let combined = sections.joined(separator: "\n")
+        guard !combined.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(combined, forType: .string)
+        showToast("已复制 \(item.hostName) 的执行输出")
     }
 
     private func exportReport(content: String, defaultName: String, contentType: UTType) {
@@ -719,16 +844,18 @@ public struct BatchOperationsSheet: View {
                 try content.write(to: url, atomically: true, encoding: .utf8)
                 showToast("已保存 \(url.lastPathComponent)")
             } catch {
-                showToast("导出失败: \(error.localizedDescription)")
+                showToast("导出失败: \(error.localizedDescription)", isError: true)
             }
         }
     }
 
-    private func showToast(_ message: String) {
+    private func showToast(_ message: String, isError: Bool = false) {
+        toastIsError = isError
         toastMessage = message
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
             if toastMessage == message {
                 toastMessage = nil
+                toastIsError = false
             }
         }
     }

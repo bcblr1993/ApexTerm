@@ -215,16 +215,16 @@ public struct MetricCapsuleView: View {
     }
 
     private var formattedMemory: String {
-        guard let m = latest, m.memoryTotalBytes > 0 else { return "0.0/0.0 GB" }
-        let usedGB = Double(m.memoryUsedBytes) / (1024 * 1024 * 1024)
-        let totalGB = Double(m.memoryTotalBytes) / (1024 * 1024 * 1024)
+        guard let m = latest, m.memoryTotalBytes > 0 else { return "--" }
+        let usedGB = Double(m.memoryUsedBytes) / 1_073_741_824.0
+        let totalGB = Double(m.memoryTotalBytes) / 1_073_741_824.0
         return String(format: "%.1f/%.0fG (%.0f%%)", usedGB, totalGB, m.memoryUsagePercent)
     }
 
     private var formattedDisk: String {
-        guard let d = latest, d.diskTotalBytes > 0 else { return "0/0G" }
-        let usedGB = Double(d.diskUsedBytes) / 1e9
-        let totalGB = Double(d.diskTotalBytes) / 1e9
+        guard let d = latest, d.diskTotalBytes > 0 else { return "--" }
+        let usedGB = Double(d.diskUsedBytes) / 1_073_741_824.0
+        let totalGB = Double(d.diskTotalBytes) / 1_073_741_824.0
         return String(format: "%.0f/%.0fG", usedGB, totalGB)
     }
 
@@ -348,8 +348,12 @@ public struct MetricDetailView: View {
     }
 
     public var body: some View {
-        TimelineView(.periodic(from: .now, by: 2)) { context in
-            details(at: context.date)
+        if monitoringEnabled && connectionActive && latest != nil {
+            TimelineView(.periodic(from: .now, by: 10)) { context in
+                details(at: context.date)
+            }
+        } else {
+            details(at: Date())
         }
     }
 
@@ -1133,8 +1137,8 @@ public struct MetricDetailView: View {
 
     private var formattedDiskShort: String {
         guard let d = latest, d.diskTotalBytes > 0 else { return "--" }
-        let usedGB = Double(d.diskUsedBytes) / 1e9
-        let totalGB = Double(d.diskTotalBytes) / 1e9
+        let usedGB = Double(d.diskUsedBytes) / 1_073_741_824.0
+        let totalGB = Double(d.diskTotalBytes) / 1_073_741_824.0
         return String(format: "%.0f/%.0fG", usedGB, totalGB)
     }
 

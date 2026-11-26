@@ -30,6 +30,8 @@ public struct ProcessInspectorView: View {
     @State private var pendingContainerAction: (container: ContainerItem, action: ContainerAction)? = nil
     @State private var showingContainerActionConfirm: Bool = false
     @State private var showingAllSystemdServices: Bool = false
+    @State private var pendingSystemdTarget: SystemdServiceItem? = nil
+    @State private var fetchTask: Task<Void, Never>? = nil
 
     public enum InspectorMode: String, CaseIterable, Identifiable {
         case processes = "活跃进程"
@@ -98,6 +100,10 @@ public struct ProcessInspectorView: View {
         .onAppear {
             fetchProcessData()
         }
+        .onDisappear {
+            fetchTask?.cancel()
+            fetchTask = nil
+        }
         .confirmationDialog(
             "终止进程确认",
             isPresented: $showingKillConfirmation,
@@ -136,11 +142,15 @@ public struct ProcessInspectorView: View {
             )
             .apexTheme()
         }
-        .sheet(isPresented: $showingAllSystemdServices) {
+        .sheet(isPresented: $showingAllSystemdServices, onDismiss: {
+            if let svc = pendingSystemdTarget {
+                pendingSystemdTarget = nil
+                activeLogTarget = .systemd(svc)
+            }
+        }) {
             SystemdAllServicesSheet(services: services) { svc in
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                    activeLogTarget = .systemd(svc)
-                }
+                pendingSystemdTarget = svc
+                showingAllSystemdServices = false
             }
             .apexTheme()
         }
@@ -674,11 +684,11 @@ public struct ProcessInspectorView: View {
     }
     
     private func fetchProcessData() {
-        guard !isLoading else { return }
+        fetchTask?.cancel()
         isLoading = true
         statusFeedback = nil
         
-        Task {
+        let task = Task {
             // Sample fallback processes if offline
             var fetchedItems: [ProcessDetailItem] = []
             var fetchedServices: [SystemdServiceItem] = []
@@ -686,34 +696,69 @@ public struct ProcessInspectorView: View {
             var fetchedContainerRuntime: ContainerRuntime? = nil
             var fetchedContainerError: String? = nil
             var fetchedPorts: [ListeningPortItem] = []
+            var fetchFailureFeedback: String? = nil
             
             if let client = sshClient, client.isConnected {
-                let cmd = AgentlessMonitor.processInspectorProbeCommand
-                if let raw = try? await client.executeCommand(cmd) {
-                    fetchedItems = ProcessListParser.parsePSOutput(raw)
+                async let psAttempt: Result<SSHCommandResult, Error> = {
+                    do { return .success(try await client.executeCommandWithResult(AgentlessMonitor.processInspectorProbeCommand)) }
+                    catch { return .failure(error) }
+                }()
+                async let dynSvcAttempt: Result<SSHCommandResult, Error> = {
+                    do { return .success(try await client.executeCommandWithResult(AgentlessMonitor.systemdDynamicProbeCommand)) }
+                    catch { return .failure(error) }
+                }()
+                async let contAttempt: Result<SSHCommandResult, Error> = {
+                    do { return .success(try await client.executeCommandWithResult(AgentlessMonitor.containerListProbeCommand)) }
+                    catch { return .failure(error) }
+                }()
+                async let portsAttempt: Result<SSHCommandResult, Error> = {
+                    do { return .success(try await client.executeCommandWithResult(AgentlessMonitor.listeningPortsProbeCommand)) }
+                    catch { return .failure(error) }
+                }()
+
+                let (psResult, dynSvcResult, contResult, portsResult) = await (psAttempt, dynSvcAttempt, contAttempt, portsAttempt)
+                guard !Task.isCancelled else { return }
+
+                switch psResult {
+                case .success(let res):
+                    if res.exitCode == 0 || !res.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        fetchedItems = ProcessListParser.parsePSOutput(res.stdout)
+                    } else {
+                        let err = res.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+                        fetchFailureFeedback = err.isEmpty ? "进程列表获取失败 (退出码 \(res.exitCode))" : "进程列表获取失败: \(err)"
+                    }
+                case .failure(let error):
+                    fetchFailureFeedback = "进程列表获取失败: \(error.localizedDescription)"
                 }
-                
-                if let rawDynamicSvc = try? await client.executeCommand(AgentlessMonitor.systemdDynamicProbeCommand) {
-                    fetchedServices = AgentlessMonitor.parseSystemdDynamicOutput(rawDynamicSvc)
+
+                if case .success(let dynRes) = dynSvcResult, dynRes.exitCode == 0 {
+                    fetchedServices = AgentlessMonitor.parseSystemdDynamicOutput(dynRes.stdout)
                 }
-                if fetchedServices.isEmpty {
+                if fetchedServices.isEmpty && !Task.isCancelled {
                     let monitored = ["nginx", "docker", "redis", "mysql", "sshd", "postgresql"]
                     let svcCmd = AgentlessMonitor.systemdServicesProbeCommand(services: monitored)
-                    if let rawSvc = try? await client.executeCommand(svcCmd) {
-                        fetchedServices = ProcessListParser.parseSystemdServices(rawSvc, monitoredServices: monitored)
+                    if let rawSvc = try? await client.executeCommandWithResult(svcCmd), rawSvc.exitCode == 0 {
+                        fetchedServices = ProcessListParser.parseSystemdServices(rawSvc.stdout, monitoredServices: monitored)
                     }
                 }
 
-                if let rawContainers = try? await client.executeCommand(AgentlessMonitor.containerListProbeCommand) {
-                    let parsed = AgentlessMonitor.parseContainerProbeResult(rawContainers)
+                switch contResult {
+                case .success(let res):
+                    let parsed = AgentlessMonitor.parseContainerProbeResult(res.stdout)
                     fetchedContainerRuntime = parsed.runtime
                     fetchedContainers = parsed.items
-                    fetchedContainerError = parsed.errorMessage
+                    let errTrimmed = res.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if let parsedErr = parsed.errorMessage, !parsedErr.isEmpty {
+                        fetchedContainerError = parsedErr
+                    } else if res.exitCode != 0 && parsed.items.isEmpty && !errTrimmed.isEmpty {
+                        fetchedContainerError = errTrimmed
+                    }
+                case .failure(let error):
+                    fetchedContainerError = "容器探测失败: \(error.localizedDescription)"
                 }
 
-                let portsCmd = AgentlessMonitor.listeningPortsProbeCommand
-                if let rawPorts = try? await client.executeCommand(portsCmd) {
-                    fetchedPorts = ListeningPortParser.parseOutput(rawPorts)
+                if case .success(let portsRes) = portsResult, portsRes.exitCode == 0 {
+                    fetchedPorts = ListeningPortParser.parseOutput(portsRes.stdout)
                 }
             }
             
@@ -746,22 +791,29 @@ public struct ProcessInspectorView: View {
                 ]
             }
             
+            guard !Task.isCancelled else { return }
             let finalItems = fetchedItems
             let finalServices = fetchedServices
             let finalContainers = fetchedContainers
             let finalRuntime = fetchedContainerRuntime
             let finalContainerError = fetchedContainerError
             let finalPorts = fetchedPorts
+            let finalFeedback = fetchFailureFeedback
             await MainActor.run {
+                guard !Task.isCancelled else { return }
                 self.processes = finalItems
                 self.services = finalServices
                 self.containers = finalContainers
                 self.containerRuntime = finalRuntime
                 self.containerErrorMessage = finalContainerError
                 self.listeningPorts = finalPorts
+                if let finalFeedback {
+                    self.statusFeedback = finalFeedback
+                }
                 self.isLoading = false
             }
         }
+        fetchTask = task
     }
     
     public static func performKillSignal(to proc: ProcessDetailItem, signal: ProcessSignal, client: SSHSessionProtocol?) async -> String {
@@ -776,12 +828,19 @@ public struct ProcessInspectorView: View {
 
         let killCmd = "kill -\(signal.rawValue) \(proc.pid) 2>&1"
         do {
-            let output = try await client.executeCommand(killCmd).trimmingCharacters(in: .whitespacesAndNewlines)
-            if !output.isEmpty && (output.localizedCaseInsensitiveContains("not permitted") ||
-                                   output.localizedCaseInsensitiveContains("permission denied") ||
-                                   output.localizedCaseInsensitiveContains("no such process") ||
-                                   output.localizedCaseInsensitiveContains("kill:")) {
-                return "发送信号失败: \(output)"
+            let result = try await client.executeCommandWithResult(killCmd)
+            let combined = [result.stdout, result.stderr]
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .joined(separator: "\n")
+            if result.exitCode != 0 || (!combined.isEmpty && (
+                combined.localizedCaseInsensitiveContains("not permitted") ||
+                combined.localizedCaseInsensitiveContains("permission denied") ||
+                combined.localizedCaseInsensitiveContains("no such process") ||
+                combined.localizedCaseInsensitiveContains("kill:")
+            )) {
+                let reason = combined.isEmpty ? "退出码 \(result.exitCode)" : combined
+                return "发送信号失败: \(reason)"
             }
             return "已向 PID \(proc.pid) (\(proc.command)) 发送 \(signal.name)"
         } catch {
@@ -814,14 +873,25 @@ public struct ProcessInspectorView: View {
         isLoading = true
         Task {
             do {
-                let output = try await client.executeCommand(cmd).trimmingCharacters(in: .whitespacesAndNewlines)
+                let result = try await client.executeCommandWithResult(cmd)
+                let combined = [result.stdout, result.stderr]
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                    .joined(separator: "\n")
                 await MainActor.run {
                     self.isLoading = false
-                    self.statusFeedback = output.isEmpty
-                        ? "已对容器 \(container.name) 执行 \(action.rawValue)"
-                        : "[\(container.name)] \(output)"
+                    if result.exitCode == 0 {
+                        self.statusFeedback = combined.isEmpty
+                            ? "已对容器 \(container.name) 执行 \(action.rawValue)"
+                            : "[\(container.name)] \(combined)"
+                    } else {
+                        let reason = combined.isEmpty ? "退出码 \(result.exitCode)" : combined
+                        self.statusFeedback = "容器操作失败: \(reason)"
+                    }
                 }
-                fetchProcessData()
+                if result.exitCode == 0 {
+                    fetchProcessData()
+                }
             } catch {
                 await MainActor.run {
                     self.isLoading = false

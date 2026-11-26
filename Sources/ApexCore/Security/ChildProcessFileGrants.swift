@@ -20,11 +20,31 @@ public struct ChildProcessAuthentication: Codable, Sendable {
     }
     public func accepts(prompt: String, hint: String?) -> Bool {
         guard hint != "confirm" else { return false }
-        let prompt = prompt.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = prompt.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
         switch kind {
-        case .passphrase: return prompt.hasPrefix("enter passphrase for key ") && prompt.hasSuffix(":")
-        case .password: return prompt.hasSuffix("password:") && !prompt.contains("passphrase")
+        case .passphrase:
+            return normalized.hasPrefix("enter passphrase for key ") && normalized.hasSuffix(":")
+        case .password:
+            guard !Self.isTwoFactorPrompt(normalized) else { return false }
+            return normalized.hasSuffix("password:") && !normalized.contains("passphrase")
         }
+    }
+
+    /// Detects 2FA / TOTP / OTP prompts so stored login passwords are never sent as one-time codes.
+    public static func isTwoFactorPrompt(_ prompt: String) -> Bool {
+        let lower = prompt.lowercased()
+        let markers = [
+            "one-time password",
+            "one time password",
+            "verification code",
+            "authenticator code",
+            "2fa",
+            "totp",
+            "passcode",
+            "duo ",
+            "otp"
+        ]
+        return markers.contains(where: { lower.contains($0) })
     }
 }
 
@@ -159,4 +179,59 @@ public final class ChildProcessFileGrants: @unchecked Sendable {
         }
     }
     deinit { close() }
+}
+
+/// Shared sandbox SSH directory, known_hosts preparation, and `-F /dev/null` isolation helpers
+/// reused across `ApexSSH` (`SandboxSSHPaths`) and `ApexCore` (`SSHTunnelManager`).
+public enum SandboxSSHEnvironment {
+    public static func directory(home: URL = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)) -> URL {
+        home.appendingPathComponent("Library/Application Support/ApexTerm/SSH", isDirectory: true)
+    }
+
+    public static func knownHostsURL(home: URL = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)) -> URL {
+        directory(home: home).appendingPathComponent("known_hosts")
+    }
+
+    public static func quotedPath(_ path: String) -> String {
+        "\"" + path.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"") + "\""
+    }
+
+    public static func prepareKnownHosts(home: URL = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)) throws -> URL {
+        let dir = directory(home: home)
+        let knownHosts = knownHostsURL(home: home)
+        try FileManager.default.createDirectory(
+            at: dir,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let attributes = try FileManager.default.attributesOfItem(atPath: dir.path)
+        guard attributes[.type] as? FileAttributeType == .typeDirectory,
+              (attributes[.ownerAccountID] as? NSNumber)?.uint32Value == getuid(),
+              ((attributes[.posixPermissions] as? NSNumber)?.intValue ?? 0o777) & 0o077 == 0 else {
+            throw CocoaError(.fileWriteNoPermission)
+        }
+        let fd = open(knownHosts.path, O_WRONLY | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { throw CocoaError(.fileWriteNoPermission) }
+        defer { Darwin.close(fd) }
+        var info = stat()
+        guard fstat(fd, &info) == 0,
+              info.st_mode & S_IFMT == S_IFREG,
+              info.st_uid == getuid(),
+              info.st_mode & 0o077 == 0 else {
+            throw CocoaError(.fileWriteNoPermission)
+        }
+        return knownHosts
+    }
+
+    public static func arguments(
+        prependingTo arguments: [String],
+        tool: String,
+        knownHosts: URL
+    ) throws -> [String] {
+        let localIndices = try ChildProcessGrantPayload.localFileArgumentIndices(in: arguments, tool: tool)
+        let hasConfig = localIndices.contains { $0 > 0 && arguments[$0 - 1] == "-F" }
+        let config = hasConfig ? [] : ["-F", "/dev/null"]
+        return config + ["-o", "UserKnownHostsFile=\(quotedPath(knownHosts.path))"] + arguments
+    }
 }

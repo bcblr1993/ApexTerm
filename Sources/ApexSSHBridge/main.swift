@@ -19,10 +19,17 @@ do {
     let payload = try ChildProcessFileGrants.read(from: URL(fileURLWithPath: path))
     let environment = ProcessInfo.processInfo.environment
     if arguments.count == 1, environment["SSH_ASKPASS"] == CommandLine.arguments[0],
-       environment["SSH_ASKPASS_REQUIRE"] == "force" {
-        guard let authentication = payload.authentication,
-              authentication.accepts(prompt: arguments[0], hint: environment["SSH_ASKPASS_PROMPT"]) else {
+       let askpassRequire = environment["SSH_ASKPASS_REQUIRE"],
+       askpassRequire == "force" || askpassRequire == "prefer" {
+        guard let authentication = payload.authentication else {
             throw CocoaError(.fileReadNoPermission)
+        }
+        let prompt = arguments[0]
+        guard authentication.accepts(prompt: prompt, hint: environment["SSH_ASKPASS_PROMPT"]) else {
+            if ChildProcessAuthentication.isTwoFactorPrompt(prompt) {
+                FileHandle.standardError.write(Data("Two-factor verification code required; stored login password was not sent.\n".utf8))
+            }
+            exit(1)
         }
         FileHandle.standardOutput.write(Data((authentication.secret + "\n").utf8))
         exit(0)

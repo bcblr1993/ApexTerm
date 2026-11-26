@@ -119,33 +119,133 @@ public struct SystemdServiceItem: Identifiable, Codable, Sendable, Equatable, Ha
 }
 
 /// Zero-dependency parser for process lines from `ps -eo pid,user,%cpu,%mem,rss,vsz,stat,comm,args`
+/// as well as BusyBox/POSIX fallbacks (`pid,user,rss,vsz,stat,comm,args` or `pid,user,vsz,stat,comm,args`).
 public enum ProcessListParser {
-    
+    private enum PSLayout {
+        case standard      // PID USER %CPU %MEM RSS VSZ STAT COMM ARGS
+        case busyBoxRSS    // PID USER RSS VSZ STAT COMM ARGS
+        case busyBoxVSZ    // PID USER VSZ STAT COMM ARGS
+    }
+
+    private static func parseProcessState(_ statRaw: String) -> ProcessState {
+        guard let first = statRaw.first else { return .unknown }
+        let upper = String(first).uppercased()
+        if upper == "I" { return .sleeping }
+        return ProcessState(rawValue: upper) ?? .unknown
+    }
+
+    private static func splitSpacedCommAndArgs(tail: Substring) -> (comm: String, args: String)? {
+        let trimmedTail = tail.trimmingCharacters(in: .whitespaces)
+        guard !trimmedTail.isEmpty else { return nil }
+        // On macOS, `comm` can contain spaces (e.g. "/Applications/Google Chrome.app/.../Google Chrome")
+        // followed by `command` which starts with that same executable path/name.
+        var searchStart = trimmedTail.startIndex
+        var bestSplit: (comm: String, args: String)?
+        while let spaceIdx = trimmedTail[searchStart...].firstIndex(where: { $0.isWhitespace }) {
+            let candidateComm = trimmedTail[..<spaceIdx].trimmingCharacters(in: .whitespaces)
+            let candidateArgs = trimmedTail[spaceIdx...].trimmingCharacters(in: .whitespaces)
+            if !candidateComm.isEmpty && !candidateArgs.isEmpty && candidateArgs.hasPrefix(candidateComm) {
+                let afterPrefixIdx = candidateArgs.index(candidateArgs.startIndex, offsetBy: candidateComm.count)
+                if afterPrefixIdx == candidateArgs.endIndex || candidateArgs[afterPrefixIdx].isWhitespace {
+                    bestSplit = (candidateComm, candidateArgs)
+                }
+            }
+            searchStart = trimmedTail.index(after: spaceIdx)
+        }
+        return bestSplit
+    }
+
+    private static func tokenSlices(in line: String) -> [Substring] {
+        var slices: [Substring] = []
+        var idx = line.startIndex
+        while idx < line.endIndex {
+            while idx < line.endIndex && line[idx].isWhitespace {
+                idx = line.index(after: idx)
+            }
+            guard idx < line.endIndex else { break }
+            let start = idx
+            while idx < line.endIndex && !line[idx].isWhitespace {
+                idx = line.index(after: idx)
+            }
+            slices.append(line[start..<idx])
+        }
+        return slices
+    }
+
     public static func parsePSOutput(_ raw: String) -> [ProcessDetailItem] {
         var items: [ProcessDetailItem] = []
+        var layout: PSLayout = .standard
         let lines = raw.components(separatedBy: "\n")
         
         for line in lines {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.isEmpty { continue }
-            if trimmed.hasPrefix("PID") || trimmed.hasPrefix("---") { continue }
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty || trimmed.hasPrefix("---") { continue }
+            if trimmed.hasPrefix("PID") || trimmed.hasPrefix("pid") {
+                let upper = trimmed.uppercased()
+                if upper.contains("%CPU") {
+                    layout = .standard
+                } else if upper.contains("RSS") {
+                    layout = .busyBoxRSS
+                } else {
+                    layout = .busyBoxVSZ
+                }
+                continue
+            }
             
-            // Format: PID USER %CPU %MEM RSS VSZ STAT COMM ARGS
-            let tokens = trimmed.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
-            guard tokens.count >= 8, let pid = Int(tokens[0]) else { continue }
+            let tokens = tokenSlices(in: trimmed)
+            let minTokens: Int
+            let statIndex: Int
+            switch layout {
+            case .standard:
+                minTokens = 8
+                statIndex = 6
+            case .busyBoxRSS:
+                minTokens = 6
+                statIndex = 4
+            case .busyBoxVSZ:
+                minTokens = 5
+                statIndex = 3
+            }
+            guard tokens.count >= minTokens, let pid = Int(tokens[0]) else { continue }
             
-            let user = tokens[1]
-            let cpu = Double(tokens[2]) ?? 0.0
-            let mem = Double(tokens[3]) ?? 0.0
-            let rssKB = UInt64(tokens[4]) ?? 0
-            let vszKB = UInt64(tokens[5]) ?? 0
+            let user = String(tokens[1])
+            let cpu: Double
+            let mem: Double
+            let rssKB: UInt64
+            let vszKB: UInt64
+            switch layout {
+            case .standard:
+                cpu = Double(tokens[2]) ?? 0.0
+                mem = Double(tokens[3]) ?? 0.0
+                rssKB = UInt64(tokens[4]) ?? 0
+                vszKB = UInt64(tokens[5]) ?? 0
+            case .busyBoxRSS:
+                cpu = 0.0
+                mem = 0.0
+                rssKB = UInt64(tokens[2]) ?? 0
+                vszKB = UInt64(tokens[3]) ?? 0
+            case .busyBoxVSZ:
+                cpu = 0.0
+                mem = 0.0
+                rssKB = 0
+                vszKB = UInt64(tokens[2]) ?? 0
+            }
             
-            // Stat first character
-            let statRaw = tokens[6]
-            let stateChar = statRaw.prefix(1)
-            let state = ProcessState(rawValue: String(stateChar)) ?? .running
+            let state = parseProcessState(String(tokens[statIndex]))
+            let commIndex = statIndex + 1
+            let tailSubstring = trimmed[tokens[commIndex].startIndex...]
+            let rawComm: String
+            let args: String
+            if let split = splitSpacedCommAndArgs(tail: tailSubstring) {
+                rawComm = split.comm
+                args = split.args
+            } else {
+                rawComm = String(tokens[commIndex])
+                args = tokens.count > commIndex + 1
+                    ? String(trimmed[tokens[commIndex + 1].startIndex...])
+                    : rawComm
+            }
             
-            let rawComm = tokens[7]
             let comm: String
             if rawComm.hasPrefix("/") {
                 let base = (rawComm as NSString).lastPathComponent
@@ -153,7 +253,6 @@ public enum ProcessListParser {
             } else {
                 comm = rawComm
             }
-            let args = tokens.count > 8 ? tokens.dropFirst(8).joined(separator: " ") : rawComm
             
             let item = ProcessDetailItem(
                 pid: pid,

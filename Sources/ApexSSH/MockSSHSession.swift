@@ -34,7 +34,7 @@ public final class MockSSHSession: SSHSessionProtocol, @unchecked Sendable {
     public private(set) var executedCommands: [String] = []
     public private(set) var sentInputs: [Data] = []
     
-    private var metricsTimer: Timer?
+    private var metricsTask: Task<Void, Never>?
     private var currentDirectory = "/root"
     private var inputBuffer = ""
     private let fileLock = NSLock()
@@ -48,28 +48,38 @@ public final class MockSSHSession: SSHSessionProtocol, @unchecked Sendable {
     public init(session: Session) {
         self.session = session
     }
+
+    deinit {
+        stateLock.withLock {
+            metricsTask?.cancel()
+            metricsTask = nil
+        }
+    }
     
     public func setOutputHandler(_ handler: @Sendable @escaping (Data) -> Void) {
-        self.outputHandler = handler
+        stateLock.withLock { self.outputHandler = handler }
     }
     
     public func setMetricsHandler(_ handler: @Sendable @escaping (ServerMetricsSnapshot) -> Void) {
-        self.metricsHandler = handler
+        stateLock.withLock { self.metricsHandler = handler }
     }
     
     public func setDirectoryChangeHandler(_ handler: @Sendable @escaping (String) -> Void) {
-        self.directoryChangeHandler = handler
+        stateLock.withLock { self.directoryChangeHandler = handler }
     }
     
     public func setStateChangeHandler(_ handler: @Sendable @escaping (SSHConnectionState) -> Void) {
-        self.stateChangeHandler = handler
+        stateLock.withLock { self.stateChangeHandler = handler }
     }
 
     public func triggerDirectoryChange(to path: String) {
-        self.currentDirectory = path
-        let osc7 = "\u{001B}]7;file://\(session.host)\(currentDirectory)\u{0007}"
+        let handler = stateLock.withLock { () -> (@Sendable (String) -> Void)? in
+            self.currentDirectory = path
+            return self.directoryChangeHandler
+        }
+        let osc7 = "\u{001B}]7;file://\(session.host)\(path)\u{0007}"
         emit(osc7)
-        self.directoryChangeHandler?(path)
+        handler?(path)
     }
     
     public func connect() async throws {
@@ -100,22 +110,31 @@ public final class MockSSHSession: SSHSessionProtocol, @unchecked Sendable {
     }
     
     public func disconnect() async {
+        stateLock.withLock {
+            metricsTask?.cancel()
+            metricsTask = nil
+        }
         self.connectionState = .disconnected
-        metricsTimer?.invalidate()
-        metricsTimer = nil
     }
     
     public func sendInputSync(_ data: Data) {
         stateLock.withLock { sentInputs.append(data) }
         if data.count == 1, let first = data.first {
             if first >= 0x20 && first <= 0x7E {
-                inputBuffer.append(Character(UnicodeScalar(first)))
-                outputHandler?(data)
+                stateLock.withLock {
+                    inputBuffer.append(Character(UnicodeScalar(first)))
+                }
+                let handler = stateLock.withLock { outputHandler }
+                handler?(data)
                 return
             } else if first == 10 || first == 13 {
                 emit("\r\n")
-                processCommand(inputBuffer.trimmingCharacters(in: .whitespaces))
-                inputBuffer = ""
+                let cmd = stateLock.withLock { () -> String in
+                    let trimmed = inputBuffer.trimmingCharacters(in: .whitespaces)
+                    inputBuffer = ""
+                    return trimmed
+                }
+                processCommand(cmd)
                 emitPrompt()
                 return
             }
@@ -126,22 +145,31 @@ public final class MockSSHSession: SSHSessionProtocol, @unchecked Sendable {
         for char in text {
             if char == "\r" || char == "\n" {
                 emit("\r\n")
-                processCommand(inputBuffer.trimmingCharacters(in: .whitespaces))
-                inputBuffer = ""
+                let cmd = stateLock.withLock { () -> String in
+                    let trimmed = inputBuffer.trimmingCharacters(in: .whitespaces)
+                    inputBuffer = ""
+                    return trimmed
+                }
+                processCommand(cmd)
                 emitPrompt()
             } else if char == "\u{7F}" || char == "\u{08}" { // Backspace
-                if !inputBuffer.isEmpty {
+                let didRemove = stateLock.withLock { () -> Bool in
+                    guard !inputBuffer.isEmpty else { return false }
                     inputBuffer.removeLast()
+                    return true
+                }
+                if didRemove {
                     emit("\u{08} \u{08}")
                 }
             } else if char == "\u{03}" { // Ctrl+C
-                inputBuffer = ""
+                stateLock.withLock { inputBuffer = "" }
                 emit("^C\r\n")
                 emitPrompt()
             } else {
-                inputBuffer.append(char)
+                stateLock.withLock { inputBuffer.append(char) }
                 if let ascii = char.asciiValue {
-                    outputHandler?(Data([ascii]))
+                    let handler = stateLock.withLock { outputHandler }
+                    handler?(Data([ascii]))
                 } else {
                     emit(String(char))
                 }
@@ -170,25 +198,29 @@ public final class MockSSHSession: SSHSessionProtocol, @unchecked Sendable {
             emit("\u{001B}[2J\u{001B}[H")
         } else if cmd.hasPrefix("cd ") {
             let target = cmd.dropFirst(3).trimmingCharacters(in: .whitespaces)
-            if target == ".." {
-                let parts = currentDirectory.split(separator: "/")
-                if parts.count > 1 {
-                    currentDirectory = "/" + parts.dropLast().joined(separator: "/")
+            let updatedDir = stateLock.withLock { () -> String in
+                if target == ".." {
+                    let parts = currentDirectory.split(separator: "/")
+                    if parts.count > 1 {
+                        currentDirectory = "/" + parts.dropLast().joined(separator: "/")
+                    } else {
+                        currentDirectory = "/"
+                    }
+                } else if target.hasPrefix("/") {
+                    currentDirectory = target
+                } else if target == "~" {
+                    currentDirectory = "/root"
                 } else {
-                    currentDirectory = "/"
+                    currentDirectory = currentDirectory == "/" ? "/\(target)" : "\(currentDirectory)/\(target)"
                 }
-            } else if target.hasPrefix("/") {
-                currentDirectory = target
-            } else if target == "~" {
-                currentDirectory = "/root"
-            } else {
-                currentDirectory = currentDirectory == "/" ? "/\(target)" : "\(currentDirectory)/\(target)"
+                return currentDirectory
             }
             
             // Emit OSC 7 path change sequence to trigger SFTP auto-sync!
-            let osc7 = "\u{001B}]7;file://\(session.host)\(currentDirectory)\u{0007}"
+            let osc7 = "\u{001B}]7;file://\(session.host)\(updatedDir)\u{0007}"
             emit(osc7)
-            directoryChangeHandler?(currentDirectory)
+            let handler = stateLock.withLock { directoryChangeHandler }
+            handler?(updatedDir)
         } else if cmd == "ls" || cmd == "ll" {
             let listing = """
             \u{001B}[1;34mbin\u{001B}[0m   \u{001B}[1;34metc\u{001B}[0m   \u{001B}[1;34mhome\u{001B}[0m  \u{001B}[1;34mlib\u{001B}[0m    \u{001B}[1;34mopt\u{001B}[0m   \u{001B}[1;34mroot\u{001B}[0m  \u{001B}[1;34msys\u{001B}[0m   \u{001B}[1;34musr\u{001B}[0m
@@ -227,19 +259,21 @@ public final class MockSSHSession: SSHSessionProtocol, @unchecked Sendable {
     }
     
     private func emitPrompt() {
-        let prompt = "\u{001B}[1;32m\(session.username)@\(session.name)\u{001B}[0m:\u{001B}[1;34m\(currentDirectory == "/root" ? "~" : currentDirectory)\u{001B}[0m# "
+        let dir = stateLock.withLock { currentDirectory }
+        let prompt = "\u{001B}[1;32m\(session.username)@\(session.name)\u{001B}[0m:\u{001B}[1;34m\(dir == "/root" ? "~" : dir)\u{001B}[0m# "
         emit(prompt)
     }
     
     private func emit(_ str: String) {
         if let data = str.data(using: .utf8) {
-            outputHandler?(data)
+            let handler = stateLock.withLock { outputHandler }
+            handler?(data)
         }
     }
     
     private func startMetricsSimulation() {
-        Task { @MainActor [weak self] in
-            while true {
+        let task = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
                 guard let self = self, self.connectionState == .connected else { break }
                 
                 // Fluctuating dynamic values for charts
@@ -292,9 +326,14 @@ public final class MockSSHSession: SSHSessionProtocol, @unchecked Sendable {
                     ]
                 )
                 
-                self.metricsHandler?(snapshot)
+                let handler = self.stateLock.withLock { self.metricsHandler }
+                handler?(snapshot)
                 try? await Task.sleep(nanoseconds: 1_200_000_000) // 1.2s update interval
             }
+        }
+        stateLock.withLock {
+            metricsTask?.cancel()
+            metricsTask = task
         }
     }
     

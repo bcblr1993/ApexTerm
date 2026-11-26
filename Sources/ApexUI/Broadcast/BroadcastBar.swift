@@ -38,6 +38,7 @@ public struct BroadcastBar: View {
     
     @State private var broadcastText = ""
     @State private var isConfirmingEnable = false
+    @State private var pendingProdTargetToEnable: BroadcastTargetItem? = nil
     
     public init(
         isBroadcastActive: Binding<Bool>,
@@ -59,8 +60,12 @@ public struct BroadcastBar: View {
         self.onBroadcastSubmit = onBroadcastSubmit
     }
 
-    public static func requiresEnableConfirmation(remoteTargetCount: Int) -> Bool {
-        remoteTargetCount >= 2
+    public static func hasProdTarget(in items: [BroadcastTargetItem]) -> Bool {
+        items.contains { $0.isSelected && $0.environmentTier == .prod }
+    }
+
+    public static func requiresEnableConfirmation(remoteTargetCount: Int, hasProdTarget: Bool = false) -> Bool {
+        remoteTargetCount >= 2 || hasProdTarget
     }
 
     public static func selectedTargetIDs(from items: [BroadcastTargetItem]) -> Set<UUID> {
@@ -84,6 +89,14 @@ public struct BroadcastBar: View {
         Self.effectiveTargetCount(targetCount: targetCount, targetTabs: targetTabs)
     }
 
+    private var selectedProdTargets: [BroadcastTargetItem] {
+        targetTabs.filter { $0.isSelected && $0.environmentTier == .prod }
+    }
+
+    private var hasSelectedProdTarget: Bool {
+        !selectedProdTargets.isEmpty
+    }
+
     private var activeToggleForeground: Color {
         guard let rgb = NSColor(ApexStyle.error).usingColorSpace(.sRGB) else { return .white }
         func channel(_ c: CGFloat) -> Double {
@@ -99,7 +112,7 @@ public struct BroadcastBar: View {
         Binding(
             get: { isBroadcastActive },
             set: { nextValue in
-                if nextValue && !isBroadcastActive && Self.requiresEnableConfirmation(remoteTargetCount: remoteTargetCount) {
+                if nextValue && !isBroadcastActive && Self.requiresEnableConfirmation(remoteTargetCount: remoteTargetCount, hasProdTarget: hasSelectedProdTarget) {
                     isConfirmingEnable = true
                 } else {
                     isBroadcastActive = nextValue
@@ -197,13 +210,44 @@ public struct BroadcastBar: View {
         .background(isBroadcastActive ? ApexStyle.error.opacity(0.12) : ApexStyle.subtleSurface.opacity(0.6))
         .overlay(alignment: .bottom) { Divider() }
         .animation(ApexStyle.springSnappy, value: isBroadcastActive)
-        .confirmationDialog("开启多终端命令广播模式？", isPresented: $isConfirmingEnable) {
-            Button("确认开启广播（影响 \(remoteTargetCount) 台远程主机）", role: .destructive) {
+        .confirmationDialog(
+            hasSelectedProdTarget ? "⚠️ 警告：广播目标包含 [PROD] 生产环境主机" : "开启多终端命令广播模式？",
+            isPresented: $isConfirmingEnable
+        ) {
+            Button(
+                hasSelectedProdTarget
+                    ? "我已确认风险，开启广播（含 \(selectedProdTargets.count) 个 PROD 目标）"
+                    : "确认开启广播（影响 \(remoteTargetCount) 台远程主机）",
+                role: .destructive
+            ) {
                 isBroadcastActive = true
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("开启后，您在终端中的按键输入以及通过快捷命令/命令面板执行的操作，将同时发送到全部 \(resolvedTargetCount) 个已选终端（含 \(remoteTargetCount) 台远程主机）。请确认操作安全。")
+            if hasSelectedProdTarget {
+                let prodList = selectedProdTargets.map(\.title).joined(separator: "、")
+                Text("当前已选广播目标包含生产环境 [PROD] 标签页（\(prodList)），共 \(resolvedTargetCount) 个目标会话。所有按键输入与快捷命令将同步下发至生产主机，请务必谨慎确认。")
+            } else {
+                Text("开启后，您在终端中的按键输入以及通过快捷命令/命令面板执行的操作，将同时发送到全部 \(resolvedTargetCount) 个已选终端（含 \(remoteTargetCount) 台远程主机）。请确认操作安全。")
+            }
+        }
+        .confirmationDialog(
+            "将 [PROD] 生产环境主机加入当前广播？",
+            isPresented: Binding(
+                get: { pendingProdTargetToEnable != nil },
+                set: { if !$0 { pendingProdTargetToEnable = nil } }
+            ),
+            presenting: pendingProdTargetToEnable
+        ) { item in
+            Button("确认加入广播目标 [PROD]", role: .destructive) {
+                pendingProdTargetToEnable = nil
+                onToggleTargetTab?(item.tabID)
+            }
+            Button("取消", role: .cancel) {
+                pendingProdTargetToEnable = nil
+            }
+        } message: { item in
+            Text("「\(item.title)」标记为生产环境 [PROD]。当前多终端广播模式处于激活状态，加入后广播命令将立即同步发送至该生产主机。")
         }
     }
 
@@ -213,7 +257,11 @@ public struct BroadcastBar: View {
         let chipTint: Color = item.isSelected ? (item.environmentTier == .prod ? ApexStyle.error : ApexStyle.accent) : ApexStyle.secondary
 
         Button {
-            onToggleTargetTab?(item.tabID)
+            if isBroadcastActive && !item.isSelected && item.environmentTier == .prod {
+                pendingProdTargetToEnable = item
+            } else {
+                onToggleTargetTab?(item.tabID)
+            }
         } label: {
             HStack(spacing: 4) {
                 Image(systemName: item.isSelected ? "checkmark.circle.fill" : "circle")

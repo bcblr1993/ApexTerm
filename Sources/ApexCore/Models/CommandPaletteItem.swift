@@ -42,6 +42,8 @@ public enum CommandPaletteAppAction: String, CaseIterable, Codable, Sendable {
     case checkForUpdates = "check_for_updates"
     case openAbout = "open_about"
     case openShortcuts = "open_shortcuts"
+    case saveWorkspaceSnapshot = "save_workspace_snapshot"
+    case restoreLastWorkspaceSnapshot = "restore_last_workspace_snapshot"
     
     public var title: String {
         switch self {
@@ -66,6 +68,8 @@ public enum CommandPaletteAppAction: String, CaseIterable, Codable, Sendable {
         case .checkForUpdates: return "检查软件更新"
         case .openAbout: return "关于 AetherTerm"
         case .openShortcuts: return "快捷键速查清单"
+        case .saveWorkspaceSnapshot: return "保存当前工作区快照..."
+        case .restoreLastWorkspaceSnapshot: return "恢复上次工作区布局"
         }
     }
     
@@ -92,6 +96,8 @@ public enum CommandPaletteAppAction: String, CaseIterable, Codable, Sendable {
         case .checkForUpdates: return "arrow.clockwise.circle"
         case .openAbout: return "info.circle"
         case .openShortcuts: return "keyboard"
+        case .saveWorkspaceSnapshot: return "rectangle.3.group.badge.plus"
+        case .restoreLastWorkspaceSnapshot: return "clock.arrow.trianglehead.counterclockwise.rotate.90"
         }
     }
     
@@ -118,6 +124,8 @@ public enum CommandPaletteAppAction: String, CaseIterable, Codable, Sendable {
         case .checkForUpdates: return nil
         case .openAbout: return nil
         case .openShortcuts: return ApexShortcutRegistry.shortcutHint(for: .openShortcuts)
+        case .saveWorkspaceSnapshot: return nil
+        case .restoreLastWorkspaceSnapshot: return nil
         }
     }
 }
@@ -128,6 +136,7 @@ public enum CommandPaletteAction: Codable, Sendable, Equatable {
     case openBookmark(String)
     case runSnippet(Snippet)
     case executeAppAction(CommandPaletteAppAction)
+    case restoreWorkspaceSnapshot(UUID)
 }
 
 /// A searchable item in the Command Palette

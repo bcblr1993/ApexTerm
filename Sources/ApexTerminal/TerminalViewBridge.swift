@@ -772,7 +772,7 @@ public final class NativeTerminalView: NSTextView {
     /// Configurable hooks wired by the app layer (`AppSettings`) without adding a direct dependency cycle.
     public static var isOptionAsMetaEnabled: () -> Bool = { AppSettings.shared.optionAsMeta }
     public static var shouldConvertCJKPunctuation: () -> Bool = { AppSettings.shared.autoConvertCJKPunctuation }
-    public static var isTriggerAutoResponseEnabled: () -> Bool = { false }
+    public static var isTriggerAutoResponseEnabled: () -> Bool = { AppSettings.shared.triggerAutoResponseEnabled }
     public static let openDetectedFilePathNotification = Notification.Name("ApexTermOpenDetectedFilePath")
     public static let toggleCommandTimelineNotification = Notification.Name("ApexTermToggleCommandTimeline")
 
@@ -1431,6 +1431,7 @@ public final class NativeTerminalView: NSTextView {
         
         settingsObserver = NotificationCenter.default.addObserver(forName: AppSettings.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor [weak self] in
+                self?.syncTriggerAutoResponseFlag()
                 self?.applyAppSettings()
             }
         }

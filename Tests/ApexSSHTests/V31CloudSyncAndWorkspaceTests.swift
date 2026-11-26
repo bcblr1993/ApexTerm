@@ -3,6 +3,7 @@ import Darwin
 import os
 @testable import ApexCore
 @testable import ApexSSH
+@testable import ApexTerminal
 @testable import ApexUI
 
 final class V31CloudSyncAndWorkspaceTests: XCTestCase {
@@ -496,5 +497,140 @@ final class V31CloudSyncAndWorkspaceTests: XCTestCase {
         XCTAssertEqual(duplicated.command, snippet.command)
         XCTAssertEqual(duplicated.category, snippet.category)
         XCTAssertEqual(duplicated.autoExecute, snippet.autoExecute)
+    }
+
+    // MARK: - Step 2 Integration Wiring: Settings, Multi-Pane Presets, PROD Broadcast Guard, Snapshots, Path Resolution & Trigger Lifecycle
+
+    @MainActor
+    func testV31IntegrationWiring_SettingsLayoutsSnapshotsTriggersAndProdGuard() async throws {
+        let settings = AppSettings.shared
+        let prevPool = settings.controlMasterPoolEnabled
+        let prevAutoResp = settings.triggerAutoResponseEnabled
+        let prevRestore = settings.restoreWorkspaceOnLaunch
+        let prevRedact = settings.redactSecrets
+        let prevPoolStatic = SSHControlMasterPool.isPoolEnabled
+        defer {
+            settings.controlMasterPoolEnabled = prevPool
+            settings.triggerAutoResponseEnabled = prevAutoResp
+            settings.restoreWorkspaceOnLaunch = prevRestore
+            settings.redactSecrets = prevRedact
+            SSHControlMasterPool.isPoolEnabled = prevPoolStatic
+        }
+
+        // 1. AppSettings <-> NativeTerminalView trigger opt-in & defaults
+        settings.triggerAutoResponseEnabled = false
+        XCTAssertFalse(NativeTerminalView.isTriggerAutoResponseEnabled())
+        XCTAssertFalse(AppSettings.isTriggerAutoResponseEnabledSync)
+        settings.triggerAutoResponseEnabled = true
+        XCTAssertTrue(NativeTerminalView.isTriggerAutoResponseEnabled())
+        XCTAssertTrue(AppSettings.isTriggerAutoResponseEnabledSync)
+        settings.triggerAutoResponseEnabled = false
+
+        // 2. Multi-pane layout presets (1x2, 2x1, 1+2, 2x2 up to 4 panes) & close fallback
+        let sProd = Session(name: "prod-web", host: "10.0.10.1", username: "ops", environmentTier: .prod)
+        let tab = TerminalTabItem(session: sProd, sshClient: MockSSHSession(session: sProd))
+        defer { tab.tearDown() }
+
+        tab.applyLayoutPreset(.mainPlusTwo) { MockSSHSession(session: sProd) }
+        XCTAssertEqual(tab.panes.count, 3)
+        XCTAssertEqual(tab.layoutPreset, .mainPlusTwo)
+        XCTAssertFalse(tab.isPaneMaximized)
+
+        tab.applyLayoutPreset(.grid2x2) { MockSSHSession(session: sProd) }
+        XCTAssertEqual(tab.panes.count, 4)
+        XCTAssertEqual(tab.layoutPreset, .grid2x2)
+
+        tab.toggleMaximizeActivePane()
+        XCTAssertTrue(tab.isPaneMaximized)
+        XCTAssertEqual(tab.panes.count, 4, "Maximize must remain non-destructive")
+
+        tab.closePane(id: tab.panes[3].id)
+        XCTAssertEqual(tab.panes.count, 3)
+        XCTAssertEqual(tab.layoutPreset, .mainPlusTwo)
+
+        // 3. PROD broadcast confirmation guard
+        let prodTarget = BroadcastTargetItem(tabID: tab.id, title: "prod-web", environmentTier: .prod, isSelected: true)
+        let devTarget = BroadcastTargetItem(tabID: UUID(), title: "dev-web", environmentTier: .dev, isSelected: true)
+        XCTAssertTrue(BroadcastBar.hasProdTarget(in: [prodTarget, devTarget]))
+        XCTAssertTrue(BroadcastBar.requiresEnableConfirmation(remoteTargetCount: 1, hasProdTarget: true))
+        XCTAssertFalse(BroadcastBar.hasProdTarget(in: [devTarget]))
+        XCTAssertFalse(BroadcastBar.requiresEnableConfirmation(remoteTargetCount: 1, hasProdTarget: false))
+
+        // 4. Detected file path resolution
+        XCTAssertEqual(
+            WorkspaceView.resolveDetectedPath("Sources/Foo.swift", workingDirectory: "/srv/app", fallbackDirectory: "/tmp", isLocal: false),
+            "/srv/app/Sources/Foo.swift"
+        )
+        XCTAssertEqual(
+            WorkspaceView.resolveDetectedPath("./main.py", workingDirectory: nil, fallbackDirectory: "/srv/app/", isLocal: false),
+            "/srv/app/main.py"
+        )
+        XCTAssertEqual(
+            WorkspaceView.resolveDetectedPath("/etc/nginx/nginx.conf", workingDirectory: "/srv/app", fallbackDirectory: "/tmp", isLocal: false),
+            "/etc/nginx/nginx.conf"
+        )
+
+        // 5. Trigger .sendResponse gated callback & tearDown cleanup
+        let mockClient = MockSSHSession(session: sProd)
+        let trigTab = TerminalTabItem(session: sProd, sshClient: mockClient)
+        try await mockClient.connect()
+        trigTab.panes[0].connectionState = .connected
+        let sendTrigger = Trigger(name: "Prompt", regexPattern: "Proceed\\?", action: .sendResponse(text: "yes\n"), cooldownSeconds: 0)
+        trigTab.panes[0].ringBuffer.setTriggers([sendTrigger])
+
+        settings.triggerAutoResponseEnabled = false
+        trigTab.panes[0].ringBuffer.appendStream("Proceed?\r\n")
+        try await Task.sleep(for: .milliseconds(40))
+        XCTAssertTrue(mockClient.sentInputs.isEmpty, "Trigger auto-response must not send when disabled")
+
+        settings.triggerAutoResponseEnabled = true
+        trigTab.panes[0].ringBuffer.appendStream("Proceed?\r\n")
+        try await Task.sleep(for: .milliseconds(60))
+        XCTAssertEqual(mockClient.sentInputs, [Data("yes\n".utf8)])
+
+        trigTab.tearDown()
+        XCTAssertNil(trigTab.panes[0].ringBuffer.onTriggerSendResponse)
+        XCTAssertNil(trigTab.panes[0].ringBuffer.isTriggerAutoResponseEnabled)
+        XCTAssertNil(trigTab.panes[0].ringBuffer.onDesktopNotification)
+
+        // 6. WorkspaceSnapshot makeSnapshot & restoreSnapshot roundtrip (zero credentials)
+        let storeDir = tempDir.appendingPathComponent("ws_restore", isDirectory: true)
+        let sessionStore = SessionStore(baseDirectory: storeDir)
+        sessionStore.addSession(sProd)
+
+        let snapTab = TerminalTabItem(session: sProd, sshClient: MockSSHSession(session: sProd))
+        snapTab.customTitle = "主库面板"
+        snapTab.currentRemotePath = "/var/log/app"
+        snapTab.applyLayoutPreset(.grid2x2) { MockSSHSession(session: sProd) }
+        snapTab.paneSplitRatio = 0.62
+        let snapshot = WorkspaceView.makeSnapshot(
+            name: "核心巡检",
+            tabs: [snapTab],
+            selectedTabId: snapTab.id,
+            isSFTPVisible: false,
+            filesSplitRatio: 0.72
+        )
+        snapTab.tearDown()
+
+        var restoredTabs: [TerminalTabItem] = []
+        var restoredSelected: UUID?
+        let restoredLayout = WorkspaceView.restoreSnapshot(
+            snapshot,
+            store: sessionStore,
+            activeTabs: &restoredTabs,
+            selectedTabId: &restoredSelected
+        )
+        defer { restoredTabs.forEach { $0.tearDown() } }
+        XCTAssertEqual(restoredLayout.restoredCount, 1)
+        XCTAssertFalse(restoredLayout.isSFTPVisible)
+        XCTAssertEqual(restoredLayout.filesSplitRatio, 0.72, accuracy: 0.001)
+        XCTAssertEqual(restoredTabs.first?.customTitle, "主库面板")
+        XCTAssertEqual(restoredTabs.first?.panes.count, 4)
+        XCTAssertEqual(restoredTabs.first?.layoutPreset, .grid2x2)
+        XCTAssertEqual(restoredTabs.first?.currentRemotePath, "/var/log/app")
+        XCTAssertEqual(restoredSelected, restoredTabs.first?.id)
+
+        // 7. SettingsView keeps >= 700pt width for 6 tabs
+        XCTAssertGreaterThanOrEqual(SettingsView.contentWidth, 700)
     }
 }

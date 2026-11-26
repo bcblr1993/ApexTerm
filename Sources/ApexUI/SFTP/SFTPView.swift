@@ -1102,6 +1102,13 @@ public struct SFTPView: View {
                 loadDirectory(path: currentPath)
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: Self.openDetectedRemoteFileNotification)) { notification in
+            guard let notifTabID = notification.userInfo?["tabId"] as? UUID else { return }
+            if let myTabID = tabID, myTabID != notifTabID { return }
+            guard let path = notification.userInfo?["path"] as? String, !path.isEmpty else { return }
+            let line = notification.userInfo?["line"] as? Int
+            openDetectedRemotePath(path, lineNumber: line)
+        }
     }
 
     public var body: some View {
@@ -2254,6 +2261,50 @@ public struct SFTPView: View {
     private static func isLogFileName(_ name: String) -> Bool {
         let lower = name.lowercased()
         return lower.hasSuffix(".log") || lower.contains(".log.")
+    }
+
+    public static let openDetectedRemoteFileNotification = Notification.Name("ApexTermSFTPOpenDetectedRemoteFile")
+
+    private func openDetectedRemotePath(_ remotePath: String, lineNumber: Int?) {
+        guard let session, Self.shouldLoadDirectory(for: connectionState) else {
+            setNotice("会话未连接，无法打开远端文件", kind: .warning)
+            return
+        }
+        let normalizedPath: String
+        if remotePath == "~" || remotePath.hasPrefix("~/") {
+            normalizedPath = remotePath
+        } else {
+            let ns = (remotePath as NSString).standardizingPath
+            normalizedPath = ns.isEmpty ? remotePath : ns
+        }
+        let parentDir = (normalizedPath as NSString).deletingLastPathComponent
+        let fileName = (normalizedPath as NSString).lastPathComponent
+
+        Task {
+            let listed = (try? await session.listDirectory(path: parentDir.isEmpty ? "." : parentDir)) ?? []
+            let matchedItem = listed.first(where: { $0.path == normalizedPath || $0.name == fileName })
+                ?? SFTPItem(name: fileName.isEmpty ? normalizedPath : fileName, path: normalizedPath, isDirectory: false)
+
+            await MainActor.run {
+                if !parentDir.isEmpty && currentPath != parentDir {
+                    currentPath = parentDir
+                }
+                if matchedItem.isDirectory {
+                    currentPath = matchedItem.path
+                    return
+                }
+                if matchedItem.size <= 1_000_000 {
+                    openEditor(matchedItem, lineNumber: lineNumber)
+                } else if Self.isLogFileName(matchedItem.name) {
+                    pendingLargeLogTailPrompt = matchedItem
+                } else {
+                    let bundleID = externalEditManager.preferredEditorBundleID.isEmpty
+                        ? nil
+                        : externalEditManager.preferredEditorBundleID
+                    openInExternalEditor(matchedItem, editorBundleID: bundleID, editorAppURL: nil)
+                }
+            }
+        }
     }
 
     private func openEditor(_ item: SFTPItem, lineNumber: Int? = nil) {

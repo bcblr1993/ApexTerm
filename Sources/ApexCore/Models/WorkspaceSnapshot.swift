@@ -5,6 +5,14 @@ public enum WorkspaceSnapshotSplitMode: String, Codable, Sendable, Equatable, Ha
     case single
     case vertical
     case horizontal
+    case mainPlusTwo = "1+2"
+    case grid2x2 = "2x2"
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let raw = (try? container.decode(String.self)) ?? "single"
+        self = Self(rawValue: raw) ?? .single
+    }
 }
 
 /// Credential-free snapshot of a single workspace tab and its split layout.
@@ -125,6 +133,24 @@ public final class WorkspaceSnapshotStore: ObservableObject {
 
     public var snapshotsFileURL: URL {
         baseDirectory.appendingPathComponent("workspace_snapshots.json")
+    }
+
+    public var lastWorkspaceFileURL: URL {
+        baseDirectory.appendingPathComponent("last_workspace.json")
+    }
+
+    public func saveLastWorkspace(_ snapshot: WorkspaceSnapshot) {
+        if let data = try? encoder.encode(snapshot) {
+            try? data.write(to: lastWorkspaceFileURL, options: .atomic)
+        }
+    }
+
+    public func loadLastWorkspace() -> WorkspaceSnapshot? {
+        guard let data = try? Data(contentsOf: lastWorkspaceFileURL),
+              let decoded = try? decoder.decode(WorkspaceSnapshot.self, from: data) else {
+            return nil
+        }
+        return decoded
     }
 
     public func loadSnapshots() {

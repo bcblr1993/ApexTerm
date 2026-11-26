@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import Combine
+import os
 
 /// Cursor visual styles
 public enum TerminalCursorShape: String, CaseIterable, Identifiable, Sendable {
@@ -115,8 +116,17 @@ public final class AppSettings: ObservableObject {
         static let sessionLogFormat = "settings.logging.format"
         static let sessionLogDirectory = "settings.logging.directory"
         static let sessionLogMaxFileSizeMB = "settings.logging.maxFileSizeMB"
+        static let sessionLogRedactSecrets = "settings.logging.redactSecrets"
         static let isAutoReconnectEnabled = "settings.ssh.autoReconnect"
         static let isKeepAliveEnhanced = "settings.ssh.keepAliveEnhanced"
+        static let controlMasterPoolEnabled = "settings.ssh.controlMasterPoolEnabled"
+        static let triggerAutoResponseEnabled = "settings.terminal.triggerAutoResponseEnabled"
+        static let restoreWorkspaceOnLaunch = "settings.workspace.restoreOnLaunch"
+    }
+
+    private nonisolated static let triggerAutoResponseSyncLock = OSAllocatedUnfairLock(initialState: false)
+    public nonisolated static var isTriggerAutoResponseEnabledSync: Bool {
+        triggerAutoResponseSyncLock.withLock { $0 }
     }
     
     // MARK: - Notification
@@ -245,6 +255,9 @@ public final class AppSettings: ObservableObject {
     @Published public var sessionLogMaxFileSizeMB: Int {
         didSet { defaults.set(sessionLogMaxFileSizeMB, forKey: Keys.sessionLogMaxFileSizeMB) }
     }
+    @Published public var redactSecrets: Bool {
+        didSet { defaults.set(redactSecrets, forKey: Keys.sessionLogRedactSecrets) }
+    }
     
     // Connection Keep-Alive & Auto-Reconnect
     @Published public var isAutoReconnectEnabled: Bool {
@@ -252,6 +265,23 @@ public final class AppSettings: ObservableObject {
     }
     @Published public var isKeepAliveEnhanced: Bool {
         didSet { defaults.set(isKeepAliveEnhanced, forKey: Keys.isKeepAliveEnhanced) }
+    }
+    @Published public var controlMasterPoolEnabled: Bool {
+        didSet {
+            defaults.set(controlMasterPoolEnabled, forKey: Keys.controlMasterPoolEnabled)
+            NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
+        }
+    }
+    @Published public var triggerAutoResponseEnabled: Bool {
+        didSet {
+            let value = triggerAutoResponseEnabled
+            Self.triggerAutoResponseSyncLock.withLock { $0 = value }
+            defaults.set(value, forKey: Keys.triggerAutoResponseEnabled)
+            NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
+        }
+    }
+    @Published public var restoreWorkspaceOnLaunch: Bool {
+        didSet { defaults.set(restoreWorkspaceOnLaunch, forKey: Keys.restoreWorkspaceOnLaunch) }
     }
     
     // MARK: - Init
@@ -341,6 +371,9 @@ public final class AppSettings: ObservableObject {
         self.sessionLogDirectory = defaults.string(forKey: Keys.sessionLogDirectory) ?? defaultLogDir
         let persistedMaxLogMB = defaults.object(forKey: Keys.sessionLogMaxFileSizeMB) != nil ? defaults.integer(forKey: Keys.sessionLogMaxFileSizeMB) : 50
         self.sessionLogMaxFileSizeMB = max(1, persistedMaxLogMB)
+        self.redactSecrets = defaults.object(forKey: Keys.sessionLogRedactSecrets) != nil
+            ? defaults.bool(forKey: Keys.sessionLogRedactSecrets)
+            : true
         
         let persistedTransfers = defaults.object(forKey: Keys.maxConcurrentTransfers) != nil
             ? defaults.integer(forKey: Keys.maxConcurrentTransfers)
@@ -358,6 +391,20 @@ public final class AppSettings: ObservableObject {
         self.isKeepAliveEnhanced = defaults.object(forKey: Keys.isKeepAliveEnhanced) != nil
             ? defaults.bool(forKey: Keys.isKeepAliveEnhanced)
             : true
+
+        self.controlMasterPoolEnabled = defaults.object(forKey: Keys.controlMasterPoolEnabled) != nil
+            ? defaults.bool(forKey: Keys.controlMasterPoolEnabled)
+            : true
+
+        let persistedTriggerAutoResponse = defaults.object(forKey: Keys.triggerAutoResponseEnabled) != nil
+            ? defaults.bool(forKey: Keys.triggerAutoResponseEnabled)
+            : false
+        self.triggerAutoResponseEnabled = persistedTriggerAutoResponse
+        Self.triggerAutoResponseSyncLock.withLock { $0 = persistedTriggerAutoResponse }
+
+        self.restoreWorkspaceOnLaunch = defaults.object(forKey: Keys.restoreWorkspaceOnLaunch) != nil
+            ? defaults.bool(forKey: Keys.restoreWorkspaceOnLaunch)
+            : false
     }
     
     /// Reset all settings to factory default
@@ -388,8 +435,12 @@ public final class AppSettings: ObservableObject {
         sessionLogFormat = .plainText
         sessionLogDirectory = defaultLogDir
         sessionLogMaxFileSizeMB = 50
+        redactSecrets = true
         isAutoReconnectEnabled = true
         isKeepAliveEnhanced = true
+        controlMasterPoolEnabled = true
+        triggerAutoResponseEnabled = false
+        restoreWorkspaceOnLaunch = false
 
         defaults.removeObject(forKey: "externalEdit.preferredEditorBundleID")
         defaults.removeObject(forKey: "externalEdit.autoUploadOnSave")

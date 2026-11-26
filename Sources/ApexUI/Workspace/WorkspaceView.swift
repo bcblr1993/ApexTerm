@@ -9,6 +9,43 @@ public enum PaneSplitMode: String, Sendable {
     case horizontal
 }
 
+public enum PaneLayoutPreset: String, CaseIterable, Codable, Sendable, Equatable, Hashable {
+    case single = "1x1"
+    case twoColumns = "1x2"
+    case twoRows = "2x1"
+    case mainPlusTwo = "1+2"
+    case grid2x2 = "2x2"
+
+    public var displayName: String {
+        switch self {
+        case .single: return "单窗格 (1×1)"
+        case .twoColumns: return "左右双栏 (1×2)"
+        case .twoRows: return "上下双栏 (2×1)"
+        case .mainPlusTwo: return "主次三栏 (1+2)"
+        case .grid2x2: return "四宫格 (2×2)"
+        }
+    }
+
+    public var iconName: String {
+        switch self {
+        case .single: return "rectangle"
+        case .twoColumns: return "rectangle.split.2x1"
+        case .twoRows: return "rectangle.split.1x2"
+        case .mainPlusTwo: return "rectangle.split.1x2.fill"
+        case .grid2x2: return "rectangle.split.2x2"
+        }
+    }
+
+    public var targetPaneCount: Int {
+        switch self {
+        case .single: return 1
+        case .twoColumns, .twoRows: return 2
+        case .mainPlusTwo: return 3
+        case .grid2x2: return 4
+        }
+    }
+}
+
 @MainActor
 public final class TerminalPaneItem: Identifiable, ObservableObject {
     public let id = UUID()
@@ -173,6 +210,8 @@ public final class TerminalPaneItem: Identifiable, ObservableObject {
         ringBuffer.onUpdate = nil
         ringBuffer.onOSC52WriteRequest = nil
         ringBuffer.onDesktopNotification = nil
+        ringBuffer.onTriggerSendResponse = nil
+        ringBuffer.isTriggerAutoResponseEnabled = nil
         ringBuffer.shellIntegration.onCommandCompleted = nil
         pendingOSC52Request = nil
         dropTransferNotice = nil
@@ -212,7 +251,8 @@ public final class TerminalPaneItem: Identifiable, ObservableObject {
                 autoLoggingEnabled: true,
                 logDirectoryPath: AppSettings.shared.sessionLogDirectory,
                 format: AppSettings.shared.sessionLogFormat,
-                maxFileSizeMB: AppSettings.shared.sessionLogMaxFileSizeMB
+                maxFileSizeMB: AppSettings.shared.sessionLogMaxFileSizeMB,
+                redactSecrets: AppSettings.shared.redactSecrets
             )
             self.logger = SessionLogger(session: session, config: config)
         }
@@ -282,6 +322,7 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
     @Published public var terminfoWarning: TerminalType? = nil
     private var terminfoProbeTask: Task<Void, Never>? = nil
     @Published public var paneSplitRatio: CGFloat = 0.5
+    @Published public var secondaryPaneSplitRatio: CGFloat = 0.5
     
     public var displayTitle: String {
         customTitle ?? session.name
@@ -297,6 +338,7 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
         }
     }
     @Published public var splitMode: PaneSplitMode = .single
+    @Published public var layoutPreset: PaneLayoutPreset = .single
     @Published public var isPaneMaximized: Bool = false
     public private(set) var isTornDown: Bool = false
     
@@ -361,6 +403,26 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
 
     private func attachNotificationHandlers(to pane: TerminalPaneItem) {
         let tabID = self.id
+        pane.ringBuffer.isTriggerAutoResponseEnabled = {
+            if Thread.isMainThread {
+                return MainActor.assumeIsolated {
+                    NativeTerminalView.isTriggerAutoResponseEnabled()
+                }
+            }
+            return AppSettings.isTriggerAutoResponseEnabledSync
+        }
+        pane.ringBuffer.onTriggerSendResponse = { [weak pane] responseText in
+            Task { @MainActor [weak pane] in
+                guard let pane,
+                      !pane.isTornDown,
+                      pane.connectionState == .connected,
+                      NativeTerminalView.isTriggerAutoResponseEnabled(),
+                      let data = responseText.data(using: .utf8) else {
+                    return
+                }
+                pane.sshClient.sendInputSync(data)
+            }
+        }
         pane.ringBuffer.shellIntegration.onCommandCompleted = { [weak self] record in
             Task { @MainActor [weak self] in
                 guard let self, !self.isTornDown else { return }
@@ -551,13 +613,58 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
     public func split(mode: PaneSplitMode, sshClient customClient: SSHSessionProtocol? = nil) {
         if panes.count >= 2 {
             self.splitMode = mode
+            if panes.count == 2 {
+                self.layoutPreset = (mode == .horizontal ? .twoRows : .twoColumns)
+            }
             self.isPaneMaximized = false
             return
         }
+        let newPane = appendSplitPane(sshClient: customClient)
+        self.activePaneId = newPane.id
+        self.splitMode = mode
+        self.layoutPreset = (mode == .horizontal ? .twoRows : .twoColumns)
+        self.paneSplitRatio = 0.5
+        self.secondaryPaneSplitRatio = 0.5
+        self.isPaneMaximized = false
+        connect(pane: newPane)
+    }
+
+    public func applyLayoutPreset(_ preset: PaneLayoutPreset, sshClientFactory: (() -> SSHSessionProtocol)? = nil) {
+        let targetCount = preset.targetPaneCount
+        while panes.count < targetCount {
+            let newPane = appendSplitPane(sshClient: sshClientFactory?())
+            connect(pane: newPane)
+        }
+        while panes.count > targetCount, let last = panes.last {
+            let wasActive = (activePaneId == last.id)
+            last.tearDown()
+            panes.removeLast()
+            if wasActive {
+                activePaneId = panes.last?.id ?? panes.first?.id
+            }
+        }
+        self.layoutPreset = preset
+        switch preset {
+        case .single:
+            self.splitMode = .single
+        case .twoRows:
+            self.splitMode = .horizontal
+        case .twoColumns, .mainPlusTwo, .grid2x2:
+            self.splitMode = .vertical
+        }
+        if panes.count <= 1 {
+            self.activePaneId = panes.first?.id
+        }
+        self.paneSplitRatio = 0.5
+        self.secondaryPaneSplitRatio = 0.5
+        self.isPaneMaximized = false
+    }
+
+    private func appendSplitPane(sshClient customClient: SSHSessionProtocol? = nil) -> TerminalPaneItem {
         let newClient = customClient ?? SSHClientFactory.makeClient(for: session)
         let inheritedTerminalType = (activePane ?? panes.first)?.sshClient.terminalType ?? sshClient.terminalType
         newClient.setTerminalType(inheritedTerminalType)
-        
+
         let newPane = TerminalPaneItem(session: session, sshClient: newClient, title: "\(session.name) (分屏)", initialState: .connecting(step: "连接中"))
         newPane.onConnectionStateChanged = { [weak self, weak newPane] newState in
             guard let self = self, let newPane = newPane else { return }
@@ -569,14 +676,9 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
             self?.connect(pane: pane)
         }
         self.panes.append(newPane)
-        self.activePaneId = newPane.id
-        self.splitMode = mode
-        self.paneSplitRatio = 0.5
-        self.isPaneMaximized = false
         attachNotificationHandlers(to: newPane)
         registerDirectoryLinkage(for: newClient, paneId: newPane.id)
-        
-        connect(pane: newPane)
+        return newPane
     }
     
     public func closePane(id: UUID) {
@@ -585,14 +687,32 @@ public final class TerminalTabItem: Identifiable, ObservableObject {
         let pane = panes[idx]
         pane.tearDown()
         panes.remove(at: idx)
-        splitMode = .single
         paneSplitRatio = 0.5
-        if panes.count <= 1 {
+        secondaryPaneSplitRatio = 0.5
+        switch panes.count {
+        case 0, 1:
+            splitMode = .single
+            layoutPreset = .single
             isPaneMaximized = false
+        case 2:
+            if layoutPreset == .mainPlusTwo || layoutPreset == .grid2x2 {
+                layoutPreset = .twoColumns
+                splitMode = .vertical
+            } else {
+                splitMode = (layoutPreset == .twoRows) ? .horizontal : .vertical
+            }
+        case 3:
+            layoutPreset = .mainPlusTwo
+            splitMode = .vertical
+        default:
+            layoutPreset = .grid2x2
+            splitMode = .vertical
         }
         if let remaining = panes.first {
             remaining.title = session.name
-            activePaneId = remaining.id
+            if panes.count == 1 || activePaneId == id {
+                activePaneId = remaining.id
+            }
             if wasPrimary {
                 attachMetricsHandler(to: remaining.sshClient)
             }
@@ -661,6 +781,9 @@ public struct WorkspaceView: View {
     @Binding public var selectedTabId: UUID?
     
     @State private var isBroadcastActive = false
+    @State private var excludedBroadcastTabIDs: Set<UUID> = []
+    @State private var isShowingSaveSnapshotAlert = false
+    @State private var snapshotNameText = ""
     @AppStorage("workspace.filesSplitRatio") private var storedSplitRatio: Double = 0.70
     private var splitRatioBinding: Binding<CGFloat> {
         Binding(get: { CGFloat(min(max(storedSplitRatio, 0.2), 0.85)) },
@@ -769,19 +892,25 @@ public struct WorkspaceView: View {
         return nil
     }
 
-    public static func broadcastTargets(in tabs: [TerminalTabItem]) -> [(tab: TerminalTabItem, pane: TerminalPaneItem)] {
+    public static func broadcastTargets(
+        in tabs: [TerminalTabItem],
+        selectedTabIDs: Set<UUID>? = nil
+    ) -> [(tab: TerminalTabItem, pane: TerminalPaneItem)] {
         tabs.compactMap { tab in
+            if let selectedTabIDs, !selectedTabIDs.contains(tab.id) {
+                return nil
+            }
             guard let target = broadcastTargetPane(for: tab) else { return nil }
             return (tab, target)
         }
     }
 
-    public static func broadcastTargetCount(in tabs: [TerminalTabItem]) -> Int {
-        broadcastTargets(in: tabs).count
+    public static func broadcastTargetCount(in tabs: [TerminalTabItem], selectedTabIDs: Set<UUID>? = nil) -> Int {
+        broadcastTargets(in: tabs, selectedTabIDs: selectedTabIDs).count
     }
 
-    public static func broadcastRemoteTargetCount(in tabs: [TerminalTabItem]) -> Int {
-        broadcastTargets(in: tabs).filter { !$0.tab.session.isLocal }.count
+    public static func broadcastRemoteTargetCount(in tabs: [TerminalTabItem], selectedTabIDs: Set<UUID>? = nil) -> Int {
+        broadcastTargets(in: tabs, selectedTabIDs: selectedTabIDs).filter { !$0.tab.session.isLocal }.count
     }
 
     public static func dispatchInputPayload(
@@ -789,11 +918,12 @@ public struct WorkspaceView: View {
         activePane: TerminalPaneItem,
         activeTab: TerminalTabItem,
         allTabs: [TerminalTabItem],
-        isBroadcastActive: Bool
+        isBroadcastActive: Bool,
+        selectedBroadcastTabIDs: Set<UUID>? = nil
     ) {
         let shouldRefreshLinkage = data.contains(13) || data.contains(10)
         if isBroadcastActive {
-            for target in broadcastTargets(in: allTabs) {
+            for target in broadcastTargets(in: allTabs, selectedTabIDs: selectedBroadcastTabIDs) {
                 target.pane.sshClient.sendInputSync(data)
                 if shouldRefreshLinkage && target.tab.isDirectoryLinkageEnabled {
                     target.tab.scheduleDirectoryLinkageRefresh()
@@ -876,6 +1006,22 @@ public struct WorkspaceView: View {
         return store.sessions.first(where: { $0.id == tab.session.id }) ?? tab.session
     }
 
+    private var broadcastTargetItems: [BroadcastTargetItem] {
+        activeTabs.compactMap { tab in
+            guard Self.broadcastTargetPane(for: tab) != nil else { return nil }
+            return BroadcastTargetItem(
+                tabID: tab.id,
+                title: tab.displayTitle,
+                environmentTier: tab.session.environmentTier,
+                isSelected: !excludedBroadcastTabIDs.contains(tab.id)
+            )
+        }
+    }
+
+    private var selectedBroadcastTabIDs: Set<UUID> {
+        BroadcastBar.selectedTargetIDs(from: broadcastTargetItems)
+    }
+
     /// Propagates saved `SessionStore` edits into open terminal tabs, split panes, and pinned monitor headers.
     public static func syncActiveTabs(_ tabs: [TerminalTabItem], with sessions: [Session]) {
         let sessionsByID = Dictionary(sessions.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
@@ -884,6 +1030,109 @@ public struct WorkspaceView: View {
                 tab.applySessionUpdate(updated)
             }
         }
+    }
+
+    public static func makeSnapshot(
+        name: String,
+        tabs: [TerminalTabItem],
+        selectedTabId: UUID?,
+        isSFTPVisible: Bool,
+        filesSplitRatio: Double
+    ) -> WorkspaceSnapshot {
+        let tabSnapshots = tabs.map { tab -> WorkspaceTabSnapshot in
+            let snapSplitMode: WorkspaceSnapshotSplitMode
+            switch tab.layoutPreset {
+            case .single: snapSplitMode = .single
+            case .twoColumns: snapSplitMode = .vertical
+            case .twoRows: snapSplitMode = .horizontal
+            case .mainPlusTwo: snapSplitMode = .mainPlusTwo
+            case .grid2x2: snapSplitMode = .grid2x2
+            }
+            return WorkspaceTabSnapshot(
+                sessionID: tab.session.isLocal ? nil : tab.session.id,
+                isLocal: tab.session.isLocal,
+                customTitle: tab.customTitle,
+                splitMode: snapSplitMode,
+                paneCount: tab.panes.count,
+                paneSplitRatio: Double(tab.paneSplitRatio),
+                isPaneMaximized: tab.isPaneMaximized,
+                currentRemotePath: tab.currentRemotePath,
+                isDirectoryLinkageEnabled: tab.isDirectoryLinkageEnabled
+            )
+        }
+        let selectedIndex = selectedTabId.flatMap { id in tabs.firstIndex(where: { $0.id == id }) }
+        return WorkspaceSnapshot(
+            name: name,
+            tabs: tabSnapshots,
+            selectedTabIndex: selectedIndex,
+            isSFTPVisible: isSFTPVisible,
+            filesSplitRatio: filesSplitRatio
+        )
+    }
+
+    public static func restoreSnapshot(
+        _ snapshot: WorkspaceSnapshot,
+        store: SessionStore,
+        activeTabs: inout [TerminalTabItem],
+        selectedTabId: inout UUID?
+    ) -> (isSFTPVisible: Bool, filesSplitRatio: Double, restoredCount: Int) {
+        let resolved = snapshot.resolvedTabs(using: store.sessions)
+        for existing in activeTabs {
+            existing.tearDown()
+        }
+        activeTabs.removeAll()
+
+        let sessionsByID = Dictionary(store.sessions.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
+        var newTabs: [TerminalTabItem] = []
+
+        for tabSnap in resolved {
+            let session: Session
+            if tabSnap.isLocal {
+                session = Session.local()
+            } else if let sid = tabSnap.sessionID, let matched = sessionsByID[sid] {
+                session = matched
+            } else {
+                continue
+            }
+
+            let client = SSHClientFactory.makeClient(for: session)
+            let tab = TerminalTabItem(session: session, sshClient: client)
+            tab.customTitle = tabSnap.customTitle
+            tab.currentRemotePath = tabSnap.currentRemotePath
+            tab.isDirectoryLinkageEnabled = tabSnap.isDirectoryLinkageEnabled
+            tab.connect()
+
+            let targetPreset: PaneLayoutPreset = {
+                switch tabSnap.splitMode {
+                case .single:
+                    return tabSnap.paneCount >= 4 ? .grid2x2 : (tabSnap.paneCount == 3 ? .mainPlusTwo : (tabSnap.paneCount == 2 ? .twoColumns : .single))
+                case .vertical:
+                    return tabSnap.paneCount >= 4 ? .grid2x2 : (tabSnap.paneCount == 3 ? .mainPlusTwo : .twoColumns)
+                case .horizontal:
+                    return .twoRows
+                case .mainPlusTwo:
+                    return .mainPlusTwo
+                case .grid2x2:
+                    return .grid2x2
+                }
+            }()
+            if targetPreset != .single {
+                tab.applyLayoutPreset(targetPreset)
+            }
+            tab.paneSplitRatio = CGFloat(min(max(tabSnap.paneSplitRatio, 0.15), 0.85))
+            if tab.panes.count > 1 {
+                tab.isPaneMaximized = tabSnap.isPaneMaximized
+            }
+            newTabs.append(tab)
+        }
+
+        activeTabs = newTabs
+        if let idx = snapshot.selectedTabIndex, newTabs.indices.contains(idx) {
+            selectedTabId = newTabs[idx].id
+        } else {
+            selectedTabId = newTabs.first?.id
+        }
+        return (snapshot.isSFTPVisible, snapshot.filesSplitRatio, newTabs.count)
     }
     
     public var body: some View {
@@ -963,12 +1212,28 @@ public struct WorkspaceView: View {
                 .overlay(alignment: .bottom) { Divider() }
 
                 if activeTabs.count > 1 {
-                    let broadcastTargetCount = Self.broadcastTargetCount(in: activeTabs)
-                    let broadcastRemoteCount = Self.broadcastRemoteTargetCount(in: activeTabs)
+                    let targetItems = broadcastTargetItems
+                    let selectedIDs = BroadcastBar.selectedTargetIDs(from: targetItems)
+                    let broadcastTargetCount = Self.broadcastTargetCount(in: activeTabs, selectedTabIDs: selectedIDs)
+                    let broadcastRemoteCount = Self.broadcastRemoteTargetCount(in: activeTabs, selectedTabIDs: selectedIDs)
                     BroadcastBar(
                         isBroadcastActive: $isBroadcastActive,
                         targetCount: broadcastTargetCount,
                         remoteTargetCount: broadcastRemoteCount,
+                        targetTabs: targetItems,
+                        onToggleTargetTab: { tabID in
+                            if excludedBroadcastTabIDs.contains(tabID) {
+                                excludedBroadcastTabIDs.remove(tabID)
+                            } else {
+                                excludedBroadcastTabIDs.insert(tabID)
+                            }
+                        },
+                        onSelectAllTargets: {
+                            excludedBroadcastTabIDs.removeAll()
+                        },
+                        onDeselectAllTargets: {
+                            excludedBroadcastTabIDs = Set(activeTabs.map(\.id))
+                        },
                         onBroadcastSubmit: { cmd in
                             guard let data = cmd.data(using: .utf8),
                                   let activeTab = currentTab,
@@ -980,7 +1245,8 @@ public struct WorkspaceView: View {
                                 activePane: activePane,
                                 activeTab: activeTab,
                                 allTabs: activeTabs,
-                                isBroadcastActive: true
+                                isBroadcastActive: true,
+                                selectedBroadcastTabIDs: selectedBroadcastTabIDs
                             )
                         }
                     )
@@ -1058,6 +1324,7 @@ public struct WorkspaceView: View {
                     tab: tab,
                     activeTabs: activeTabs,
                     isBroadcastActive: isBroadcastActive,
+                    selectedBroadcastTabIDs: selectedBroadcastTabIDs,
                     isSFTPVisible: $isSFTPVisible,
                     splitRatio: splitRatioBinding,
                     splitDragStartRatio: $splitDragStartRatio,
@@ -1198,8 +1465,10 @@ public struct WorkspaceView: View {
             metricsDetail.handleTabChanged()
             DesktopNotificationManager.shared.trackedActiveTabID = currentTab?.id
         }
-        .onChange(of: activeTabs.map(\.id)) { _, _ in
+        .onChange(of: activeTabs.map(\.id)) { _, ids in
             DesktopNotificationManager.shared.trackedActiveTabID = currentTab?.id
+            let validIDs = Set(ids)
+            excludedBroadcastTabIDs = excludedBroadcastTabIDs.intersection(validIDs)
         }
         .onChange(of: activeTabs.count) { _, count in
             if count < 2 { isBroadcastActive = false }
@@ -1280,6 +1549,19 @@ public struct WorkspaceView: View {
         .onReceive(NotificationCenter.default.publisher(for: CommandPaletteItem.openBatchOperationsNotification)) { notif in
             handleOpenBatchOperationsNotification(notif)
         }
+        .onReceive(NotificationCenter.default.publisher(for: NativeTerminalView.openDetectedFilePathNotification)) { notif in
+            guard !AppLockManager.shared.isLocked else { return }
+            handleOpenDetectedFilePathNotification(notif)
+        }
+        .alert("保存当前工作区快照", isPresented: $isShowingSaveSnapshotAlert) {
+            TextField("快照名称", text: $snapshotNameText)
+            Button("保存") {
+                saveCurrentWorkspaceSnapshot(named: snapshotNameText)
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("将保存当前打开的标签页、分屏布局、自定义标题与 SFTP 目录路径（不包含任何密码或私钥凭据）。")
+        }
         .sheet(item: $pendingSnippetForVariables) { snippet in
             VariableInputSheet(
                 snippet: snippet,
@@ -1327,16 +1609,34 @@ public struct WorkspaceView: View {
         } message: {
             Text(pendingCloseRequest?.summary.confirmationMessage ?? "")
         }
-        .confirmationDialog("开启多终端命令广播模式？", isPresented: $isConfirmingBroadcastEnable) {
-            let remoteCount = Self.broadcastRemoteTargetCount(in: activeTabs)
-            Button("确认开启广播（影响 \(remoteCount) 台远程主机）", role: .destructive) {
+        .confirmationDialog(
+            BroadcastBar.hasProdTarget(in: broadcastTargetItems)
+                ? "⚠️ 警告：广播目标包含 [PROD] 生产环境主机"
+                : "开启多终端命令广播模式？",
+            isPresented: $isConfirmingBroadcastEnable
+        ) {
+            let selectedIDs = selectedBroadcastTabIDs
+            let remoteCount = Self.broadcastRemoteTargetCount(in: activeTabs, selectedTabIDs: selectedIDs)
+            let hasProd = BroadcastBar.hasProdTarget(in: broadcastTargetItems)
+            Button(
+                hasProd
+                    ? "我已确认风险，开启广播（含 PROD 生产主机）"
+                    : "确认开启广播（影响 \(remoteCount) 台远程主机）",
+                role: .destructive
+            ) {
                 isBroadcastActive = true
             }
             Button("取消", role: .cancel) {}
         } message: {
-            let totalCount = Self.broadcastTargetCount(in: activeTabs)
-            let remoteCount = Self.broadcastRemoteTargetCount(in: activeTabs)
-            Text("开启后，您在终端中的按键输入以及通过快捷命令/命令面板执行的操作，将同时发送到全部 \(totalCount) 个已连接终端（含 \(remoteCount) 台远程主机）。请确认操作安全。")
+            let selectedIDs = selectedBroadcastTabIDs
+            let totalCount = Self.broadcastTargetCount(in: activeTabs, selectedTabIDs: selectedIDs)
+            let remoteCount = Self.broadcastRemoteTargetCount(in: activeTabs, selectedTabIDs: selectedIDs)
+            if BroadcastBar.hasProdTarget(in: broadcastTargetItems) {
+                let prodNames = broadcastTargetItems.filter { $0.isSelected && $0.environmentTier == .prod }.map(\.title).joined(separator: "、")
+                Text("当前已选广播目标包含生产环境 [PROD] 主机（\(prodNames)），共 \(totalCount) 个目标会话。开启后输入与快捷命令将同步发送至生产主机，请确认操作安全。")
+            } else {
+                Text("开启后，您在终端中的按键输入以及通过快捷命令/命令面板执行的操作，将同时发送到全部 \(totalCount) 个已选终端（含 \(remoteCount) 台远程主机）。请确认操作安全。")
+            }
         }
         .sheet(isPresented: $isTunnelModalPresented) {
             SSHTunnelModalView(store: store).apexTheme()
@@ -1481,6 +1781,138 @@ public struct WorkspaceView: View {
         pendingCloseRequest = nil
         isConfirmingBroadcastEnable = false
         isShowingTabRenameAlert = false
+        isShowingSaveSnapshotAlert = false
+    }
+
+    private func handleOpenDetectedFilePathNotification(_ notif: Notification) {
+        guard let rawPath = notif.userInfo?["path"] as? String, !rawPath.isEmpty else { return }
+        let line = notif.userInfo?["line"] as? Int
+        let workingDirectory = notif.userInfo?["workingDirectory"] as? String
+
+        let sourceTerminal = notif.object as? NativeTerminalView
+        let matchedTab: TerminalTabItem?
+        let matchedPane: TerminalPaneItem?
+        if let sourceBuffer = sourceTerminal?.ringBuffer,
+           let tabMatch = activeTabs.first(where: { tab in tab.panes.contains(where: { $0.ringBuffer === sourceBuffer }) }) {
+            matchedTab = tabMatch
+            matchedPane = tabMatch.panes.first(where: { $0.ringBuffer === sourceBuffer })
+        } else {
+            matchedTab = currentTab
+            matchedPane = currentTab?.activePane ?? currentTab?.panes.first
+        }
+
+        guard let tab = matchedTab else { return }
+        let resolvedPath = Self.resolveDetectedPath(
+            rawPath,
+            workingDirectory: workingDirectory,
+            fallbackDirectory: tab.currentRemotePath,
+            isLocal: tab.session.isLocal
+        )
+
+        if tab.session.isLocal {
+            let url = URL(fileURLWithPath: resolvedPath)
+            var isDir: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) else {
+                showHUDToast("未找到本地路径: \(resolvedPath)", isWarning: true)
+                return
+            }
+            if isDir.boolValue {
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            } else {
+                let bundleID = ExternalEditSessionManager.shared.preferredEditorBundleID
+                if !bundleID.isEmpty, let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
+                    NSWorkspace.shared.open([url], withApplicationAt: appURL, configuration: NSWorkspace.OpenConfiguration())
+                } else {
+                    NSWorkspace.shared.open(url)
+                }
+            }
+            return
+        }
+
+        let targetPane = matchedPane ?? tab.activePane ?? tab.panes.first
+        guard targetPane?.connectionState == .connected else {
+            showHUDToast("会话未连接，无法打开远端文件: \(resolvedPath)", isWarning: true)
+            return
+        }
+
+        selectedTabId = tab.id
+        if tab.activePaneId != targetPane?.id, let pid = targetPane?.id {
+            tab.activePaneId = pid
+        }
+
+        let wasSFTPVisible = isSFTPVisible
+        if !wasSFTPVisible {
+            isSFTPVisible = true
+        }
+        var info: [AnyHashable: Any] = ["tabId": tab.id, "path": resolvedPath]
+        if let line {
+            info["line"] = line
+        }
+
+        if wasSFTPVisible {
+            NotificationCenter.default.post(name: SFTPView.openDetectedRemoteFileNotification, object: nil, userInfo: info)
+        } else {
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(100))
+                NotificationCenter.default.post(name: SFTPView.openDetectedRemoteFileNotification, object: nil, userInfo: info)
+            }
+        }
+    }
+
+    public static func resolveDetectedPath(
+        _ rawPath: String,
+        workingDirectory: String?,
+        fallbackDirectory: String,
+        isLocal: Bool
+    ) -> String {
+        if rawPath.hasPrefix("/") {
+            return (rawPath as NSString).standardizingPath
+        }
+        if rawPath == "~" || rawPath.hasPrefix("~/") {
+            return isLocal ? (rawPath as NSString).expandingTildeInPath : rawPath
+        }
+        let cleanRel = rawPath.hasPrefix("./") ? String(rawPath.dropFirst(2)) : rawPath
+        let baseRaw: String = {
+            if let wd = workingDirectory?.trimmingCharacters(in: .whitespacesAndNewlines), !wd.isEmpty {
+                return wd
+            }
+            let fb = fallbackDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !fb.isEmpty {
+                return fb
+            }
+            return isLocal ? FileManager.default.homeDirectoryForCurrentUser.path : "~"
+        }()
+        let base = isLocal ? (baseRaw as NSString).expandingTildeInPath : baseRaw
+        let joined = (base as NSString).appendingPathComponent(cleanRel)
+        return (joined as NSString).standardizingPath
+    }
+
+    private func saveCurrentWorkspaceSnapshot(named rawName: String) {
+        let trimmed = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = trimmed.isEmpty ? "工作区快照" : trimmed
+        let snap = Self.makeSnapshot(
+            name: name,
+            tabs: activeTabs,
+            selectedTabId: selectedTabId,
+            isSFTPVisible: isSFTPVisible,
+            filesSplitRatio: storedSplitRatio
+        )
+        WorkspaceSnapshotStore.shared.saveSnapshot(snap)
+        showHUDToast("已保存工作区快照「\(snap.name)」")
+    }
+
+    private func applyWorkspaceSnapshot(_ snapshot: WorkspaceSnapshot) {
+        let result = Self.restoreSnapshot(
+            snapshot,
+            store: store,
+            activeTabs: &activeTabs,
+            selectedTabId: &selectedTabId
+        )
+        isSFTPVisible = result.isSFTPVisible
+        storedSplitRatio = result.filesSplitRatio
+        excludedBroadcastTabIDs.removeAll()
+        isBroadcastActive = false
+        showHUDToast("已切换至工作区快照「\(snapshot.name)」（\(result.restoredCount) 个标签页）")
     }
 
     private func handleFocusTabNotification(_ notif: Notification) {
@@ -1630,6 +2062,28 @@ public struct WorkspaceView: View {
                 NotificationCenter.default.post(name: NSNotification.Name("OpenAboutModal"), object: nil)
             case .openShortcuts:
                 NotificationCenter.default.post(name: NSNotification.Name("OpenShortcutsModal"), object: nil)
+            case .saveWorkspaceSnapshot:
+                guard !activeTabs.isEmpty else {
+                    showHUDToast("当前没有打开的标签页可保存为快照", isWarning: true)
+                    return
+                }
+                let fmt = DateFormatter()
+                fmt.locale = Locale(identifier: "en_US_POSIX")
+                fmt.dateFormat = "MM-dd HH:mm"
+                snapshotNameText = "工作区 \(fmt.string(from: Date()))"
+                isShowingSaveSnapshotAlert = true
+            case .restoreLastWorkspaceSnapshot:
+                if let snap = WorkspaceSnapshotStore.shared.loadLastWorkspace() ?? WorkspaceSnapshotStore.shared.snapshots.first {
+                    applyWorkspaceSnapshot(snap)
+                } else {
+                    showHUDToast("暂无可恢复的工作区快照", isWarning: true)
+                }
+            }
+        case .restoreWorkspaceSnapshot(let snapshotID):
+            if let snap = WorkspaceSnapshotStore.shared.snapshot(id: snapshotID) {
+                applyWorkspaceSnapshot(snap)
+            } else {
+                showHUDToast("未找到指定工作区快照", isWarning: true)
             }
         }
     }
@@ -1662,13 +2116,16 @@ public struct WorkspaceView: View {
             isBroadcastActive = false
             return
         }
-        let targetCount = Self.broadcastTargetCount(in: activeTabs)
+        let targetItems = broadcastTargetItems
+        let selectedIDs = BroadcastBar.selectedTargetIDs(from: targetItems)
+        let targetCount = Self.broadcastTargetCount(in: activeTabs, selectedTabIDs: selectedIDs)
         guard targetCount > 0 else {
-            showHUDToast("当前没有已连接的终端会话可广播", isWarning: true)
+            showHUDToast("当前没有已选中的已连接终端会话可广播", isWarning: true)
             return
         }
-        let remoteCount = Self.broadcastRemoteTargetCount(in: activeTabs)
-        if BroadcastBar.requiresEnableConfirmation(remoteTargetCount: remoteCount) {
+        let remoteCount = Self.broadcastRemoteTargetCount(in: activeTabs, selectedTabIDs: selectedIDs)
+        let hasProd = BroadcastBar.hasProdTarget(in: targetItems)
+        if BroadcastBar.requiresEnableConfirmation(remoteTargetCount: remoteCount, hasProdTarget: hasProd) {
             isConfirmingBroadcastEnable = true
         } else {
             isBroadcastActive = true
@@ -1708,7 +2165,8 @@ public struct WorkspaceView: View {
             activePane: pane,
             activeTab: tab,
             allTabs: activeTabs,
-            isBroadcastActive: isBroadcastActive
+            isBroadcastActive: isBroadcastActive,
+            selectedBroadcastTabIDs: selectedBroadcastTabIDs
         )
     }
 
@@ -1857,14 +2315,32 @@ private struct WorkspaceSplitToolbarMenu: View {
 
     var body: some View {
         Menu {
-            Button("垂直分屏", systemImage: "rectangle.split.2x1") { tab.split(mode: .vertical) }
-            Button("水平分屏", systemImage: "rectangle.split.1x2") { tab.split(mode: .horizontal) }
+            Button("左右双栏 (1×2)", systemImage: "rectangle.split.2x1") {
+                tab.applyLayoutPreset(.twoColumns)
+            }
+            Button("上下双栏 (2×1)", systemImage: "rectangle.split.1x2") {
+                tab.applyLayoutPreset(.twoRows)
+            }
+            Button("主次三栏 (1+2)", systemImage: "rectangle.split.1x2.fill") {
+                tab.applyLayoutPreset(.mainPlusTwo)
+            }
+            Button("四宫格 (2×2)", systemImage: "rectangle.split.2x2") {
+                tab.applyLayoutPreset(.grid2x2)
+            }
+            if tab.panes.count > 1 {
+                Divider()
+                Button(tab.isPaneMaximized ? "恢复分屏布局 (⌘⇧↵)" : "放大当前窗格 (⌘⇧↵)", systemImage: "arrow.up.left.and.arrow.down.right") {
+                    tab.toggleMaximizeActivePane()
+                }
+                Button("还原为单窗格 (1×1)", systemImage: "rectangle") {
+                    tab.applyLayoutPreset(.single)
+                }
+            }
         } label: {
-            Label("分屏", systemImage: "rectangle.split.2x1")
+            Label("分屏", systemImage: tab.layoutPreset.iconName)
         }
         .menuIndicator(.hidden)
-        .disabled(tab.panes.count >= 2)
-        .help("分屏 (⌘D / ⌘⇧D)")
+        .help("分屏布局预设 (⌘D / ⌘⇧D · 1×2 / 2×1 / 1+2 / 2×2)")
     }
 }
 
@@ -2088,6 +2564,7 @@ public struct WorkspaceMainAreaWithMetricsDock: View {
     @ObservedObject var tab: TerminalTabItem
     let activeTabs: [TerminalTabItem]
     let isBroadcastActive: Bool
+    var selectedBroadcastTabIDs: Set<UUID>? = nil
     @Binding var isSFTPVisible: Bool
     @Binding var splitRatio: CGFloat
     @Binding var splitDragStartRatio: CGFloat?
@@ -2119,6 +2596,7 @@ public struct WorkspaceMainAreaWithMetricsDock: View {
                     tab: tab,
                     activeTabs: activeTabs,
                     isBroadcastActive: isBroadcastActive,
+                    selectedBroadcastTabIDs: selectedBroadcastTabIDs,
                     isSFTPVisible: $isSFTPVisible,
                     splitRatio: $splitRatio,
                     splitDragStartRatio: $splitDragStartRatio,
@@ -2288,12 +2766,14 @@ private struct WorkspaceActiveTabSplitView: View {
     @ObservedObject var tab: TerminalTabItem
     let activeTabs: [TerminalTabItem]
     let isBroadcastActive: Bool
+    var selectedBroadcastTabIDs: Set<UUID>? = nil
     @Binding var isSFTPVisible: Bool
     @Binding var splitRatio: CGFloat
     @Binding var splitDragStartRatio: CGFloat?
     let transferPresentation: TransferDrawerPresentation
     let isTabActive: Bool
     @State private var paneDragStartRatio: CGFloat?
+    @State private var secondaryPaneDragStartRatio: CGFloat?
 
     private static func clampedSplitRatio(_ preferred: CGFloat, availableHeight: CGFloat) -> CGFloat {
         guard availableHeight > 8 else { return min(max(preferred, 0.2), 0.85) }
@@ -2320,7 +2800,19 @@ private struct WorkspaceActiveTabSplitView: View {
                 GeometryReader { paneGeo in
                     let totalW = max(0, paneGeo.size.width)
                     let totalH = max(0, paneGeo.size.height)
-                    let isSplit = tab.splitMode != .single && tab.panes.count >= 2 && !tab.isPaneMaximized
+                    let effectivePreset: PaneLayoutPreset = {
+                        if tab.isPaneMaximized || tab.panes.count <= 1 {
+                            return .single
+                        }
+                        if tab.panes.count >= 4 || tab.layoutPreset == .grid2x2 {
+                            return tab.panes.count >= 4 ? .grid2x2 : (tab.panes.count == 3 ? .mainPlusTwo : .twoColumns)
+                        }
+                        if tab.panes.count == 3 || tab.layoutPreset == .mainPlusTwo {
+                            return tab.panes.count >= 3 ? .mainPlusTwo : .twoColumns
+                        }
+                        return tab.splitMode == .horizontal ? .twoRows : .twoColumns
+                    }()
+                    let isSplit = effectivePreset != .single
                     let visiblePaneId = (tab.activePane ?? tab.panes.first)?.id
 
                     let usableW = max(0, totalW - 8)
@@ -2330,39 +2822,69 @@ private struct WorkspaceActiveTabSplitView: View {
 
                     let usableH = max(0, totalH - 8)
                     let minPaneH = min(60, usableH / 2)
-                    let topH = min(max(minPaneH, usableH * tab.paneSplitRatio), max(minPaneH, usableH - minPaneH))
-                    let bottomH = max(0, usableH - topH)
+                    let primaryH = min(max(minPaneH, usableH * tab.paneSplitRatio), max(minPaneH, usableH - minPaneH))
+                    let primaryBottomH = max(0, usableH - primaryH)
+                    let secondaryTopH = min(max(minPaneH, usableH * tab.secondaryPaneSplitRatio), max(minPaneH, usableH - minPaneH))
+                    let secondaryBottomH = max(0, usableH - secondaryTopH)
 
                     ZStack(alignment: .topLeading) {
                         ForEach(Array(tab.panes.enumerated()), id: \.element.id) { index, pane in
                             let isVisible = isSplit || pane.id == visiblePaneId
-                            let frameSize: CGSize = {
-                                guard isSplit else { return CGSize(width: totalW, height: totalH) }
-                                if tab.splitMode == .vertical {
-                                    return CGSize(width: index == 0 ? leftW : rightW, height: totalH)
-                                } else {
-                                    return CGSize(width: totalW, height: index == 0 ? topH : bottomH)
+                            let rect: CGRect = {
+                                guard isSplit else {
+                                    return CGRect(x: 0, y: 0, width: totalW, height: totalH)
                                 }
-                            }()
-                            let origin: CGPoint = {
-                                guard isSplit && index == 1 else { return .zero }
-                                if tab.splitMode == .vertical {
-                                    return CGPoint(x: leftW + 8, y: 0)
-                                } else {
-                                    return CGPoint(x: 0, y: topH + 8)
+                                switch effectivePreset {
+                                case .single:
+                                    return CGRect(x: 0, y: 0, width: totalW, height: totalH)
+                                case .twoColumns:
+                                    return index == 0
+                                        ? CGRect(x: 0, y: 0, width: leftW, height: totalH)
+                                        : CGRect(x: leftW + 8, y: 0, width: rightW, height: totalH)
+                                case .twoRows:
+                                    return index == 0
+                                        ? CGRect(x: 0, y: 0, width: totalW, height: primaryH)
+                                        : CGRect(x: 0, y: primaryH + 8, width: totalW, height: primaryBottomH)
+                                case .mainPlusTwo:
+                                    switch index {
+                                    case 0:
+                                        return CGRect(x: 0, y: 0, width: leftW, height: totalH)
+                                    case 1:
+                                        return CGRect(x: leftW + 8, y: 0, width: rightW, height: secondaryTopH)
+                                    default:
+                                        return CGRect(x: leftW + 8, y: secondaryTopH + 8, width: rightW, height: secondaryBottomH)
+                                    }
+                                case .grid2x2:
+                                    switch index {
+                                    case 0:
+                                        return CGRect(x: 0, y: 0, width: leftW, height: secondaryTopH)
+                                    case 1:
+                                        return CGRect(x: leftW + 8, y: 0, width: rightW, height: secondaryTopH)
+                                    case 2:
+                                        return CGRect(x: 0, y: secondaryTopH + 8, width: leftW, height: secondaryBottomH)
+                                    default:
+                                        return CGRect(x: leftW + 8, y: secondaryTopH + 8, width: rightW, height: secondaryBottomH)
+                                    }
                                 }
                             }()
 
-                            PaneContainerView(store: store, pane: pane, tab: tab, activeTabs: activeTabs, isBroadcastActive: isBroadcastActive)
-                                .frame(width: frameSize.width, height: frameSize.height)
-                                .offset(x: origin.x, y: origin.y)
-                                .opacity(isVisible ? 1 : 0)
-                                .allowsHitTesting(isVisible)
-                                .accessibilityHidden(!isVisible)
+                            PaneContainerView(
+                                store: store,
+                                pane: pane,
+                                tab: tab,
+                                activeTabs: activeTabs,
+                                isBroadcastActive: isBroadcastActive,
+                                selectedBroadcastTabIDs: selectedBroadcastTabIDs
+                            )
+                            .frame(width: rect.width, height: rect.height)
+                            .offset(x: rect.origin.x, y: rect.origin.y)
+                            .opacity(isVisible ? 1 : 0)
+                            .allowsHitTesting(isVisible)
+                            .accessibilityHidden(!isVisible)
                         }
 
                         if isSplit {
-                            if tab.splitMode == .vertical {
+                            if effectivePreset == .twoColumns || effectivePreset == .mainPlusTwo || effectivePreset == .grid2x2 {
                                 ApexSplitDividerHandle(isVertical: true, background: .clear)
                                     .frame(width: 8, height: totalH)
                                     .offset(x: leftW, y: 0)
@@ -2386,10 +2908,11 @@ private struct WorkspaceActiveTabSplitView: View {
                                             }
                                             .onEnded { _ in paneDragStartRatio = nil }
                                     )
-                            } else {
+                            }
+                            if effectivePreset == .twoRows {
                                 ApexSplitDividerHandle(isVertical: false, background: .clear)
                                     .frame(width: totalW, height: 8)
-                                    .offset(x: 0, y: topH)
+                                    .offset(x: 0, y: primaryH)
                                     .accessibilityElement(children: .ignore)
                                     .accessibilityLabel("上下终端分屏比例")
                                     .accessibilityValue("\(Int(tab.paneSplitRatio * 100))%")
@@ -2409,6 +2932,33 @@ private struct WorkspaceActiveTabSplitView: View {
                                                 tab.paneSplitRatio = min(max(newRatio, 0.15), 0.85)
                                             }
                                             .onEnded { _ in paneDragStartRatio = nil }
+                                    )
+                            }
+                            if effectivePreset == .mainPlusTwo || effectivePreset == .grid2x2 {
+                                let hDividerX: CGFloat = effectivePreset == .mainPlusTwo ? (leftW + 8) : 0
+                                let hDividerW: CGFloat = effectivePreset == .mainPlusTwo ? rightW : totalW
+                                ApexSplitDividerHandle(isVertical: false, background: .clear)
+                                    .frame(width: hDividerW, height: 8)
+                                    .offset(x: hDividerX, y: secondaryTopH)
+                                    .accessibilityElement(children: .ignore)
+                                    .accessibilityLabel("上下子窗格比例")
+                                    .accessibilityValue("\(Int(tab.secondaryPaneSplitRatio * 100))%")
+                                    .accessibilityAdjustableAction { direction in
+                                        switch direction {
+                                        case .increment: tab.secondaryPaneSplitRatio = min(0.85, tab.secondaryPaneSplitRatio + 0.05)
+                                        case .decrement: tab.secondaryPaneSplitRatio = max(0.15, tab.secondaryPaneSplitRatio - 0.05)
+                                        @unknown default: break
+                                        }
+                                    }
+                                    .gesture(
+                                        DragGesture()
+                                            .onChanged { val in
+                                                let start = secondaryPaneDragStartRatio ?? tab.secondaryPaneSplitRatio
+                                                if secondaryPaneDragStartRatio == nil { secondaryPaneDragStartRatio = start }
+                                                let newRatio = start + val.translation.height / max(usableH, 80)
+                                                tab.secondaryPaneSplitRatio = min(max(newRatio, 0.15), 0.85)
+                                            }
+                                            .onEnded { _ in secondaryPaneDragStartRatio = nil }
                                     )
                             }
                         }
@@ -2469,13 +3019,18 @@ private struct PaneContainerView: View {
     @ObservedObject var tab: TerminalTabItem
     let activeTabs: [TerminalTabItem]
     let isBroadcastActive: Bool
+    var selectedBroadcastTabIDs: Set<UUID>? = nil
     
     var isFocused: Bool {
         tab.activePaneId == pane.id
     }
 
     private var isBroadcastTarget: Bool {
-        isBroadcastActive && WorkspaceView.broadcastTargetPane(for: tab)?.id == pane.id
+        guard isBroadcastActive else { return false }
+        if let selectedBroadcastTabIDs, !selectedBroadcastTabIDs.contains(tab.id) {
+            return false
+        }
+        return WorkspaceView.broadcastTargetPane(for: tab)?.id == pane.id
     }
 
     private var hasMaximizedPill: Bool {
@@ -2511,6 +3066,9 @@ private struct PaneContainerView: View {
                                 .fill(isFocused ? ApexStyle.accent : ApexStyle.secondary.opacity(0.5))
                                 .frame(width: 6, height: 6)
                                 .shadow(color: isFocused ? ApexStyle.accent.opacity(0.6) : .clear, radius: 3)
+                            if let tier = pane.session.environmentTier {
+                                EnvironmentTierBadgeView(tier: tier, compact: true)
+                            }
                             Text(pane.title)
                                 .font(.system(size: 11, weight: isFocused ? .semibold : .regular, design: .monospaced))
                                 .foregroundColor(isFocused ? ApexStyle.primary : ApexStyle.secondary)
@@ -2539,6 +3097,22 @@ private struct PaneContainerView: View {
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
                 .background(isFocused ? ApexStyle.accent.opacity(0.12) : ApexStyle.subtleSurface)
+            } else if let tier = pane.session.environmentTier {
+                let tierColor = Color(hex: tier.colorHex) ?? ApexStyle.accent
+                HStack(spacing: 6) {
+                    EnvironmentTierBadgeView(tier: tier, compact: true)
+                    Text(tier == .prod ? "生产环境 · 请谨慎执行变更操作" : (tier == .staging ? "预发环境" : "开发环境"))
+                        .font(.system(size: 10.5, weight: tier == .prod ? .semibold : .medium))
+                        .foregroundColor(tier == .prod ? tierColor : ApexStyle.secondary)
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 3)
+                .background(tierColor.opacity(tier == .prod ? 0.10 : 0.06))
+                .overlay(alignment: .bottom) {
+                    Rectangle().fill(tierColor.opacity(0.28)).frame(height: 0.75)
+                }
             }
 
             if isBroadcastTarget {
@@ -2625,6 +3199,15 @@ private struct PaneContainerView: View {
                                 }
                             }
                         })
+                    },
+                    onTriggerSendResponse: { responseText in
+                        guard NativeTerminalView.isTriggerAutoResponseEnabled(),
+                              !pane.isTornDown,
+                              pane.connectionState == .connected,
+                              let data = responseText.data(using: .utf8) else {
+                            return
+                        }
+                        pane.sshClient.sendInputSync(data)
                     }
                 ) { inputData in
                     WorkspaceView.dispatchInputPayload(
@@ -2632,7 +3215,8 @@ private struct PaneContainerView: View {
                         activePane: pane,
                         activeTab: tab,
                         allTabs: activeTabs,
-                        isBroadcastActive: isBroadcastActive
+                        isBroadcastActive: isBroadcastActive,
+                        selectedBroadcastTabIDs: selectedBroadcastTabIDs
                     )
                 }
                 
@@ -3356,6 +3940,10 @@ struct TabButton: View {
                         .frame(width: 7, height: 7)
                         .shadow(color: dotColor.opacity(isSelected ? 0.6 : 0.2), radius: isSelected ? 3 : 1)
                 }
+
+                if let tier = tab.session.environmentTier {
+                    EnvironmentTierBadgeView(tier: tier, compact: true)
+                }
                 
                 Text(tab.displayTitle)
                     .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
@@ -3364,7 +3952,7 @@ struct TabButton: View {
                     .truncationMode(.tail)
             }
             .accessibilityElement(children: .combine)
-            .accessibilityLabel("标签页 \(tab.displayTitle)，\(connectionStatusAccessibilityLabel)")
+            .accessibilityLabel("标签页 \(tab.displayTitle)\(tab.session.environmentTier.map { " [\($0.badgeText)]" } ?? "")，\(connectionStatusAccessibilityLabel)")
             .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : [.isButton])
             .accessibilityAction { onSelect() }
             
@@ -3394,7 +3982,7 @@ struct TabButton: View {
         .accessibilityElement(children: .contain)
         .padding(.horizontal, 10)
         .frame(height: 26)
-        .frame(maxWidth: 200)
+        .frame(maxWidth: 230)
         .help(tab.displayTitle)
         .background(
             RoundedRectangle(cornerRadius: 7)
@@ -3484,5 +4072,25 @@ struct TabButton: View {
                 Label("关闭右侧标签页", systemImage: "arrow.right.to.line")
             }
         }
+    }
+}
+
+private struct EnvironmentTierBadgeView: View {
+    let tier: EnvironmentTier
+    var compact: Bool = false
+
+    var body: some View {
+        let tierColor = Color(hex: tier.colorHex) ?? ApexStyle.accent
+        Text(tier.badgeText)
+            .font(.system(size: compact ? 8.5 : 9.5, weight: .bold, design: .monospaced))
+            .foregroundColor(tierColor)
+            .padding(.horizontal, compact ? 4 : 5)
+            .padding(.vertical, 1)
+            .background(tierColor.opacity(0.14), in: RoundedRectangle(cornerRadius: 3))
+            .overlay(
+                RoundedRectangle(cornerRadius: 3)
+                    .stroke(tierColor.opacity(0.35), lineWidth: 0.6)
+            )
+            .fixedSize()
     }
 }

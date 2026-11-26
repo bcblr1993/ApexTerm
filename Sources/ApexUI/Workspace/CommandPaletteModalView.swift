@@ -4,6 +4,7 @@ import ApexCore
 /// Spotlight-style Command Palette modal overlay for quick fuzzy navigation and action triggering
 public struct CommandPaletteModalView: View {
     @ObservedObject private var themeSettings = AppSettings.shared
+    @ObservedObject private var snapshotStore = WorkspaceSnapshotStore.shared
     @ObservedObject public var store: SessionStore
     @Binding public var isPresented: Bool
     public let onSelectAction: (CommandPaletteAction) -> Void
@@ -82,6 +83,21 @@ public struct CommandPaletteModalView: View {
                     iconName: "terminal",
                     shortcutHint: nil,
                     action: .runSnippet(snip)
+                )
+            )
+        }
+
+        // 5. Workspace Snapshots
+        for snap in snapshotStore.snapshots {
+            items.append(
+                CommandPaletteItem(
+                    id: CommandPaletteItem.stableID(for: "snapshot.\(snap.id.uuidString)"),
+                    title: "切换工作区快照: \(snap.name)",
+                    subtitle: "\(snap.tabs.count) 个标签页 · \(snap.isSFTPVisible ? "含 SFTP" : "纯终端")",
+                    category: .action,
+                    iconName: "rectangle.3.group",
+                    shortcutHint: nil,
+                    action: .restoreWorkspaceSnapshot(snap.id)
                 )
             )
         }

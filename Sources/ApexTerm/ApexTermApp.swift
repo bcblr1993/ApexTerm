@@ -169,6 +169,7 @@ private final class ApexTermAppDelegate: NSObject, NSApplicationDelegate, UNUser
         if let onBeforeTerminate {
             onBeforeTerminate()
         } else {
+            SSHControlMasterPool.shared.closeAll()
             SSHTunnelManager.shared.stopAll()
             TransferManager.shared.cancelAllTasks()
             ExternalEditSessionManager.shared.stopAllSessions()
@@ -290,6 +291,7 @@ struct ApexTermApp: App {
     @State private var isAboutPresented = false
     @State private var isShortcutsPresented = false
     @State private var isNewSessionPresented = false
+    @State private var hasAttemptedSnapshotRestore = false
     
     var body: some Scene {
         WindowGroup(id: "main") {
@@ -328,7 +330,21 @@ struct ApexTermApp: App {
             .onChange(of: lockManager.isLocked) { _, isLocked in
                 if isLocked {
                     dismissAppLevelSheetsForLock()
+                } else {
+                    restoreWorkspaceOnLaunchIfNeeded()
                 }
+            }
+            .onChange(of: settings.controlMasterPoolEnabled) { _, enabled in
+                SSHControlMasterPool.isPoolEnabled = enabled
+            }
+            .onReceive(NotificationCenter.default.publisher(for: AppSettings.didResetToDefaultsNotification)) { _ in
+                SSHControlMasterPool.isPoolEnabled = settings.controlMasterPoolEnabled
+            }
+            .onChange(of: activeTabs.map(\.id)) { _, _ in
+                persistLastWorkspaceSnapshot()
+            }
+            .onChange(of: selectedTabId) { _, _ in
+                persistLastWorkspaceSnapshot()
             }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
                 performBeforeTerminateCleanup()
@@ -386,10 +402,14 @@ struct ApexTermApp: App {
                 showMainWindow()
             }
             .onAppear {
+                SSHControlMasterPool.isPoolEnabled = settings.controlMasterPoolEnabled
                 wireLifecycleHandlers()
+                restoreWorkspaceOnLaunchIfNeeded()
             }
             .task {
+                SSHControlMasterPool.isPoolEnabled = settings.controlMasterPoolEnabled
                 wireLifecycleHandlers()
+                restoreWorkspaceOnLaunchIfNeeded()
                 if updateManager.distributionChannel == .direct && settings.checkForUpdatesOnLaunch && ProcessInfo.processInfo.environment["APEX_UI_TEST_REOPEN"] != "1" {
                     await updateManager.checkForUpdates(manual: false)
                 }
@@ -743,6 +763,8 @@ struct ApexTermApp: App {
     }
 
     private func performBeforeTerminateCleanup() {
+        persistLastWorkspaceSnapshot()
+        SSHControlMasterPool.shared.closeAll()
         SSHTunnelManager.shared.stopAll()
         TransferManager.shared.cancelAllTasks()
         ExternalEditSessionManager.shared.stopAllSessions()
@@ -753,6 +775,45 @@ struct ApexTermApp: App {
                 (pane.sshClient as? LocalTerminalSession)?.terminatePTYProcess()
             }
         }
+    }
+
+    private func persistLastWorkspaceSnapshot() {
+        let isSFTPVisible = UserDefaults.standard.object(forKey: "workspace.filesVisible") as? Bool ?? true
+        let filesSplitRatio = UserDefaults.standard.object(forKey: "workspace.filesSplitRatio") as? Double ?? 0.70
+        let snap = WorkspaceView.makeSnapshot(
+            name: "上次工作区",
+            tabs: activeTabs,
+            selectedTabId: selectedTabId,
+            isSFTPVisible: isSFTPVisible,
+            filesSplitRatio: filesSplitRatio
+        )
+        WorkspaceSnapshotStore.shared.saveLastWorkspace(snap)
+    }
+
+    private func restoreWorkspaceOnLaunchIfNeeded() {
+        guard !hasAttemptedSnapshotRestore else { return }
+        guard settings.restoreWorkspaceOnLaunch, !lockManager.isLocked else { return }
+        guard activeTabs.isEmpty else {
+            hasAttemptedSnapshotRestore = true
+            return
+        }
+        guard ProcessInfo.processInfo.environment["APEX_UI_TEST_REOPEN"] != "1" else {
+            hasAttemptedSnapshotRestore = true
+            return
+        }
+        hasAttemptedSnapshotRestore = true
+        guard let snap = WorkspaceSnapshotStore.shared.loadLastWorkspace() ?? WorkspaceSnapshotStore.shared.snapshots.first,
+              !snap.tabs.isEmpty else {
+            return
+        }
+        let restored = WorkspaceView.restoreSnapshot(
+            snap,
+            store: sessionStore,
+            activeTabs: &activeTabs,
+            selectedTabId: &selectedTabId
+        )
+        UserDefaults.standard.set(restored.isSFTPVisible, forKey: "workspace.filesVisible")
+        UserDefaults.standard.set(restored.filesSplitRatio, forKey: "workspace.filesSplitRatio")
     }
 
     private func clearActiveTerminalScreen() {

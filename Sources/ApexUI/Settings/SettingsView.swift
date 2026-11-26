@@ -129,6 +129,17 @@ private struct GeneralSettingsTab: View {
             } header: {
                 Text("软件更新")
             }
+
+            Section {
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle("启动时恢复上次工作区布局", isOn: $settings.restoreWorkspaceOnLaunch)
+                    Text("自动恢复上次关闭前的打开标签页、分屏预设及 SFTP 目录路径（不含明文密码与私钥；若启用应用锁则在解锁后恢复）。")
+                        .font(.caption)
+                        .foregroundColor(ApexStyle.secondary)
+                }
+            } header: {
+                Text("工作区启动行为")
+            }
             
             Section {
                 Picker(L10n.bellSettings, selection: $settings.bellMode) {
@@ -443,6 +454,7 @@ private struct AppearanceSettingsTab: View {
 // MARK: - Tab 3: Behavior
 private struct BehaviorSettingsTab: View {
     @ObservedObject var settings: AppSettings
+    @State private var isShowingAuditLogViewer = false
     
     var body: some View {
         Form {
@@ -517,12 +529,39 @@ private struct BehaviorSettingsTab: View {
                         .font(.caption)
                         .foregroundColor(ApexStyle.secondary)
                 }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle("启用 SSH ControlMaster 连接复用池", isOn: $settings.controlMasterPoolEnabled)
+                    Text("同主机、端口、密钥与跳板机链的标签页、SFTP 传输与后台监控自动共享已认证主通道，避免重复输入密码或 2FA 验证码。")
+                        .font(.caption)
+                        .foregroundColor(ApexStyle.secondary)
+                }
+                .onChange(of: settings.controlMasterPoolEnabled) { _, enabled in
+                    SSHControlMasterPool.isPoolEnabled = enabled
+                }
             } header: {
-                Text("连接保活与防断线")
+                Text("连接保活与复用")
+            }
+
+            Section {
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle("允许触发器自动发送响应内容 (SendResponse)", isOn: $settings.triggerAutoResponseEnabled)
+                    Text("默认关闭以防止输出回显循环或误响应。开启后，仅当触发器规则启用了「发送响应」且超过冷却时间时自动向当前终端发送文本。")
+                        .font(.caption)
+                        .foregroundColor(ApexStyle.secondary)
+                }
+            } header: {
+                Text("终端触发器自动化")
             }
             
             Section {
                 Toggle("启用终端会话自动审计记录", isOn: $settings.isSessionLoggingEnabled)
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle("自动脱敏密码、Bearer Token 与私钥块", isOn: $settings.redactSecrets)
+                    Text("在审计日志落盘前自动将 PEM 私钥块、Authorization 头及密码提示后的敏感内容替换为 [REDACTED]，日志权限强制为 0o600。")
+                        .font(.caption)
+                        .foregroundColor(ApexStyle.secondary)
+                }
                 if settings.isSessionLoggingEnabled {
                     Picker("记录格式", selection: $settings.sessionLogFormat) {
                         ForEach(SessionLogFormat.allCases, id: \.self) { fmt in
@@ -559,11 +598,30 @@ private struct BehaviorSettingsTab: View {
                         Stepper("\(settings.sessionLogMaxFileSizeMB) MB", value: $settings.sessionLogMaxFileSizeMB, in: 10...500, step: 10)
                     }
                 }
+
+                HStack {
+                    Text("查看已记录的会话审计日志文件与内容检索")
+                        .font(.caption)
+                        .foregroundColor(ApexStyle.secondary)
+                    Spacer()
+                    ApexActionButton(
+                        "审计日志查看器...",
+                        icon: "doc.text.magnifyingglass",
+                        tint: ApexStyle.accent,
+                        size: .small
+                    ) {
+                        isShowingAuditLogViewer = true
+                    }
+                }
             } header: {
                 Text("会话审计与日志记录")
             }
         }
         .formStyle(.grouped)
+        .sheet(isPresented: $isShowingAuditLogViewer) {
+            AuditLogViewerSheet(logDirectoryPath: settings.sessionLogDirectory)
+                .apexTheme()
+        }
     }
 }
 
@@ -677,6 +735,10 @@ private struct BackupSettingsTab: View {
     @State private var pendingForceSyncAction: ForceSyncAction?
     @State private var showingGroupExportSheet = false
     @State private var showingGroupImportSheet = false
+    @State private var showingSyncDiffSheet = false
+    @State private var isLoadingSyncDiff = false
+    @State private var syncDiffResult: iCloudSyncDiff?
+    @State private var syncDiffError: String?
 
     private enum ForceSyncAction: String, Identifiable {
         case overwriteCloud
@@ -770,6 +832,17 @@ private struct BackupSettingsTab: View {
                             pendingForceSyncAction = .overwriteLocal
                         }
                         .disabled(isSyncingAction)
+
+                        ApexActionButton(
+                            "差异预览...",
+                            icon: "arrow.left.arrow.right",
+                            tint: ApexStyle.secondary,
+                            size: .small
+                        ) {
+                            showingSyncDiffSheet = true
+                            loadSyncDiff()
+                        }
+                        .disabled(isSyncingAction)
                     }
                     .padding(.top, 4)
                 }
@@ -851,6 +924,18 @@ private struct BackupSettingsTab: View {
                 alertMessage = result.summaryText
                 isShowingAlert = true
             }
+            .apexTheme()
+        }
+        .sheet(isPresented: $showingSyncDiffSheet) {
+            iCloudConflictDiffSheet(
+                diff: syncDiffResult,
+                isLoading: isLoadingSyncDiff,
+                errorMessage: syncDiffError,
+                onRefresh: { loadSyncDiff() },
+                onApplyStrategy: { strategy in
+                    runSyncWithStrategy(strategy)
+                }
+            )
             .apexTheme()
         }
         .alert(alertTitle, isPresented: $isShowingAlert) {
@@ -967,10 +1052,34 @@ private struct BackupSettingsTab: View {
     }
     
     private func runForceDownload() {
+        runSyncWithStrategy(.overwriteLocal)
+    }
+
+    private func loadSyncDiff() {
+        isLoadingSyncDiff = true
+        syncDiffError = nil
+        Task {
+            do {
+                let diff = try await syncManager.previewDiff()
+                await MainActor.run {
+                    syncDiffResult = diff
+                    isLoadingSyncDiff = false
+                }
+            } catch {
+                await MainActor.run {
+                    syncDiffResult = nil
+                    syncDiffError = error.localizedDescription
+                    isLoadingSyncDiff = false
+                }
+            }
+        }
+    }
+
+    private func runSyncWithStrategy(_ strategy: iCloudConflictStrategy) {
         isSyncingAction = true
         Task {
             do {
-                let res = try await syncManager.syncNow(withTemporaryStrategy: .overwriteLocal)
+                let res = try await syncManager.syncNow(withTemporaryStrategy: strategy)
                 await MainActor.run {
                     isSyncingAction = false
                     alertTitle = "同步状态"

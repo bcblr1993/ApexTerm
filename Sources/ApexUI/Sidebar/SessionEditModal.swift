@@ -21,6 +21,8 @@ public struct SessionEditModal: View {
     @State private var privateKeyPath: String = ""
     @State private var certificatePath: String = ""
     @State private var passphrase: String = ""
+    @State private var isPassphraseVisible: Bool = false
+    @State private var isAuthorizingSecretReveal: Bool = false
     @State private var didFinishLoadingInitialSecret: Bool = false
     @State private var didFinishLoadingInitialPassphrase: Bool = false
     @State private var didLoadInitialSecretValue: Bool = false
@@ -531,8 +533,9 @@ public struct SessionEditModal: View {
                                 size: 22,
                                 iconSize: 11
                             ) {
-                                isPasswordVisible.toggle()
+                                togglePasswordVisibility()
                             }
+                            .disabled(isAuthorizingSecretReveal)
                         }
                     } else if authType == .privateKey {
                         VStack(alignment: .leading, spacing: 8) {
@@ -586,8 +589,7 @@ public struct SessionEditModal: View {
                                 }
                                 .controlSize(.small)
                             }
-                            SecureField("私钥口令 Passphrase (可选)", text: $passphrase)
-                                .font(.system(.body, design: .monospaced))
+                            passphraseFieldRow
                         }
                     } else if authType == .certificate {
                         VStack(alignment: .leading, spacing: 8) {
@@ -680,8 +682,7 @@ public struct SessionEditModal: View {
                                 certificateStatusBanner
                             }
                             
-                            SecureField("私钥口令 Passphrase (可选)", text: $passphrase)
-                                .font(.system(.body, design: .monospaced))
+                            passphraseFieldRow
                             
                             Text("OpenSSH 证书通常由 CA 签发并以 -cert.pub 结尾，须与对应私钥配合使用。")
                                 .font(.caption2)
@@ -913,6 +914,81 @@ public struct SessionEditModal: View {
         .onChange(of: forwardAgent) { _, _ in invalidateTestResult() }
         .onChange(of: compression) { _, _ in invalidateTestResult() }
         .onChange(of: proxyCommand) { _, _ in invalidateTestResult() }
+    }
+
+    @ViewBuilder
+    private var passphraseFieldRow: some View {
+        HStack {
+            if isPassphraseVisible {
+                TextField("私钥口令 Passphrase (可选)", text: $passphrase)
+                    .accessibilityLabel("私钥口令")
+                    .font(.system(.body, design: .monospaced))
+            } else {
+                SecureField("私钥口令 Passphrase (可选)", text: $passphrase)
+                    .accessibilityLabel("私钥口令")
+                    .font(.system(.body, design: .monospaced))
+            }
+
+            ApexIconButton(
+                icon: isPassphraseVisible ? "eye.slash" : "eye",
+                label: isPassphraseVisible ? "隐藏私钥口令" : "显示明文私钥口令",
+                size: 22,
+                iconSize: 11
+            ) {
+                togglePassphraseVisibility()
+            }
+            .disabled(isAuthorizingSecretReveal)
+        }
+    }
+
+    private func togglePasswordVisibility() {
+        if isPasswordVisible {
+            isPasswordVisible = false
+            return
+        }
+        guard !isAuthorizingSecretReveal else { return }
+        let hasStoredSecret = didLoadInitialSecretValue || (initialSession != nil && !password.isEmpty)
+        if hasStoredSecret && AppLockManager.shared.requireAuthForSensitiveActions {
+            isAuthorizingSecretReveal = true
+            Task { @MainActor in
+                let authorized = await AppLockManager.shared.authorizeSensitiveAction(
+                    reason: "验证身份以查看已保存的服务器密码"
+                )
+                isAuthorizingSecretReveal = false
+                if authorized {
+                    isPasswordVisible = true
+                } else {
+                    saveError = AppLockManager.shared.lastErrorMessage ?? "未通过身份验证，无法查看明文密码"
+                }
+            }
+        } else {
+            isPasswordVisible = true
+        }
+    }
+
+    private func togglePassphraseVisibility() {
+        if isPassphraseVisible {
+            isPassphraseVisible = false
+            return
+        }
+        guard !isAuthorizingSecretReveal else { return }
+        let hasStoredPassphrase = didLoadInitialPassphraseValue || (initialSession != nil && !passphrase.isEmpty)
+        if hasStoredPassphrase && AppLockManager.shared.requireAuthForSensitiveActions {
+            isAuthorizingSecretReveal = true
+            Task { @MainActor in
+                let authorized = await AppLockManager.shared.authorizeSensitiveAction(
+                    reason: "验证身份以查看已保存的私钥口令"
+                )
+                isAuthorizingSecretReveal = false
+                if authorized {
+                    isPassphraseVisible = true
+                } else {
+                    saveError = AppLockManager.shared.lastErrorMessage ?? "未通过身份验证，无法查看明文口令"
+                }
+            }
+        } else {
+            isPassphraseVisible = true
+        }
     }
 
     nonisolated public static func inspectCertificateFile(atPath rawPath: String) -> SSHCertificateInfo {

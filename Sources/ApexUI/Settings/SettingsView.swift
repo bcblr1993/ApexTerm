@@ -65,7 +65,10 @@ public struct SettingsView: View {
 private struct GeneralSettingsTab: View {
     @ObservedObject var settings: AppSettings
     @ObservedObject private var updateManager = UpdateManager.shared
+    @ObservedObject private var lockManager = AppLockManager.shared
     @State private var isShowingResetConfirm = false
+    @State private var isEnablingAppLock = false
+    @State private var appLockToggleError: String?
     
     var body: some View {
         Form {
@@ -114,6 +117,79 @@ private struct GeneralSettingsTab: View {
             } header: {
                 Text("系统通知与提示音")
             }
+
+            Section {
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle("启用应用锁 (Touch ID / 系统密码)", isOn: Binding(
+                        get: { lockManager.appLockEnabled },
+                        set: { newValue in
+                            if !newValue {
+                                lockManager.appLockEnabled = false
+                                appLockToggleError = nil
+                            } else if !isEnablingAppLock {
+                                isEnablingAppLock = true
+                                appLockToggleError = nil
+                                Task {
+                                    let ok = await lockManager.setAppLockEnabled(true)
+                                    isEnablingAppLock = false
+                                    if !ok {
+                                        appLockToggleError = lockManager.lastErrorMessage ?? "身份验证未通过，未启用应用锁"
+                                    }
+                                }
+                            }
+                        }
+                    ))
+                    .disabled(isEnablingAppLock)
+
+                    if let appLockToggleError {
+                        Text(appLockToggleError)
+                            .font(.caption)
+                            .foregroundColor(ApexStyle.error)
+                    } else {
+                        Text("锁定后使用毛玻璃遮罩隐藏所有终端、SFTP 文件与凭据信息。")
+                            .font(.caption)
+                            .foregroundColor(ApexStyle.secondary)
+                    }
+                }
+
+                Picker("闲置自动锁定", selection: $lockManager.idleTimeoutSeconds) {
+                    Text("从不").tag(TimeInterval(0))
+                    Text("1 分钟").tag(TimeInterval(60))
+                    Text("5 分钟").tag(TimeInterval(300))
+                    Text("15 分钟").tag(TimeInterval(900))
+                    Text("30 分钟").tag(TimeInterval(1800))
+                }
+                .disabled(!lockManager.appLockEnabled)
+
+                Toggle("应用切至后台时自动锁定", isOn: $lockManager.lockOnAppBackground)
+                    .disabled(!lockManager.appLockEnabled)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle("敏感操作二次验证 (查看密码 / 导出凭据 / 读取私钥)", isOn: $lockManager.requireAuthForSensitiveActions)
+                    Text("查看已保存密码或口令、导出含凭据分享包、查看或导出保险库私钥前需验证 Touch ID 或系统密码。")
+                        .font(.caption)
+                        .foregroundColor(ApexStyle.secondary)
+                }
+
+                HStack {
+                    Text("快捷键 ⌘⇧L 可随时手动锁定应用")
+                        .font(.caption)
+                        .foregroundColor(ApexStyle.secondary)
+
+                    Spacer()
+
+                    ApexActionButton(
+                        "立即锁定",
+                        icon: "lock.fill",
+                        tint: ApexStyle.accent,
+                        size: .small
+                    ) {
+                        lockManager.lockNow()
+                    }
+                }
+            } header: {
+                Text("安全与应用锁")
+            }
             
             Section {
                 ApexActionButton(
@@ -131,9 +207,11 @@ private struct GeneralSettingsTab: View {
             Button("取消", role: .cancel) {}
             Button("恢复默认", role: .destructive) {
                 settings.resetToDefaults()
+                lockManager.resetPreferences()
+                appLockToggleError = nil
             }
         } message: {
-            Text("确定要将字体、主题、操作习惯和 SFTP 偏好恢复为初始默认值吗？已保存的 SSH 会话与密钥不受影响。")
+            Text("确定要将字体、主题、操作习惯、SFTP 与安全锁偏好恢复为初始默认值吗？已保存的 SSH 会话与密钥不受影响。")
         }
     }
 }

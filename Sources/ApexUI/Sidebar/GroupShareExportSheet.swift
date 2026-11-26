@@ -477,6 +477,26 @@ public struct GroupShareExportSheet: View {
             return
         }
 
+        if includeCredentials && AppLockManager.shared.requireAuthForSensitiveActions {
+            isExporting = true
+            Task { @MainActor in
+                let authorized = await AppLockManager.shared.authorizeSensitiveAction(
+                    reason: "验证身份以导出包含密码与密钥凭据的连接分享包"
+                )
+                guard authorized else {
+                    isExporting = false
+                    exportError = AppLockManager.shared.lastErrorMessage ?? "未通过身份验证，已取消含凭据导出"
+                    return
+                }
+                isExporting = false
+                performExportAfterAuthorization(resolution: resolution)
+            }
+        } else {
+            performExportAfterAuthorization(resolution: resolution)
+        }
+    }
+
+    private func performExportAfterAuthorization(resolution: (sessions: [Session], addedJumpHostIDs: [UUID])) {
         let groups = SessionBundleExporter.normalizedGroupNames(for: resolution.sessions)
         let folderHint = initialFolder ?? (groups.count == 1 ? groups.first : nil)
 

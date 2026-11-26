@@ -1,5 +1,7 @@
 import SwiftUI
 import AppKit
+import Combine
+import UserNotifications
 import ApexCore
 import ApexSSH
 import ApexTerminal
@@ -31,8 +33,9 @@ private struct SettingsOpenerBridge: View {
 }
 
 @MainActor
-private final class ApexTermAppDelegate: NSObject, NSApplicationDelegate {
+private final class ApexTermAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     var reopenMainWindow: (() -> Void)?
+    private var activityEventMonitor: Any?
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         guard UpdateManager.shouldEnforceSingleInstance() else { return }
@@ -77,6 +80,19 @@ private final class ApexTermAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if Bundle.main.bundleIdentifier != nil {
+            UNUserNotificationCenter.current().delegate = self
+        }
+
+        activityEventMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.keyDown, .leftMouseDown, .rightMouseDown, .scrollWheel]
+        ) { event in
+            MainActor.assumeIsolated {
+                AppLockManager.shared.recordUserActivity()
+            }
+            return event
+        }
+
         DistributedNotificationCenter.default().addObserver(
             forName: NSNotification.Name(UpdateManager.activateMainWindowNotificationName),
             object: nil,
@@ -87,6 +103,49 @@ private final class ApexTermAppDelegate: NSObject, NSApplicationDelegate {
                 NSApp.activate(ignoringOtherApps: true)
             }
         }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        if let monitor = activityEventMonitor {
+            NSEvent.removeMonitor(monitor)
+            activityEventMonitor = nil
+        }
+    }
+
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .sound, .list])
+    }
+
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let userInfo = Self.sendableUserInfo(from: response.notification.request.content.userInfo)
+        Task { @MainActor in
+            let postedInfo: [AnyHashable: Any] = userInfo
+            NotificationCenter.default.post(
+                name: Notification.Name("ApexTermFocusTabFromNotification"),
+                object: nil,
+                userInfo: postedInfo
+            )
+            self.reopenMainWindow?()
+            NSApp.activate(ignoringOtherApps: true)
+        }
+        completionHandler()
+    }
+
+    nonisolated private static func sendableUserInfo(from raw: [AnyHashable: Any]) -> [String: String] {
+        var result: [String: String] = [:]
+        for (key, value) in raw {
+            let keyStr = (key as? String) ?? String(describing: key)
+            result[keyStr] = (value as? String) ?? String(describing: value)
+        }
+        return result
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -114,6 +173,7 @@ struct ApexTermApp: App {
     @StateObject private var sessionStore = SessionStore.shared
     @ObservedObject private var updateManager = UpdateManager.shared
     @ObservedObject private var settings = AppSettings.shared
+    @ObservedObject private var lockManager = AppLockManager.shared
     
     @FocusedValue(\.isWorkspaceWindow) private var isWorkspaceWindow
 
@@ -124,29 +184,46 @@ struct ApexTermApp: App {
     @State private var isAboutPresented = false
     @State private var isShortcutsPresented = false
     @State private var isNewSessionPresented = false
+
+    private let idleLockTimer = Timer.publish(every: 15, on: .main, in: .common).autoconnect()
     
     var body: some Scene {
         WindowGroup(id: "main") {
-            NavigationSplitView {
-                SidebarView(
-                    store: sessionStore,
-                    selectedSession: $selectedSidebarSession,
-                    onConnect: { session in
-                        connectToSession(session)
-                    },
-                    onRunSnippet: { snippet in
-                        runSnippet(snippet)
-                    }
-                )
-                .frame(minWidth: ApexStyle.minSidebarWidth, idealWidth: ApexStyle.idealSidebarWidth, maxWidth: ApexStyle.maxSidebarWidth)
-            } detail: {
-                WorkspaceView(
-                    store: sessionStore,
-                    activeTabs: $activeTabs,
-                    selectedTabId: $selectedTabId
-                )
+            ZStack {
+                NavigationSplitView {
+                    SidebarView(
+                        store: sessionStore,
+                        selectedSession: $selectedSidebarSession,
+                        onConnect: { session in
+                            connectToSession(session)
+                        },
+                        onRunSnippet: { snippet in
+                            runSnippet(snippet)
+                        }
+                    )
+                    .frame(minWidth: ApexStyle.minSidebarWidth, idealWidth: ApexStyle.idealSidebarWidth, maxWidth: ApexStyle.maxSidebarWidth)
+                } detail: {
+                    WorkspaceView(
+                        store: sessionStore,
+                        activeTabs: $activeTabs,
+                        selectedTabId: $selectedTabId
+                    )
+                }
+                .disabled(lockManager.isLocked)
+
+                if lockManager.isLocked {
+                    AppLockOverlayView(lockManager: lockManager)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .transition(.opacity)
+                }
             }
             .focusedSceneValue(\.isWorkspaceWindow, true)
+            .onReceive(idleLockTimer) { _ in
+                lockManager.checkIdleLock()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.willResignActiveNotification)) { _ in
+                lockManager.handleAppDidResignActive()
+            }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
                 SSHTunnelManager.shared.stopAll()
                 TransferManager.shared.cancelAllTasks()
@@ -223,6 +300,11 @@ struct ApexTermApp: App {
                     showMainWindow()
                 }
                 .keyboardShortcut("0", modifiers: [.command, .shift])
+
+                Button("锁定应用") {
+                    lockManager.lockNow()
+                }
+                .keyboardShortcut("l", modifiers: [.command, .shift])
             }
 
             CommandGroup(replacing: .appInfo) {
@@ -422,8 +504,17 @@ struct ApexTermApp: App {
         }
         
         Settings {
-            SettingsView().apexTheme()
-                .focusedSceneValue(\.isWorkspaceWindow, false)
+            ZStack {
+                SettingsView().apexTheme()
+                    .disabled(lockManager.isLocked)
+
+                if lockManager.isLocked {
+                    AppLockOverlayView(lockManager: lockManager)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .apexTheme()
+                }
+            }
+            .focusedSceneValue(\.isWorkspaceWindow, false)
         }
     }
 

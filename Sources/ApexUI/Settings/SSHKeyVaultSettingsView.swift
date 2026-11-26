@@ -13,12 +13,34 @@ public struct SSHKeyVaultSettingsView: View {
     @ObservedObject private var vaultManager = SSHKeyVaultManager.shared
     @ObservedObject private var knownHostsManager = KnownHostsManager.shared
 
+    private enum PrivateKeyAccessAction {
+        case reveal
+        case copy
+        case export
+
+        var authReason: String {
+            switch self {
+            case .reveal: return "验证身份以查看 SSH 私钥内容"
+            case .copy: return "验证身份以复制 SSH 私钥到剪贴板"
+            case .export: return "验证身份以导出 SSH 私钥文件"
+            }
+        }
+    }
+
+    private struct RevealedPrivateKeyPayload: Identifiable {
+        let id = UUID()
+        let key: SSHKeyIdentity
+        let privateKeyPEM: String
+    }
+
     @State private var selectedSubTab: SecuritySubTab = .keyVault
     @State private var showingImportSheet: Bool = false
     @State private var showingDeploySheet: Bool = false
     @State private var selectedKeyForDeploy: SSHKeyIdentity?
     @State private var keyToDelete: SSHKeyIdentity?
     @State private var showingDeleteAlert: Bool = false
+    @State private var revealedPrivateKey: RevealedPrivateKeyPayload?
+    @State private var isAuthorizingPrivateKeyAccess: Bool = false
     @State private var toastMessage: String?
     @State private var toastToken = UUID()
     
@@ -121,6 +143,10 @@ public struct SSHKeyVaultSettingsView: View {
             deployKeySheet
                 .apexTheme()
         }
+        .sheet(item: $revealedPrivateKey) { payload in
+            privateKeyRevealSheet(payload)
+                .apexTheme()
+        }
         .alert("确认删除密钥", isPresented: $showingDeleteAlert, presenting: keyToDelete) { key in
             Button("删除", role: .destructive) {
                 vaultManager.deleteKey(id: key.id)
@@ -188,6 +214,32 @@ public struct SSHKeyVaultSettingsView: View {
                     showingDeploySheet = true
                 }
                 .help("一键免密分发公钥到远程服务器 (ssh-copy-id)")
+
+                Menu {
+                    Button {
+                        performPrivateKeyAction(for: key, action: .reveal)
+                    } label: {
+                        Label("查看私钥 (PEM)...", systemImage: "eye")
+                    }
+                    Button {
+                        performPrivateKeyAction(for: key, action: .copy)
+                    } label: {
+                        Label("复制私钥到剪贴板", systemImage: "doc.on.doc")
+                    }
+                    Button {
+                        performPrivateKeyAction(for: key, action: .export)
+                    } label: {
+                        Label("导出私钥文件 (.pem)...", systemImage: "square.and.arrow.up")
+                    }
+                } label: {
+                    ApexMenuTrigger(icon: "key.viewfinder", label: "查看或导出私钥", size: 24, iconSize: 11)
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .disabled(isAuthorizingPrivateKeyAccess)
+                .accessibilityLabel("查看或导出私钥")
+                .help("查看、复制或导出私钥（受 Touch ID / 密码保护）")
                 
                 ApexIconButton(
                     icon: "trash",
@@ -356,7 +408,124 @@ public struct SSHKeyVaultSettingsView: View {
         }
     }
     
+    private func privateKeyRevealSheet(_ payload: RevealedPrivateKeyPayload) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: ApexStyle.s2) {
+                Image(systemName: "lock.shield.fill")
+                    .font(.system(size: 16))
+                    .foregroundColor(ApexStyle.accent)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("私钥内容 · \(payload.key.name)")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundColor(ApexStyle.primary)
+                    Text("\(payload.key.algorithm.rawValue) · \(payload.key.fingerprintSHA256)")
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundColor(ApexStyle.secondary)
+                        .lineLimit(1)
+                }
+                Spacer()
+            }
+
+            ScrollView {
+                Text(payload.privateKeyPEM)
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+                    .textSelection(.enabled)
+            }
+            .frame(minHeight: 160, maxHeight: 260)
+            .background(ApexStyle.subtleSurface, in: RoundedRectangle(cornerRadius: ApexStyle.controlRadius))
+            .overlay(
+                RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
+                    .stroke(ApexStyle.border, lineWidth: 1)
+            )
+
+            HStack(spacing: ApexStyle.s2) {
+                ApexActionButton("导出 .pem 文件...", icon: "square.and.arrow.up", tint: ApexStyle.secondary, size: .regular) {
+                    exportPrivateKeyPEM(payload.privateKeyPEM, keyName: payload.key.name)
+                }
+
+                ApexActionButton("复制私钥", icon: "doc.on.doc", tint: ApexStyle.accent, size: .regular) {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(payload.privateKeyPEM, forType: .string)
+                    showToast("已复制私钥到剪贴板 (\(payload.key.algorithm.rawValue))")
+                }
+
+                Spacer()
+
+                ApexActionButton("关闭", tint: ApexStyle.accent, size: .regular, isProminent: true) {
+                    revealedPrivateKey = nil
+                }
+                .keyboardShortcut(.cancelAction)
+            }
+        }
+        .padding(ApexStyle.s5)
+        .frame(width: 540)
+        .frame(minHeight: 300, maxHeight: 440)
+        .onExitCommand {
+            revealedPrivateKey = nil
+        }
+    }
+
     // MARK: - Operations
+    private func performPrivateKeyAction(for key: SSHKeyIdentity, action: PrivateKeyAccessAction) {
+        guard !isAuthorizingPrivateKeyAccess else { return }
+        isAuthorizingPrivateKeyAccess = true
+        Task { @MainActor in
+            defer { isAuthorizingPrivateKeyAccess = false }
+
+            if AppLockManager.shared.requireAuthForSensitiveActions {
+                let authorized = await AppLockManager.shared.authorizeSensitiveAction(reason: action.authReason)
+                guard authorized else {
+                    showToast(AppLockManager.shared.lastErrorMessage ?? "未通过身份验证，已拒绝访问私钥")
+                    return
+                }
+            }
+
+            let pem: String
+            do {
+                pem = try KeychainStore.shared.getSync(key: key.keychainPrivateKeyRef)
+            } catch {
+                showToast("读取钥匙串私钥失败：\(error.localizedDescription)")
+                return
+            }
+
+            switch action {
+            case .reveal:
+                revealedPrivateKey = RevealedPrivateKeyPayload(key: key, privateKeyPEM: pem)
+            case .copy:
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(pem, forType: .string)
+                showToast("已复制私钥到剪贴板 (\(key.algorithm.rawValue))")
+            case .export:
+                exportPrivateKeyPEM(pem, keyName: key.name)
+            }
+        }
+    }
+
+    private func exportPrivateKeyPEM(_ pem: String, keyName: String) {
+        let sanitized = keyName
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: " ", with: "_")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let baseName = sanitized.isEmpty ? "id_aetherterm" : sanitized
+
+        let savePanel = NSSavePanel()
+        savePanel.nameFieldStringValue = "\(baseName).pem"
+        savePanel.prompt = "导出私钥"
+        savePanel.message = "选择私钥文件的安全保存位置（权限将自动设为 0600）"
+
+        guard savePanel.runModal() == .OK, let url = savePanel.url else { return }
+        do {
+            let normalized = pem.hasSuffix("\n") ? pem : pem + "\n"
+            try normalized.write(to: url, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            showToast("已导出私钥文件（0600 权限）：\(url.lastPathComponent)")
+        } catch {
+            showToast("导出私钥失败：\(error.localizedDescription)")
+        }
+    }
+
     private func doImportKey() {
         do {
             _ = try vaultManager.importKey(

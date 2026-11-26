@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import AppKit
+import CryptoKit
 
 /// Release information payload
 public struct ReleaseInfo: Codable, Equatable, Sendable, Identifiable {
@@ -13,6 +14,8 @@ public struct ReleaseInfo: Codable, Equatable, Sendable, Identifiable {
     public let packageUrl: String?
     public let packageName: String?
     public let packageSize: Int64?
+    public let expectedSHA256: String?
+    public let sha256SumsUrl: String?
     public let mandatory: Bool
     
     public init(
@@ -24,6 +27,8 @@ public struct ReleaseInfo: Codable, Equatable, Sendable, Identifiable {
         packageUrl: String? = nil,
         packageName: String? = nil,
         packageSize: Int64? = nil,
+        expectedSHA256: String? = nil,
+        sha256SumsUrl: String? = nil,
         mandatory: Bool = false
     ) {
         self.version = version
@@ -34,6 +39,8 @@ public struct ReleaseInfo: Codable, Equatable, Sendable, Identifiable {
         self.packageUrl = packageUrl
         self.packageName = packageName
         self.packageSize = packageSize
+        self.expectedSHA256 = expectedSHA256
+        self.sha256SumsUrl = sha256SumsUrl
         self.mandatory = mandatory
     }
 }
@@ -71,11 +78,7 @@ public final class UpdateManager: ObservableObject {
         if let custom = customCurrentVersion {
             return custom
         }
-        if let bundleId = Bundle.main.bundleIdentifier, bundleId.lowercased().contains("apexterm"),
-           let ver = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String {
-            return ver
-        }
-        return "1.4.0"
+        return Bundle.apexResolvedAppVersion
     }
     
     public var currentBuild: String {
@@ -83,11 +86,14 @@ public final class UpdateManager: ObservableObject {
            let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String {
             return build
         }
-        return "2026092801"
+        return "2026112601"
     }
     
     /// Default releases URL (GitHub Releases API)
     public var updateManifestURL: URL? = URL(string: "https://api.github.com/repos/bcblr1993/ApexTerm/releases/latest")
+
+    /// Optional synchronous pre-exit cleanup hook invoked immediately before terminating for update relaunch.
+    public var onBeforeTerminateForUpdate: (() -> Void)?
     
     public typealias FetchHandler = @Sendable (URLRequest) async throws -> (Data, URLResponse)
     public typealias DownloadHandler = @Sendable (
@@ -95,10 +101,17 @@ public final class UpdateManager: ObservableObject {
         @escaping @Sendable (_ receivedBytes: Int64, _ totalBytes: Int64) -> Void
     ) async throws -> URL
     public typealias ExtractHandler = @Sendable (URL, String) throws -> URL
+    public typealias SignatureValidator = @Sendable (URL) throws -> Void
+    public typealias SHA256Validator = @Sendable (URL, String) throws -> Void
+
+    nonisolated public static let expectedTeamIdentifier = "5984KQD4D7"
+    nonisolated public static let expectedBundleIdentifier = "com.apexterm.app"
 
     private let fetch: FetchHandler
     private let downloadFileHandler: DownloadHandler?
     private let extractPackageHandler: ExtractHandler?
+    private let signatureValidator: SignatureValidator?
+    private let sha256Validator: SHA256Validator
     
     private var activeDownloadSession: URLSession?
     private var activeDownloadTask: URLSessionDownloadTask?
@@ -108,18 +121,30 @@ public final class UpdateManager: ObservableObject {
         self.fetch = { try await URLSession.shared.data(for: $0) }
         self.downloadFileHandler = nil
         self.extractPackageHandler = nil
+        self.signatureValidator = Self.verifyCodeSignature(at:)
+        self.sha256Validator = Self.verifyArchiveSHA256(at:expectedHex:)
     }
 
     public init(
         distributionChannel: DistributionChannel = .current,
         fetch: @escaping FetchHandler,
         downloadHandler: DownloadHandler? = nil,
-        extractHandler: ExtractHandler? = nil
+        extractHandler: ExtractHandler? = nil,
+        signatureValidator: SignatureValidator? = nil,
+        sha256Validator: SHA256Validator? = nil
     ) {
         self.distributionChannel = distributionChannel
         self.fetch = fetch
         self.downloadFileHandler = downloadHandler
         self.extractPackageHandler = extractHandler
+        if let signatureValidator {
+            self.signatureValidator = signatureValidator
+        } else if extractHandler == nil {
+            self.signatureValidator = Self.verifyCodeSignature(at:)
+        } else {
+            self.signatureValidator = nil
+        }
+        self.sha256Validator = sha256Validator ?? Self.verifyArchiveSHA256(at:expectedHex:)
     }
     
     /// Compares two semver strings like "1.2.1" and "1.2.0" or "v2.0.0" and "1.9.9"
@@ -266,14 +291,61 @@ public final class UpdateManager: ObservableObject {
             }
             
             self.status = .preparing(message: "正在校验并解压安装包...")
+
+            do {
+                let expectedDigest: String?
+                if let explicit = rel.expectedSHA256?.trimmingCharacters(in: .whitespacesAndNewlines), !explicit.isEmpty {
+                    expectedDigest = explicit
+                } else if let sumsUrlStr = rel.sha256SumsUrl, let sumsURL = URL(string: sumsUrlStr) {
+                    var req = URLRequest(url: sumsURL)
+                    req.timeoutInterval = 15.0
+                    req.setValue("AetherTerm-Updater", forHTTPHeaderField: "User-Agent")
+                    let (sumsData, sumsResp) = try await fetch(req)
+                    guard let http = sumsResp as? HTTPURLResponse, (200...299).contains(http.statusCode),
+                          let sumsText = String(data: sumsData, encoding: .utf8),
+                          let parsed = Self.parseExpectedSHA256(from: sumsText, filename: filename) else {
+                        throw NSError(domain: "UpdateManager", code: 109, userInfo: [NSLocalizedDescriptionKey: "更新包 SHA-256 校验清单解析失败"])
+                    }
+                    expectedDigest = parsed
+                } else {
+                    expectedDigest = nil
+                }
+
+                if let expectedDigest {
+                    let shaValidator = self.sha256Validator
+                    try await Task.detached(priority: .userInitiated) {
+                        try shaValidator(downloadedArchive, expectedDigest)
+                    }.value
+                }
+            } catch {
+                try? FileManager.default.removeItem(at: downloadedArchive)
+                throw error
+            }
             
             let extractor = self.extractPackageHandler ?? Self.defaultExtractPackage
-            let stagedAppURL = try await Task.detached(priority: .userInitiated) {
-                try extractor(downloadedArchive, rel.version)
-            }.value
+            let stagedAppURL: URL
+            do {
+                stagedAppURL = try await Task.detached(priority: .userInitiated) {
+                    try extractor(downloadedArchive, rel.version)
+                }.value
+            } catch {
+                try? FileManager.default.removeItem(at: downloadedArchive)
+                throw error
+            }
             
             // Clean up temporary downloaded archive
             try? FileManager.default.removeItem(at: downloadedArchive)
+
+            if let sigValidator = self.signatureValidator {
+                do {
+                    try await Task.detached(priority: .userInitiated) {
+                        try sigValidator(stagedAppURL)
+                    }.value
+                } catch {
+                    try? FileManager.default.removeItem(at: stagedAppURL.deletingLastPathComponent())
+                    throw error
+                }
+            }
 
             guard isDownloading else {
                 try? FileManager.default.removeItem(at: stagedAppURL.deletingLastPathComponent())
@@ -421,6 +493,26 @@ public final class UpdateManager: ObservableObject {
         """
     }
 
+    /// Returns the private per-user update log file URL under `~/Library/Logs/AetherTerm/update.log` (0700 dir).
+    nonisolated public static func defaultUpdateLogURL(
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) throws -> URL {
+        let logDir = homeDirectory
+            .appendingPathComponent("Library/Logs/AetherTerm", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: logDir,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        _ = chmod(logDir.path, 0o700)
+        return logDir.appendingPathComponent("update.log")
+    }
+
+    /// Invokes synchronous pre-exit cleanup before terminating for update installation.
+    public func runPreExitCleanupForUpdate() {
+        onBeforeTerminateForUpdate?()
+    }
+
     /// Executes detached update replacement script and restarts the application
     public func relaunchAndInstall(targetURL: URL? = nil) {
         guard distributionChannel == .direct else {
@@ -434,12 +526,22 @@ public final class UpdateManager: ObservableObject {
         let current = targetURL ?? Bundle.main.bundleURL
         let destination = targetURL.map(Self.brandedInstallationURL(for:)) ?? Self.defaultTargetAppURL()
         let pid = ProcessInfo.processInfo.processIdentifier
+
+        func quote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\"'\"'") + "'" }
+        let logURL: URL
+        do {
+            logURL = try Self.defaultUpdateLogURL()
+        } catch {
+            self.status = .failed("无法创建更新日志目录: \(error.localizedDescription)")
+            return
+        }
         
         let script = """
         #!/bin/bash
         PID=\(pid)
-        LOG="/tmp/apexterm_update.log"
+        LOG=\(quote(logURL.path))
 
+        umask 077
         echo "[$(date)] Starting update replacement for PID $PID..." > "$LOG"
 
         WAIT_COUNT=0
@@ -480,7 +582,8 @@ public final class UpdateManager: ObservableObject {
             proc.standardError = FileHandle.nullDevice
             try proc.run()
             
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                self?.runPreExitCleanupForUpdate()
                 if let app = NSApp {
                     app.terminate(nil)
                 }
@@ -488,6 +591,98 @@ public final class UpdateManager: ObservableObject {
             }
         } catch {
             self.status = .failed("启动更新安装进程失败: \(error.localizedDescription)")
+        }
+    }
+
+    /// Computes streaming lowercase hex SHA-256 digest for `fileURL`.
+    nonisolated public static func computeSHA256Hex(at fileURL: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: fileURL)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while let chunk = try handle.read(upToCount: 65_536), !chunk.isEmpty {
+            hasher.update(data: chunk)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Verifies that `archiveURL` matches `expectedHex` (case-insensitive SHA-256).
+    nonisolated public static func verifyArchiveSHA256(at archiveURL: URL, expectedHex: String) throws {
+        let normalizedExpected = expectedHex.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard normalizedExpected.count == 64,
+              normalizedExpected.allSatisfy({ $0.isHexDigit }) else {
+            throw NSError(domain: "UpdateManager", code: 110, userInfo: [NSLocalizedDescriptionKey: "更新包 SHA-256 预期摘要格式无效"])
+        }
+        let actual = try computeSHA256Hex(at: archiveURL)
+        guard actual == normalizedExpected else {
+            throw NSError(domain: "UpdateManager", code: 111, userInfo: [NSLocalizedDescriptionKey: "更新包 SHA-256 完整性校验失败，文件可能已被损坏或篡改"])
+        }
+    }
+
+    /// Parses `<sha256>  <filename>` lines from a `SHA256SUMS.txt` manifest.
+    nonisolated public static func parseExpectedSHA256(from sumsText: String, filename: String) -> String? {
+        let targetName = URL(fileURLWithPath: filename).lastPathComponent
+        for rawLine in sumsText.components(separatedBy: .newlines) {
+            let trimmed = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, !trimmed.hasPrefix("#") else { continue }
+            let parts = trimmed.split(maxSplits: 1, omittingEmptySubsequences: true, whereSeparator: \.isWhitespace)
+            guard parts.count == 2 else { continue }
+            let hash = String(parts[0]).lowercased()
+            var entryName = String(parts[1]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if entryName.hasPrefix("*") {
+                entryName = String(entryName.dropFirst())
+            }
+            if URL(fileURLWithPath: entryName).lastPathComponent == targetName,
+               hash.count == 64,
+               hash.allSatisfy(\.isHexDigit) {
+                return hash
+            }
+        }
+        return nil
+    }
+
+    /// Verifies deep strict code signature, Bundle ID, and Apple Developer Team ID (`5984KQD4D7`) on a staged `.app`.
+    nonisolated public static func verifyCodeSignature(at appURL: URL) throws {
+        let requirement = "identifier \"\(expectedBundleIdentifier)\" and anchor apple generic and certificate leaf[subject.OU] = \"\(expectedTeamIdentifier)\""
+
+        let verifyProc = Process()
+        verifyProc.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+        verifyProc.arguments = ["--verify", "--deep", "--strict", "--verbose=2", "-R", requirement, appURL.path]
+        let verifyErr = Pipe()
+        verifyProc.standardOutput = FileHandle.nullDevice
+        verifyProc.standardError = verifyErr
+        try verifyProc.run()
+        let verifyData = verifyErr.fileHandleForReading.readDataToEndOfFile()
+        verifyProc.waitUntilExit()
+
+        guard verifyProc.terminationStatus == 0 else {
+            let detail = String(data: verifyData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            throw NSError(
+                domain: "UpdateManager",
+                code: 112,
+                userInfo: [NSLocalizedDescriptionKey: "更新包代码签名或开发者团队校验失败 (\(expectedTeamIdentifier))\(detail.isEmpty ? "" : ": \(detail)")"]
+            )
+        }
+
+        let infoProc = Process()
+        infoProc.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+        infoProc.arguments = ["-dv", "--verbose=4", appURL.path]
+        let infoPipe = Pipe()
+        infoProc.standardOutput = infoPipe
+        infoProc.standardError = infoPipe
+        try infoProc.run()
+        let infoData = infoPipe.fileHandleForReading.readDataToEndOfFile()
+        infoProc.waitUntilExit()
+
+        let metadata = String(data: infoData, encoding: .utf8) ?? ""
+        let lines = metadata.components(separatedBy: .newlines)
+        let hasExpectedTeam = lines.contains { $0.trimmingCharacters(in: .whitespacesAndNewlines) == "TeamIdentifier=\(expectedTeamIdentifier)" }
+        let hasExpectedId = lines.contains { $0.trimmingCharacters(in: .whitespacesAndNewlines) == "Identifier=\(expectedBundleIdentifier)" }
+        guard infoProc.terminationStatus == 0, hasExpectedTeam, hasExpectedId else {
+            throw NSError(
+                domain: "UpdateManager",
+                code: 113,
+                userInfo: [NSLocalizedDescriptionKey: "更新包开发者 Team ID (\(expectedTeamIdentifier)) 或应用标识不匹配"]
+            )
         }
     }
     
@@ -646,8 +841,10 @@ public final class UpdateManager: ObservableObject {
         var packageUrl: String? = nil
         var packageName: String? = nil
         var packageSize: Int64? = nil
+        var sha256SumsUrl: String? = nil
         
         if let assets = gh.assets {
+            sha256SumsUrl = assets.first(where: { $0.name.caseInsensitiveCompare("SHA256SUMS.txt") == .orderedSame })?.browser_download_url
             func isTarGz(_ name: String) -> Bool {
                 let lower = name.lowercased()
                 return lower.hasSuffix(".tar.gz") || lower.hasSuffix(".tgz")
@@ -680,7 +877,8 @@ public final class UpdateManager: ObservableObject {
             downloadUrl: gh.html_url,
             packageUrl: packageUrl,
             packageName: packageName,
-            packageSize: packageSize
+            packageSize: packageSize,
+            sha256SumsUrl: sha256SumsUrl
         )
     }
 }

@@ -16,7 +16,7 @@ public struct AetherSharePack: Codable, Sendable, Equatable {
     public init(
         formatVersion: Int = AetherSharePack.currentFormatVersion,
         exportedAt: Date = Date(),
-        appVersion: String = "1.23.0",
+        appVersion: String = Bundle.apexResolvedAppVersion,
         sessions: [Session] = [],
         snippets: [Snippet] = [],
         triggers: [Trigger] = [],
@@ -139,7 +139,7 @@ public enum SessionBundleExporter {
         bookmarks: [SFTPBookmark] = [],
         tunnels: [SSHTunnel] = [],
         onlyFolder: String? = nil,
-        appVersion: String = "1.23.0"
+        appVersion: String = Bundle.apexResolvedAppVersion
     ) throws -> Data {
         let filteredSessions: [Session]
         if let folderFilter = onlyFolder?.trimmingCharacters(in: .whitespacesAndNewlines), !folderFilter.isEmpty {
@@ -280,6 +280,9 @@ public enum SessionBundleExporter {
             for var tun in pack.tunnels {
                 if let mappedSessionId = sessionIdRemap[tun.sessionId] {
                     tun.sessionId = mappedSessionId
+                }
+                if tunManager.tunnels.contains(where: { $0.id == tun.id }) {
+                    tun.id = UUID()
                 }
                 let exists = tunManager.tunnels.contains {
                     $0.sessionId == tun.sessionId &&
@@ -517,7 +520,7 @@ public enum SessionBundleExporter {
         tunnels: [SSHTunnel] = [],
         protectionMode: SharePackProtectionMode = .appSealed,
         passphrase: String? = nil,
-        appVersion: String = "1.26.0",
+        appVersion: String = Bundle.apexResolvedAppVersion,
         vaultKeys: [SSHKeyIdentity] = [],
         secretLookup: @Sendable (String) async -> String? = { try? await KeychainStore.shared.get(key: $0) }
     ) async throws -> Data {

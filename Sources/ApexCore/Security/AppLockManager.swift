@@ -62,9 +62,11 @@ public final class AppLockManager: ObservableObject {
     }
 
     public static let defaultIdleTimeoutSeconds: TimeInterval = 300
+    public static let appDidLockNotification = Notification.Name("com.apexterm.app.AppDidLock")
 
     private let userDefaults: UserDefaults
     private let authenticator: any BiometricAuthenticating
+    public var onDidLock: (() -> Void)?
 
     @Published public var appLockEnabled: Bool {
         didSet {
@@ -131,8 +133,48 @@ public final class AppLockManager: ObservableObject {
             : true
     }
 
-    /// Resets all security lock preferences to factory defaults.
+    /// Resets non-protected preferences without silently disabling active app lock or sensitive-action protections.
+    public func resetNonSecurityPreferences() {
+        if !appLockEnabled {
+            idleTimeoutSeconds = Self.defaultIdleTimeoutSeconds
+            lockOnAppBackground = false
+        } else {
+            // Only strengthen idle timeout if previously shortened below default? No, never weaken or disable.
+            if idleTimeoutSeconds > Self.defaultIdleTimeoutSeconds {
+                idleTimeoutSeconds = Self.defaultIdleTimeoutSeconds
+            }
+        }
+        if !isLocked {
+            lastErrorMessage = nil
+        }
+        lastActivityDate = Date()
+    }
+
+    /// Resets preferences to defaults when unprotected; never disables active `appLockEnabled`, `isLocked`,
+    /// or `requireAuthForSensitiveActions` without authentication.
     public func resetPreferences() {
+        if !appLockEnabled && !isLocked {
+            idleTimeoutSeconds = Self.defaultIdleTimeoutSeconds
+            lockOnAppBackground = false
+            requireAuthForSensitiveActions = true
+            lastErrorMessage = nil
+            lastActivityDate = Date()
+            return
+        }
+        // Protected mode active: keep appLockEnabled, isLocked, lockOnAppBackground, and idleTimeout protections intact.
+        requireAuthForSensitiveActions = true
+        lastActivityDate = Date()
+    }
+
+    /// Authenticated reset of all lock preferences back to factory defaults.
+    @discardableResult
+    public func resetAllPreferencesWithAuthentication(
+        reason: String = "验证身份以恢复 AetherTerm 安全锁默认设置"
+    ) async -> Bool {
+        if appLockEnabled || isLocked || !requireAuthForSensitiveActions {
+            let ok = await authenticate(reason: reason)
+            guard ok else { return false }
+        }
         appLockEnabled = false
         idleTimeoutSeconds = Self.defaultIdleTimeoutSeconds
         lockOnAppBackground = false
@@ -140,6 +182,7 @@ public final class AppLockManager: ObservableObject {
         isLocked = false
         lastErrorMessage = nil
         lastActivityDate = Date()
+        return true
     }
 
     /// Refreshes the user activity timestamp to postpone idle auto-lock.
@@ -157,8 +200,13 @@ public final class AppLockManager: ObservableObject {
 
     /// Immediately locks the application UI.
     public func lockNow() {
+        let didTransition = !isLocked
         isLocked = true
         lastErrorMessage = nil
+        if didTransition {
+            onDidLock?()
+            NotificationCenter.default.post(name: Self.appDidLockNotification, object: self)
+        }
     }
 
     /// Handles `NSApplication.willResignActiveNotification`, locking only when both `appLockEnabled` and `lockOnAppBackground` are true.
@@ -167,36 +215,83 @@ public final class AppLockManager: ObservableObject {
         lockNow()
     }
 
-    /// Enables or disables app lock, prompting Touch ID / system password before enabling.
+    /// Enables or disables app lock, requiring Touch ID / system password for both enabling and disabling.
     @discardableResult
     public func setAppLockEnabled(
         _ enabled: Bool,
-        reason: String = "验证身份以启用 AetherTerm 应用锁"
+        reason: String? = nil
     ) async -> Bool {
-        if !enabled {
-            appLockEnabled = false
+        if enabled == appLockEnabled {
             return true
         }
-        if appLockEnabled {
-            return true
-        }
-        guard !isAuthenticating else { return false }
-
-        isAuthenticating = true
+        let resolvedReason = reason ?? (enabled
+            ? "验证身份以启用 AetherTerm 应用锁"
+            : "验证身份以关闭 AetherTerm 应用锁")
+        let ok = await authenticate(reason: resolvedReason)
+        guard ok else { return false }
+        appLockEnabled = enabled
         lastErrorMessage = nil
-        defer { isAuthenticating = false }
+        lastActivityDate = Date()
+        return true
+    }
 
-        let result = await authenticator.authenticate(reason: reason)
-        switch result {
-        case .success:
-            appLockEnabled = true
-            lastErrorMessage = nil
-            lastActivityDate = Date()
+    /// Enables or disables sensitive-action authentication, requiring verification before weakening (`false`).
+    @discardableResult
+    public func setRequireAuthForSensitiveActions(
+        _ enabled: Bool,
+        reason: String = "验证身份以关闭敏感操作二次验证"
+    ) async -> Bool {
+        if enabled == requireAuthForSensitiveActions {
             return true
-        case .failure(let error):
-            lastErrorMessage = Self.formattedErrorMessage(for: error)
-            return false
         }
+        if !enabled {
+            let ok = await authenticate(reason: reason)
+            guard ok else { return false }
+        }
+        requireAuthForSensitiveActions = enabled
+        lastErrorMessage = nil
+        lastActivityDate = Date()
+        return true
+    }
+
+    /// Updates idle auto-lock timeout, requiring verification when weakening (`0` or increasing timeout) while app lock is active.
+    @discardableResult
+    public func updateIdleTimeout(
+        _ timeout: TimeInterval,
+        reason: String = "验证身份以调整闲置自动锁定时间"
+    ) async -> Bool {
+        let sanitized = max(0, timeout)
+        if sanitized == idleTimeoutSeconds {
+            return true
+        }
+        let isWeakening = appLockEnabled && (sanitized == 0 || (idleTimeoutSeconds > 0 && sanitized > idleTimeoutSeconds))
+        if isWeakening {
+            let ok = await authenticate(reason: reason)
+            guard ok else { return false }
+        }
+        idleTimeoutSeconds = sanitized
+        lastErrorMessage = nil
+        lastActivityDate = Date()
+        return true
+    }
+
+    /// Updates background auto-lock setting, requiring verification when disabling while app lock is active.
+    @discardableResult
+    public func setLockOnAppBackground(
+        _ enabled: Bool,
+        reason: String = "验证身份以关闭后台自动锁定"
+    ) async -> Bool {
+        if enabled == lockOnAppBackground {
+            return true
+        }
+        if appLockEnabled && lockOnAppBackground && !enabled {
+            let ok = await authenticate(reason: reason)
+            guard ok else { return false }
+        }
+        lockOnAppBackground = enabled
+        lastErrorMessage = nil
+        lastActivityDate = Date()
+        return true
     }
 
     /// Attempts to unlock the application using Touch ID or system password.
@@ -227,6 +322,10 @@ public final class AppLockManager: ObservableObject {
     /// Gates sensitive operations (revealing passwords, exporting credentials, copying/exporting private keys).
     public func authorizeSensitiveAction(reason: String) async -> Bool {
         guard requireAuthForSensitiveActions else { return true }
+        return await authenticate(reason: reason)
+    }
+
+    private func authenticate(reason: String) async -> Bool {
         guard !isAuthenticating else { return false }
 
         isAuthenticating = true

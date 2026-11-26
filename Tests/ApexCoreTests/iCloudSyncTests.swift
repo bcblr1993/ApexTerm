@@ -69,16 +69,24 @@ final class iCloudSyncTests: XCTestCase {
     // MARK: - TC-ICLOUD-02: Zero-Bundle & Privacy Sanitization
     @MainActor
     func testZeroBundleAndPrivacySanitization() {
+        let managedRef = "ssh_\(UUID().uuidString)"
         let passwordSession = Session(
             name: "Secret Host",
             host: "secret.corp.com",
             port: 22,
             username: "root",
-            authMethod: .password(keychainRef: "keychain_ref_uuid_123")
+            authMethod: .password(keychainRef: managedRef)
+        )
+        let singleTokenInlineSession = Session(
+            name: "Legacy Inline Host",
+            host: "legacy.corp.com",
+            port: 22,
+            username: "root",
+            authMethod: .password(keychainRef: "MyP@ss123")
         )
         
         let rawPayload = iCloudSyncPayload(
-            sessions: [passwordSession],
+            sessions: [passwordSession, singleTokenInlineSession],
             snippets: [],
             triggers: [],
             bookmarks: [],
@@ -87,12 +95,17 @@ final class iCloudSyncTests: XCTestCase {
         
         let sanitized = iCloudSyncManager.sanitizeForCloud(payload: rawPayload)
         
-        // Assert password ref remains only a keychain reference, no plain passwords
+        // Assert managed password ref remains only a keychain reference, while single-token inline password is cleared
         if case .password(let ref) = sanitized.sessions.first?.authMethod {
-            XCTAssertEqual(ref, "keychain_ref_uuid_123")
+            XCTAssertEqual(ref, managedRef)
             XCTAssertFalse(ref.contains("password123"))
         } else {
             XCTFail("Expected .password authMethod with reference")
+        }
+        if case .password(let inlineRef) = sanitized.sessions.last?.authMethod {
+            XCTAssertEqual(inlineRef, "", "Single-token legacy inline password must be sanitized to empty")
+        } else {
+            XCTFail("Expected sanitized .password authMethod")
         }
         
         // Assert that private keys are sanitized and do not contain raw PEM markers

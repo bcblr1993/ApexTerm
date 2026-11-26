@@ -75,11 +75,7 @@ public final class iCloudSyncManager: ObservableObject {
     }
     
     public nonisolated static var resolvedAppVersion: String {
-        if let bundleVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String,
-           !bundleVersion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return bundleVersion
-        }
-        return "1.17.2"
+        Bundle.apexResolvedAppVersion
     }
 
     // MARK: - Zero-Bundle & Security Sanitization
@@ -92,12 +88,12 @@ public final class iCloudSyncManager: ObservableObject {
         for var s in payload.sessions {
             switch s.authMethod {
             case .password(let keychainRef):
-                // Ensure keychainRef is only a reference identifier, never an inline multi-word password or PEM.
+                // Clear anything that is not a recognized Keychain reference (blocks single-token legacy passwords too).
                 let safeRef = keychainRef.trimmingCharacters(in: .whitespacesAndNewlines)
-                if safeRef.contains("PRIVATE KEY") || safeRef.contains(where: \.isWhitespace) {
-                    s.authMethod = .password(keychainRef: "")
-                } else {
+                if KeychainStore.isManagedReference(safeRef) {
                     s.authMethod = .password(keychainRef: safeRef)
+                } else {
+                    s.authMethod = .password(keychainRef: "")
                 }
             case .privateKey(let keychainRef, let passphraseRef):
                 // If keychainRef accidentally contains raw private key PEM markers, redact it to a safe reference

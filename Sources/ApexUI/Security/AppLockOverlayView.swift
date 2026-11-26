@@ -18,7 +18,7 @@ public struct AppLockOverlayView: View {
                     .ignoresSafeArea()
 
                 Rectangle()
-                    .fill(ApexStyle.surface.opacity(0.68))
+                    .fill(ApexStyle.surface.opacity(0.84))
                     .ignoresSafeArea()
 
                 VStack(spacing: ApexStyle.s4) {
@@ -78,6 +78,7 @@ public struct AppLockOverlayView: View {
                     }
                     .keyboardShortcut(.defaultAction)
                     .disabled(lockManager.isAuthenticating)
+                    .accessibilityIdentifier("applock.unlockButton")
 
                     HStack(spacing: ApexStyle.sCompact) {
                         Text("⌘⇧L")

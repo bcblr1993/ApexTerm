@@ -13,6 +13,8 @@ public struct SSHConfigHost: Identifiable, Sendable, Equatable, Hashable {
     public let environmentVariables: [String: String]
     public let forwardAgent: Bool
     public let compression: Bool
+    public let explicitForwardAgent: Bool?
+    public let explicitCompression: Bool?
     public let proxyCommand: String?
     public let proxyJump: [String]
     
@@ -28,6 +30,8 @@ public struct SSHConfigHost: Identifiable, Sendable, Equatable, Hashable {
         environmentVariables: [String: String] = [:],
         forwardAgent: Bool = false,
         compression: Bool = false,
+        explicitForwardAgent: Bool? = nil,
+        explicitCompression: Bool? = nil,
         proxyCommand: String? = nil,
         proxyJump: [String] = []
     ) {
@@ -42,6 +46,8 @@ public struct SSHConfigHost: Identifiable, Sendable, Equatable, Hashable {
         self.environmentVariables = environmentVariables
         self.forwardAgent = forwardAgent
         self.compression = compression
+        self.explicitForwardAgent = explicitForwardAgent
+        self.explicitCompression = explicitCompression
         self.proxyCommand = proxyCommand
         self.proxyJump = proxyJump
     }
@@ -123,8 +129,8 @@ public struct SSHConfigHost: Identifiable, Sendable, Equatable, Hashable {
             colorHex: existing.colorHex,
             jumpServerId: existing.jumpServerId,
             jumpServerChain: existing.effectiveJumpServerChain,
-            forwardAgent: forwardAgent || existing.forwardAgent,
-            compression: compression || existing.compression,
+            forwardAgent: explicitForwardAgent ?? (forwardAgent ? true : existing.forwardAgent),
+            compression: explicitCompression ?? (compression ? true : existing.compression),
             proxyCommand: proxyCommand ?? existing.proxyCommand,
             agentlessMonitorEnabled: existing.agentlessMonitorEnabled,
             sftpAutoSyncEnabled: existing.sftpAutoSyncEnabled,
@@ -204,6 +210,8 @@ public final class SSHConfigParser: Sendable {
                     environmentVariables: currentEnvVars,
                     forwardAgent: currentForwardAgent ?? false,
                     compression: currentCompression ?? false,
+                    explicitForwardAgent: currentForwardAgent,
+                    explicitCompression: currentCompression,
                     proxyCommand: currentProxyCommand,
                     proxyJump: currentProxyJump
                 )

@@ -12,6 +12,7 @@ public struct SSHKeyVaultSettingsView: View {
     @ObservedObject private var themeSettings = AppSettings.shared
     @ObservedObject private var vaultManager = SSHKeyVaultManager.shared
     @ObservedObject private var knownHostsManager = KnownHostsManager.shared
+    @ObservedObject private var lockManager = AppLockManager.shared
 
     private enum PrivateKeyAccessAction {
         case reveal
@@ -67,7 +68,7 @@ public struct SSHKeyVaultSettingsView: View {
                     Text(selectedSubTab == .keyVault ? "SSH 密钥保险库 (Key Vault)" : "已知主机指纹 (known_hosts)")
                         .font(.system(size: 15, weight: .bold))
                         .foregroundColor(ApexStyle.primary)
-                    Text(selectedSubTab == .keyVault ? "集中管理 SSH 密钥对，私钥采用 macOS 官方 Keychain 安全加密隔离" : "可视化审查 ~/.ssh/known_hosts 信任库、SHA-256 指纹与主机重装公钥冲突")
+                    Text(selectedSubTab == .keyVault ? "集中管理 SSH 密钥对，私钥采用 macOS 官方 Keychain 安全加密隔离" : "可视化审查 \(knownHostsManager.displayPath) 信任库、SHA-256 指纹与主机重装公钥冲突")
                         .font(.system(size: 11))
                         .foregroundColor(ApexStyle.secondary)
                 }
@@ -146,6 +147,13 @@ public struct SSHKeyVaultSettingsView: View {
         .sheet(item: $revealedPrivateKey) { payload in
             privateKeyRevealSheet(payload)
                 .apexTheme()
+        }
+        .onChange(of: lockManager.isLocked) { _, isLocked in
+            if isLocked {
+                revealedPrivateKey = nil
+                showingImportSheet = false
+                showingDeploySheet = false
+            }
         }
         .alert("确认删除密钥", isPresented: $showingDeleteAlert, presenting: keyToDelete) { key in
             Button("删除", role: .destructive) {
@@ -446,8 +454,7 @@ public struct SSHKeyVaultSettingsView: View {
                 }
 
                 ApexActionButton("复制私钥", icon: "doc.on.doc", tint: ApexStyle.accent, size: .regular) {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(payload.privateKeyPEM, forType: .string)
+                    SensitivePasteboardHelper.shared.copySecret(payload.privateKeyPEM)
                     showToast("已复制私钥到剪贴板 (\(payload.key.algorithm.rawValue))")
                 }
 
@@ -494,8 +501,7 @@ public struct SSHKeyVaultSettingsView: View {
             case .reveal:
                 revealedPrivateKey = RevealedPrivateKeyPayload(key: key, privateKeyPEM: pem)
             case .copy:
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(pem, forType: .string)
+                SensitivePasteboardHelper.shared.copySecret(pem)
                 showToast("已复制私钥到剪贴板 (\(key.algorithm.rawValue))")
             case .export:
                 exportPrivateKeyPEM(pem, keyName: key.name)
@@ -518,8 +524,7 @@ public struct SSHKeyVaultSettingsView: View {
         guard savePanel.runModal() == .OK, let url = savePanel.url else { return }
         do {
             let normalized = pem.hasSuffix("\n") ? pem : pem + "\n"
-            try normalized.write(to: url, atomically: true, encoding: .utf8)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            try SSHKeyVaultManager.writePrivateKeyFileAtomically(Data(normalized.utf8), to: url)
             showToast("已导出私钥文件（0600 权限）：\(url.lastPathComponent)")
         } catch {
             showToast("导出私钥失败：\(error.localizedDescription)")

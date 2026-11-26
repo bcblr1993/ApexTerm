@@ -128,12 +128,36 @@ public final class KnownHostsManager: ObservableObject, @unchecked Sendable {
     public let fileURL: URL
     private let lock = NSLock()
 
-    public init(fileURL: URL? = nil) {
+    public static func defaultFileURL(
+        for channel: DistributionChannel = .current,
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        appSupportDirectory: URL? = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+    ) -> URL {
+        switch channel {
+        case .appStore:
+            let appSupport = appSupportDirectory ?? homeDirectory.appendingPathComponent("Library/Application Support", isDirectory: true)
+            return appSupport.appendingPathComponent("ApexTerm/SSH/known_hosts")
+        case .direct:
+            return homeDirectory.appendingPathComponent(".ssh/known_hosts")
+        }
+    }
+
+    public var displayPath: String {
+        let path = fileURL.path
+        if path == Self.defaultFileURL(for: .direct).path {
+            return "~/.ssh/known_hosts"
+        }
+        if path.hasSuffix("/ApexTerm/SSH/known_hosts") {
+            return "Application Support/ApexTerm/SSH/known_hosts"
+        }
+        return SessionBundleExporter.portablePath(path)
+    }
+
+    public init(fileURL: URL? = nil, distributionChannel: DistributionChannel = .current) {
         if let custom = fileURL {
             self.fileURL = custom
         } else {
-            let home = FileManager.default.homeDirectoryForCurrentUser
-            self.fileURL = home.appendingPathComponent(".ssh/known_hosts")
+            self.fileURL = Self.defaultFileURL(for: distributionChannel)
         }
         reload()
     }
@@ -378,9 +402,15 @@ public final class KnownHostsManager: ObservableObject, @unchecked Sendable {
     }
 
     private func writeUpdatedLinesLocked(_ lines: [String], originalContent: String) throws {
+        try FileManager.default.createDirectory(
+            at: fileURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
         try originalContent.write(to: backupFileURL, atomically: true, encoding: .utf8)
         let newContent = lines.joined(separator: "\n")
         try newContent.write(to: fileURL, atomically: true, encoding: .utf8)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
         let parsed = Self.parse(content: newContent)
         entries = parsed
         conflicts = Self.detectConflicts(in: parsed)

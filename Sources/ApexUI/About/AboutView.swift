@@ -8,6 +8,27 @@ public struct AboutView: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var updateManager = UpdateManager.shared
     @State private var dismissedErrorText: String?
+
+    private static var isArm64Architecture: Bool {
+        var systemInfo = utsname()
+        uname(&systemInfo)
+        let machine = withUnsafePointer(to: &systemInfo.machine) {
+            $0.withMemoryRebound(to: CChar.self, capacity: 1) {
+                String(validatingCString: $0)
+            }
+        } ?? ""
+        if machine.contains("arm64") { return true }
+        if machine.contains("x86_64") { return false }
+        #if arch(arm64)
+        return true
+        #else
+        return false
+        #endif
+    }
+
+    private static var hostArchitectureLabel: String {
+        isArm64Architecture ? "Apple Silicon arm64" : "Intel x86_64"
+    }
     
     public init() {}
     
@@ -47,7 +68,7 @@ public struct AboutView: View {
                                 .clipShape(Capsule())
                         }
                         
-                        Text("\(L10n.buildNumber) \(updateManager.currentBuild) • Apple Silicon arm64")
+                        Text("\(L10n.buildNumber) \(updateManager.currentBuild) • \(Self.hostArchitectureLabel)")
                             .font(.system(size: 12))
                             .foregroundColor(ApexStyle.secondary)
                         
@@ -62,7 +83,7 @@ public struct AboutView: View {
                 
                 // Tech badges
                 HStack(spacing: 10) {
-                    techBadge(icon: "bolt.fill", title: "Apple Silicon", color: ApexStyle.warning)
+                    techBadge(icon: "bolt.fill", title: Self.isArm64Architecture ? "Apple Silicon" : "Intel x86_64", color: ApexStyle.warning)
                     techBadge(icon: "display", title: "Metal 120Hz", color: ApexStyle.accent)
                     techBadge(icon: "lock.shield.fill", title: "Native SSH / SFTP", color: ApexStyle.success)
                     techBadge(icon: "swift", title: "Swift 6 Native", color: ApexStyle.error)
@@ -111,7 +132,7 @@ public struct AboutView: View {
                     .buttonStyle(.bordered)
                     .controlSize(.regular)
                     
-                    Button("关闭") {
+                    Button(L10n.closeWindow) {
                         dismiss()
                     }
                     .buttonStyle(.bordered)

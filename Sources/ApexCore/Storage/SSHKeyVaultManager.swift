@@ -96,6 +96,48 @@ public final class SSHKeyVaultManager: ObservableObject {
         FileManager.default.temporaryDirectory.appendingPathComponent("com.apexterm.vaultkeys.\(getuid())", isDirectory: true)
     }
 
+    /// Writes sensitive private key bytes to `fileURL` via an exclusive `0o600` temp file and atomic `rename`.
+    nonisolated public static func writePrivateKeyFileAtomically(_ data: Data, to fileURL: URL) throws {
+        let dir = fileURL.deletingLastPathComponent()
+        try FileManager.default.createDirectory(
+            at: dir,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        _ = chmod(dir.path, 0o700)
+        let attrs = try FileManager.default.attributesOfItem(atPath: dir.path)
+        guard attrs[.type] as? FileAttributeType == .typeDirectory,
+              (attrs[.ownerAccountID] as? NSNumber)?.uint32Value == getuid(),
+              ((attrs[.posixPermissions] as? NSNumber)?.intValue ?? 0o777) & 0o077 == 0 else {
+            throw CocoaError(.fileWriteNoPermission)
+        }
+
+        let tempURL = dir.appendingPathComponent(".\(fileURL.lastPathComponent).\(UUID().uuidString).tmp")
+        var createdTemp = false
+        do {
+            let fd = open(tempURL.path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0o600)
+            guard fd >= 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+            createdTemp = true
+            do {
+                let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+                defer { try? handle.close() }
+                try handle.write(contentsOf: data)
+            }
+            guard rename(tempURL.path, fileURL.path) == 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+            createdTemp = false
+            _ = chmod(fileURL.path, 0o600)
+        } catch {
+            if createdTemp {
+                try? FileManager.default.removeItem(at: tempURL)
+            }
+            throw error
+        }
+    }
+
     /// Materializes a Keychain-backed SSH Key Vault reference (`vault.priv.<UUID>`) into a `0600` local file
     /// with a guaranteed trailing newline so `/usr/bin/ssh` and `/usr/bin/scp` can authenticate with it.
     nonisolated public static func materializePrivateKeyPath(
@@ -112,15 +154,11 @@ public final class SSHKeyVaultManager: ObservableObject {
             return nil
         }
         let dir = directory ?? defaultMaterializedDirectory
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        _ = chmod(dir.path, 0o700)
-
         let fileURL = dir.appendingPathComponent("\(reference).key")
         let normalizedPEM = rawPEM + "\n"
         guard let data = normalizedPEM.data(using: .utf8) else { return nil }
         do {
-            try data.write(to: fileURL, options: .atomic)
-            _ = chmod(fileURL.path, 0o600)
+            try writePrivateKeyFileAtomically(data, to: fileURL)
             return fileURL.path
         } catch {
             return nil
@@ -132,18 +170,25 @@ public final class SSHKeyVaultManager: ObservableObject {
         let dir = directory ?? defaultMaterializedDirectory
         try? FileManager.default.removeItem(at: dir)
     }
+
+    /// Purges leftover materialized key files at launch (alias of `cleanupMaterializedKeys`).
+    nonisolated public static func cleanupStaleMaterializedKeys(directory: URL? = nil) {
+        cleanupMaterializedKeys(directory: directory)
+    }
     
     public func key(for id: UUID) -> SSHKeyIdentity? {
         keys.first(where: { $0.id == id })
     }
     
     /// Imports a private/public key pair into the vault, storing sensitive private material in Keychain
+    /// and rolling back saved Keychain entries if any subsequent step fails.
     public func importKey(
         name: String,
         privateKeyPEM: String,
         publicKeyOpenSSH: String,
         passphrase: String? = nil,
-        secretSaver: (String, String) throws -> String = { try KeychainStore.shared.save(key: $0, secret: $1) }
+        secretSaver: (String, String) throws -> String = { try KeychainStore.shared.save(key: $0, secret: $1) },
+        secretDeleter: (String) -> Void = { try? KeychainStore.shared.delete(key: $0) }
     ) throws -> SSHKeyIdentity {
         let cleanPriv = privateKeyPEM
             .replacingOccurrences(of: "\r\n", with: "\n")
@@ -166,25 +211,33 @@ public final class SSHKeyVaultManager: ObservableObject {
         let savedPrivRef = try secretSaver("vault.priv.\(id.uuidString)", cleanPriv)
         var savedPassRef: String? = nil
         
-        if let pass = passphrase, !pass.isEmpty {
-            savedPassRef = try secretSaver("vault.pass.\(id.uuidString)", pass)
+        do {
+            if let pass = passphrase, !pass.isEmpty {
+                savedPassRef = try secretSaver("vault.pass.\(id.uuidString)", pass)
+            }
+            
+            let algo = SSHKeyIdentity.detectAlgorithm(from: cleanPub)
+            let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            let identity = SSHKeyIdentity(
+                id: id,
+                name: cleanName.isEmpty ? "\(algo.rawValue) (\(fp.prefix(16)))" : cleanName,
+                algorithm: algo,
+                fingerprintSHA256: fp,
+                publicKeyOpenSSH: cleanPub,
+                keychainPrivateKeyRef: savedPrivRef,
+                hasPassphrase: savedPassRef != nil,
+                keychainPassphraseRef: savedPassRef,
+                createdAt: Date()
+            )
+            
+            try addKey(identity)
+            return identity
+        } catch {
+            secretDeleter(savedPrivRef)
+            if let passRef = savedPassRef {
+                secretDeleter(passRef)
+            }
+            throw error
         }
-        
-        let algo = SSHKeyIdentity.detectAlgorithm(from: cleanPub)
-        let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let identity = SSHKeyIdentity(
-            id: id,
-            name: cleanName.isEmpty ? "\(algo.rawValue) (\(fp.prefix(16)))" : cleanName,
-            algorithm: algo,
-            fingerprintSHA256: fp,
-            publicKeyOpenSSH: cleanPub,
-            keychainPrivateKeyRef: savedPrivRef,
-            hasPassphrase: savedPassRef != nil,
-            keychainPassphraseRef: savedPassRef,
-            createdAt: Date()
-        )
-        
-        try addKey(identity)
-        return identity
     }
 }

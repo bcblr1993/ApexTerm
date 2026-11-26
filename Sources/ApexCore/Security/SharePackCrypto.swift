@@ -3,11 +3,27 @@ import CryptoKit
 import CommonCrypto
 import Security
 
+public extension Bundle {
+    /// Resolves the running AetherTerm app's marketing version from `CFBundleShortVersionString`,
+    /// falling back to the current release baseline only in non-bundled test runners.
+    static var apexResolvedAppVersion: String {
+        if let bundleId = main.bundleIdentifier,
+           bundleId.lowercased().contains("apexterm"),
+           let ver = main.infoDictionary?["CFBundleShortVersionString"] as? String {
+            let trimmed = ver.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                return trimmed
+            }
+        }
+        return "1.30.0"
+    }
+}
+
 /// Protection mode applied when exporting an `.aetherpack` share bundle.
 public enum SharePackProtectionMode: String, Codable, Sendable, Equatable, CaseIterable {
-    /// Sealed with AES-256-GCM + HKDF-SHA256 without requiring a manual passphrase,
-    /// so exported files never store plaintext passwords or private keys while supporting
-    /// one-click import inside AetherTerm.
+    /// Sealed with AES-256-GCM + HKDF-SHA256 using an app-embedded key without a user passphrase.
+    /// Prevents plaintext casual reading while supporting one-click import inside AetherTerm;
+    /// public or cross-team distribution MUST use `.passphrase` with an independent passphrase.
     case appSealed = "app_sealed"
     /// Encrypted with AES-256-GCM + PBKDF2-HMAC-SHA256 using an explicit share passphrase.
     case passphrase = "passphrase"
@@ -134,7 +150,7 @@ public struct AetherShareEnvelopeHeader: Codable, Sendable, Equatable {
         sessionCount: Int = 0,
         tunnelCount: Int = 0,
         includesCredentials: Bool = false,
-        exportedByAppVersion: String = "1.26.0",
+        exportedByAppVersion: String = Bundle.apexResolvedAppVersion,
         exportedAt: Date = Date()
     ) {
         self.groupNames = groupNames

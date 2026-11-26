@@ -135,6 +135,7 @@ public final class DesktopNotificationManager: ObservableObject {
 
     public var isAppActive: () -> Bool
     public var activeTabID: () -> UUID?
+    public var isAppLocked: () -> Bool
     public var trackedActiveTabID: UUID?
 
     @Published public var notificationsEnabled: Bool {
@@ -169,6 +170,7 @@ public final class DesktopNotificationManager: ObservableObject {
         deliverer: (any DesktopNotificationDelivering)? = nil,
         isAppActive: (() -> Bool)? = nil,
         activeTabID: (() -> UUID?)? = nil,
+        isAppLocked: (() -> Bool)? = nil,
         now: @escaping () -> Date = { Date() },
         rateLimitWindow: TimeInterval = 10.0,
         maxNotificationsPerTabInWindow: Int = 3
@@ -180,6 +182,7 @@ public final class DesktopNotificationManager: ObservableObject {
         self.maxNotificationsPerTabInWindow = max(1, maxNotificationsPerTabInWindow)
         self.isAppActive = isAppActive ?? { NSApp?.isActive ?? false }
         self.activeTabID = { nil }
+        self.isAppLocked = isAppLocked ?? { AppLockManager.shared.isLocked }
 
         self.notificationsEnabled = defaults.object(forKey: Keys.notificationsEnabled) != nil
             ? defaults.bool(forKey: Keys.notificationsEnabled)
@@ -278,35 +281,47 @@ public final class DesktopNotificationManager: ObservableObject {
         guard !shouldSuppressForFocus(tabID: tabID) else { return }
         guard consumeRateLimitSlot(for: tabID) else { return }
 
-        let safeSession = Self.sanitize(sessionTitle, maxUTF8Bytes: 128)
-        let displaySession = safeSession.isEmpty ? "终端会话" : safeSession
-        let durationLabel = formattedDuration ?? Self.formatDuration(ms: durationMs)
-        let codeValue = exitCode ?? 0
-
-        let title: String
-        if codeValue == 0 {
-            title = "命令执行完成 · \(displaySession)"
+        let payload: DesktopNotificationPayload
+        if isAppLocked() {
+            payload = DesktopNotificationPayload(
+                tabID: tabID,
+                title: "AetherTerm 已锁定",
+                body: "安全提示：终端任务已完成",
+                userInfo: ["tabID": tabID.uuidString],
+                playSound: playSound,
+                kind: .commandCompleted(exitCode: exitCode, durationMs: durationMs)
+            )
         } else {
-            title = "命令执行失败 (退出码 \(codeValue)) · \(displaySession)"
-        }
+            let safeSession = Self.sanitize(sessionTitle, maxUTF8Bytes: 128)
+            let displaySession = safeSession.isEmpty ? "终端会话" : safeSession
+            let durationLabel = formattedDuration ?? Self.formatDuration(ms: durationMs)
+            let codeValue = exitCode ?? 0
 
-        let safeCommand = commandText.map { Self.sanitize($0, maxUTF8Bytes: 256) }.flatMap { $0.isEmpty ? nil : $0 }
-        let rawBody: String
-        if let safeCommand {
-            rawBody = "\(safeCommand) — 退出码 \(codeValue)，耗时 \(durationLabel)"
-        } else {
-            rawBody = "退出码 \(codeValue)，耗时 \(durationLabel)"
-        }
-        let body = Self.sanitize(rawBody, maxUTF8Bytes: Self.maxPayloadBytes)
+            let title: String
+            if codeValue == 0 {
+                title = "命令执行完成 · \(displaySession)"
+            } else {
+                title = "命令执行失败 (退出码 \(codeValue)) · \(displaySession)"
+            }
 
-        let payload = DesktopNotificationPayload(
-            tabID: tabID,
-            title: title,
-            body: body,
-            userInfo: ["tabID": tabID.uuidString],
-            playSound: playSound,
-            kind: .commandCompleted(exitCode: exitCode, durationMs: durationMs)
-        )
+            let safeCommand = commandText.map { Self.sanitize($0, maxUTF8Bytes: 256) }.flatMap { $0.isEmpty ? nil : $0 }
+            let rawBody: String
+            if let safeCommand {
+                rawBody = "\(safeCommand) — 退出码 \(codeValue)，耗时 \(durationLabel)"
+            } else {
+                rawBody = "退出码 \(codeValue)，耗时 \(durationLabel)"
+            }
+            let body = Self.sanitize(rawBody, maxUTF8Bytes: Self.maxPayloadBytes)
+
+            payload = DesktopNotificationPayload(
+                tabID: tabID,
+                title: title,
+                body: body,
+                userInfo: ["tabID": tabID.uuidString],
+                playSound: playSound,
+                kind: .commandCompleted(exitCode: exitCode, durationMs: durationMs)
+            )
+        }
         deliverer.deliver(payload)
     }
 
@@ -326,22 +341,35 @@ public final class DesktopNotificationManager: ObservableObject {
         guard !shouldSuppressForFocus(tabID: tabID) else { return }
         guard consumeRateLimitSlot(for: tabID) else { return }
 
-        let safeSession = Self.sanitize(sessionTitle, maxUTF8Bytes: 128)
-        let displaySession = safeSession.isEmpty ? "终端会话" : safeSession
+        let payload: DesktopNotificationPayload
+        if isAppLocked() {
+            payload = DesktopNotificationPayload(
+                tabID: tabID,
+                title: "AetherTerm 已锁定",
+                subtitle: nil,
+                body: "安全提示：终端任务已完成",
+                userInfo: ["tabID": tabID.uuidString],
+                playSound: playSound,
+                kind: .oscSequence
+            )
+        } else {
+            let safeSession = Self.sanitize(sessionTitle, maxUTF8Bytes: 128)
+            let displaySession = safeSession.isEmpty ? "终端会话" : safeSession
 
-        let resolvedTitle = safeTitle ?? displaySession
-        let resolvedSubtitle = safeTitle != nil ? displaySession : nil
-        let resolvedBody = safeBody.isEmpty ? (safeTitle ?? "") : safeBody
+            let resolvedTitle = safeTitle ?? displaySession
+            let resolvedSubtitle = safeTitle != nil ? displaySession : nil
+            let resolvedBody = safeBody.isEmpty ? (safeTitle ?? "") : safeBody
 
-        let payload = DesktopNotificationPayload(
-            tabID: tabID,
-            title: resolvedTitle,
-            subtitle: resolvedSubtitle,
-            body: resolvedBody,
-            userInfo: ["tabID": tabID.uuidString],
-            playSound: playSound,
-            kind: .oscSequence
-        )
+            payload = DesktopNotificationPayload(
+                tabID: tabID,
+                title: resolvedTitle,
+                subtitle: resolvedSubtitle,
+                body: resolvedBody,
+                userInfo: ["tabID": tabID.uuidString],
+                playSound: playSound,
+                kind: .oscSequence
+            )
+        }
         deliverer.deliver(payload)
     }
 

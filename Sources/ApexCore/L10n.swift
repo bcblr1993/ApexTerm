@@ -117,8 +117,8 @@ public enum L10n {
     public static let tagsLabel = "标签 (用逗号分隔)"
     public static let tagsPlaceholder = "例如：生产, k8s, 核心"
     public static let performanceSection = "性能与增强特性"
-    public static let agentlessMonitorToggle = "开启无感实时性能监控 (FinalShell 风格)"
-    public static let sftpAutoSyncToggle = "开启 SFTP 终端目录跟随联动 (electerm 风格)"
+    public static let agentlessMonitorToggle = "开启无感实时性能监控"
+    public static let sftpAutoSyncToggle = "开启 SFTP 终端目录跟随联动"
     
     // 菜单项
     public static let menuNewTab = "新建终端标签"
@@ -134,6 +134,11 @@ public enum L10n {
     public static let menuDocumentation = "在线文档与主页"
     public static let menuGitHubRepo = "GitHub 源码仓库"
     public static let menuReportIssue = "提交反馈与建议..."
+    public static let menuLockApp = "立即锁定应用"
+    public static let menuCopy = "复制"
+    public static let menuPaste = "粘贴"
+    public static let menuFind = "查找..."
+    public static let menuSelectAll = "全选"
 
     // 偏好设置 Settings
     public static let settingsTitle = "偏好设置"
@@ -141,7 +146,10 @@ public enum L10n {
     public static let settingsTabTerminal = "终端外观"
     public static let settingsTabBehavior = "操作习惯"
     public static let settingsTabSFTP = "SFTP传输"
+    public static let settingsTabSecurity = "密钥与安全"
     public static let settingsTabData = "数据备份"
+    public static let shortcutsTitle = "键盘快捷键参考"
+    public static let pasteboardAutoClearLabel = "敏感剪贴板自动清除延迟"
     
     // 设置 - 终端外观
     public static let fontSettings = "字体与字号"
@@ -156,10 +164,10 @@ public enum L10n {
     public static let bellSettings = "终端响铃提示"
     
     // 设置 - 操作习惯
-    public static let copyOnSelectLabel = "选中文字后自动复制到剪切板 (PuTTY / Xshell 风格)"
-    public static let copyOnSelectDesc = "开启后，使用鼠标在终端中划选任意文字，释放鼠标即可直接复制到系统剪切板。"
-    public static let rightClickPasteLabel = "鼠标右键直接粘贴剪切板内容"
-    public static let rightClickPasteDesc = "开启后，鼠标右键点击终端立即粘贴剪切板内容；按住 Shift + 右键可调出完整右键菜单。"
+    public static let copyOnSelectLabel = "选中文字后自动复制到剪贴板"
+    public static let copyOnSelectDesc = "开启后，使用鼠标在终端中划选任意文字，释放鼠标即可直接复制到系统剪贴板。"
+    public static let rightClickPasteLabel = "鼠标右键直接粘贴剪贴板内容"
+    public static let rightClickPasteDesc = "开启后，鼠标右键点击终端立即粘贴剪贴板内容；按住 Shift + 右键可调出完整右键菜单。"
     
     // 设置 - SFTP
     public static let sftpShowHiddenLabel = "默认显示隐藏文件 (点开头 .dotfile)"

@@ -62,7 +62,7 @@ public struct KnownHostsSettingsView: View {
                 ) {
                     manager.reload()
                     errorMessage = nil
-                    showToast("已重新加载 ~/.ssh/known_hosts")
+                    showToast("已重新加载 \(manager.displayPath)")
                 }
             }
 
@@ -105,7 +105,7 @@ public struct KnownHostsSettingsView: View {
                     Image(systemName: "checkmark.shield")
                         .font(.system(size: 30))
                         .foregroundColor(ApexStyle.secondary.opacity(0.5))
-                    Text(searchQuery.isEmpty ? "尚未记录任何 ~/.ssh/known_hosts 主机指纹" : "未找到匹配的已知主机指纹")
+                    Text(searchQuery.isEmpty ? "尚未记录任何 \(manager.displayPath) 主机指纹" : "未找到匹配的已知主机指纹")
                         .font(.system(size: 13, weight: .medium))
                         .foregroundColor(ApexStyle.secondary)
                     Spacer()
@@ -153,7 +153,7 @@ public struct KnownHostsSettingsView: View {
             }
             Button("取消", role: .cancel) {}
         } message: { entry in
-            Text("确定要从 ~/.ssh/known_hosts 中移除「\(entry.displayHostTitle)」的 \(entry.algorithmBadge) 指纹（第 \(entry.lineNumber) 行）吗？下次连接该主机时将重新验证公钥。")
+            Text("确定要从 \(manager.displayPath) 中移除「\(entry.displayHostTitle)」的 \(entry.algorithmBadge) 指纹（第 \(entry.lineNumber) 行）吗？下次连接该主机时将重新验证公钥。")
         }
     }
 

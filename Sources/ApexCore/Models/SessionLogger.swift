@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 /// Output format for terminal session audit logging
 public enum SessionLogFormat: String, CaseIterable, Codable, Sendable {
@@ -44,6 +45,7 @@ public final class SessionLogger: @unchecked Sendable {
     private var currentFileURL: URL?
     private var currentFileSize: UInt64 = 0
     private var isClosed = false
+    private var _lastWriteError: String?
     private var utf8Decoder = UTF8StreamDecoder()
     private static let ansiRegex = try? NSRegularExpression(
         pattern: "\\x1B(?:\\[[0-?]*[ -/]*[@-~]|\\].*?(?:\\x07|\\x1B\\\\)|[()\\*+][0-9A-Za-z]|[78DEHMNOPVWXYZ=<>c~}|])",
@@ -74,11 +76,46 @@ public final class SessionLogger: @unchecked Sendable {
     }
 
     deinit {
-        fileHandle?.closeFile()
+        try? fileHandle?.close()
     }
     
     public var activeFileURL: URL? {
         queue.sync { currentFileURL }
+    }
+
+    public var lastWriteError: String? {
+        queue.sync { _lastWriteError }
+    }
+
+    private func buildHeaderStamp(isRotation: Bool = false) -> String {
+        let marker = isRotation ? "Rotated" : "Started"
+        return "=== AetherTerm Session Log \(marker) at \(Date()) ===\n" +
+               "=== Target: \(username)@\(host) [\(sessionName)] ===\n\n"
+    }
+
+    private func openPrivateLogFile(at fileURL: URL) -> FileHandle? {
+        let fd = open(fileURL.path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0o600)
+        if fd >= 0 {
+            return FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        }
+        if errno == EEXIST {
+            _ = chmod(fileURL.path, 0o600)
+            return try? FileHandle(forWritingTo: fileURL)
+        }
+        _lastWriteError = String(cString: strerror(errno))
+        return nil
+    }
+
+    private func writeLocked(_ data: Data, to handle: FileHandle) -> Bool {
+        do {
+            try handle.seekToEnd()
+            try handle.write(contentsOf: data)
+            currentFileSize += UInt64(data.count)
+            return true
+        } catch {
+            _lastWriteError = error.localizedDescription
+            return false
+        }
     }
     
     private func setupLogFile() {
@@ -86,7 +123,17 @@ public final class SessionLogger: @unchecked Sendable {
             guard let self = self else { return }
             let expandedDirPath = (self.config.logDirectoryPath as NSString).expandingTildeInPath
             let dir = URL(fileURLWithPath: expandedDirPath, isDirectory: true)
-            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            do {
+                try FileManager.default.createDirectory(
+                    at: dir,
+                    withIntermediateDirectories: true,
+                    attributes: [.posixPermissions: 0o700]
+                )
+                _ = chmod(dir.path, 0o700)
+            } catch {
+                self._lastWriteError = error.localizedDescription
+                return
+            }
             
             let dateStr = Self.fileTimestampFormatter.string(from: Date())
             func sanitizeFilenameComponent(_ raw: String, fallback: String) -> String {
@@ -101,24 +148,17 @@ public final class SessionLogger: @unchecked Sendable {
             let safeName = sanitizeFilenameComponent(self.sessionName, fallback: "session")
             let safeUser = sanitizeFilenameComponent(self.username, fallback: "user")
             let safeHost = sanitizeFilenameComponent(self.host, fallback: "host")
-            let fileName = "\(dateStr)_\(safeName)_\(safeUser)@\(safeHost).log"
+            let uniqueSuffix = UUID().uuidString.prefix(8)
+            let fileName = "\(dateStr)_\(safeName)_\(safeUser)@\(safeHost)_\(uniqueSuffix).log"
             let fileURL = dir.appendingPathComponent(fileName)
             
-            if !FileManager.default.fileExists(atPath: fileURL.path) {
-                FileManager.default.createFile(atPath: fileURL.path, contents: nil)
-            }
             self.currentFileURL = fileURL
-            self.fileHandle = try? FileHandle(forWritingTo: fileURL)
+            self.fileHandle = self.openPrivateLogFile(at: fileURL)
             let existingSize = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? NSNumber)?.uint64Value ?? 0
             self.currentFileSize = existingSize
             
-            // Header stamp
-            let header = "=== AetherTerm Session Log Started at \(Date()) ===\n" +
-                         "=== Target: \(self.username)@\(self.host) [\(self.sessionName)] ===\n\n"
-            if let data = header.data(using: .utf8) {
-                self.fileHandle?.seekToEndOfFile()
-                self.fileHandle?.write(data)
-                self.currentFileSize += UInt64(data.count)
+            if let handle = self.fileHandle, let data = self.buildHeaderStamp(isRotation: false).data(using: .utf8) {
+                _ = self.writeLocked(data, to: handle)
             }
         }
     }
@@ -138,9 +178,7 @@ public final class SessionLogger: @unchecked Sendable {
                 dataToWrite = rawData
             }
             
-            handle.seekToEndOfFile()
-            handle.write(dataToWrite)
-            self.currentFileSize += UInt64(dataToWrite.count)
+            _ = self.writeLocked(dataToWrite, to: handle)
             
             // Rotate if exceeds threshold
             let limitBytes = UInt64(max(1, self.config.maxFileSizeMB)) * 1024 * 1024
@@ -152,7 +190,7 @@ public final class SessionLogger: @unchecked Sendable {
     
     private func rotateLogFile() {
         guard let oldURL = currentFileURL else { return }
-        fileHandle?.closeFile()
+        try? fileHandle?.close()
         fileHandle = nil
         
         // Find next rotation index .1, .2...
@@ -163,31 +201,36 @@ public final class SessionLogger: @unchecked Sendable {
             index += 1
         } while FileManager.default.fileExists(atPath: rotatedURL.path)
         
-        try? FileManager.default.moveItem(at: oldURL, to: rotatedURL)
+        do {
+            try FileManager.default.moveItem(at: oldURL, to: rotatedURL)
+        } catch {
+            _lastWriteError = error.localizedDescription
+        }
         
-        // Re-open clean active file
-        FileManager.default.createFile(atPath: oldURL.path, contents: nil)
-        fileHandle = try? FileHandle(forWritingTo: oldURL)
         currentFileSize = 0
+        fileHandle = openPrivateLogFile(at: oldURL)
+        if let handle = fileHandle, let data = buildHeaderStamp(isRotation: true).data(using: .utf8) {
+            _ = writeLocked(data, to: handle)
+        }
     }
     
     public func close() {
         queue.sync {
             guard !isClosed else { return }
             isClosed = true
-            if config.format == .plainText {
-                let trailing = Self.stripANSI(from: utf8Decoder.finish())
-                if !trailing.isEmpty, let trailingData = trailing.data(using: .utf8) {
-                    fileHandle?.seekToEndOfFile()
-                    fileHandle?.write(trailingData)
+            if let handle = fileHandle {
+                if config.format == .plainText {
+                    let trailing = Self.stripANSI(from: utf8Decoder.finish())
+                    if !trailing.isEmpty, let trailingData = trailing.data(using: .utf8) {
+                        _ = writeLocked(trailingData, to: handle)
+                    }
                 }
+                let footer = "\n=== AetherTerm Session Log Ended at \(Date()) ===\n"
+                if let data = footer.data(using: .utf8) {
+                    _ = writeLocked(data, to: handle)
+                }
+                try? handle.close()
             }
-            let footer = "\n=== AetherTerm Session Log Ended at \(Date()) ===\n"
-            if let data = footer.data(using: .utf8) {
-                fileHandle?.seekToEndOfFile()
-                fileHandle?.write(data)
-            }
-            fileHandle?.closeFile()
             fileHandle = nil
         }
     }

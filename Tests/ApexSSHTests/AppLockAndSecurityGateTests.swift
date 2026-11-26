@@ -75,7 +75,7 @@ final class AppLockAndSecurityGateTests: XCTestCase {
     }
 
     // MARK: - TC-V29-18: Idle timeout auto-lock and activity countdown reset
-    func testTCV29_18_IdleTimeoutAndRecordUserActivityReset() {
+    func testTCV29_18_IdleTimeoutAndRecordUserActivityReset() async {
         let (defaults, suite) = makeIsolatedDefaults()
         defer { defaults.removePersistentDomain(forName: suite) }
 
@@ -104,9 +104,9 @@ final class AppLockAndSecurityGateTests: XCTestCase {
         manager.checkIdleLock(now: resetBase.addingTimeInterval(300))
         XCTAssertTrue(manager.isLocked, "Elapsed time >= idleTimeoutSeconds must trigger lock")
 
-        // Idle timeout = 0 disables idle auto-locking.
-        manager.resetPreferences()
-        manager.appLockEnabled = true
+        // Idle timeout = 0 disables idle auto-locking (after unlocking or on a fresh unprotected session).
+        let unlocked = await manager.unlockWithAuthentication()
+        XCTAssertTrue(unlocked)
         manager.idleTimeoutSeconds = 0
         manager.checkIdleLock(now: Date().addingTimeInterval(86_400))
         XCTAssertFalse(manager.isLocked, "idleTimeoutSeconds == 0 must never auto-lock on idle")

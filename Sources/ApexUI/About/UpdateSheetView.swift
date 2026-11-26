@@ -360,7 +360,7 @@ public struct UpdateSheetView: View {
             HStack(spacing: ApexStyle.s2) {
                 Spacer()
                 ApexActionButton(
-                    "完成",
+                    L10n.closeWindow,
                     tint: ApexStyle.accent,
                     size: .regular,
                     isProminent: true

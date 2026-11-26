@@ -2,6 +2,55 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.30.0] - 2026-11-26 (Build 2026112602)
+
+### ✨ 新增特性 (Features)
+- **敏感剪贴板隐蔽写入与自动清空 (`SensitivePasteboardHelper`, `AppSettings`, `SettingsView`, `SSHKeyVaultSettingsView`, `SidebarView`, `GroupShareExportSheet`)**：
+  - 新增 `SensitivePasteboardHelper`，写入密码、私钥、分享口令等敏感数据时附加 macOS `ConcealedType` / `TransientType` 标记，并按用户配置的超时（默认 30 秒，基于 `changeCount` 校验）自动清空剪贴板，避免覆盖用户后续复制内容；
+  - 将密钥保险库私钥复制、侧边栏凭据复制及 `.aetherpack` 随机分享口令复制全链路接入隐蔽剪贴板与 `AppLockManager` 敏感操作鉴权，并在偏好设置中提供可配置自动清空时长。
+- **外部编辑远端冲突检测与并发保护 (`ExternalEditSessionManager`, `SFTPView`)**：
+  - 打开外部编辑前记录远端文件元信息基线（`RemoteFileMetadata`），自动回传前再次探测远端 `stat`；若发现远端已被其他操作修改，立即转入 `.conflict` 状态暂停覆盖并弹出冲突处理提示（强制覆盖或重载远端），防止静默丢失远端变更；
+  - 支持 `> 50 MB` 大文件编辑前确认、分块流式 `SHA-256` 校验与并发编辑队列隔离，关闭会话或退出应用时自动取消在途上传并清理隔离暂存目录。
+- **单源快捷键注册表与设置偏好联动 (`ApexShortcutRegistry`, `ShortcutsSheetView`, `CommandPaletteItem`, `ApexTermApp`)**：
+  - 建立 `ApexShortcutRegistry` 作为全局快捷键唯一真源，零重复快捷键冲突，将「切换 SFTP 面板」调整为 `⌘⌥S`（释放 `⌘⇧F` 专用于 SFTP 远端搜索），并补齐命令面板 7 项缺失全局动作（广播输入、锁定应用、进程检查器、复制上条输出、重连、新建连接、导入 SSH Config）；
+  - 在 `AppSettings` 与 `SettingsView`（维持 6 标签页紧凑无溢出布局）新增 `Option` 键作为 `Meta`（默认关闭）与中文标点自动转换开关，并接入 `TerminalViewBridge` 与系统外观跟随。
+
+### ⚡️ 体验优化 (Improvements)
+- **应用锁全生命周期与菜单门禁强化 (`AppLockManager`, `ApexTermApp`, `AppLockOverlayView`, `DesktopNotificationManager`)**：
+  - 将闲置超时与 `willResignActive` 自动锁定观察器迁移至 `ApexTermAppDelegate`，确保关闭主窗口后自动锁定依然有效；锁定瞬间自动关闭所有应用级弹窗、屏蔽除「锁定/显示主窗口」外的所有菜单快捷键，并延迟锁屏期间的 `.aetherpack` 导入与通知跳页直至解锁；
+  - 对「关闭应用锁」「关闭敏感操作鉴权」「提高闲置锁定阈值」与 `AppSettings.resetToDefaults()` 实施身份认证保护，防止未经授权降级安全策略；锁屏状态下的桌面通知自动脱敏隐藏主机与命令详情。
+- **跨发行版运维监控、批量执行与多跳隧道优化 (`BatchOperationsManager`, `SSHTunnelManager`, `AgentlessMonitor`, `ProcessInspectorView`, `MetricCapsuleView`)**：
+  - `BatchOperationsManager` 新增单主机可配置执行超时（默认 60 秒，超时强制终止并返回 `.failed("执行超时")`）、stdout/stderr 单流 `512 KB` 上限保护与连接池 `ControlPersist` 禁用，避免长时间挂起与内存/Mux 进程泄漏；批量面板支持按全部/失败/成功过滤结果与运行中关闭确认；
+  - `SSHTunnelManager` 新增 `SSHTunnelState.canStop` 与 App Store 沙盒 `ApexSSHBridge` 授权透传、连接超时探测及修改配置后自动重启运行中隧道；`AgentlessMonitor` 强制 `LC_ALL=C`、支持 BusyBox `ps` 回退与 `docker -> podman` 容器探测回退，并联行拉取进程/服务/端口检查数据。
+- **快捷编辑文本编解码与 SFTP 键盘导航体验 (`QuickEditorView`, `NativeCodeEditor`, `TransferDrawer`, `SFTPView`)**：
+  - `QuickEditorTextCodec` 支持二进制文件防护（NUL 字节与控制字符比例拦截）及 UTF-8 / UTF-16 LE/BE / GB18030 / Latin1 与 LF/CRLF 检测无损回写；状态栏展示当前编码、换行符与大文件（`> 512 KB`）高亮降级提示，语法高亮分词移出主线程；
+  - `SFTPView` 支持文件列表键盘导航（回车、`⌘↑`、`⌘⌫`、`⌘R`、`Space`）及跟随分屏焦点的 `paneID`/`isTabActive` 自动刷新；`TransferDrawer` 支持失败/取消任务保留安全书签一键重试；广播栏新增多主机远端连接二次确认与目标窗格红/琥珀色警示边框。
+
+### 🐞 问题修复 (Bug Fixes)
+- **修复在线更新、密钥库与本地 PTY 生命周期隐患 (`UpdateManager`, `SSHKeyVaultManager`, `SessionLogger`, `LocalTerminalSession`)**：
+  - 为 `UpdateManager` 补齐 SHA-256 校验与 `codesign` Team ID（`5984KQD4D7`）验证、更新日志落盘与退出更新前的同步清理钩子（停止隧道、取消传输、清理临时密钥与外部编辑暂存）；
+  - 修复密钥物化与审计日志竞态（`O_EXCL` `0o600` 原子创建、导入失败 Keychain 回滚、UUID 后缀防碰撞）；修复 `LocalTerminalSession` 控制终端分配与异步 `waitpid` 回收，防止 `SIGKILL` 误杀已回收 PID 及子进程退出时丢失尾部输出。
+- **修复 VT 解析器越界崩溃、SGR 污染与查找区间越界 (`VTParser`, `RingBuffer`, `SGRStyle`, `TerminalViewBridge`, `DirectoryChangeStreamParser`, `ShellIntegrationTracker`)**：
+  - 修复未闭合 OSC 与末尾孤立转义符导致的 `String` 索引越界崩溃，补全 ECMA-48 CSI 参数/中间字节解析；过滤 CSI 私有前缀与非数字 SGR 参数污染，并在退出备用屏幕时恢复普通模式样式；
+  - 修复清屏/备用屏幕切换/回滚淘汰后搜索命中区间越界，恢复本地 `Shift` 大小写映射、非输入法状态 `Option-as-Meta` 修饰以及 `OSC 133;C` 跨行命令文本恢复。
+- **修复 SFTP 目录覆盖嵌套、SSH 2FA 误喂密与沙盒路径兼容 (`SFTPRemoteOperations`, `NativeSSHSession`, `KnownHostsManager`, `TerminalFontManager`)**：
+  - 修复拖拽上传替换同名远端目录时发生嵌套的缺陷，改为确认后先原子清理旧目录再上传；所有远端打包/解压/软链接操作校验 `exitCode == 0` 并透传 `stderr`；
+  - 修复 `NativeSSHSession` 短控制套接字路径碰撞、`ControlPath=none` 高频探测以及 2FA/TOTP 提示误填登录密码问题；修复多字重等宽字体回退与 Nerd Font 误判；全库维持 Zero-Bundle 合规（无硬编码服务器 IP、明文密码或私钥）。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- **全量自动化测试与 Tart VM 真机链路验证 (`./scripts/test_vm_acceptance.sh`)**：
+  - 全量执行 **788 项** XCTest（`ApexSSHTests` 678 项、`ApexCoreTests` 110 项；782 通过 / 6 环境条件跳过 / **0 失败**），覆盖 `TC-V30-01 ~ TC-V30-28`（29/29 通过）、`TC-V29-01 ~ TC-V29-20`（20/20 通过）与 `RG-08 ~ RG-15` 全线门禁，含 **Tart VM (`macos27`) 真实 SSH/SFTP/监控集成测试 10/10 全部通过**；Swift 6 `-warnings-as-errors` 零警告。
+  - 真实公网 Linux 服务器端到端验证：`PublicServerIntegrationTests` 5/5 全部通过，并完成外部编辑远端冲突拦截、目录覆盖无嵌套、远端命令非零退出码与批量执行超时/输出上限/零 Mux 泄漏等实时链路验收。
+- **8 大 Release 性能基准测试 (`FullPerformanceBenchmarkTests` + `verify_release_benchmarks.py`, 8/8 通过)**：
+  - `[Benchmark 1]` RingBuffer 写入吞吐：`1,708,756 行/秒`（`172.74 MB/秒`）
+  - `[Benchmark 2]` ANSI / TrueColor 颜色解析：`411,193 spans/秒`
+  - `[Benchmark 3]` 内存水位与驻留集（RSS）：Release 峰值 `102.03 MB`（符合 `≤ 250 MB` 门禁）
+  - `[Benchmark 4]` 16 线程并发写入吞吐：`2,469,689 writes/秒`
+  - `[Benchmark 5]` 64 核 Linux 指标解析：`14,906 次/秒`
+  - `[Benchmark 6]` OpenSSH 500 主机批量解析：`153,635 hosts/秒`
+  - `[Benchmark 7]` SFTP 100 任务并发调度：`1,005 tasks/秒`
+  - `[Benchmark 8]` 终端按键直通延迟：`5.84 μs`
+
 ## [v1.29.0] - 2026-11-26
 
 ### ✨ 新增特性 (Features)

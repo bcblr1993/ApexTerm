@@ -2,6 +2,46 @@
 
 本项目的版本记录严格遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 与 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 规范。
 
+## [v1.29.0] - 2026-11-26
+
+### ✨ 新增特性 (Features)
+- **SFTP 外部编辑器编辑与自动回传热同步 (`ExternalEditSessionManager`, `SFTPView`)**：
+  - 支持在 SFTP 文件列表中选择本机已安装的外部编辑器（如 VS Code、Cursor、Zed、CotEditor 等）打开远程文件，自动下载至隔离暂存目录并记录初始 SHA-256 摘要；
+  - 监听本地文件保存与原子替换（`replaceItemAt`）事件，内容发生实质变化时通过防抖机制自动回传至远端，相同内容不触发冗余上传；支持失败重试、按标签页清理暂存会话及编辑状态指示。
+- **多主机批量命令执行与文件分发 (`BatchOperationsManager`, `BatchOperationsSheet`, `NativeSSHSession`, `SidebarView`)**：
+  - 支持从侧边栏分组或命令面板发起多主机并发批量命令执行与 SFTP 文件批量分发，内置可控并发上限、单机失败/非零退出码隔离与任务取消保护；
+  - 支持仅重试失败主机（`retryFailedHosts`）、查看每台主机的 stdout/stderr/退出码/耗时与传输进度，以及导出 CSV / Markdown 执行报告。
+- **后台长命令完成与 OSC 9 / 777 桌面通知 (`DesktopNotificationManager`, `ShellIntegrationTracker`, `TerminalRingBuffer`, `WorkspaceView`)**：
+  - 结合 OSC 133 Shell 集成追踪命令耗时与退出码，后台标签页或非激活窗口长耗时命令完成时自动发送原生 macOS 桌面通知；
+  - 支持解析终端 `OSC 9` / `OSC 777` 通知序列（自动忽略 `OSC 9;4` 进度序列），内置控制字符清洗、1024 字节长度上限、单标签页防刷屏限流及点击通知自动聚焦对应标签页。
+- **Touch ID 应用锁与敏感操作二次验证 (`AppLockManager`, `AppLockOverlayView`, `ApexTermApp`, `SSHKeyVaultSettingsView`, `GroupShareExportSheet`, `SessionEditModal`)**：
+  - 新增 `AppLockManager`（`LocalAuthentication`），支持 `⌘⇧L` 手动锁定、闲置超时自动锁定与切至后台自动锁定，锁定时通过毛玻璃遮罩完全隐藏工作区与凭据信息；
+  - 支持敏感操作门禁：查看已保存密码/口令、导出含凭据 `.aetherpack` 分享包及查看/复制/导出密钥保险库私钥前均要求通过 Touch ID 或系统密码验证。
+
+### ⚡️ 体验优化 (Improvements)
+- **全局命令面板、设置集成与全链路联动 (`SettingsView`, `CommandPaletteItem`, `AppSettings`, `WorkspaceView`)**：
+  - 保持设置窗口 6 标签页紧凑无溢出布局，将外部编辑器、桌面通知与安全应用锁选项整合至偏好设置并支持 `AppSettings.resetToDefaults()`；在命令面板与菜单栏补齐批量运维、外部编辑同步与锁定应用入口。
+- **锁安全与并发输出流加固 (`ShellIntegrationTracker`, `TerminalRingBuffer`, `NativeSSHSession`)**：
+  - 确保 `ShellIntegrationTracker.onCommandCompleted` 与 `TerminalRingBuffer.onDesktopNotification` 回调严格在 `NSLock` 释放后派发，防止回调重入死锁；`NativeSSHSession.runProcessWithOutput` 并发排空 stdout/stderr 管道以避免大输出阻塞。
+
+### 🐞 问题修复 (Bug Fixes)
+- **稳定性与安全边界加固**：
+  - 完善多主机批量取消状态标记、通知内容控制字符过滤及外部编辑退出清理机制，防止残留临时文件与误触发通知；全库保持 Zero-Bundle 安全合规（无硬编码 IP、明文凭据或私钥残留）。
+
+### 🧪 质量门禁与性能对比 (Verification & Benchmarks)
+- **全量自动化测试与 Tart VM 真机链路验证 (`./scripts/test_vm_acceptance.sh`)**：
+  - 全量执行 **759 项** XCTest（`ApexSSHTests` 649 项、`ApexCoreTests` 110 项；753 通过 / 6 环境条件跳过 / **0 失败**），覆盖 `TC-V29-01 ~ TC-V29-20`（20/20 通过）、`TC-V24-01 ~ TC-V24-20`（20/20 通过）、`TC-TERM-01 ~ TC-TERM-08`（8/8 通过）与 `RG-08 ~ RG-13`，含 **Tart VM (`macos27`) 真实 SSH/SFTP/监控集成测试 10/10 全部通过**；Swift 6 `-warnings-as-errors` 零警告。
+  - 真实公网 Linux 服务器端到端验证：`PublicServerIntegrationTests` 5/5 全部通过，并完成外部编辑器保存回传、多主机批量执行/分发、Live PTY 通知与 App Lock 4 项实时链路验收。
+- **8 大 Release 性能基准测试 (`FullPerformanceBenchmarkTests` + `verify_release_benchmarks.py`, 8/8 通过)**：
+  - `[Benchmark 1]` RingBuffer 写入吞吐：`1,707,330 行/秒`（`172.59 MB/秒`）
+  - `[Benchmark 2]` ANSI / TrueColor 颜色解析：`334,264 spans/秒`
+  - `[Benchmark 3]` 内存水位与驻留集（RSS）：Release 峰值 `101.39 MB`（符合 `≤ 250 MB` 门禁）
+  - `[Benchmark 4]` 16 线程并发写入吞吐：`2,804,324 writes/秒`
+  - `[Benchmark 5]` 64 核 Linux 指标解析：`15,606 次/秒`
+  - `[Benchmark 6]` OpenSSH 500 主机批量解析：`159,513 hosts/秒`
+  - `[Benchmark 7]` SFTP 100 任务并发调度：`904 tasks/秒`
+  - `[Benchmark 8]` 终端按键直通延迟：`5.60 μs`
+
 ## [v1.28.0] - 2026-11-25
 
 ### ✨ 新增特性 (Features)

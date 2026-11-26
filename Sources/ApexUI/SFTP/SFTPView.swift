@@ -142,6 +142,9 @@ public struct SFTPView: View {
     // Sort and visibility
     @State private var showHiddenFiles = AppSettings.shared.showHiddenFiles
     @ObservedObject private var bookmarkManager = SFTPBookmarkManager.shared
+    @ObservedObject private var externalEditManager = ExternalEditSessionManager.shared
+    @State private var isShowingExternalEditPopover = false
+    @State private var installedEditors: [ExternalEditorApp] = []
     
     // File operations state
     @State private var itemToDelete: SFTPItem?
@@ -426,6 +429,10 @@ public struct SFTPView: View {
             .disabled(connectionState != .connected)
 
             Divider().frame(height: 14)
+
+            if !tabExternalEditSessions.isEmpty {
+                externalEditToolbarButton(compact: compact)
+            }
 
             // Transfer records drawer toggle button
             TransferToolbarButton(isExpanded: transferDrawerExpandedBinding, compact: compact)
@@ -882,8 +889,16 @@ public struct SFTPView: View {
         .onAppear {
             showHiddenFiles = themeSettings.showHiddenFiles
             pathInput = currentPath
+            if installedEditors.isEmpty {
+                installedEditors = ExternalEditSessionManager.installedEditors()
+            }
             updateDisplayItems()
             loadDirectory(path: currentPath)
+        }
+        .onChange(of: tabExternalEditSessions.isEmpty) { _, isEmpty in
+            if isEmpty {
+                isShowingExternalEditPopover = false
+            }
         }
         .onChange(of: currentPath) { oldPath, newPath in
             // Focus alone is not an edit: follow directory changes until a draft differs.
@@ -1117,6 +1132,40 @@ public struct SFTPView: View {
                     selectedPaths = [item.path]
                     openEditor(item)
                 }
+                Menu("使用外部编辑器打开") {
+                    Button {
+                        selectedPaths = [item.path]
+                        openInExternalEditor(item, editorBundleID: "", editorAppURL: nil)
+                    } label: {
+                        Label("系统默认应用", systemImage: "arrow.up.forward.app")
+                    }
+
+                    let editors = installedEditors.isEmpty ? ExternalEditSessionManager.installedEditors() : installedEditors
+                    if !editors.isEmpty {
+                        Divider()
+                        ForEach(editors) { editor in
+                            let isPreferred = externalEditManager.preferredEditorBundleID == editor.bundleID
+                            Button {
+                                selectedPaths = [item.path]
+                                openInExternalEditor(item, editorBundleID: editor.bundleID, editorAppURL: editor.appURL)
+                            } label: {
+                                Label(
+                                    isPreferred ? "\(editor.name)（首选）" : editor.name,
+                                    systemImage: isPreferred ? "checkmark.circle" : "app"
+                                )
+                            }
+                        }
+                    }
+
+                    Divider()
+                    Button {
+                        selectedPaths = [item.path]
+                        chooseExternalEditorAndOpen(item)
+                    } label: {
+                        Label("选择应用...", systemImage: "folder")
+                    }
+                }
+                .disabled(connectionState != .connected)
             }
             Button("属性与校验和 (SHA-256)...") {
                 selectedPaths = [item.path]
@@ -1660,6 +1709,93 @@ public struct SFTPView: View {
             }
         } else {
             openEditor(item)
+        }
+    }
+
+    private var tabExternalEditSessions: [ExternalEditSessionManager.ActiveEditSession] {
+        externalEditManager.sessions(forTabID: tabID)
+    }
+
+    @ViewBuilder
+    private func externalEditToolbarButton(compact: Bool) -> some View {
+        let sessions = tabExternalEditSessions
+        let hasError = sessions.contains(where: { $0.status.isError })
+        let isBusy = sessions.contains(where: { $0.status.isBusy })
+        let chipTint: Color = hasError ? ApexStyle.error : ApexStyle.accent
+        let iconName = hasError
+            ? "exclamationmark.triangle.fill"
+            : (isBusy ? "arrow.triangle.2.circlepath" : "square.and.pencil")
+        let title = "外编 (\(sessions.count))"
+
+        SFTPToolbarChip(
+            title: title,
+            compact: compact,
+            isHighlighted: isShowingExternalEditPopover || isBusy || hasError,
+            tint: chipTint
+        ) {
+            isShowingExternalEditPopover.toggle()
+        } icon: {
+            Image(systemName: iconName)
+                .font(.system(size: 11, weight: .medium))
+        }
+        .accessibilityLabel("外部编辑同步状态，当前 \(sessions.count) 个文件")
+        .accessibilityAddTraits(isShowingExternalEditPopover ? .isSelected : [])
+        .help("查看或管理当前标签页的外部编辑器实时同步任务")
+        .popover(isPresented: $isShowingExternalEditPopover, arrowEdge: .bottom) {
+            SFTPExternalEditPopover(
+                manager: externalEditManager,
+                sessions: sessions,
+                onClose: { isShowingExternalEditPopover = false }
+            )
+            .apexTheme()
+            .onExitCommand { isShowingExternalEditPopover = false }
+        }
+    }
+
+    private func openInExternalEditor(
+        _ item: SFTPItem,
+        editorBundleID: String?,
+        editorAppURL: URL?
+    ) {
+        guard let session, Self.shouldLoadDirectory(for: connectionState) else { return }
+        let sessionName = session.session.name
+        let currentTabID = tabID
+        Task {
+            do {
+                let active = try await externalEditManager.openInExternalEditor(
+                    session: session,
+                    tabID: currentTabID,
+                    sessionName: sessionName,
+                    remotePath: item.path,
+                    editorBundleID: editorBundleID,
+                    editorAppURL: editorAppURL
+                )
+                self.setNotice(
+                    "已在 \(active.editorName) 中打开「\(item.name)」，保存将自动同步",
+                    kind: .info,
+                    autoDismissAfter: 3.0
+                )
+            } catch {
+                self.setNotice(
+                    "外部编辑器打开失败：\(error.localizedDescription)",
+                    kind: .error
+                )
+            }
+        }
+    }
+
+    private func chooseExternalEditorAndOpen(_ item: SFTPItem) {
+        let panel = NSOpenPanel()
+        panel.title = "选择外部编辑器"
+        panel.message = "选择用于编辑「\(item.name)」的应用程序"
+        panel.allowedContentTypes = [.applicationBundle, .application]
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        if panel.runModal() == .OK, let appURL = panel.url {
+            let bundleID = Bundle(url: appURL)?.bundleIdentifier
+            openInExternalEditor(item, editorBundleID: bundleID, editorAppURL: appURL)
         }
     }
 
@@ -2999,6 +3135,7 @@ private struct SFTPToolbarChip<Icon: View>: View {
     let title: String?
     let compact: Bool
     let isHighlighted: Bool
+    let tint: Color
     let action: () -> Void
     @ViewBuilder let icon: () -> Icon
 
@@ -3009,12 +3146,14 @@ private struct SFTPToolbarChip<Icon: View>: View {
         title: String?,
         compact: Bool = false,
         isHighlighted: Bool = false,
+        tint: Color = ApexStyle.accent,
         action: @escaping () -> Void,
         @ViewBuilder icon: @escaping () -> Icon
     ) {
         self.title = title
         self.compact = compact
         self.isHighlighted = isHighlighted
+        self.tint = tint
         self.action = action
         self.icon = icon
     }
@@ -3030,14 +3169,14 @@ private struct SFTPToolbarChip<Icon: View>: View {
                         .lineLimit(1)
                 }
             }
-            .foregroundStyle(isHighlighted ? ApexStyle.accent : ApexStyle.primary)
+            .foregroundStyle(isHighlighted ? tint : ApexStyle.primary)
             .padding(.horizontal, compact ? 6 : 8)
             .frame(height: 24)
             .background(
                 RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
                     .fill(
                         isHighlighted
-                            ? ApexStyle.accent.opacity(isHovered && isEnabled ? 0.20 : 0.14)
+                            ? tint.opacity(isHovered && isEnabled ? 0.20 : 0.14)
                             : (isHovered && isEnabled ? ApexStyle.primary.opacity(0.06) : ApexStyle.subtleSurface)
                     )
             )
@@ -3045,7 +3184,7 @@ private struct SFTPToolbarChip<Icon: View>: View {
                 RoundedRectangle(cornerRadius: ApexStyle.controlRadius)
                     .stroke(
                         isHighlighted
-                            ? ApexStyle.accent.opacity(isHovered && isEnabled ? 0.55 : 0.40)
+                            ? tint.opacity(isHovered && isEnabled ? 0.55 : 0.40)
                             : ApexStyle.border.opacity(isHovered && isEnabled ? 0.95 : 0.70),
                         lineWidth: 0.75
                     )
@@ -3058,6 +3197,174 @@ private struct SFTPToolbarChip<Icon: View>: View {
             withAnimation(ApexStyle.hoverTransition) {
                 isHovered = hovering
             }
+        }
+    }
+}
+
+private struct SFTPExternalEditPopover: View {
+    @ObservedObject var manager: ExternalEditSessionManager
+    let sessions: [ExternalEditSessionManager.ActiveEditSession]
+    let onClose: () -> Void
+
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter
+    }()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "square.and.pencil")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(ApexStyle.accent)
+                Text("外部编辑实时同步 (\(sessions.count))")
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .monospacedDigit()
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                Toggle("自动上传", isOn: $manager.autoUploadOnSave)
+                    .toggleStyle(.switch)
+                    .controlSize(.mini)
+                    .font(.system(size: 11))
+                    .help("开启后，外部编辑器保存文件且内容变化时将自动回传至服务器")
+            }
+            .padding(.horizontal, ApexStyle.s4)
+            .padding(.vertical, 10)
+            .background(ApexStyle.subtleSurface)
+
+            Divider()
+
+            ScrollView(.vertical) {
+                LazyVStack(spacing: 0) {
+                    ForEach(Array(sessions.enumerated()), id: \.element.id) { index, editSession in
+                        if index > 0 {
+                            Divider()
+                        }
+                        sessionRow(editSession)
+                    }
+                }
+            }
+            .frame(maxHeight: 240)
+
+            Divider()
+
+            HStack(spacing: 8) {
+                Text("SHA-256 校验 · 保存后自动同步")
+                    .font(.caption2)
+                    .foregroundStyle(ApexStyle.secondary)
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                if sessions.count > 1 {
+                    ApexActionButton("全部停止", tint: ApexStyle.error, size: .small) {
+                        for item in sessions {
+                            manager.stopSession(id: item.id)
+                        }
+                        onClose()
+                    }
+                }
+                ApexActionButton("关闭", tint: ApexStyle.secondary, size: .small) {
+                    onClose()
+                }
+            }
+            .padding(.horizontal, ApexStyle.s4)
+            .padding(.vertical, 8)
+            .background(ApexStyle.subtleSurface)
+        }
+        .frame(width: 360)
+        .background(ApexStyle.surface)
+    }
+
+    @ViewBuilder
+    private func sessionRow(_ editSession: ExternalEditSessionManager.ActiveEditSession) -> some View {
+        HStack(alignment: .center, spacing: 8) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(editSession.fileName)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(ApexStyle.primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                Text("\(editSession.editorName) · \(editSession.remotePath)")
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundStyle(ApexStyle.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(editSession.remotePath)
+
+                statusLabel(for: editSession)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            HStack(spacing: 4) {
+                ApexIconButton(
+                    icon: "arrow.up.circle",
+                    label: "立即上传同步",
+                    size: 24,
+                    iconSize: 12,
+                    tint: editSession.status.isError ? ApexStyle.error : ApexStyle.accent
+                ) {
+                    Task {
+                        await manager.triggerManualUpload(id: editSession.id)
+                    }
+                }
+                .disabled(editSession.status.isBusy)
+
+                ApexIconButton(
+                    icon: "arrow.up.forward.app",
+                    label: "在外部编辑器中打开",
+                    size: 24,
+                    iconSize: 11
+                ) {
+                    Task {
+                        try? await manager.reopenInEditor(id: editSession.id)
+                    }
+                }
+
+                ApexIconButton(
+                    icon: "stop.circle",
+                    label: "停止监听并清理临时文件",
+                    size: 24,
+                    iconSize: 12,
+                    tint: ApexStyle.secondary
+                ) {
+                    manager.stopSession(id: editSession.id)
+                }
+            }
+            .fixedSize()
+        }
+        .padding(.horizontal, ApexStyle.s4)
+        .padding(.vertical, 10)
+    }
+
+    @ViewBuilder
+    private func statusLabel(for editSession: ExternalEditSessionManager.ActiveEditSession) -> some View {
+        switch editSession.status {
+        case .downloading:
+            Text("正在下载到本地临时区…")
+                .font(.caption2)
+                .foregroundStyle(ApexStyle.accent)
+        case .watching:
+            Text(manager.autoUploadOnSave ? "监听修改中" : "已暂停自动上传（可手动同步）")
+                .font(.caption2)
+                .foregroundStyle(manager.autoUploadOnSave ? ApexStyle.secondary : ApexStyle.warning)
+        case .uploading:
+            Text("正在同步上传…")
+                .font(.caption2)
+                .foregroundStyle(ApexStyle.accent)
+        case .synced:
+            let timeText = editSession.lastSyncedAt.map { " · \(Self.timeFormatter.string(from: $0))" } ?? ""
+            Text("已同步\(timeText)")
+                .font(.caption2)
+                .monospacedDigit()
+                .foregroundStyle(ApexStyle.success)
+        case .error(let message):
+            Text("同步失败：\(message)")
+                .font(.caption2)
+                .foregroundStyle(ApexStyle.error)
+                .lineLimit(2)
+                .help(message)
         }
     }
 }

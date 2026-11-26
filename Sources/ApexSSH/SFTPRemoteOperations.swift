@@ -72,12 +72,106 @@ public enum SFTPRemoteOperations: Sendable {
             || lower.hasSuffix(".zip")
     }
 
-    private static func isSafeRelativeName(_ name: String) -> Bool {
+    public static func isSafeRelativeName(_ name: String) -> Bool {
         !name.isEmpty
             && name != "."
             && name != ".."
             && !name.contains("/")
             && !name.contains("\0")
+    }
+
+    public static func isValidOctalPermissions(_ mode: String) -> Bool {
+        let trimmed = mode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count == 3 || trimmed.count == 4 else { return false }
+        return trimmed.unicodeScalars.allSatisfy { $0 >= "0" && $0 <= "7" }
+    }
+
+    public static func removeDirectoryCommand(remotePath: String) -> String? {
+        let trimmed = remotePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              trimmed != "/",
+              trimmed != "~",
+              trimmed != ".",
+              trimmed != "..",
+              !containsPathTraversal(trimmed) else {
+            return nil
+        }
+        return "rm -rf -- \(shellQuotedRemotePath(trimmed))"
+    }
+
+    public static func chmodRecursiveCommand(remotePath: String, permissions: String) -> String? {
+        let path = remotePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        let mode = permissions.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty,
+              !containsPathTraversal(path),
+              isValidOctalPermissions(mode) else {
+            return nil
+        }
+        return "chmod -R -- \(posixSingleQuoted(mode)) \(shellQuotedRemotePath(path))"
+    }
+
+    public static func formatCommandFailure(_ result: SSHCommandResult, fallback: String? = nil) -> String? {
+        guard result.exitCode != 0 else { return nil }
+        let detail = [result.stderr, result.stdout]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty }
+        return detail ?? fallback ?? "命令执行失败 (退出码 \(result.exitCode))"
+    }
+
+    public static func availableRemoteName(
+        for desiredName: String,
+        isDirectory: Bool,
+        existingNames: Set<String>
+    ) -> String {
+        guard existingNames.contains(desiredName) else { return desiredName }
+        let (stem, ext) = splitStemAndExtension(desiredName, isDirectory: isDirectory)
+        var index = 2
+        while true {
+            let candidate = ext.isEmpty ? "\(stem) (\(index))" : "\(stem) (\(index)).\(ext)"
+            if !existingNames.contains(candidate) {
+                return candidate
+            }
+            index += 1
+        }
+    }
+
+    private static func splitStemAndExtension(_ name: String, isDirectory: Bool) -> (String, String) {
+        guard !isDirectory, !name.hasPrefix(".") else {
+            return (name, "")
+        }
+        let compoundSuffixes = ["tar.gz", "tar.bz2", "tar.xz", "tar.zst"]
+        let lower = name.lowercased()
+        for compound in compoundSuffixes {
+            if lower.hasSuffix("." + compound), name.count > compound.count + 1 {
+                let cutIndex = name.index(name.endIndex, offsetBy: -(compound.count + 1))
+                return (String(name[..<cutIndex]), compound)
+            }
+        }
+        if let dot = name.lastIndex(of: "."), dot > name.startIndex {
+            return (String(name[..<dot]), String(name[name.index(after: dot)...]))
+        }
+        return (name, "")
+    }
+
+    public enum SFTPSymlinkTargetKind: Sendable, Equatable {
+        case regularFile
+        case directory
+        case broken
+        case unknown
+    }
+
+    public static func symlinkProbeCommand(remotePath: String) -> String? {
+        let trimmed = remotePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !containsPathTraversal(trimmed) else { return nil }
+        let quoted = shellQuotedRemotePath(trimmed)
+        return "if [ -d \(quoted) ]; then echo '__AETHER_SYMLINK_DIR__'; elif [ -f \(quoted) ]; then echo '__AETHER_SYMLINK_FILE__'; elif [ -L \(quoted) ]; then echo '__AETHER_SYMLINK_BROKEN__'; else echo '__AETHER_SYMLINK_UNKNOWN__'; fi"
+    }
+
+    public static func parseSymlinkProbeOutput(_ raw: String) -> SFTPSymlinkTargetKind {
+        if raw.contains("__AETHER_SYMLINK_DIR__") { return .directory }
+        if raw.contains("__AETHER_SYMLINK_FILE__") { return .regularFile }
+        if raw.contains("__AETHER_SYMLINK_BROKEN__") { return .broken }
+        return .unknown
     }
 
     private static func containsPathTraversal(_ path: String) -> Bool {

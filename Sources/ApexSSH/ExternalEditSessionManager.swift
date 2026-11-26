@@ -25,11 +25,57 @@ public struct ExternalEditorApp: Identifiable, Hashable, Sendable {
 public final class ExternalEditSessionManager: ObservableObject {
     public static let shared = ExternalEditSessionManager()
 
+    public struct RemoteFileMetadata: Equatable, Sendable {
+        public let mtime: TimeInterval?
+        public let size: Int64?
+        public let sha256: String?
+
+        public init(mtime: TimeInterval? = nil, size: Int64? = nil, sha256: String? = nil) {
+            self.mtime = mtime
+            self.size = size
+            self.sha256 = sha256
+        }
+
+        public func hasChanged(comparedTo baseline: RemoteFileMetadata) -> Bool {
+            if let currentHash = sha256?.lowercased(), !currentHash.isEmpty,
+               let baseHash = baseline.sha256?.lowercased(), !baseHash.isEmpty {
+                return currentHash != baseHash
+            }
+            if let currentSize = size, let baseSize = baseline.size, currentSize != baseSize {
+                return true
+            }
+            if let currentMtime = mtime, let baseMtime = baseline.mtime, abs(currentMtime - baseMtime) > 0.001 {
+                return true
+            }
+            return false
+        }
+    }
+
+    public struct RemoteConflictState: Equatable, Sendable {
+        public let baselineMetadata: RemoteFileMetadata?
+        public let remoteMetadata: RemoteFileMetadata
+        public let detectedAt: Date
+        public let localHash: Data
+
+        public init(
+            baselineMetadata: RemoteFileMetadata?,
+            remoteMetadata: RemoteFileMetadata,
+            detectedAt: Date = Date(),
+            localHash: Data = Data()
+        ) {
+            self.baselineMetadata = baselineMetadata
+            self.remoteMetadata = remoteMetadata
+            self.detectedAt = detectedAt
+            self.localHash = localHash
+        }
+    }
+
     public enum SyncStatus: Equatable, Sendable {
         case downloading
         case watching
         case uploading
         case synced
+        case conflict(RemoteConflictState)
         case error(String)
 
         public var isBusy: Bool {
@@ -41,6 +87,11 @@ public final class ExternalEditSessionManager: ObservableObject {
 
         public var isError: Bool {
             if case .error = self { return true }
+            return false
+        }
+
+        public var isConflict: Bool {
+            if case .conflict = self { return true }
             return false
         }
     }
@@ -55,6 +106,7 @@ public final class ExternalEditSessionManager: ObservableObject {
         public var status: SyncStatus
         public var lastSyncedAt: Date?
         public var lastHash: Data
+        public var baselineMetadata: RemoteFileMetadata?
 
         public init(
             id: UUID,
@@ -65,7 +117,8 @@ public final class ExternalEditSessionManager: ObservableObject {
             editorName: String,
             status: SyncStatus,
             lastSyncedAt: Date? = nil,
-            lastHash: Data = Data()
+            lastHash: Data = Data(),
+            baselineMetadata: RemoteFileMetadata? = nil
         ) {
             self.id = id
             self.tabID = tabID
@@ -76,6 +129,7 @@ public final class ExternalEditSessionManager: ObservableObject {
             self.status = status
             self.lastSyncedAt = lastSyncedAt
             self.lastHash = lastHash
+            self.baselineMetadata = baselineMetadata
         }
 
         public var fileName: String {
@@ -86,6 +140,7 @@ public final class ExternalEditSessionManager: ObservableObject {
 
     public typealias DownloadHandler = @Sendable (_ remotePath: String, _ localURL: URL) async throws -> Void
     public typealias UploadHandler = @Sendable (_ localURL: URL, _ remotePath: String) async throws -> Void
+    public typealias MetadataProbeHandler = @Sendable (_ remotePath: String) async throws -> RemoteFileMetadata?
     public typealias OpenHandler = @MainActor (_ localURL: URL, _ editorBundleID: String?, _ editorAppURL: URL?) async throws -> String
 
     // MARK: - Preferences
@@ -135,14 +190,19 @@ public final class ExternalEditSessionManager: ObservableObject {
         let remotePath: String
         let editorBundleID: String?
         let editorAppURL: URL?
+        let downloadHandler: DownloadHandler
         let uploadHandler: UploadHandler
+        let metadataProbe: MetadataProbeHandler?
+        var baselineMetadata: RemoteFileMetadata?
         var fileSource: DispatchSourceFileSystemObject?
         var dirSource: DispatchSourceFileSystemObject?
         var pollTask: Task<Void, Never>?
         var debounceTask: Task<Void, Never>?
+        var uploadTask: Task<Void, Error>?
         var lastFingerprint: FileFingerprint?
         var isUploading = false
         var needsReuploadAfterCurrent = false
+        var pendingForcedUpload = false
 
         init(
             id: UUID,
@@ -151,7 +211,10 @@ public final class ExternalEditSessionManager: ObservableObject {
             remotePath: String,
             editorBundleID: String?,
             editorAppURL: URL?,
-            uploadHandler: @escaping UploadHandler
+            downloadHandler: @escaping DownloadHandler,
+            uploadHandler: @escaping UploadHandler,
+            metadataProbe: MetadataProbeHandler?,
+            baselineMetadata: RemoteFileMetadata?
         ) {
             self.id = id
             self.stagingDir = stagingDir
@@ -159,18 +222,49 @@ public final class ExternalEditSessionManager: ObservableObject {
             self.remotePath = remotePath
             self.editorBundleID = editorBundleID
             self.editorAppURL = editorAppURL
+            self.downloadHandler = downloadHandler
             self.uploadHandler = uploadHandler
+            self.metadataProbe = metadataProbe
+            self.baselineMetadata = baselineMetadata
         }
 
-        func cancelWatchers() {
+        func cancelAllTasks() {
             debounceTask?.cancel()
             debounceTask = nil
             pollTask?.cancel()
             pollTask = nil
+            uploadTask?.cancel()
+            uploadTask = nil
             fileSource?.cancel()
             fileSource = nil
             dirSource?.cancel()
             dirSource = nil
+        }
+    }
+
+    private static let activeStagingLock = NSLock()
+    nonisolated(unsafe) private static var activeStagingIDs: [String: Int] = [:]
+
+    private static func registerActiveStagingID(_ id: String) {
+        activeStagingLock.withLock {
+            activeStagingIDs[id, default: 0] += 1
+        }
+    }
+
+    private static func unregisterActiveStagingID(_ id: String) {
+        activeStagingLock.withLock {
+            guard let count = activeStagingIDs[id] else { return }
+            if count <= 1 {
+                activeStagingIDs.removeValue(forKey: id)
+            } else {
+                activeStagingIDs[id] = count - 1
+            }
+        }
+    }
+
+    private static func isStagingIDActive(_ id: String) -> Bool {
+        activeStagingLock.withLock {
+            (activeStagingIDs[id] ?? 0) > 0
         }
     }
 
@@ -181,6 +275,7 @@ public final class ExternalEditSessionManager: ObservableObject {
     private let fallbackPollInterval: Duration
     private let defaultDownloadHandler: DownloadHandler?
     private let defaultUploadHandler: UploadHandler?
+    private let defaultMetadataProbeHandler: MetadataProbeHandler?
     private let openHandler: OpenHandler
     nonisolated(unsafe) private var resetObserver: NSObjectProtocol?
 
@@ -197,6 +292,7 @@ public final class ExternalEditSessionManager: ObservableObject {
         fallbackPollInterval: Duration = .milliseconds(200),
         downloadHandler: DownloadHandler? = nil,
         uploadHandler: UploadHandler? = nil,
+        metadataProbeHandler: MetadataProbeHandler? = nil,
         openHandler: OpenHandler? = nil
     ) {
         self.defaults = defaults
@@ -206,6 +302,7 @@ public final class ExternalEditSessionManager: ObservableObject {
         self.fallbackPollInterval = fallbackPollInterval
         self.defaultDownloadHandler = downloadHandler
         self.defaultUploadHandler = uploadHandler
+        self.defaultMetadataProbeHandler = metadataProbeHandler
         self.openHandler = openHandler ?? { localURL, editorBundleID, editorAppURL in
             try await Self.defaultOpenInExternalApp(
                 localURL: localURL,
@@ -240,6 +337,37 @@ public final class ExternalEditSessionManager: ObservableObject {
                 }
             }
         }
+
+        _ = cleanupStaleStagingDirectories()
+    }
+
+    /// Removes orphaned staging directories inside `stagingRootURL` that do not belong to any live edit session.
+    @discardableResult
+    public func cleanupStaleStagingDirectories(olderThan maxAgeSeconds: TimeInterval = 0, now: Date = Date()) -> Int {
+        guard let children = try? FileManager.default.contentsOfDirectory(
+            at: stagingRootURL,
+            includingPropertiesForKeys: [.contentModificationDateKey, .creationDateKey],
+            options: []
+        ) else {
+            return 0
+        }
+        let ownActiveIDs = Set(runtimes.keys.map(\.uuidString) + activeSessions.map(\.id.uuidString))
+        var removed = 0
+        for childURL in children {
+            let folderName = childURL.lastPathComponent
+            if ownActiveIDs.contains(folderName) || Self.isStagingIDActive(folderName) {
+                continue
+            }
+            if maxAgeSeconds > 0 {
+                let values = try? childURL.resourceValues(forKeys: [.contentModificationDateKey, .creationDateKey])
+                let timestamp = values?.contentModificationDate ?? values?.creationDate ?? .distantPast
+                guard now.timeIntervalSince(timestamp) >= maxAgeSeconds else { continue }
+            }
+            if (try? FileManager.default.removeItem(at: childURL)) != nil {
+                removed += 1
+            }
+        }
+        return removed
     }
 
     // MARK: - Queries
@@ -265,7 +393,8 @@ public final class ExternalEditSessionManager: ObservableObject {
         editorBundleID: String? = nil,
         editorAppURL: URL? = nil,
         download: DownloadHandler? = nil,
-        upload: UploadHandler? = nil
+        upload: UploadHandler? = nil,
+        metadataProbe: MetadataProbeHandler? = nil
     ) async throws -> ActiveEditSession {
         let resolvedDownload: DownloadHandler
         if let download {
@@ -293,6 +422,19 @@ public final class ExternalEditSessionManager: ObservableObject {
             throw ExternalEditError.missingSession
         }
 
+        let resolvedProbe: MetadataProbeHandler?
+        if let metadataProbe {
+            resolvedProbe = metadataProbe
+        } else if let defaultMetadataProbeHandler {
+            resolvedProbe = defaultMetadataProbeHandler
+        } else if let session {
+            resolvedProbe = { path in
+                await Self.defaultRemoteMetadataProbe(session: session, remotePath: path)
+            }
+        } else {
+            resolvedProbe = nil
+        }
+
         // Replace any existing watcher for the exact same tab + remotePath to prevent duplicate sync races.
         for existing in activeSessions where existing.tabID == tabID && existing.remotePath == remotePath {
             stopSession(id: existing.id)
@@ -315,6 +457,7 @@ public final class ExternalEditSessionManager: ObservableObject {
             editorAppURL: editorAppURL
         )
 
+        Self.registerActiveStagingID(editID.uuidString)
         try FileManager.default.createDirectory(at: stagingDir, withIntermediateDirectories: true)
 
         let placeholder = ActiveEditSession(
@@ -326,7 +469,8 @@ public final class ExternalEditSessionManager: ObservableObject {
             editorName: initialEditorName,
             status: .downloading,
             lastSyncedAt: nil,
-            lastHash: Data()
+            lastHash: Data(),
+            baselineMetadata: nil
         )
         activeSessions.append(placeholder)
 
@@ -335,13 +479,14 @@ public final class ExternalEditSessionManager: ObservableObject {
             guard FileManager.default.fileExists(atPath: localURL.path) else {
                 throw ExternalEditError.stagedFileMissing
             }
-            let initialData = try Data(contentsOf: localURL)
-            let initialHash = Self.sha256(initialData)
+            let initialHash = try await Self.streamingSHA256(at: localURL)
+            let baselineMetadata = try? await resolvedProbe?(remotePath)
             let launchedEditorName = try await openHandler(localURL, effectiveBundleID, editorAppURL)
 
             // Guard in case stopSession was called while awaiting download/open.
             guard let idx = activeSessions.firstIndex(where: { $0.id == editID }) else {
                 try? FileManager.default.removeItem(at: stagingDir)
+                Self.unregisterActiveStagingID(editID.uuidString)
                 throw CancellationError()
             }
 
@@ -354,7 +499,8 @@ public final class ExternalEditSessionManager: ObservableObject {
                 editorName: launchedEditorName.isEmpty ? initialEditorName : launchedEditorName,
                 status: .watching,
                 lastSyncedAt: nil,
-                lastHash: initialHash
+                lastHash: initialHash,
+                baselineMetadata: baselineMetadata
             )
             activeSessions[idx] = finalSession
 
@@ -365,7 +511,10 @@ public final class ExternalEditSessionManager: ObservableObject {
                 remotePath: remotePath,
                 editorBundleID: effectiveBundleID,
                 editorAppURL: editorAppURL,
-                uploadHandler: resolvedUpload
+                downloadHandler: resolvedDownload,
+                uploadHandler: resolvedUpload,
+                metadataProbe: resolvedProbe,
+                baselineMetadata: baselineMetadata
             )
             runtime.lastFingerprint = Self.readFingerprint(at: localURL)
             runtimes[editID] = runtime
@@ -374,8 +523,9 @@ public final class ExternalEditSessionManager: ObservableObject {
             return finalSession
         } catch {
             activeSessions.removeAll(where: { $0.id == editID })
-            runtimes.removeValue(forKey: editID)?.cancelWatchers()
+            runtimes.removeValue(forKey: editID)?.cancelAllTasks()
             try? FileManager.default.removeItem(at: stagingDir)
+            Self.unregisterActiveStagingID(editID.uuidString)
             throw error
         }
     }
@@ -388,15 +538,68 @@ public final class ExternalEditSessionManager: ObservableObject {
 
     /// Manually triggers an upload of the staged local file regardless of `autoUploadOnSave` or hash equality.
     public func triggerManualUpload(id: UUID) async {
-        await performUpload(sessionID: id, force: true)
+        await performUpload(sessionID: id, force: true, bypassConflictCheck: true)
+    }
+
+    /// Resolves a `.conflict` session by forcing local contents to overwrite the remote file.
+    public func resolveConflictForceOverwrite(id: UUID) async {
+        await performUpload(sessionID: id, force: true, bypassConflictCheck: true)
+    }
+
+    /// Resolves a `.conflict` session by discarding local conflict state and re-downloading the latest remote version.
+    public func resolveConflictReloadRemote(id: UUID) async {
+        guard let runtime = runtimes[id] else { return }
+        runtime.debounceTask?.cancel()
+        runtime.debounceTask = nil
+        runtime.uploadTask?.cancel()
+        runtime.uploadTask = nil
+        runtime.isUploading = false
+        runtime.needsReuploadAfterCurrent = false
+        runtime.pendingForcedUpload = false
+
+        updateSession(id: id) { $0.status = .downloading }
+
+        let reloadTempURL = runtime.stagingDir.appendingPathComponent(".reload-\(UUID().uuidString)")
+        do {
+            try await runtime.downloadHandler(runtime.remotePath, reloadTempURL)
+            guard runtimes[id] != nil else {
+                try? FileManager.default.removeItem(at: reloadTempURL)
+                return
+            }
+            guard FileManager.default.fileExists(atPath: reloadTempURL.path) else {
+                throw ExternalEditError.stagedFileMissing
+            }
+            if FileManager.default.fileExists(atPath: runtime.localURL.path) {
+                _ = try FileManager.default.replaceItemAt(runtime.localURL, withItemAt: reloadTempURL)
+            } else {
+                try FileManager.default.moveItem(at: reloadTempURL, to: runtime.localURL)
+            }
+            let newHash = try await Self.streamingSHA256(at: runtime.localURL)
+            let newMetadata = try? await runtime.metadataProbe?(runtime.remotePath)
+            guard let liveRuntime = runtimes[id] else { return }
+            liveRuntime.lastFingerprint = Self.readFingerprint(at: liveRuntime.localURL)
+            liveRuntime.baselineMetadata = newMetadata
+            armFileSource(for: liveRuntime)
+            updateSession(id: id) { session in
+                session.lastHash = newHash
+                session.baselineMetadata = newMetadata
+                session.status = .watching
+            }
+        } catch {
+            try? FileManager.default.removeItem(at: reloadTempURL)
+            guard runtimes[id] != nil else { return }
+            if error is CancellationError || Task.isCancelled { return }
+            updateSession(id: id) { $0.status = .error(error.localizedDescription) }
+        }
     }
 
     /// Stops watching a single edit session and deletes its isolated staging directory.
     public func stopSession(id: UUID) {
         if let runtime = runtimes.removeValue(forKey: id) {
-            runtime.cancelWatchers()
+            runtime.cancelAllTasks()
             try? FileManager.default.removeItem(at: runtime.stagingDir)
         }
+        Self.unregisterActiveStagingID(id.uuidString)
         activeSessions.removeAll(where: { $0.id == id })
     }
 
@@ -555,7 +758,7 @@ public final class ExternalEditSessionManager: ObservableObject {
         }
     }
 
-    private func performUpload(sessionID: UUID, force: Bool) async {
+    private func performUpload(sessionID: UUID, force: Bool, bypassConflictCheck: Bool = false) async {
         guard let runtime = runtimes[sessionID],
               let idx = activeSessions.firstIndex(where: { $0.id == sessionID }) else {
             return
@@ -565,51 +768,109 @@ public final class ExternalEditSessionManager: ObservableObject {
             return
         }
 
+        if !force && !bypassConflictCheck && activeSessions[idx].status.isConflict {
+            return
+        }
+
         if runtime.isUploading {
-            runtime.needsReuploadAfterCurrent = true
+            if force {
+                runtime.pendingForcedUpload = true
+            } else {
+                runtime.needsReuploadAfterCurrent = true
+            }
             return
         }
 
         guard FileManager.default.fileExists(atPath: runtime.localURL.path),
-              let data = try? Data(contentsOf: runtime.localURL) else {
+              let newHash = try? await Self.streamingSHA256(at: runtime.localURL) else {
             if force {
                 updateSession(id: sessionID) { $0.status = .error("本地临时文件不存在") }
             }
             return
         }
 
-        let newHash = Self.sha256(data)
-        if !force && newHash == activeSessions[idx].lastHash {
+        guard let liveRuntime = runtimes[sessionID],
+              let liveIdx = activeSessions.firstIndex(where: { $0.id == sessionID }) else {
             return
         }
 
-        runtime.isUploading = true
-        runtime.needsReuploadAfterCurrent = false
+        if !force && newHash == activeSessions[liveIdx].lastHash {
+            return
+        }
+
+        // Before every auto-upload, check remote metadata if a probe is available.
+        if !force && !bypassConflictCheck,
+           let probe = liveRuntime.metadataProbe,
+           let baseline = liveRuntime.baselineMetadata,
+           let remoteMeta = try? await probe(liveRuntime.remotePath) {
+            guard runtimes[sessionID] != nil else { return }
+            if remoteMeta.hasChanged(comparedTo: baseline) {
+                let conflict = RemoteConflictState(
+                    baselineMetadata: baseline,
+                    remoteMetadata: remoteMeta,
+                    detectedAt: Date(),
+                    localHash: newHash
+                )
+                updateSession(id: sessionID) { $0.status = .conflict(conflict) }
+                return
+            }
+        }
+
+        guard let activeRuntime = runtimes[sessionID] else { return }
+        activeRuntime.isUploading = true
+        activeRuntime.needsReuploadAfterCurrent = false
+        activeRuntime.pendingForcedUpload = false
         updateSession(id: sessionID) { $0.status = .uploading }
 
+        let localURL = activeRuntime.localURL
+        let remotePath = activeRuntime.remotePath
+        let uploadHandler = activeRuntime.uploadHandler
+        let uploadTask = Task<Void, Error> {
+            try await uploadHandler(localURL, remotePath)
+        }
+        activeRuntime.uploadTask = uploadTask
+
         do {
-            try await runtime.uploadHandler(runtime.localURL, runtime.remotePath)
-            guard runtimes[sessionID] != nil else { return }
-            runtime.isUploading = false
+            try await uploadTask.value
+            guard let postRuntime = runtimes[sessionID], !Task.isCancelled else { return }
+            postRuntime.uploadTask = nil
+            postRuntime.isUploading = false
+
+            var refreshedMetadata = postRuntime.baselineMetadata
+            if let probe = postRuntime.metadataProbe {
+                refreshedMetadata = try? await probe(postRuntime.remotePath)
+            }
+            guard let postProbeRuntime = runtimes[sessionID], !Task.isCancelled else { return }
+            postProbeRuntime.baselineMetadata = refreshedMetadata
+
             updateSession(id: sessionID) { session in
                 session.lastHash = newHash
                 session.lastSyncedAt = Date()
                 session.status = .synced
+                session.baselineMetadata = refreshedMetadata
             }
 
-            // Re-check if the editor wrote newer bytes while upload was in-flight.
-            let latestData = try? Data(contentsOf: runtime.localURL)
-            let latestHash = latestData.map(Self.sha256)
-            if runtime.needsReuploadAfterCurrent || (latestHash != nil && latestHash != newHash) {
-                runtime.needsReuploadAfterCurrent = false
+            // Re-check if the user triggered a forced upload or the editor wrote newer bytes while upload was in-flight.
+            let latestHash = try? await Self.streamingSHA256(at: postProbeRuntime.localURL)
+            if postProbeRuntime.pendingForcedUpload {
+                postProbeRuntime.pendingForcedUpload = false
+                postProbeRuntime.needsReuploadAfterCurrent = false
+                await performUpload(sessionID: sessionID, force: true, bypassConflictCheck: true)
+            } else if postProbeRuntime.needsReuploadAfterCurrent || (latestHash != nil && latestHash != newHash) {
+                postProbeRuntime.needsReuploadAfterCurrent = false
                 if autoUploadOnSave {
-                    scheduleDebouncedSyncCheck(for: runtime)
+                    scheduleDebouncedSyncCheck(for: postProbeRuntime)
                 }
             }
         } catch {
-            guard runtimes[sessionID] != nil else { return }
-            runtime.isUploading = false
-            runtime.needsReuploadAfterCurrent = false
+            guard let failedRuntime = runtimes[sessionID] else { return }
+            failedRuntime.uploadTask = nil
+            failedRuntime.isUploading = false
+            if error is CancellationError || Task.isCancelled {
+                return
+            }
+            failedRuntime.needsReuploadAfterCurrent = false
+            failedRuntime.pendingForcedUpload = false
             updateSession(id: sessionID) { session in
                 session.status = .error(error.localizedDescription)
             }
@@ -625,6 +886,55 @@ public final class ExternalEditSessionManager: ObservableObject {
 
     public static func sha256(_ data: Data) -> Data {
         Data(SHA256.hash(data: data))
+    }
+
+    /// Computes SHA-256 over a file in fixed-size chunks via `FileHandle` without loading the entire file into RAM.
+    public static func streamingSHA256(at url: URL, chunkSize: Int = 256 * 1024) async throws -> Data {
+        try await Task.detached(priority: .utility) {
+            try sha256FileSync(at: url, chunkSize: chunkSize)
+        }.value
+    }
+
+    nonisolated public static func sha256FileSync(at url: URL, chunkSize: Int = 256 * 1024) throws -> Data {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        let effectiveChunkSize = max(4096, chunkSize)
+        while true {
+            try Task.checkCancellation()
+            let chunk = try handle.read(upToCount: effectiveChunkSize) ?? Data()
+            if chunk.isEmpty { break }
+            hasher.update(data: chunk)
+        }
+        return Data(hasher.finalize())
+    }
+
+    public static func defaultRemoteMetadataProbe(session: any SSHSessionProtocol, remotePath: String) async -> RemoteFileMetadata? {
+        guard session.isConnected else { return nil }
+        let quoted = SFTPRemoteOperations.shellQuotedRemotePath(remotePath)
+        let cmd = "stat -c '%Y %s' \(quoted) 2>/dev/null || stat -f '%m %z' \(quoted) 2>/dev/null"
+        guard let result = try? await session.executeCommandWithResult(cmd),
+              result.exitCode == 0 else {
+            return nil
+        }
+        return parseRemoteStatOutput(result.stdout)
+    }
+
+    nonisolated public static func parseRemoteStatOutput(_ raw: String) -> RemoteFileMetadata? {
+        for rawLine in raw.components(separatedBy: .newlines) {
+            let trimmed = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            let parts = trimmed.split(whereSeparator: { $0 == " " || $0 == "\t" })
+            guard parts.count == 2,
+                  let mtime = TimeInterval(parts[0]),
+                  let size = Int64(parts[1]),
+                  mtime >= 0,
+                  size >= 0 else {
+                continue
+            }
+            return RemoteFileMetadata(mtime: mtime, size: size, sha256: nil)
+        }
+        return nil
     }
 
     public static func safeFilename(from remotePath: String) -> String {

@@ -86,6 +86,21 @@ public struct SFTPView: View {
     public let session: SSHSessionProtocol?
     public let connectionState: SSHConnectionState
     public let tabID: UUID?
+    public let paneID: UUID?
+    public let isTabActive: Bool
+
+    private struct PendingExternalEditRequest: Identifiable {
+        let id = UUID()
+        let item: SFTPItem
+        let editorBundleID: String?
+        let editorAppURL: URL?
+    }
+
+    private struct PendingRenameOverwrite: Identifiable {
+        let id = UUID()
+        let item: SFTPItem
+        let newName: String
+    }
 
     public enum SFTPSortField: String, CaseIterable, Sendable {
         case name
@@ -121,6 +136,7 @@ public struct SFTPView: View {
     @FocusState private var isFilterFocused: Bool
     @State private var editingFile: SFTPItem?
     @State private var editorContent = ""
+    @State private var editorDocumentMeta = QuickEditorDocumentMeta()
     @State private var isDropTargeted = false
     @State private var transferNotice: String?
     @State private var transferNoticeToken = UUID()
@@ -153,6 +169,7 @@ public struct SFTPView: View {
     @State private var isShowingRenameAlert = false
     @State private var itemToChmod: SFTPItem?
     @State private var chmodText = "755"
+    @State private var chmodRecursive = false
     @State private var isShowingChmodAlert = false
     @State private var newFolderName = ""
     @State private var isShowingNewFolderAlert = false
@@ -162,6 +179,11 @@ public struct SFTPView: View {
     @State private var itemToSymlink: SFTPItem? = nil
     @State private var symlinkNameText = ""
     @State private var isShowingSymlinkAlert = false
+    @State private var pendingLargeExternalEdit: PendingExternalEditRequest? = nil
+    @State private var pendingRenameOverwrite: PendingRenameOverwrite? = nil
+    @State private var conflictResolutionSession: ExternalEditSessionManager.ActiveEditSession? = nil
+    @State private var lastExternalEditStatuses: [UUID: ExternalEditSessionManager.SyncStatus] = [:]
+    @State private var symlinkTargetKinds: [String: SFTPRemoteOperations.SFTPSymlinkTargetKind] = [:]
 
     // Remote search (find / grep -F) & Archive / Extract (v1.24.0)
     @State private var isRemoteSearchVisible = false
@@ -188,6 +210,8 @@ public struct SFTPView: View {
         session: SSHSessionProtocol?,
         connectionState: SSHConnectionState = .connected,
         tabID: UUID? = nil,
+        paneID: UUID? = nil,
+        isTabActive: Bool = true,
         isTransferDrawerExpanded: Binding<Bool>? = nil
     ) {
         self._currentPath = currentPath
@@ -195,6 +219,8 @@ public struct SFTPView: View {
         self.session = session
         self.connectionState = connectionState
         self.tabID = tabID
+        self.paneID = paneID
+        self.isTabActive = isTabActive
         self.externalTransferDrawerExpanded = isTransferDrawerExpanded
     }
 
@@ -568,6 +594,37 @@ public struct SFTPView: View {
                 Divider()
             }
 
+            if let conflictSession = tabExternalEditSessions.first(where: { $0.status.isConflict }) {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(ApexStyle.warning)
+                    Text("外部编辑冲突：\(conflictSession.fileName) 在服务器上已被修改，自动上传已暂停")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(ApexStyle.primary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 8)
+                    Button("解决冲突") {
+                        conflictResolutionSession = conflictSession
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(ApexStyle.warning)
+                    .fixedSize(horizontal: true, vertical: false)
+                }
+                .padding(.horizontal, ApexStyle.s4)
+                .frame(height: 30)
+                .background {
+                    ZStack {
+                        ApexStyle.subtleSurface
+                        ApexStyle.warning.opacity(0.10)
+                    }
+                }
+
+                Divider()
+            }
+
             // Search filter bar
             if isFilterVisible || !searchFilter.isEmpty {
                 HStack(spacing: 8) {
@@ -771,6 +828,21 @@ public struct SFTPView: View {
                             },
                             onStatusChange: { notice in
                                 self.applyDragExportNotice(notice)
+                            },
+                            onOpenSelected: {
+                                handleKeyboardOpenSelection()
+                            },
+                            onNavigateUp: {
+                                navigateUp()
+                            },
+                            onDeleteSelected: {
+                                handleKeyboardDeleteSelection()
+                            },
+                            onRefresh: {
+                                loadDirectory(path: currentPath)
+                            },
+                            onQuickInspect: {
+                                handleKeyboardInspectSelection()
                             }
                         )
                         .frame(width: 0, height: 0)
@@ -799,6 +871,7 @@ public struct SFTPView: View {
                         Button("修改当前目录权限 (chmod)...") {
                             itemToChmod = nil
                             chmodText = "755"
+                            chmodRecursive = false
                             isShowingChmodAlert = true
                         }
                         Divider()
@@ -892,12 +965,61 @@ public struct SFTPView: View {
             if installedEditors.isEmpty {
                 installedEditors = ExternalEditSessionManager.installedEditors()
             }
+            lastExternalEditStatuses = Dictionary(uniqueKeysWithValues: tabExternalEditSessions.map { ($0.id, $0.status) })
             updateDisplayItems()
             loadDirectory(path: currentPath)
         }
-        .onChange(of: tabExternalEditSessions.isEmpty) { _, isEmpty in
-            if isEmpty {
+        .onChange(of: tabExternalEditSessions) { _, sessions in
+            for editSession in sessions {
+                let previous = lastExternalEditStatuses[editSession.id]
+                if previous != editSession.status {
+                    switch editSession.status {
+                    case .error(let message):
+                        setNotice("外部编辑同步失败（\(editSession.fileName)）：\(message)", kind: .error)
+                    case .conflict:
+                        setNotice("检测到远端冲突（\(editSession.fileName)）：服务器文件已被修改，已暂停自动上传", kind: .warning)
+                        if conflictResolutionSession == nil {
+                            conflictResolutionSession = editSession
+                        }
+                    default:
+                        break
+                    }
+                }
+            }
+            lastExternalEditStatuses = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0.status) })
+            if sessions.isEmpty {
                 isShowingExternalEditPopover = false
+                conflictResolutionSession = nil
+            } else if let currentConflict = conflictResolutionSession,
+                      let updated = sessions.first(where: { $0.id == currentConflict.id }) {
+                if updated.status.isConflict {
+                    conflictResolutionSession = updated
+                } else {
+                    conflictResolutionSession = nil
+                }
+            }
+        }
+        .onChange(of: paneID) { _, _ in
+            loadDirectory(path: currentPath)
+        }
+        .onChange(of: isTabActive) { _, active in
+            if active && isLinkageEnabled {
+                loadDirectory(path: currentPath)
+            }
+        }
+        .onChange(of: selectedPaths) { _, paths in
+            guard paths.count == 1,
+                  let path = paths.first,
+                  let item = items.first(where: { $0.path == path }),
+                  item.isSymlink,
+                  symlinkTargetKinds[item.path] == nil,
+                  let session,
+                  Self.shouldLoadDirectory(for: connectionState) else { return }
+            Task {
+                let kind = await Self.probeSymlinkTarget(for: item, session: session)
+                await MainActor.run {
+                    self.symlinkTargetKinds[item.path] = kind
+                }
             }
         }
         .onChange(of: currentPath) { oldPath, newPath in
@@ -941,7 +1063,7 @@ public struct SFTPView: View {
             loadDirectory(path: currentPath)
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            if isLinkageEnabled {
+            if isLinkageEnabled && isTabActive {
                 loadDirectory(path: currentPath)
             }
         }
@@ -953,6 +1075,7 @@ public struct SFTPView: View {
             QuickEditorView(
                 item: item,
                 content: $editorContent,
+                documentMeta: $editorDocumentMeta,
                 initialLine: editorInitialLine,
                 onSave: { newContent in
                     try await saveEditedFileAsync(item, content: newContent)
@@ -962,6 +1085,64 @@ public struct SFTPView: View {
                 }
             )
             .apexTheme()
+        }
+        .confirmationDialog(
+            "文件较大，确定使用外部编辑器打开？",
+            isPresented: isShowingLargeExternalEditConfirmation,
+            presenting: pendingLargeExternalEdit
+        ) { request in
+            Button("继续下载并打开 (\(request.item.formattedSize))") {
+                pendingLargeExternalEdit = nil
+                openInExternalEditor(
+                    request.item,
+                    editorBundleID: request.editorBundleID,
+                    editorAppURL: request.editorAppURL,
+                    confirmedLargeFile: true
+                )
+            }
+            Button("取消", role: .cancel) {
+                pendingLargeExternalEdit = nil
+            }
+        } message: { request in
+            Text("「\(request.item.name)」大小为 \(request.item.formattedSize)（超过 50 MB），下载与保存同步将占用较多时间与本地临时磁盘空间。")
+        }
+        .confirmationDialog(
+            "目标文件已存在，确定覆盖？",
+            isPresented: isShowingRenameOverwriteConfirmation,
+            presenting: pendingRenameOverwrite
+        ) { request in
+            Button("覆盖「\(request.newName)」", role: .destructive) {
+                pendingRenameOverwrite = nil
+                performRename(item: request.item, newName: request.newName, confirmedOverwrite: true)
+            }
+            Button("取消", role: .cancel) {
+                pendingRenameOverwrite = nil
+            }
+        } message: { request in
+            Text("当前目录中已存在名为「\(request.newName)」的文件，重命名将会覆盖其内容。")
+        }
+        .confirmationDialog(
+            "检测到远端文件冲突",
+            isPresented: isShowingConflictResolutionDialog,
+            presenting: conflictResolutionSession
+        ) { conflictSession in
+            Button("拉取远端最新版本") {
+                conflictResolutionSession = nil
+                Task {
+                    await externalEditManager.resolveConflictReloadRemote(id: conflictSession.id)
+                }
+            }
+            Button("强制覆盖远端", role: .destructive) {
+                conflictResolutionSession = nil
+                Task {
+                    await externalEditManager.resolveConflictForceOverwrite(id: conflictSession.id)
+                }
+            }
+            Button("稍后处理", role: .cancel) {
+                conflictResolutionSession = nil
+            }
+        } message: { conflictSession in
+            Text("「\(conflictSession.fileName)」在您本地编辑期间已被服务器上的其他进程修改。请选择拉取远端最新版本或用本地版本强制覆盖。")
         }
         .alert(archiveFormat.menuTitle, isPresented: $isShowingArchiveAlert) {
             TextField("归档文件名", text: $archiveOutputName)
@@ -1063,20 +1244,76 @@ public struct SFTPView: View {
         } message: {
             Text("输入「\(itemToRename?.name ?? "")」的新名称")
         }
-        .alert("修改权限 (chmod)", isPresented: $isShowingChmodAlert) {
-            TextField("权限代码 (如 755, 644, 777)", text: $chmodText)
-            Button("确定") {
-                let target = itemToChmod?.path ?? currentPath
-                performChmod(targetPath: target, mode: chmodText)
+        .sheet(isPresented: $isShowingChmodAlert) {
+            let trimmedMode = chmodText.trimmingCharacters(in: .whitespacesAndNewlines)
+            let isValidMode = SFTPRemoteOperations.isValidOctalPermissions(trimmedMode)
+            let supportsRecursive = (itemToChmod?.isDirectory ?? true)
+            VStack(alignment: .leading, spacing: 14) {
+                Text("修改权限 (chmod)")
+                    .font(.headline)
+
+                Text(itemToChmod.map { "修改「\($0.name)」的访问权限（例如：文件夹推荐 755，普通文件推荐 644）" }
+                     ?? "修改当前目录 (\(currentPath)) 的访问权限（推荐 755 赋予读写与遍历权限）")
+                    .font(.caption)
+                    .foregroundColor(ApexStyle.secondary)
+
+                TextField("八进制权限代码 (如 755, 0644, 1777)", text: $chmodText)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 13, design: .monospaced))
+                    .autocorrectionDisabled()
+
+                if !trimmedMode.isEmpty && !isValidMode {
+                    Text("请输入 3~4 位有效八进制权限码（每位 0-7，如 755 或 0644）")
+                        .font(.caption)
+                        .foregroundColor(ApexStyle.error)
+                }
+
+                if supportsRecursive {
+                    Toggle("递归应用到子目录和文件 (chmod -R)", isOn: $chmodRecursive)
+                        .font(.subheadline)
+                }
+
+                HStack {
+                    Spacer()
+                    Button("取消", role: .cancel) {
+                        isShowingChmodAlert = false
+                    }
+                    .keyboardShortcut(.cancelAction)
+                    Button("确定") {
+                        let target = itemToChmod?.path ?? currentPath
+                        let recursive = supportsRecursive && chmodRecursive
+                        isShowingChmodAlert = false
+                        performChmod(targetPath: target, mode: chmodText, recursive: recursive)
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!isValidMode)
+                }
             }
-            Button("取消", role: .cancel) {}
-        } message: {
-            if let item = itemToChmod {
-                Text("修改「\(item.name)」的访问权限（例如：文件夹推荐 755，普通文件推荐 644）")
-            } else {
-                Text("修改当前目录 (\(currentPath)) 的访问权限（推荐 755 赋予读写与遍历权限）")
-            }
+            .padding(ApexStyle.s4)
+            .frame(minWidth: 380, idealWidth: 420)
+            .apexTheme()
         }
+    }
+
+    private var isShowingLargeExternalEditConfirmation: Binding<Bool> {
+        Binding<Bool>(
+            get: { pendingLargeExternalEdit != nil },
+            set: { if !$0 { pendingLargeExternalEdit = nil } }
+        )
+    }
+
+    private var isShowingRenameOverwriteConfirmation: Binding<Bool> {
+        Binding<Bool>(
+            get: { pendingRenameOverwrite != nil },
+            set: { if !$0 { pendingRenameOverwrite = nil } }
+        )
+    }
+
+    private var isShowingConflictResolutionDialog: Binding<Bool> {
+        Binding<Bool>(
+            get: { conflictResolutionSession != nil },
+            set: { if !$0 { conflictResolutionSession = nil } }
+        )
     }
 
     private var isShowingDeleteConfirmation: Binding<Bool> {
@@ -1128,10 +1365,13 @@ public struct SFTPView: View {
                 downloadAction(item)
             }
             if !item.isDirectory {
+                let knownSymlinkKind = item.isSymlink ? symlinkTargetKinds[item.path] : nil
+                let symlinkBlocksFileEdit = (knownSymlinkKind == .directory || knownSymlinkKind == .broken)
                 Button(L10n.quickViewEdit) {
                     selectedPaths = [item.path]
                     openEditor(item)
                 }
+                .disabled(symlinkBlocksFileEdit)
                 Menu("使用外部编辑器打开") {
                     Button {
                         selectedPaths = [item.path]
@@ -1165,7 +1405,7 @@ public struct SFTPView: View {
                         Label("选择应用...", systemImage: "folder")
                     }
                 }
-                .disabled(connectionState != .connected)
+                .disabled(connectionState != .connected || symlinkBlocksFileEdit)
             }
             Button("属性与校验和 (SHA-256)...") {
                 selectedPaths = [item.path]
@@ -1183,6 +1423,7 @@ public struct SFTPView: View {
                     selectedPaths = [item.path]
                     itemToChmod = item
                     chmodText = item.isDirectory ? "755" : "644"
+                    chmodRecursive = false
                     isShowingChmodAlert = true
                 }
                 Button("在服务器端创建副本 (快速克隆)") {
@@ -1390,7 +1631,7 @@ public struct SFTPView: View {
                 session: s,
                 remotePath: item.path,
                 localURL: localURL,
-                totalBytes: Int64(item.size),
+                totalBytes: item.isDirectory ? 0 : Int64(clamping: item.size),
                 onCompleted: nil,
                 onResult: { result in
                     let outcome: SFTPBatchTracker.Outcome = switch result {
@@ -1514,7 +1755,11 @@ public struct SFTPView: View {
 
     private func performCreateFolder(name: String) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let s = session, Self.shouldLoadDirectory(for: connectionState) else { return }
+        guard SFTPRemoteOperations.isSafeRelativeName(trimmed) else {
+            setNotice("文件夹名称无效（不能包含 / 或为 . / ..）", kind: .warning)
+            return
+        }
+        guard let s = session, Self.shouldLoadDirectory(for: connectionState) else { return }
         let target = currentPath.hasSuffix("/") ? "\(currentPath)\(trimmed)" : "\(currentPath)/\(trimmed)"
         Task {
             do {
@@ -1533,7 +1778,11 @@ public struct SFTPView: View {
     
     private func performCreateFile(name: String) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let s = session, Self.shouldLoadDirectory(for: connectionState) else { return }
+        guard SFTPRemoteOperations.isSafeRelativeName(trimmed) else {
+            setNotice("文件名无效（不能包含 / 或为 . / ..）", kind: .warning)
+            return
+        }
+        guard let s = session, Self.shouldLoadDirectory(for: connectionState) else { return }
         let target = currentPath.hasSuffix("/") ? "\(currentPath)\(trimmed)" : "\(currentPath)/\(trimmed)"
         Task {
             do {
@@ -1550,9 +1799,21 @@ public struct SFTPView: View {
         }
     }
     
-    private func performRename(item: SFTPItem, newName: String) {
+    private func performRename(item: SFTPItem, newName: String, confirmedOverwrite: Bool = false) {
         let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed != item.name, let s = session, Self.shouldLoadDirectory(for: connectionState) else { return }
+        guard SFTPRemoteOperations.isSafeRelativeName(trimmed) else {
+            setNotice("新名称无效（不能包含 / 或为 . / ..）", kind: .warning)
+            return
+        }
+        guard trimmed != item.name, let s = session, Self.shouldLoadDirectory(for: connectionState) else { return }
+        if !confirmedOverwrite, let existing = items.first(where: { $0.name == trimmed && $0.path != item.path }) {
+            if existing.isDirectory {
+                setNotice("目标位置已存在同名目录「\(trimmed)」，无法重命名覆盖", kind: .warning)
+                return
+            }
+            pendingRenameOverwrite = PendingRenameOverwrite(item: item, newName: trimmed)
+            return
+        }
         let parent = (item.path as NSString).deletingLastPathComponent
         let target = parent == "/" ? "/\(trimmed)" : "\(parent)/\(trimmed)"
         Task {
@@ -1570,14 +1831,34 @@ public struct SFTPView: View {
         }
     }
 
-    private func performChmod(targetPath: String, mode: String) {
+    private func performChmod(targetPath: String, mode: String, recursive: Bool = false) {
         let trimmed = mode.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let s = session, Self.shouldLoadDirectory(for: connectionState) else { return }
+        guard SFTPRemoteOperations.isValidOctalPermissions(trimmed) else {
+            setNotice("权限格式无效，请输入 3~4 位八进制权限码（如 755、0644）", kind: .warning)
+            return
+        }
+        guard let s = session, Self.shouldLoadDirectory(for: connectionState) else { return }
         Task {
             do {
-                try await s.changePermissions(remotePath: targetPath, permissions: trimmed)
+                if recursive {
+                    guard let cmd = SFTPRemoteOperations.chmodRecursiveCommand(remotePath: targetPath, permissions: trimmed) else {
+                        await MainActor.run {
+                            self.setNotice("修改权限失败: 目标路径或权限格式无效", kind: .warning)
+                        }
+                        return
+                    }
+                    let result = try await s.executeCommandWithResult(cmd)
+                    if let failure = SFTPRemoteOperations.formatCommandFailure(result) {
+                        await MainActor.run {
+                            self.setNotice("修改权限失败: \(failure)", kind: .error)
+                        }
+                        return
+                    }
+                } else {
+                    try await s.changePermissions(remotePath: targetPath, permissions: trimmed)
+                }
                 await MainActor.run {
-                    self.setNotice("已修改权限为: \(trimmed)", kind: .success, autoDismissAfter: 3.0)
+                    self.setNotice("已修改权限为: \(trimmed)\(recursive ? " (递归)" : "")", kind: .success, autoDismissAfter: 3.0)
                     self.loadDirectory(path: self.currentPath)
                 }
             } catch {
@@ -1590,13 +1871,23 @@ public struct SFTPView: View {
 
     private func performCreateSymlink(targetItem: SFTPItem, linkName: String) {
         let trimmed = linkName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let s = session, Self.shouldLoadDirectory(for: connectionState) else { return }
+        guard SFTPRemoteOperations.isSafeRelativeName(trimmed) else {
+            setNotice("链接名称无效（不能包含 / 或为 . / ..）", kind: .warning)
+            return
+        }
+        guard let s = session, Self.shouldLoadDirectory(for: connectionState) else { return }
         let parent = (targetItem.path as NSString).deletingLastPathComponent
         let linkPath = parent == "/" ? "/\(trimmed)" : "\(parent)/\(trimmed)"
         let cmd = SFTPInspectorHelper.buildSymlinkCommand(targetPath: targetItem.path, linkPath: linkPath)
         Task {
             do {
-                _ = try await s.executeCommand(cmd)
+                let result = try await s.executeCommandWithResult(cmd)
+                if let failure = SFTPRemoteOperations.formatCommandFailure(result) {
+                    await MainActor.run {
+                        self.setNotice("创建符号链接失败: \(failure)", kind: .error)
+                    }
+                    return
+                }
                 await MainActor.run {
                     self.setNotice("已创建符号链接: \(trimmed)", kind: .success, autoDismissAfter: 3.0)
                     self.loadDirectory(path: self.currentPath)
@@ -1626,7 +1917,13 @@ public struct SFTPView: View {
         )
         Task {
             do {
-                _ = try await s.executeCommand(cmd)
+                let result = try await s.executeCommandWithResult(cmd)
+                if let failure = SFTPRemoteOperations.formatCommandFailure(result) {
+                    await MainActor.run {
+                        self.setNotice("创建副本失败: \(failure)", kind: .error)
+                    }
+                    return
+                }
                 await MainActor.run {
                     self.setNotice("已创建副本: \(dupName)", kind: .success, autoDismissAfter: 3.0)
                     self.loadDirectory(path: self.currentPath)
@@ -1637,6 +1934,51 @@ public struct SFTPView: View {
                 }
             }
         }
+    }
+
+    private func handleKeyboardOpenSelection() {
+        guard selectedPaths.count == 1,
+              let path = selectedPaths.first,
+              let item = items.first(where: { $0.path == path }) else { return }
+        handleDoubleClick(item)
+    }
+
+    private func handleKeyboardDeleteSelection() {
+        let targets = SFTPItem.modifiableSelection(from: items, selectedPaths: selectedPaths)
+        guard !targets.isEmpty else { return }
+        if targets.count == 1 {
+            itemToDelete = targets[0]
+        } else {
+            batchItemsToDelete = targets
+        }
+    }
+
+    private func handleKeyboardInspectSelection() {
+        guard selectedPaths.count == 1,
+              let path = selectedPaths.first,
+              let item = items.first(where: { $0.path == path }),
+              !item.isParentNavigationEntry else { return }
+        inspectingItem = item
+    }
+
+    private static func probeSymlinkTarget(
+        for item: SFTPItem,
+        session: SSHSessionProtocol
+    ) async -> SFTPRemoteOperations.SFTPSymlinkTargetKind {
+        guard item.isSymlink else {
+            return item.isDirectory ? .directory : .regularFile
+        }
+        if let cmd = SFTPRemoteOperations.symlinkProbeCommand(remotePath: item.path),
+           let result = try? await session.executeCommandWithResult(cmd) {
+            let parsed = SFTPRemoteOperations.parseSymlinkProbeOutput(result.stdout)
+            if parsed != .unknown {
+                return parsed
+            }
+        }
+        if (try? await session.listDirectory(path: item.path)) != nil {
+            return .directory
+        }
+        return .unknown
     }
 
     static func shouldLoadDirectory(for state: SSHConnectionState) -> Bool {
@@ -1745,6 +2087,9 @@ public struct SFTPView: View {
             SFTPExternalEditPopover(
                 manager: externalEditManager,
                 sessions: sessions,
+                onError: { message in
+                    setNotice(message, kind: .error)
+                },
                 onClose: { isShowingExternalEditPopover = false }
             )
             .apexTheme()
@@ -1755,12 +2100,39 @@ public struct SFTPView: View {
     private func openInExternalEditor(
         _ item: SFTPItem,
         editorBundleID: String?,
-        editorAppURL: URL?
+        editorAppURL: URL?,
+        confirmedLargeFile: Bool = false
     ) {
         guard let session, Self.shouldLoadDirectory(for: connectionState) else { return }
+        if !confirmedLargeFile && item.size > 50 * 1024 * 1024 {
+            pendingLargeExternalEdit = PendingExternalEditRequest(
+                item: item,
+                editorBundleID: editorBundleID,
+                editorAppURL: editorAppURL
+            )
+            return
+        }
         let sessionName = session.session.name
         let currentTabID = tabID
         Task {
+            if item.isSymlink {
+                let targetKind = await Self.probeSymlinkTarget(for: item, session: session)
+                await MainActor.run {
+                    self.symlinkTargetKinds[item.path] = targetKind
+                }
+                if targetKind == .directory {
+                    await MainActor.run {
+                        self.setNotice("「\(item.name)」是指向目录的符号链接，无法使用外部编辑器打开", kind: .warning)
+                    }
+                    return
+                }
+                if targetKind == .broken {
+                    await MainActor.run {
+                        self.setNotice("符号链接「\(item.name)」指向的目标不存在或已失效", kind: .warning)
+                    }
+                    return
+                }
+            }
             do {
                 let active = try await externalEditManager.openInExternalEditor(
                     session: session,
@@ -1812,14 +2184,30 @@ public struct SFTPView: View {
             let localURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
             defer { try? FileManager.default.removeItem(at: localURL) }
             do {
+                if item.isSymlink {
+                    let targetKind = await Self.probeSymlinkTarget(for: item, session: session)
+                    await MainActor.run {
+                        self.symlinkTargetKinds[item.path] = targetKind
+                    }
+                    if targetKind == .directory {
+                        setNotice("「\(item.name)」是指向目录的符号链接，无法作为文件编辑", kind: .warning)
+                        isOpeningEditor = false
+                        return
+                    }
+                    if targetKind == .broken {
+                        setNotice("符号链接「\(item.name)」指向的目标不存在或已失效", kind: .warning)
+                        isOpeningEditor = false
+                        return
+                    }
+                }
                 try await session.downloadFile(remotePath: item.path, localURL: localURL, progress: { _ in })
                 let data = try Data(contentsOf: localURL)
-                let text = String(data: data, encoding: .utf8) ??
-                           String(data: data, encoding: .windowsCP1252) ??
-                           String(data: data, encoding: .isoLatin1) ??
-                           String(decoding: data, as: UTF8.self)
-                editorContent = text
+                let decoded = try QuickEditorTextCodec.decode(data)
+                editorDocumentMeta = decoded.meta
+                editorContent = decoded.text
                 editingFile = item
+            } catch QuickEditorCodecError.binaryFileDetected {
+                setNotice("不支持在线编辑二进制文件「\(item.name)」：请下载后使用专用工具查看", kind: .warning)
             } catch {
                 setNotice("读取失败：\(error.localizedDescription)", kind: .error)
             }
@@ -2107,10 +2495,10 @@ public struct SFTPView: View {
         setNotice("正在压缩 \(archiveName)...", kind: .info)
         Task {
             do {
-                let output = try await s.executeCommand(cmd).trimmingCharacters(in: .whitespacesAndNewlines)
+                let result = try await s.executeCommandWithResult(cmd)
                 await MainActor.run {
-                    if output.localizedCaseInsensitiveContains("not found") || output.localizedCaseInsensitiveContains("error") {
-                        self.setNotice("压缩失败: \(output)", kind: .error)
+                    if let failure = SFTPRemoteOperations.formatCommandFailure(result) {
+                        self.setNotice("压缩失败: \(failure)", kind: .error)
                     } else {
                         self.setNotice("已压缩生成 \(archiveName)", kind: .success, autoDismissAfter: 3.0)
                         self.loadDirectory(path: self.currentPath)
@@ -2133,10 +2521,10 @@ public struct SFTPView: View {
         setNotice("正在解压 \(item.name)...", kind: .info)
         Task {
             do {
-                let output = try await s.executeCommand(cmd).trimmingCharacters(in: .whitespacesAndNewlines)
+                let result = try await s.executeCommandWithResult(cmd)
                 await MainActor.run {
-                    if output.localizedCaseInsensitiveContains("not found") || output.localizedCaseInsensitiveContains("cannot open") {
-                        self.setNotice("解压失败: \(output)", kind: .error)
+                    if let failure = SFTPRemoteOperations.formatCommandFailure(result) {
+                        self.setNotice("解压失败: \(failure)", kind: .error)
                     } else {
                         self.setNotice("已解压 \(item.name) 至当前目录", kind: .success, autoDismissAfter: 3.0)
                         self.loadDirectory(path: self.currentPath)
@@ -2154,7 +2542,8 @@ public struct SFTPView: View {
         guard let session else { return }
         let localURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: localURL) }
-        try content.write(to: localURL, atomically: true, encoding: .utf8)
+        let encoded = try QuickEditorTextCodec.encode(content, meta: editorDocumentMeta)
+        try encoded.write(to: localURL, options: .atomic)
         try await session.uploadFile(localURL: localURL, remotePath: item.path, progress: { _ in })
         await MainActor.run {
             self.loadDirectory(path: self.currentPath)
@@ -2167,10 +2556,11 @@ public struct SFTPView: View {
         defer { try? FileManager.default.removeItem(at: localURL) }
         try await session.downloadFile(remotePath: item.path, localURL: localURL, progress: { _ in })
         let data = try Data(contentsOf: localURL)
-        return String(data: data, encoding: .utf8) ??
-               String(data: data, encoding: .windowsCP1252) ??
-               String(data: data, encoding: .isoLatin1) ??
-               String(decoding: data, as: UTF8.self)
+        let decoded = try QuickEditorTextCodec.decode(data)
+        await MainActor.run {
+            self.editorDocumentMeta = decoded.meta
+        }
+        return decoded.text
     }
 
     private func handleUploadResult(_ result: Result<String, Error>, fileName: String, targetDirectory: String) {
@@ -2205,8 +2595,15 @@ public struct SFTPView: View {
         }
     }
 
+    private enum UploadConflictStrategy {
+        case replace
+        case skip
+        case keepBoth
+    }
+
     private func requestBatchUpload(_ urls: [URL], targetDirectory: String) {
         guard let session, Self.shouldLoadDirectory(for: connectionState), !urls.isEmpty else { return }
+        let currentTabID = tabID
         Task { @MainActor in
             var accesses: [FileAccessLease] = []
             var handedOffToTracker = false
@@ -2221,97 +2618,197 @@ public struct SFTPView: View {
                 }
                 let urls = accesses.isEmpty ? urls : accesses.map(\.url)
                 let existing = (try? await session.listDirectory(path: targetDirectory)) ?? []
-                let existingNames = Set(existing.map(\.name))
-                let conflicts = urls.filter { existingNames.contains($0.lastPathComponent) }
-                
-                var filesToUpload = urls
-                if !conflicts.isEmpty, let window = windowReference.window ?? NSApp.keyWindow ?? NSApp.mainWindow {
+                let existingByName = Dictionary(existing.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
+                var takenNames = Set(existing.map(\.name))
+                let conflicts = urls.filter { takenNames.contains($0.lastPathComponent) }
+
+                var strategy: UploadConflictStrategy = .replace
+                if !conflicts.isEmpty {
+                    guard let window = windowReference.window ?? NSApp.keyWindow ?? NSApp.mainWindow else {
+                        setNotice("无法弹出文件冲突确认框，已中止上传以防止误覆盖", kind: .warning)
+                        return
+                    }
                     let alert = NSAlert()
-                    alert.messageText = "目标目录已存在同名文件"
+                    alert.messageText = "目标目录已存在同名项目"
                     if conflicts.count == 1 {
                         alert.informativeText = "「\(conflicts[0].lastPathComponent)」已存在于目标目录。替换会覆盖远端内容。"
                         alert.addButton(withTitle: "取消")
                         alert.addButton(withTitle: "替换")
+                        alert.addButton(withTitle: "保留两者 (自动重命名)")
                     } else {
-                        alert.informativeText = "检测到 \(conflicts.count) 个同名文件（如「\(conflicts[0].lastPathComponent)」等）。是否覆盖替换？"
+                        alert.informativeText = "检测到 \(conflicts.count) 个同名项目（如「\(conflicts[0].lastPathComponent)」等）。请选择处理方式："
                         alert.addButton(withTitle: "取消")
                         alert.addButton(withTitle: "全部替换")
                         alert.addButton(withTitle: "跳过同名文件")
+                        alert.addButton(withTitle: "保留两者 (自动重命名)")
                     }
                     let response = await withCheckedContinuation { continuation in
                         alert.beginSheetModal(for: window) { continuation.resume(returning: $0) }
                     }
                     if conflicts.count == 1 {
-                        guard response == .alertSecondButtonReturn else { return }
+                        switch response {
+                        case .alertSecondButtonReturn:
+                            strategy = .replace
+                        case .alertThirdButtonReturn:
+                            strategy = .keepBoth
+                        default:
+                            return
+                        }
                     } else {
-                        if response == .alertFirstButtonReturn {
-                            return // 取消
-                        } else if response == .alertThirdButtonReturn {
-                            filesToUpload = urls.filter { !existingNames.contains($0.lastPathComponent) }
+                        switch response {
+                        case .alertSecondButtonReturn:
+                            strategy = .replace
+                        case .alertThirdButtonReturn:
+                            strategy = .skip
+                        case NSApplication.ModalResponse(rawValue: NSApplication.ModalResponse.alertThirdButtonReturn.rawValue + 1):
+                            strategy = .keepBoth
+                        default:
+                            return
                         }
                     }
                 }
-                
-                guard !filesToUpload.isEmpty else { return }
+
+                struct PlannedUpload {
+                    let localURL: URL
+                    let remoteName: String
+                    let destinationPath: String
+                    let shouldRemoveExistingDirectoryFirst: Bool
+                }
+
+                var plannedUploads: [PlannedUpload] = []
+                for localURL in urls {
+                    let originalName = localURL.lastPathComponent
+                    let isLocalDirectory = (try? localURL.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
+                    let remoteName: String
+                    var shouldRemoveExistingDir = false
+
+                    if takenNames.contains(originalName) {
+                        switch strategy {
+                        case .skip:
+                            continue
+                        case .keepBoth:
+                            remoteName = SFTPRemoteOperations.availableRemoteName(
+                                for: originalName,
+                                isDirectory: isLocalDirectory,
+                                existingNames: takenNames
+                            )
+                            takenNames.insert(remoteName)
+                        case .replace:
+                            remoteName = originalName
+                            if isLocalDirectory,
+                               let existingItem = existingByName[originalName],
+                               existingItem.isDirectory,
+                               existingItem.isModifiableRemoteItem {
+                                shouldRemoveExistingDir = true
+                            }
+                        }
+                    } else {
+                        remoteName = originalName
+                        takenNames.insert(remoteName)
+                    }
+
+                    let destination = targetDirectory.hasSuffix("/")
+                        ? "\(targetDirectory)\(remoteName)"
+                        : "\(targetDirectory)/\(remoteName)"
+                    plannedUploads.append(
+                        PlannedUpload(
+                            localURL: localURL,
+                            remoteName: remoteName,
+                            destinationPath: destination,
+                            shouldRemoveExistingDirectoryFirst: shouldRemoveExistingDir
+                        )
+                    )
+                }
+
+                guard !plannedUploads.isEmpty else { return }
 
                 clearNotice()
-                
-                let tracker = SFTPBatchTracker(total: filesToUpload.count)
+
+                let tracker = SFTPBatchTracker(total: plannedUploads.count)
                 let retainedAccesses = accesses
                 handedOffToTracker = true
                 tracker.addCompletionHandler {
                     retainedAccesses.forEach { $0.close() }
                 }
-                for localURL in filesToUpload {
-                    let destination = targetDirectory.hasSuffix("/")
-                        ? "\(targetDirectory)\(localURL.lastPathComponent)"
-                        : "\(targetDirectory)/\(localURL.lastPathComponent)"
-                    
-                    TransferManager.shared.enqueueUpload(session: session, localURL: localURL, remotePath: destination, onResult: { result in
-                        let outcome: SFTPBatchTracker.Outcome = switch result {
-                        case .success: .succeeded
-                        case .failure(let error): error is CancellationError ? .cancelled : .failed
-                        }
-                        let snapshot = tracker.record(outcome)
-                        Task { @MainActor in
+
+                for plan in plannedUploads {
+                    if plan.shouldRemoveExistingDirectoryFirst {
+                        guard let rmCmd = SFTPRemoteOperations.removeDirectoryCommand(remotePath: plan.destinationPath) else {
+                            let snapshot = tracker.record(.failed)
                             if snapshot.isDone {
-                                if snapshot.succeeded > 0 {
-                                    self.loadDirectory(path: self.currentPath)
+                                setNotice("上传失败：目标目录路径不安全，已中止替换", kind: .error, isTransferOutcome: true)
+                            }
+                            continue
+                        }
+                        do {
+                            let rmResult = try await session.executeCommandWithResult(rmCmd)
+                            if let failure = SFTPRemoteOperations.formatCommandFailure(rmResult) {
+                                let snapshot = tracker.record(.failed)
+                                if snapshot.isDone {
+                                    setNotice("替换远端目录失败：\(failure)", kind: .error, isTransferOutcome: true)
                                 }
-                                if snapshot.failed > 0 {
-                                    let cancelSuffix = snapshot.cancelled > 0 ? "，取消 \(snapshot.cancelled)" : ""
-                                    if tracker.total == 1, case .failure(let error) = result {
-                                        self.setNotice("上传失败: \(error.localizedDescription)", kind: .error, isTransferOutcome: true)
-                                    } else {
-                                        self.setNotice("批量上传部分失败（成功 \(snapshot.succeeded)，失败 \(snapshot.failed)\(cancelSuffix)）", kind: .error, isTransferOutcome: true)
+                                continue
+                            }
+                        } catch {
+                            let snapshot = tracker.record(.failed)
+                            if snapshot.isDone {
+                                setNotice("替换远端目录失败：\(error.localizedDescription)", kind: .error, isTransferOutcome: true)
+                            }
+                            continue
+                        }
+                    }
+
+                    TransferManager.shared.enqueueUpload(
+                        session: session,
+                        localURL: plan.localURL,
+                        remotePath: plan.destinationPath,
+                        tabID: currentTabID,
+                        onResult: { result in
+                            let outcome: SFTPBatchTracker.Outcome = switch result {
+                            case .success: .succeeded
+                            case .failure(let error): error is CancellationError ? .cancelled : .failed
+                            }
+                            let snapshot = tracker.record(outcome)
+                            Task { @MainActor in
+                                if snapshot.isDone {
+                                    if snapshot.succeeded > 0 {
+                                        self.loadDirectory(path: self.currentPath)
                                     }
-                                } else if snapshot.cancelled > 0 {
-                                    self.setNotice(
-                                        snapshot.succeeded > 0
-                                            ? "批量上传已取消部分项目（成功 \(snapshot.succeeded)，取消 \(snapshot.cancelled)）"
-                                            : "已取消上传: \(localURL.lastPathComponent)",
-                                        kind: snapshot.succeeded > 0 ? .warning : .cancelled,
-                                        isTransferOutcome: true
-                                    )
-                                } else {
-                                    self.setNotice(
-                                        tracker.total == 1
-                                            ? "上传成功: \(localURL.lastPathComponent)"
-                                            : "批量上传完成 (\(tracker.total) 个文件)",
-                                        kind: .success,
-                                        isTransferOutcome: true,
-                                        autoDismissAfter: 3.0
-                                    )
-                                }
-                            } else if case .failure(let error) = result {
-                                if error is CancellationError {
-                                    self.setNotice("已取消上传: \(localURL.lastPathComponent)", kind: .cancelled, isTransferOutcome: true)
-                                } else {
-                                    self.setNotice("上传失败: \(error.localizedDescription)", kind: .error, isTransferOutcome: true)
+                                    if snapshot.failed > 0 {
+                                        let cancelSuffix = snapshot.cancelled > 0 ? "，取消 \(snapshot.cancelled)" : ""
+                                        if tracker.total == 1, case .failure(let error) = result {
+                                            self.setNotice("上传失败: \(error.localizedDescription)", kind: .error, isTransferOutcome: true)
+                                        } else {
+                                            self.setNotice("批量上传部分失败（成功 \(snapshot.succeeded)，失败 \(snapshot.failed)\(cancelSuffix)）", kind: .error, isTransferOutcome: true)
+                                        }
+                                    } else if snapshot.cancelled > 0 {
+                                        self.setNotice(
+                                            snapshot.succeeded > 0
+                                                ? "批量上传已取消部分项目（成功 \(snapshot.succeeded)，取消 \(snapshot.cancelled)）"
+                                                : "已取消上传: \(plan.remoteName)",
+                                            kind: snapshot.succeeded > 0 ? .warning : .cancelled,
+                                            isTransferOutcome: true
+                                        )
+                                    } else {
+                                        self.setNotice(
+                                            tracker.total == 1
+                                                ? "上传成功: \(plan.remoteName)"
+                                                : "批量上传完成 (\(tracker.total) 个文件)",
+                                            kind: .success,
+                                            isTransferOutcome: true,
+                                            autoDismissAfter: 3.0
+                                        )
+                                    }
+                                } else if case .failure(let error) = result {
+                                    if error is CancellationError {
+                                        self.setNotice("已取消上传: \(plan.remoteName)", kind: .cancelled, isTransferOutcome: true)
+                                    } else {
+                                        self.setNotice("上传失败: \(error.localizedDescription)", kind: .error, isTransferOutcome: true)
+                                    }
                                 }
                             }
                         }
-                    })
+                    )
                 }
             } catch {
                 setNotice("上传失败：\(error.localizedDescription)", kind: .error, isTransferOutcome: true)
@@ -2335,7 +2832,7 @@ public struct SFTPView: View {
             session: s,
             remotePath: item.path,
             localURL: localURL,
-            totalBytes: Int64(item.size),
+            totalBytes: item.isDirectory ? 0 : Int64(clamping: item.size),
             onCompleted: nil,
             onResult: { result in
                 access.close()
@@ -2746,14 +3243,89 @@ private struct SFTPOutlineViewDragDropBridge: NSViewRepresentable {
     let acceptsDrops: Bool
     let onDropURLs: ([URL]) -> Void
     let onStatusChange: @Sendable @MainActor (String) -> Void
+    let onOpenSelected: @MainActor () -> Void
+    let onNavigateUp: @MainActor () -> Void
+    let onDeleteSelected: @MainActor () -> Void
+    let onRefresh: @MainActor () -> Void
+    let onQuickInspect: @MainActor () -> Void
 
     final class BridgeNSView: NSView {
         let proxy = SFTPOutlineDataSourceProxy()
         weak var attachedOutlineView: NSOutlineView?
+        var onOpenSelected: (@MainActor () -> Void)?
+        var onNavigateUp: (@MainActor () -> Void)?
+        var onDeleteSelected: (@MainActor () -> Void)?
+        var onRefresh: (@MainActor () -> Void)?
+        var onQuickInspect: (@MainActor () -> Void)?
+        nonisolated(unsafe) private var keyMonitor: Any?
+
+        deinit {
+            if let keyMonitor {
+                NSEvent.removeMonitor(keyMonitor)
+            }
+        }
+
+        func installKeyMonitorIfNeeded() {
+            guard keyMonitor == nil else { return }
+            keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                guard let self, self.handleKeyDown(event) else { return event }
+                return nil
+            }
+        }
+
+        func removeKeyMonitor() {
+            if let keyMonitor {
+                NSEvent.removeMonitor(keyMonitor)
+                self.keyMonitor = nil
+            }
+        }
+
+        private func handleKeyDown(_ event: NSEvent) -> Bool {
+            guard let ov = attachedOutlineView,
+                  let window = ov.window,
+                  window === NSApp.keyWindow,
+                  window.firstResponder === ov,
+                  window.attachedSheet == nil else {
+                return false
+            }
+            let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            if modifiers.isEmpty {
+                switch event.keyCode {
+                case 36, 76: // Return / Enter
+                    onOpenSelected?()
+                    return true
+                case 49: // Space
+                    onQuickInspect?()
+                    return true
+                default:
+                    return false
+                }
+            }
+            if modifiers == .command {
+                if event.keyCode == 126 { // ⌘↑
+                    onNavigateUp?()
+                    return true
+                }
+                if event.keyCode == 51 { // ⌘⌫
+                    onDeleteSelected?()
+                    return true
+                }
+                if event.charactersIgnoringModifiers?.lowercased() == "r" { // ⌘R
+                    onRefresh?()
+                    return true
+                }
+            }
+            return false
+        }
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             attachIfNeeded()
+            if window != nil {
+                installKeyMonitorIfNeeded()
+            } else {
+                removeKeyMonitor()
+            }
         }
 
         override func layout() {
@@ -2820,6 +3392,12 @@ private struct SFTPOutlineViewDragDropBridge: NSViewRepresentable {
         view.proxy.acceptsDrops = acceptsDrops
         view.proxy.onDropURLs = onDropURLs
         view.proxy.onStatusChange = onStatusChange
+        view.onOpenSelected = onOpenSelected
+        view.onNavigateUp = onNavigateUp
+        view.onDeleteSelected = onDeleteSelected
+        view.onRefresh = onRefresh
+        view.onQuickInspect = onQuickInspect
+        view.installKeyMonitorIfNeeded()
         DispatchQueue.main.async {
             view.attachIfNeeded()
         }
@@ -2832,6 +3410,11 @@ private struct SFTPOutlineViewDragDropBridge: NSViewRepresentable {
         nsView.proxy.acceptsDrops = acceptsDrops
         nsView.proxy.onDropURLs = onDropURLs
         nsView.proxy.onStatusChange = onStatusChange
+        nsView.onOpenSelected = onOpenSelected
+        nsView.onNavigateUp = onNavigateUp
+        nsView.onDeleteSelected = onDeleteSelected
+        nsView.onRefresh = onRefresh
+        nsView.onQuickInspect = onQuickInspect
         nsView.attachIfNeeded()
         nsView.clearRowDropTargetsIfAttached()
         DispatchQueue.main.async {
@@ -2841,6 +3424,7 @@ private struct SFTPOutlineViewDragDropBridge: NSViewRepresentable {
     }
 
     static func dismantleNSView(_ nsView: BridgeNSView, coordinator: ()) {
+        nsView.removeKeyMonitor()
         if let ov = nsView.attachedOutlineView, ov.dataSource === nsView.proxy {
             ov.dataSource = nsView.proxy.originalDataSource
         }
@@ -2903,6 +3487,30 @@ public enum SFTPDragExportHelper {
         )
     }
 
+    private final class ExportCancelBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var task: Task<URL, Error>?
+        private var isCancelled = false
+
+        func setTask(_ task: Task<URL, Error>) {
+            let cancelImmediately = lock.withLock { () -> Bool in
+                self.task = task
+                return isCancelled
+            }
+            if cancelImmediately {
+                task.cancel()
+            }
+        }
+
+        func cancel() {
+            let taskToCancel = lock.withLock { () -> Task<URL, Error>? in
+                isCancelled = true
+                return task
+            }
+            taskToCancel?.cancel()
+        }
+    }
+
     /// Downloads `item` from `session` and places it at `destinationURL` (or inside a temporary
     /// staging directory when `destinationURL` is nil), updating `TransferManager` throughout.
     @discardableResult
@@ -2927,6 +3535,8 @@ public enum SFTPDragExportHelper {
         let stagingURL = tempDir.appendingPathComponent(item.name)
         let recordedLocalURL = destinationURL ?? stagingURL
         let taskId = UUID()
+        let expectedBytes = item.isDirectory ? Int64(0) : Int64(clamping: item.size)
+        let cancelBox = ExportCancelBox()
 
         await Self.dispatchMainActorNonBlocking {
             TransferManager.shared.beginExternalTransfer(
@@ -2935,14 +3545,17 @@ public enum SFTPDragExportHelper {
                 remotePath: item.path,
                 localURL: recordedLocalURL,
                 direction: .download,
-                totalBytes: Int64(item.size)
+                totalBytes: expectedBytes,
+                onCancel: {
+                    cancelBox.cancel()
+                }
             )
             onStatusChange?("正在下载并导出: \(item.name)...")
         }
-        do {
+
+        let workTask = Task<URL, Error> {
             try Task.checkCancellation()
             try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-            let expectedBytes = Int64(clamping: item.size)
             let progressMonitor = Task.detached(priority: .utility) {
                 while !Task.isCancelled {
                     let bytes = TransferManager.currentTransferredBytes(at: stagingURL)
@@ -2994,6 +3607,16 @@ public enum SFTPDragExportHelper {
             } else {
                 finalURL = stagingURL
             }
+            return finalURL
+        }
+        cancelBox.setTask(workTask)
+
+        do {
+            let finalURL = try await withTaskCancellationHandler {
+                try await workTask.value
+            } onCancel: {
+                cancelBox.cancel()
+            }
             await Self.dispatchMainActorNonBlocking {
                 TransferManager.shared.completeExternalTransfer(taskId: taskId)
                 onStatusChange?("拖拽导出完成: \(item.name)")
@@ -3032,7 +3655,7 @@ public enum SFTPDragExportHelper {
             )
         }
         let loadHandler: @Sendable (@escaping @Sendable (URL?, Bool, (any Error)?) -> Void) -> Progress? = { completion in
-            let progress = Progress(totalUnitCount: Int64(max(item.size, 1)))
+            let progress = Progress(totalUnitCount: max(Int64(clamping: item.size), 1))
             progress.cancellationHandler = {
                 Task { await export.cancel() }
             }
@@ -3204,6 +3827,7 @@ private struct SFTPToolbarChip<Icon: View>: View {
 private struct SFTPExternalEditPopover: View {
     @ObservedObject var manager: ExternalEditSessionManager
     let sessions: [ExternalEditSessionManager.ActiveEditSession]
+    let onError: (String) -> Void
     let onClose: () -> Void
 
     private static let timeFormatter: DateFormatter = {
@@ -3298,18 +3922,31 @@ private struct SFTPExternalEditPopover: View {
             .frame(maxWidth: .infinity, alignment: .leading)
 
             HStack(spacing: 4) {
-                ApexIconButton(
-                    icon: "arrow.up.circle",
-                    label: "立即上传同步",
-                    size: 24,
-                    iconSize: 12,
-                    tint: editSession.status.isError ? ApexStyle.error : ApexStyle.accent
-                ) {
-                    Task {
-                        await manager.triggerManualUpload(id: editSession.id)
+                if editSession.status.isConflict {
+                    ApexActionButton("拉取远端", tint: ApexStyle.accent, size: .small) {
+                        Task {
+                            await manager.resolveConflictReloadRemote(id: editSession.id)
+                        }
                     }
+                    ApexActionButton("强制覆盖", tint: ApexStyle.warning, size: .small) {
+                        Task {
+                            await manager.resolveConflictForceOverwrite(id: editSession.id)
+                        }
+                    }
+                } else {
+                    ApexIconButton(
+                        icon: "arrow.up.circle",
+                        label: "立即上传同步",
+                        size: 24,
+                        iconSize: 12,
+                        tint: editSession.status.isError ? ApexStyle.error : ApexStyle.accent
+                    ) {
+                        Task {
+                            await manager.triggerManualUpload(id: editSession.id)
+                        }
+                    }
+                    .disabled(editSession.status.isBusy)
                 }
-                .disabled(editSession.status.isBusy)
 
                 ApexIconButton(
                     icon: "arrow.up.forward.app",
@@ -3318,7 +3955,13 @@ private struct SFTPExternalEditPopover: View {
                     iconSize: 11
                 ) {
                     Task {
-                        try? await manager.reopenInEditor(id: editSession.id)
+                        do {
+                            try await manager.reopenInEditor(id: editSession.id)
+                        } catch {
+                            await MainActor.run {
+                                onError("无法在外部编辑器中打开「\(editSession.fileName)」：\(error.localizedDescription)")
+                            }
+                        }
                     }
                 }
 
@@ -3359,6 +4002,11 @@ private struct SFTPExternalEditPopover: View {
                 .font(.caption2)
                 .monospacedDigit()
                 .foregroundStyle(ApexStyle.success)
+        case .conflict:
+            Text("远端文件已变更（已暂停自动上传，请选择覆盖或拉取）")
+                .font(.caption2)
+                .foregroundStyle(ApexStyle.warning)
+                .lineLimit(2)
         case .error(let message):
             Text("同步失败：\(message)")
                 .font(.caption2)

@@ -13,14 +13,48 @@ public final class TransferManager: ObservableObject {
     /// Upper bound on retained completed/failed/cancelled task records to prevent unbounded memory growth.
     public var maxCompletedHistory: Int = 200
     
-    private struct RetryContext {
+    private final class RetryContext {
         weak var session: SSHSessionProtocol?
+        let tabID: UUID?
         let onCompleted: (@Sendable () -> Void)?
         let onResult: (@Sendable (Result<String, Error>) -> Void)?
         let onDownloadResult: (@Sendable (Result<URL, Error>) -> Void)?
+        private var accessLease: FileAccessLease?
+
+        init(
+            session: SSHSessionProtocol?,
+            tabID: UUID?,
+            onCompleted: (@Sendable () -> Void)?,
+            onResult: (@Sendable (Result<String, Error>) -> Void)?,
+            onDownloadResult: (@Sendable (Result<URL, Error>) -> Void)?,
+            accessLease: FileAccessLease? = nil
+        ) {
+            self.session = session
+            self.tabID = tabID
+            self.onCompleted = onCompleted
+            self.onResult = onResult
+            self.onDownloadResult = onDownloadResult
+            self.accessLease = accessLease
+        }
+
+        func takeAccessLease() -> FileAccessLease? {
+            let lease = accessLease
+            accessLease = nil
+            return lease
+        }
+
+        func closeAccessLease() {
+            accessLease?.close()
+            accessLease = nil
+        }
+
+        deinit {
+            closeAccessLease()
+        }
     }
 
     private var activeTaskHandles: [UUID: Task<Void, Never>] = [:]
+    private var externalCancelHandlers: [UUID: @Sendable () -> Void] = [:]
     private var retryContexts: [UUID: RetryContext] = [:]
     private var runningTransferCount: Int = 0
     private var slotWaiters: [(id: UUID, maxConcurrent: Int, continuation: CheckedContinuation<Bool, Never>)] = []
@@ -51,7 +85,8 @@ public final class TransferManager: ObservableObject {
         let idsToRemove = Set(indicesToRemove.map { tasks[$0].id })
         for id in idsToRemove {
             activeTaskHandles.removeValue(forKey: id)
-            retryContexts.removeValue(forKey: id)
+            externalCancelHandlers.removeValue(forKey: id)
+            retryContexts.removeValue(forKey: id)?.closeAccessLease()
             lastSpeedSampleTime.removeValue(forKey: id)
             lastSampledBytes.removeValue(forKey: id)
         }
@@ -122,14 +157,40 @@ public final class TransferManager: ObservableObject {
         session: SSHSessionProtocol,
         localURL: URL,
         remotePath: String,
+        tabID: UUID? = nil,
         onCompleted: (@Sendable () -> Void)? = nil,
         onResult: (@Sendable (Result<String, Error>) -> Void)? = nil
     ) -> UUID {
+        enqueueUploadInternal(
+            session: session,
+            localURL: localURL,
+            remotePath: remotePath,
+            tabID: tabID,
+            retainedLease: nil,
+            onCompleted: onCompleted,
+            onResult: onResult
+        )
+    }
+
+    @discardableResult
+    private func enqueueUploadInternal(
+        session: SSHSessionProtocol,
+        localURL: URL,
+        remotePath: String,
+        tabID: UUID?,
+        retainedLease: FileAccessLease?,
+        onCompleted: (@Sendable () -> Void)?,
+        onResult: (@Sendable (Result<String, Error>) -> Void)?
+    ) -> UUID {
         // Acquire while the panel/Finder URL is still live, before scheduling the task.
         let accessResult = Result<FileAccessLease?, Error> {
-            distributionChannel == .appStore ? try fileAccessStore.acquire(localURL) : nil
+            if let retainedLease {
+                return retainedLease
+            }
+            return distributionChannel == .appStore ? try fileAccessStore.acquire(localURL) : nil
         }
-        let localURL = (try? accessResult.get())?.url ?? localURL
+        let accessLease = try? accessResult.get()
+        let localURL = accessLease?.url ?? localURL
         let fileSize = max(
             Self.currentTransferredBytes(at: localURL),
             (try? FileManager.default.attributesOfItem(atPath: localURL.path)[.size] as? Int64) ?? 0
@@ -145,13 +206,20 @@ public final class TransferManager: ObservableObject {
             status: .queued
         )
         tasks.insert(task, at: 0)
-        retryContexts[taskId] = RetryContext(session: session, onCompleted: onCompleted, onResult: onResult, onDownloadResult: nil)
-        
+        retryContexts[taskId] = RetryContext(
+            session: session,
+            tabID: tabID,
+            onCompleted: onCompleted,
+            onResult: onResult,
+            onDownloadResult: nil,
+            accessLease: accessLease
+        )
+
         let runner = Task { [weak self] in
             guard let self = self else { return }
-            let access: FileAccessLease?
-            do { access = try accessResult.get() }
-            catch {
+            do {
+                _ = try accessResult.get()
+            } catch {
                 if let index = self.tasks.firstIndex(where: { $0.id == taskId }) {
                     self.tasks[index].status = .failed(error.localizedDescription)
                     self.tasks[index].completedAt = Date()
@@ -161,8 +229,15 @@ public final class TransferManager: ObservableObject {
                 self.pruneCompletedHistoryIfNeeded()
                 return
             }
-            defer { access?.close() }
-            await self.executeUpload(taskId: taskId, session: session, localURL: localURL, remotePath: remotePath, onCompleted: onCompleted, onResult: onResult)
+            await self.executeUpload(
+                taskId: taskId,
+                session: session,
+                localURL: localURL,
+                remotePath: remotePath,
+                tabID: tabID,
+                onCompleted: onCompleted,
+                onResult: onResult
+            )
         }
         activeTaskHandles[taskId] = runner
         return taskId
@@ -194,11 +269,36 @@ public final class TransferManager: ObservableObject {
         onCompleted: (@Sendable () -> Void)? = nil,
         onResult: (@Sendable (Result<URL, Error>) -> Void)? = nil
     ) -> UUID {
+        enqueueDownloadInternal(
+            session: session,
+            remotePath: remotePath,
+            localURL: localURL,
+            totalBytes: totalBytes,
+            retainedLease: nil,
+            onCompleted: onCompleted,
+            onResult: onResult
+        )
+    }
+
+    @discardableResult
+    private func enqueueDownloadInternal(
+        session: SSHSessionProtocol,
+        remotePath: String,
+        localURL: URL,
+        totalBytes: Int64,
+        retainedLease: FileAccessLease?,
+        onCompleted: (@Sendable () -> Void)?,
+        onResult: (@Sendable (Result<URL, Error>) -> Void)?
+    ) -> UUID {
         // Acquire while the panel/Finder URL is still live, before scheduling the task.
         let accessResult = Result<FileAccessLease?, Error> {
-            distributionChannel == .appStore ? try fileAccessStore.acquire(localURL) : nil
+            if let retainedLease {
+                return retainedLease
+            }
+            return distributionChannel == .appStore ? try fileAccessStore.acquire(localURL) : nil
         }
-        let localURL = (try? accessResult.get())?.url ?? localURL
+        let accessLease = try? accessResult.get()
+        let localURL = accessLease?.url ?? localURL
         let taskId = UUID()
         let fileName = (remotePath as NSString).lastPathComponent
         let task = TransferTask(
@@ -211,13 +311,20 @@ public final class TransferManager: ObservableObject {
             status: .queued
         )
         tasks.insert(task, at: 0)
-        retryContexts[taskId] = RetryContext(session: session, onCompleted: onCompleted, onResult: nil, onDownloadResult: onResult)
-        
+        retryContexts[taskId] = RetryContext(
+            session: session,
+            tabID: nil,
+            onCompleted: onCompleted,
+            onResult: nil,
+            onDownloadResult: onResult,
+            accessLease: accessLease
+        )
+
         let runner = Task { [weak self] in
             guard let self = self else { return }
-            let access: FileAccessLease?
-            do { access = try accessResult.get() }
-            catch {
+            do {
+                _ = try accessResult.get()
+            } catch {
                 if let index = self.tasks.firstIndex(where: { $0.id == taskId }) {
                     self.tasks[index].status = .failed(error.localizedDescription)
                     self.tasks[index].completedAt = Date()
@@ -227,8 +334,14 @@ public final class TransferManager: ObservableObject {
                 self.pruneCompletedHistoryIfNeeded()
                 return
             }
-            defer { access?.close() }
-            await self.executeDownload(taskId: taskId, session: session, remotePath: remotePath, localURL: localURL, onCompleted: onCompleted, onResult: onResult)
+            await self.executeDownload(
+                taskId: taskId,
+                session: session,
+                remotePath: remotePath,
+                localURL: localURL,
+                onCompleted: onCompleted,
+                onResult: onResult
+            )
         }
         activeTaskHandles[taskId] = runner
         return taskId
@@ -244,10 +357,12 @@ public final class TransferManager: ObservableObject {
         }
         activeTaskHandles[id]?.cancel()
         activeTaskHandles.removeValue(forKey: id)
+        let externalCancel = externalCancelHandlers.removeValue(forKey: id)
         lastSpeedSampleTime.removeValue(forKey: id)
         lastSampledBytes.removeValue(forKey: id)
         tasks[idx].status = .cancelled
         tasks[idx].completedAt = Date()
+        externalCancel?()
         pruneCompletedHistoryIfNeeded()
     }
 
@@ -257,11 +372,22 @@ public final class TransferManager: ObservableObject {
         } else {
             activeTaskHandles[id]?.cancel()
             activeTaskHandles.removeValue(forKey: id)
+            externalCancelHandlers.removeValue(forKey: id)
             lastSpeedSampleTime.removeValue(forKey: id)
             lastSampledBytes.removeValue(forKey: id)
         }
-        retryContexts.removeValue(forKey: id)
+        retryContexts.removeValue(forKey: id)?.closeAccessLease()
         tasks.removeAll { $0.id == id }
+    }
+
+    public func canRetryTask(id: UUID) -> Bool {
+        guard let task = tasks.first(where: { $0.id == id }) else { return false }
+        switch task.status {
+        case .failed, .cancelled:
+            return retryContexts[id]?.session != nil
+        case .queued, .transferring, .completed:
+            return false
+        }
     }
 
     @discardableResult
@@ -274,22 +400,26 @@ public final class TransferManager: ObservableObject {
             return nil
         }
         guard let context = retryContexts[id], let session = context.session else { return nil }
+        let retainedLease = context.takeAccessLease()
         removeTask(id: id)
         switch task.direction {
         case .upload:
-            return enqueueUpload(
+            return enqueueUploadInternal(
                 session: session,
                 localURL: task.localURL,
                 remotePath: task.remotePath,
+                tabID: context.tabID,
+                retainedLease: retainedLease,
                 onCompleted: context.onCompleted,
                 onResult: context.onResult
             )
         case .download:
-            return enqueueDownload(
+            return enqueueDownloadInternal(
                 session: session,
                 remotePath: task.remotePath,
                 localURL: task.localURL,
                 totalBytes: task.totalBytes,
+                retainedLease: retainedLease,
                 onCompleted: context.onCompleted,
                 onResult: context.onDownloadResult
             )
@@ -306,12 +436,17 @@ public final class TransferManager: ObservableObject {
             handle.cancel()
         }
         activeTaskHandles.removeAll()
+        let cancelHandlers = Array(externalCancelHandlers.values)
+        externalCancelHandlers.removeAll()
         lastSpeedSampleTime.removeAll()
         lastSampledBytes.removeAll()
         let now = Date()
         for idx in tasks.indices where tasks[idx].status == .queued || tasks[idx].status == .transferring {
             tasks[idx].status = .cancelled
             tasks[idx].completedAt = now
+        }
+        for handler in cancelHandlers {
+            handler()
         }
         pruneCompletedHistoryIfNeeded()
     }
@@ -320,7 +455,8 @@ public final class TransferManager: ObservableObject {
         let terminalIds = tasks.filter { $0.status.isTerminal }.map(\.id)
         for id in terminalIds {
             activeTaskHandles.removeValue(forKey: id)
-            retryContexts.removeValue(forKey: id)
+            externalCancelHandlers.removeValue(forKey: id)
+            retryContexts.removeValue(forKey: id)?.closeAccessLease()
             lastSpeedSampleTime.removeValue(forKey: id)
             lastSampledBytes.removeValue(forKey: id)
         }
@@ -337,7 +473,8 @@ public final class TransferManager: ObservableObject {
         remotePath: String,
         localURL: URL,
         direction: TransferDirection,
-        totalBytes: Int64
+        totalBytes: Int64,
+        onCancel: (@Sendable () -> Void)? = nil
     ) -> UUID {
         let task = TransferTask(
             id: id,
@@ -352,6 +489,9 @@ public final class TransferManager: ObservableObject {
             startedAt: Date()
         )
         tasks.insert(task, at: 0)
+        if let onCancel {
+            externalCancelHandlers[id] = onCancel
+        }
         lastSpeedSampleTime[id] = Date()
         lastSampledBytes[id] = 0
         return id
@@ -396,7 +536,11 @@ public final class TransferManager: ObservableObject {
     
     /// Mark an externally-driven transfer as completed
     public func completeExternalTransfer(taskId: UUID) {
-        guard let idx = tasks.firstIndex(where: { $0.id == taskId }) else { return }
+        externalCancelHandlers.removeValue(forKey: taskId)
+        guard let idx = tasks.firstIndex(where: { $0.id == taskId }),
+              !tasks[idx].status.isTerminal else {
+            return
+        }
         tasks[idx].transferredBytes = max(tasks[idx].transferredBytes, tasks[idx].totalBytes)
         tasks[idx].status = .completed
         tasks[idx].completedAt = Date()
@@ -407,7 +551,11 @@ public final class TransferManager: ObservableObject {
     
     /// Mark an externally-driven transfer as failed
     public func failExternalTransfer(taskId: UUID, error: Error) {
-        guard let idx = tasks.firstIndex(where: { $0.id == taskId }) else { return }
+        externalCancelHandlers.removeValue(forKey: taskId)
+        guard let idx = tasks.firstIndex(where: { $0.id == taskId }),
+              tasks[idx].status != .cancelled else {
+            return
+        }
         tasks[idx].status = .failed(error.localizedDescription)
         tasks[idx].completedAt = Date()
         lastSpeedSampleTime.removeValue(forKey: taskId)
@@ -417,7 +565,11 @@ public final class TransferManager: ObservableObject {
     
     /// Mark an externally-driven transfer as cancelled
     public func cancelExternalTransfer(taskId: UUID) {
-        guard let idx = tasks.firstIndex(where: { $0.id == taskId }) else { return }
+        externalCancelHandlers.removeValue(forKey: taskId)
+        guard let idx = tasks.firstIndex(where: { $0.id == taskId }),
+              tasks[idx].status != .completed else {
+            return
+        }
         tasks[idx].status = .cancelled
         tasks[idx].completedAt = Date()
         lastSpeedSampleTime.removeValue(forKey: taskId)
@@ -432,6 +584,7 @@ public final class TransferManager: ObservableObject {
         session: SSHSessionProtocol,
         localURL: URL,
         remotePath: String,
+        tabID: UUID?,
         onCompleted: (@Sendable () -> Void)?,
         onResult: (@Sendable (Result<String, Error>) -> Void)? = nil
     ) async {
@@ -473,11 +626,16 @@ public final class TransferManager: ObservableObject {
                 tasks[finalIdx].status = .completed
                 tasks[finalIdx].completedAt = Date()
             }
-            retryContexts.removeValue(forKey: taskId)
+            retryContexts.removeValue(forKey: taskId)?.closeAccessLease()
             onResult?(.success(remotePath))
             onCompleted?()
+            let refreshUserInfo: [AnyHashable: Any]? = tabID.map { ["tabId": $0] }
             DispatchQueue.main.async {
-                NotificationCenter.default.post(name: NSNotification.Name("SFTPDirectoryRefreshNeeded"), object: remotePath)
+                NotificationCenter.default.post(
+                    name: NSNotification.Name("SFTPDirectoryRefreshNeeded"),
+                    object: remotePath,
+                    userInfo: refreshUserInfo
+                )
             }
         } catch {
             if let finalIdx = tasks.firstIndex(where: { $0.id == taskId }) {
@@ -530,13 +688,23 @@ public final class TransferManager: ObservableObject {
         lastSpeedSampleTime[taskId] = Date()
         lastSampledBytes[taskId] = 0
         let totalBytes = tasks[idx].totalBytes
+
+        let destDir = localURL.deletingLastPathComponent()
+        let stagingURL: URL
+        if distributionChannel != .appStore,
+           FileManager.default.isWritableFile(atPath: destDir.path) {
+            stagingURL = destDir.appendingPathComponent(".\(localURL.lastPathComponent).\(taskId.uuidString.prefix(8)).aetherpart")
+        } else {
+            stagingURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("\(localURL.lastPathComponent).\(taskId.uuidString.prefix(8)).aetherpart")
+        }
         
         // Active file size poller off the main thread to ensure real-time progress & throughput updates
         let progressMonitor = Task.detached(priority: .utility) { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 150_000_000) // 150ms sampling
                 if Task.isCancelled { break }
-                let bytes = Self.currentTransferredBytes(at: localURL)
+                let bytes = Self.currentTransferredBytes(at: stagingURL)
                 if bytes > 0 {
                     await MainActor.run { [weak self] in
                         guard let self = self else { return }
@@ -549,7 +717,7 @@ public final class TransferManager: ObservableObject {
         defer { progressMonitor.cancel() }
         
         do {
-            try await session.downloadFile(remotePath: remotePath, localURL: localURL) { [weak self] fraction in
+            try await session.downloadFile(remotePath: remotePath, localURL: stagingURL) { [weak self] fraction in
                 Task { @MainActor [weak self] in
                     self?.updateProgress(taskId: taskId, fraction: fraction)
                 }
@@ -557,6 +725,19 @@ public final class TransferManager: ObservableObject {
             
             try Task.checkCancellation()
             progressMonitor.cancel()
+
+            if FileManager.default.fileExists(atPath: stagingURL.path) {
+                let parentDir = localURL.deletingLastPathComponent()
+                if !FileManager.default.fileExists(atPath: parentDir.path) {
+                    try FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true)
+                }
+                if FileManager.default.fileExists(atPath: localURL.path) {
+                    _ = try FileManager.default.replaceItemAt(localURL, withItemAt: stagingURL)
+                } else {
+                    try FileManager.default.moveItem(at: stagingURL, to: localURL)
+                }
+            }
+
             if let finalIdx = tasks.firstIndex(where: { $0.id == taskId }) {
                 let actualSize = Self.currentTransferredBytes(at: localURL)
                 let finalBytes = actualSize > 0 ? actualSize : tasks[finalIdx].totalBytes
@@ -565,11 +746,12 @@ public final class TransferManager: ObservableObject {
                 tasks[finalIdx].status = .completed
                 tasks[finalIdx].completedAt = Date()
             }
-            retryContexts.removeValue(forKey: taskId)
+            retryContexts.removeValue(forKey: taskId)?.closeAccessLease()
             onResult?(.success(localURL))
             onCompleted?()
         } catch {
             progressMonitor.cancel()
+            try? FileManager.default.removeItem(at: stagingURL)
             if let finalIdx = tasks.firstIndex(where: { $0.id == taskId }) {
                 if Task.isCancelled || error is CancellationError || tasks[finalIdx].status == .cancelled {
                     tasks[finalIdx].status = .cancelled
@@ -596,7 +778,7 @@ public final class TransferManager: ObservableObject {
         } else if total > 0 {
             computed = Int64(Double(total) * fraction)
         } else {
-            computed = Int64(fraction * 100)
+            computed = 0
         }
         let transferred = max(tasks[idx].transferredBytes, computed)
         tasks[idx].transferredBytes = transferred

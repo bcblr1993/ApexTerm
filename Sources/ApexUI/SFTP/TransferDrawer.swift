@@ -405,7 +405,12 @@ public struct TransferDrawer: View {
                         ScrollView(.vertical, showsIndicators: true) {
                             LazyVStack(spacing: 8) {
                                 ForEach(filteredTasks) { task in
-                                    TransferTaskRow(task: task) {
+                                    TransferTaskRow(
+                                        task: task,
+                                        onRetry: manager.canRetryTask(id: task.id) ? {
+                                            _ = manager.retryTask(id: task.id)
+                                        } : nil
+                                    ) {
                                         if task.status.isTerminal {
                                             manager.removeTask(id: task.id)
                                         } else {
@@ -544,6 +549,7 @@ public struct TransferDrawer: View {
 private struct TransferTaskRow: View {
     @ObservedObject private var themeSettings = AppSettings.shared
     let task: TransferTask
+    var onRetry: (() -> Void)? = nil
     let onCancel: () -> Void
 
     private static let timeFormatter: DateFormatter = {
@@ -711,6 +717,17 @@ private struct TransferTaskRow: View {
                     }
                 } else if case .failed = task.status {
                     HStack(spacing: 6) {
+                        if let onRetry {
+                            ApexIconButton(
+                                icon: "arrow.clockwise",
+                                label: "重试传输 \(task.fileName)",
+                                size: 20,
+                                iconSize: 10,
+                                tint: ApexStyle.accent,
+                                action: onRetry
+                            )
+                        }
+
                         Image(systemName: "exclamationmark.triangle.fill")
                             .font(.system(size: 13))
                             .foregroundColor(ApexStyle.error)
@@ -728,6 +745,17 @@ private struct TransferTaskRow: View {
                     }
                 } else if task.status == .cancelled {
                     HStack(spacing: 6) {
+                        if let onRetry {
+                            ApexIconButton(
+                                icon: "arrow.clockwise",
+                                label: "重试传输 \(task.fileName)",
+                                size: 20,
+                                iconSize: 10,
+                                tint: ApexStyle.accent,
+                                action: onRetry
+                            )
+                        }
+
                         Image(systemName: "minus.circle")
                             .font(.system(size: 13))
                             .foregroundColor(ApexStyle.secondary)

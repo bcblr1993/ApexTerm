@@ -16,10 +16,34 @@ public struct SFTPFileInspectorSheet: View {
     @State private var expectedDigestInput: String = ""
     @State private var copyFeedback: String?
     @State private var checksumTask: Task<Void, Never>?
+    @State private var symlinkProbeTask: Task<Void, Never>?
+    @State private var symlinkTargetKind: SFTPRemoteOperations.SFTPSymlinkTargetKind? = nil
+    @State private var isProbingSymlink = false
 
     public init(item: SFTPItem, session: SSHSessionProtocol?) {
         self.item = item
         self.session = session
+    }
+
+    private var canComputeChecksumForItem: Bool {
+        if item.isDirectory { return false }
+        if !item.isSymlink { return true }
+        switch symlinkTargetKind {
+        case .regularFile, .unknown:
+            return true
+        case .directory, .broken, .none:
+            return false
+        }
+    }
+
+    private var symlinkTargetDescription: String {
+        if isProbingSymlink { return "正在探测目标…" }
+        switch symlinkTargetKind {
+        case .regularFile: return "符号链接 → 常规文件"
+        case .directory: return "符号链接 → 目录"
+        case .broken: return "符号链接 → 目标失效/不存在"
+        case .unknown, .none: return "符号链接 (Symlink)"
+        }
     }
 
     public var body: some View {
@@ -61,7 +85,7 @@ public struct SFTPFileInspectorSheet: View {
                     inspectorRow(label: "完整路径", value: item.path, copyable: true)
                     inspectorRow(
                         label: "类型",
-                        value: item.isDirectory ? "目录 (Directory)" : (item.isSymlink ? "符号链接 (Symlink)" : "常规文件 (File)")
+                        value: item.isDirectory ? "目录 (Directory)" : (item.isSymlink ? symlinkTargetDescription : "常规文件 (File)")
                     )
                     if !item.isDirectory {
                         inspectorRow(
@@ -80,7 +104,15 @@ public struct SFTPFileInspectorSheet: View {
                     )
                 }
 
-                if !item.isDirectory {
+                if !item.isDirectory && item.isSymlink && (symlinkTargetKind == .directory || symlinkTargetKind == .broken) {
+                    Section("远端文件完整性校验 (SHA-256 / MD5)") {
+                        Text(symlinkTargetKind == .directory
+                             ? "该符号链接指向远程目录，不支持计算文件摘要。"
+                             : "该符号链接指向的目标不存在或已失效，无法计算文件摘要。")
+                            .font(.caption)
+                            .foregroundColor(ApexStyle.warning)
+                    }
+                } else if !item.isDirectory {
                     Section("远端文件完整性校验 (SHA-256 / MD5)") {
                         HStack {
                             Picker("算法", selection: $algorithm) {
@@ -180,13 +212,53 @@ public struct SFTPFileInspectorSheet: View {
         }
         .frame(minWidth: 500, idealWidth: 540, minHeight: item.isDirectory ? 320 : 520, idealHeight: item.isDirectory ? 340 : 540)
         .onAppear {
-            if !item.isDirectory {
+            guard !item.isDirectory else { return }
+            if item.isSymlink {
+                probeSymlinkAndComputeChecksum()
+            } else {
                 computeChecksum()
             }
         }
         .onDisappear {
+            symlinkProbeTask?.cancel()
+            symlinkProbeTask = nil
             checksumTask?.cancel()
             checksumTask = nil
+        }
+    }
+
+    private func probeSymlinkAndComputeChecksum() {
+        symlinkProbeTask?.cancel()
+        isProbingSymlink = true
+        symlinkProbeTask = Task {
+            let resolvedKind: SFTPRemoteOperations.SFTPSymlinkTargetKind
+            if let session, session.isConnected {
+                if let cmd = SFTPRemoteOperations.symlinkProbeCommand(remotePath: item.path),
+                   let res = try? await session.executeCommandWithResult(cmd) {
+                    let parsed = SFTPRemoteOperations.parseSymlinkProbeOutput(res.stdout)
+                    if parsed != .unknown {
+                        resolvedKind = parsed
+                    } else if (try? await session.listDirectory(path: item.path)) != nil {
+                        resolvedKind = .directory
+                    } else {
+                        resolvedKind = .unknown
+                    }
+                } else if (try? await session.listDirectory(path: item.path)) != nil {
+                    resolvedKind = .directory
+                } else {
+                    resolvedKind = .unknown
+                }
+            } else {
+                resolvedKind = .unknown
+            }
+            await MainActor.run {
+                guard !Task.isCancelled else { return }
+                self.isProbingSymlink = false
+                self.symlinkTargetKind = resolvedKind
+                if self.canComputeChecksumForItem {
+                    self.computeChecksum()
+                }
+            }
         }
     }
 
@@ -214,7 +286,7 @@ public struct SFTPFileInspectorSheet: View {
     }
 
     private func computeChecksum() {
-        guard !item.isDirectory else { return }
+        guard canComputeChecksumForItem else { return }
         checksumTask?.cancel()
         isComputingChecksum = true
         computedDigest = nil
